@@ -78,45 +78,45 @@ public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEn
         RaftEndpoint leader = request.getSender();
 
         // Reply false if term < currentTerm (§5.1)
-        if (request.getTerm() < state.term()) {
+        if (request.getTerm() < state().term()) {
             if (LOGGER.isDebugEnabled()) {
-                LOGGER.warn(localEndpointStr() + " Stale " + request + " received in current term: " + state.term());
+                LOGGER.warn("{} Stale {} received in current term: {}", localEndpointStr(), request, state().term());
             }
 
-            node.send(leader, createAppendEntriesFailureResponse(state.term(), 0, 0));
+            node().send(leader, createAppendEntriesFailureResponse(state().term(), 0, 0));
             return;
         }
 
-        RaftLog log = state.log();
+        RaftLog log = state().log();
 
         // Transform into follower if a newer term is seen or another node wins the
         // election of the current term
-        if (request.getTerm() > state.term() || (state.role() != FOLLOWER && state.role() != LEARNER)) {
+        if (request.getTerm() > state().term() || (state().role() != FOLLOWER && state().role() != LEARNER)) {
             // If the request term is greater than the local term, update the local term and
             // convert to follower (§5.1)
             LOGGER.info("{} Moving to new term: {} and leader: {} from current term: {}.", localEndpointStr(),
-                        request.getTerm(), leader.id(), state.term());
-            node.toFollower(request.getTerm());
+                        request.getTerm(), leader.id(), state().term());
+            node().toFollower(request.getTerm());
         }
 
-        if (!leader.equals(state.leader())) {
+        if (!leader.equals(state().leader())) {
             LOGGER.info("{} Setting leader: {}", localEndpointStr(), leader.id());
-            node.leader(leader);
+            node().leader(leader);
         }
 
-        node.leaderHeartbeatReceived();
+        node().leaderHeartbeatReceived();
 
         if (!verifyLastLogEntry(request, log)) {
             RaftMessage response = createAppendEntriesFailureResponse(request.getTerm(),
                     request.getQuerySequenceNumber(), request.getFlowControlSequenceNumber());
-            node.send(leader, response);
+            node().send(leader, response);
             return;
         }
 
         Entry<Long, List<LogEntry>> e = appendLogEntries(request, log);
         long lastLogIndex = e.getKey();
         List<LogEntry> newLogEntries = e.getValue();
-        long oldCommitIndex = state.commitIndex();
+        long oldCommitIndex = state().commitIndex();
 
         // Update the commit index
         if (request.getCommitIndex() > oldCommitIndex) {
@@ -125,27 +125,27 @@ public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEn
             long newCommitIndex = min(request.getCommitIndex(), lastLogIndex);
             LOGGER.debug("{} Setting commit index: {}.", localEndpointStr(), newCommitIndex);
 
-            state.commitIndex(newCommitIndex);
+            state().commitIndex(newCommitIndex);
         }
 
         try {
-            RaftMessage response = modelFactory.createAppendEntriesSuccessResponseBuilder()
-                                               .setGroupId(node.groupId()).setSender(localEndpoint()).setTerm(state.term())
+            RaftMessage response = modelFactory().createAppendEntriesSuccessResponseBuilder()
+                                               .setGroupId(node().groupId()).setSender(localEndpoint()).setTerm(state().term())
                                                .setLastLogIndex(lastLogIndex).setQuerySequenceNumber(request.getQuerySequenceNumber())
                                                .setFlowControlSequenceNumber(request.getFlowControlSequenceNumber()).build();
-            node.send(leader, response);
+            node().send(leader, response);
         } finally {
-            boolean commitIndexAdvanced = (state.commitIndex() > oldCommitIndex);
+            boolean commitIndexAdvanced = (state().commitIndex() > oldCommitIndex);
             if (commitIndexAdvanced) {
-                node.applyLogEntries();
+                node().applyLogEntries();
             }
 
-            if (newLogEntries.size() > 0) {
-                prepareGroupOp(newLogEntries, state.commitIndex());
+            if (!newLogEntries.isEmpty()) {
+                prepareGroupOp(newLogEntries, state().commitIndex());
             }
 
             if (commitIndexAdvanced) {
-                node.tryRunScheduledQueries();
+                node().tryRunScheduledQueries();
             }
         }
     }
@@ -161,11 +161,13 @@ public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEn
             } else {
                 // Reply false if log does not contain an entry at prevLogIndex whose term
                 // matches prevLogTerm (§5.3)
-                LogEntry prevEntry = log.getLogEntry(request.getPreviousLogIndex());
+                var prevEntry = log.getLogEntry(request.getPreviousLogIndex());
                 if (prevEntry == null) {
                     if (LOGGER.isDebugEnabled()) {
-                        LOGGER.warn(localEndpointStr() + " Failed to get previous log index for " + request + ", last"
-                                + " log index: " + lastLogIndex);
+                        LOGGER.warn("{} Failed to get previous log index for {}, last log index: {}",
+                                    localEndpointStr(),
+                                    request,
+                                    lastLogIndex);
                     }
 
                     return false;
@@ -176,8 +178,10 @@ public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEn
 
             if (request.getPreviousLogTerm() != prevLogTerm) {
                 if (LOGGER.isDebugEnabled()) {
-                    LOGGER.warn(localEndpointStr() + " Previous log term of " + request + " is different than ours: "
-                            + prevLogTerm);
+                    LOGGER.warn("{} Previous log term of {} is different than ours: {}",
+                                localEndpointStr(),
+                                request,
+                                prevLogTerm);
                 }
 
                 return false;
@@ -191,7 +195,7 @@ public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEn
         int truncatedRequestEntryCount = 0;
         List<LogEntry> newLogEntries = emptyList();
         // Process any new entries
-        if (request.getLogEntries().size() > 0) {
+        if (!request.getLogEntries().isEmpty()) {
             // Delete any conflicting entries, skip any duplicates
             long lastLogIndex = log.lastLogOrSnapshotIndex();
             for (int i = 0, requestEntryCount = request.getLogEntries().size(); i < requestEntryCount; i++) {
@@ -220,7 +224,7 @@ public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEn
                                 truncatedEntries.size(), requestEntry.getIndex());
                     }
 
-                    state.invalidateFuturesFrom(requestEntry.getIndex(), node.newNotLeaderException());
+                    state().invalidateFuturesFrom(requestEntry.getIndex(), node().newNotLeaderException());
                     revertPreparedGroupOp(truncatedEntries);
                     newLogEntries = request.getLogEntries().subList(i, requestEntryCount);
                     log.flush();
@@ -228,7 +232,7 @@ public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEn
                 }
             }
 
-            if (newLogEntries.size() > 0) {
+            if (!newLogEntries.isEmpty()) {
                 if (log.availableCapacity() < newLogEntries.size()) {
                     if (LOGGER.isDebugEnabled()) {
                         LOGGER.warn(localEndpointStr() + " Truncating " + newLogEntries.size() + " entries to "
@@ -268,10 +272,10 @@ public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEn
                 .findFirst().ifPresent(logEntry -> {
                     Object operation = logEntry.getOperation();
                     assert (operation instanceof UpdateRaftGroupMembersOp)
-                            : "Invalid Raft group operation: " + operation + " in " + node.groupId();
-                    node.setStatus(UPDATING_RAFT_GROUP_MEMBER_LIST);
+                            : "Invalid Raft group operation: " + operation + " in " + node().groupId();
+                    node().setStatus(UPDATING_RAFT_GROUP_MEMBER_LIST);
                     UpdateRaftGroupMembersOp groupOp = (UpdateRaftGroupMembersOp) operation;
-                    node.updateGroupMembers(logEntry.getIndex(), groupOp.getMembers(), groupOp.getVotingMembers());
+                    node().updateGroupMembers(logEntry.getIndex(), groupOp.getMembers(), groupOp.getVotingMembers());
                 });
     }
 
@@ -281,15 +285,15 @@ public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEn
         // There can be at most 1 instance of such operation...
         logEntries.stream().filter(logEntry -> logEntry.getOperation() instanceof RaftGroupOp).findFirst()
                 .ifPresent(logEntry -> {
-                    node.setStatus(ACTIVE);
+                    node().setStatus(ACTIVE);
                     if (logEntry.getOperation() instanceof UpdateRaftGroupMembersOp) {
-                        node.revertGroupMembers();
+                        node().revertGroupMembers();
                     }
                 });
     }
 
     private RaftMessage createAppendEntriesFailureResponse(int term, long queryRound, long sequenceNumber) {
-        return modelFactory.createAppendEntriesFailureResponseBuilder().setGroupId(node.groupId())
+        return modelFactory().createAppendEntriesFailureResponseBuilder().setGroupId(node().groupId())
                 .setSender(localEndpoint()).setTerm(term).setExpectedNextIndex(message.getPreviousLogIndex() + 1)
                 .setQuerySequenceNumber(queryRound).setFlowControlSequenceNumber(sequenceNumber).build();
     }

@@ -33,10 +33,10 @@ public class FlushTask extends RaftNodeStatusAwareTask {
 
     @Override
     protected void doRun() {
-        RaftLog log = state.log();
+        RaftLog log = state().log();
         log.flush();
 
-        LeaderState leaderState = state.leaderState();
+        LeaderState leaderState = state().leaderState();
         if (leaderState == null) {
             return;
         }
@@ -44,7 +44,7 @@ public class FlushTask extends RaftNodeStatusAwareTask {
         leaderState.flushTaskSubmitted(false);
         leaderState.flushedLogIndex(log.lastLogOrSnapshotIndex());
 
-        node.tryAdvanceCommitIndex();
+        node().tryAdvanceCommitIndex();
     }
 
 }

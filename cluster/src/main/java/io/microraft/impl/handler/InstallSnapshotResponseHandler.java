@@ -69,36 +69,35 @@ public class InstallSnapshotResponseHandler extends AbstractResponseHandler<Inst
     protected void handleResponse(@Nonnull InstallSnapshotResponse response) {
         LOGGER.debug("{} received {}.", localEndpointStr(), response);
 
-        if (response.getTerm() > state.term()) {
-            if (state.role() == LEADER) {
+        if (response.getTerm() > state().term()) {
+            if (state().role() == LEADER) {
                 LOGGER.warn("{} Ignored invalid response {} for current term: {}", localEndpointStr(), response,
-                        state.term());
+                        state().term());
                 return;
-            } else if (state.role() != FOLLOWER && state.role() != LEARNER) {
+            } else if (state().role() != FOLLOWER && state().role() != LEARNER) {
                 // If the request term is greater than the local term,
                 // update the local term and convert to follower (§5.1)
                 LOGGER.info("{} Moving to new term: {} from current term: {} and sender: {}", localEndpointStr(),
-                        response.getTerm(), state.term(), response.getSender().id());
+                        response.getTerm(), state().term(), response.getSender().id());
 
-                node.toFollower(response.getTerm());
+                node().toFollower(response.getTerm());
             }
         }
 
-        node.tryAckQuery(response.getQuerySequenceNumber(), response.getSender());
+        node().tryAckQuery(response.getQuerySequenceNumber(), response.getSender());
 
-        LeaderState leaderState = state.leaderState();
+        LeaderState leaderState = state().leaderState();
         FollowerState followerState = leaderState != null ? leaderState.followerState(response.getSender()) : null;
         if (followerState != null) {
             if (response.getFlowControlSequenceNumber() == 0) {
                 followerState.resetRequestBackoff();
             } else if (!followerState.responseReceived(response.getFlowControlSequenceNumber(),
-                    node.clock().millis())) {
+                    node().clock().millis())) {
                 return;
             }
         }
 
-        node.sendSnapshotChunk(response.getSender(), response.getSnapshotIndex(),
+        node().sendSnapshotChunk(response.getSender(), response.getSnapshotIndex(),
                 response.getRequestedSnapshotChunkIndex());
     }
-
 }

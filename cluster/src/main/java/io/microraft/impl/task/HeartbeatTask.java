@@ -42,9 +42,9 @@ public class HeartbeatTask extends RaftNodeStatusAwareTask {
     @Override
     protected void doRun() {
         try {
-            if (state.leaderState() != null) {
-                if (!node.demoteToFollowerIfQuorumHeartbeatTimeoutElapsed()) {
-                    node.broadcastAppendEntriesRequest();
+            if (state().leaderState() != null) {
+                if (!node().demoteToFollowerIfQuorumHeartbeatTimeoutElapsed()) {
+                    node().broadcastAppendEntriesRequest();
                     // TODO(basri) append no-op if snapshotIndex > 0 && snapshotIndex ==
                     // lastLogIndex
                 }
@@ -52,43 +52,42 @@ public class HeartbeatTask extends RaftNodeStatusAwareTask {
                 return;
             }
 
-            RaftEndpoint leader = state.leader();
+            RaftEndpoint leader = state().leader();
             if (leader == null) {
-                if (state.role() == FOLLOWER && state.preCandidateState() == null) {
+                if (state().role() == FOLLOWER && state().preCandidateState() == null) {
                     LOGGER.warn("{} We are FOLLOWER and there is no current leader. Will start new election round.",
                             localEndpointStr());
                     resetLeaderAndTryTriggerPreVote(false);
                 }
-            } else if (node.isLeaderHeartbeatTimeoutElapsed() && state.preCandidateState() == null) {
+            } else if (node().isLeaderHeartbeatTimeoutElapsed() && state().preCandidateState() == null) {
                 LOGGER.warn("{} Current leader {}'s heartbeats are timed-out.", localEndpointStr(), leader.id());
                 resetLeaderAndTryTriggerPreVote(true);
-            } else if (!state.committedGroupMembers().isKnownMember(leader) && state.preCandidateState() == null) {
+            } else if (!state().committedGroupMembers().isKnownMember(leader) && state().preCandidateState() == null) {
                 LOGGER.warn("{} Current leader {} is not member anymore.", localEndpointStr(), leader.id());
                 resetLeaderAndTryTriggerPreVote(true);
             }
         } finally {
-            node.executor().schedule(this, node.config().leaderHeartbeatPeriodSecs(), SECONDS);
+            node().executor().schedule(this, node().config().leaderHeartbeatPeriodSecs(), SECONDS);
         }
     }
 
     void resetLeaderAndTryTriggerPreVote(boolean resetLeader) {
         if (resetLeader) {
-            node.leader(null);
+            node().leader(null);
         }
 
-        if (state.role() == LEARNER) {
+        if (state().role() == LEARNER) {
             LOGGER.debug("{} is not starting pre-vote since it is {}", localEndpointStr(), LEARNER);
             return;
         }
 
-        if (state.leaderElectionQuorumSize() > 1) {
-            node.runPreVote();
-        } else if (state.effectiveGroupMembers().getVotingMembers().contains(localEndpoint())) {
+        if (state().leaderElectionQuorumSize() > 1) {
+            node().runPreVote();
+        } else if (state().effectiveGroupMembers().getVotingMembers().contains(localEndpoint())) {
             // we can encounter this case if the leader crashes before it
             // commit the replicated membership change while it is leaving.
             LOGGER.info("{} is the single voting member left in the Raft group.", localEndpointStr());
-            node.toSingletonLeader();
+            node().toSingletonLeader();
         }
     }
-
 }

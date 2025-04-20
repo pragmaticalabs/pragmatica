@@ -36,7 +36,7 @@ import io.microraft.statemachine.StateMachine;
  * Handles a {@link VoteResponse} sent for a {@link VoteRequest}.
  * <p>
  * Changes the local Raft node's role to {@link RaftRole#LEADER} via
- * {@link RaftState#toLeader()} if the majority votes has been granted for this
+ * {@link RaftState#toLeader(long)} if the majority votes has been granted for this
  * term.
  * <p>
  * In the beginning of the new term, the Raft group leader appends a new log
@@ -60,30 +60,30 @@ public class VoteResponseHandler extends AbstractResponseHandler<VoteResponse> {
 
     @Override
     protected void handleResponse(@Nonnull VoteResponse response) {
-        if (state.role() != CANDIDATE) {
+        if (state().role() != CANDIDATE) {
             LOGGER.debug("{} Ignored {}. We are not CANDIDATE anymore.", localEndpointStr(), response);
             return;
-        } else if (response.getTerm() > state.term()) {
+        } else if (response.getTerm() > state().term()) {
             // If the response term is greater than the local term, update the local term
             // and convert to follower (§5.1)
             LOGGER.info("{} Moving to new term: {} from current term: {} after {}", localEndpointStr(),
-                    response.getTerm(), state.term(), response);
-            node.toFollower(response.getTerm());
+                    response.getTerm(), state().term(), response);
+            node().toFollower(response.getTerm());
             return;
-        } else if (response.getTerm() < state.term()) {
-            LOGGER.warn("{} Stale {} is received, current term: {}", localEndpointStr(), response, state.term());
+        } else if (response.getTerm() < state().term()) {
+            LOGGER.warn("{} Stale {} is received, current term: {}", localEndpointStr(), response, state().term());
             return;
         }
 
-        CandidateState candidateState = state.candidateState();
+        CandidateState candidateState = state().candidateState();
         if (response.isGranted() && candidateState.grantVote(response.getSender())) {
             LOGGER.info("{} Vote granted from {} for term: {}, number of votes: {}, majority: {}", localEndpointStr(),
-                        response.getSender().id(), state.term(), candidateState.voteCount(), candidateState.majority());
+                        response.getSender().id(), state().term(), candidateState.voteCount(), candidateState.majority());
         }
 
         if (candidateState.isMajorityGranted()) {
             LOGGER.info("{} We are the LEADER!", localEndpointStr());
-            node.toLeader();
+            node().toLeader();
         }
     }
 

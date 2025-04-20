@@ -17,12 +17,7 @@
 
 package io.microraft.impl.task;
 
-import java.util.Map.Entry;
-
-import io.microraft.RaftEndpoint;
 import io.microraft.RaftNode;
-import io.microraft.impl.state.FollowerState;
-import io.microraft.impl.state.LeaderState;
 
 /**
  * If the append entries request backoff period is active for any follower, this
@@ -36,23 +31,23 @@ public class LeaderBackoffResetTask extends RaftNodeStatusAwareTask {
 
     @Override
     protected void doRun() {
-        LeaderState leaderState = state.leaderState();
+        var leaderState = state().leaderState();
+
         if (leaderState == null) {
             return;
         }
 
         leaderState.requestBackoffResetTaskScheduled(false);
 
-        for (Entry<RaftEndpoint, FollowerState> e : leaderState.followerStates().entrySet()) {
-            FollowerState followerState = e.getValue();
+        for (var e : leaderState.followerStates().entrySet()) {
+            var followerState = e.getValue();
             if (followerState.isRequestBackoffSet()) {
                 if (followerState.completeBackoffRound()) {
-                    node.sendAppendEntriesRequest(e.getKey());
+                    node().sendAppendEntriesRequest(e.getKey());
                 } else {
-                    node.scheduleLeaderRequestBackoffResetTask(leaderState);
+                    node().scheduleLeaderRequestBackoffResetTask(leaderState);
                 }
             }
         }
     }
-
 }

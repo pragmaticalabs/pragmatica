@@ -17,19 +17,17 @@
 
 package io.microraft.impl.handler;
 
-import static io.microraft.RaftRole.FOLLOWER;
-
-import javax.annotation.Nonnull;
-
 import io.microraft.RaftNode;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import io.microraft.impl.state.CandidateState;
 import io.microraft.impl.task.LeaderElectionTask;
 import io.microraft.impl.task.PreVoteTask;
 import io.microraft.model.message.PreVoteRequest;
 import io.microraft.model.message.PreVoteResponse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nonnull;
+
+import static io.microraft.RaftRole.FOLLOWER;
 
 /**
  * Handles a {@link PreVoteResponse} sent for a {@link PreVoteRequest}.
@@ -53,17 +51,17 @@ public class PreVoteResponseHandler extends AbstractResponseHandler<PreVoteRespo
     protected void handleResponse(@Nonnull PreVoteResponse response) {
         LOGGER.debug("{} received {}.", localEndpointStr(), response);
 
-        if (state.role() != FOLLOWER) {
+        if (state().role() != FOLLOWER) {
             LOGGER.debug("{} Ignored {}. We are not FOLLOWER anymore.", localEndpointStr(), response);
             return;
         }
 
-        if (response.getTerm() < state.term()) {
-            LOGGER.warn("{} Stale {} is received, current term: {}", localEndpointStr(), response, state.term());
+        if (response.getTerm() < state().term()) {
+            LOGGER.warn("{} Stale {} is received, current term: {}", localEndpointStr(), response, state().term());
             return;
         }
 
-        CandidateState preCandidateState = state.preCandidateState();
+        var preCandidateState = state().preCandidateState();
         if (preCandidateState == null) {
             LOGGER.debug("{} Ignoring {}. We are not interested in pre-votes anymore.", localEndpointStr(), response);
             return;
@@ -78,7 +76,7 @@ public class PreVoteResponseHandler extends AbstractResponseHandler<PreVoteRespo
         if (preCandidateState.isMajorityGranted()) {
             LOGGER.info("{} We have the majority during pre-vote phase. Let's start real election!",
                     localEndpointStr());
-            new LeaderElectionTask(node, true).run();
+            new LeaderElectionTask(node(), true).run();
         }
     }
 

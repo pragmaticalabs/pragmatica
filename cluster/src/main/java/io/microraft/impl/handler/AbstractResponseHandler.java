@@ -43,7 +43,7 @@ public abstract class AbstractResponseHandler<T extends RaftMessage> extends Abs
     protected final void handle(@Nonnull T response) {
         requireNonNull(response);
 
-        if (!node.state().isKnownMember(response.getSender())) {
+        if (!node().state().isKnownMember(response.getSender())) {
             Logger logger = LoggerFactory.getLogger(getClass());
             logger.warn("{} Won't run, since {} is unknown to us.", localEndpointStr(), response.getSender().id());
             return;

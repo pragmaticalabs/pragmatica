@@ -32,19 +32,27 @@ import org.slf4j.LoggerFactory;
  */
 public abstract class RaftNodeStatusAwareTask implements Runnable {
 
-    protected final RaftNode node;
-    protected final RaftState state;
-    protected final RaftModelFactory modelFactory;
+    private final RaftNode node;
 
     protected RaftNodeStatusAwareTask(RaftNode node) {
         this.node = node;
-        this.state = node.state();
-        this.modelFactory = node.modelFactory();
+    }
+
+    public RaftNode node() {
+        return node;
+    }
+
+    public RaftState state() {
+        return node().state();
+    }
+
+    public RaftModelFactory modelFactory() {
+        return node().modelFactory();
     }
 
     @Override
     public final void run() {
-        var status = node.status();
+        var status = node().status();
         if (status.isTerminal() || status.isInitial()) {
             getLogger().debug("{} Won't run, since status is {}", localEndpointStr(), status);
             return;
@@ -64,10 +72,10 @@ public abstract class RaftNodeStatusAwareTask implements Runnable {
     }
 
     protected final RaftEndpoint localEndpoint() {
-        return node.localEndpoint();
+        return node().localEndpoint();
     }
 
     protected final String localEndpointStr() {
-        return node.localEndpointName();
+        return node().localEndpointName();
     }
 }

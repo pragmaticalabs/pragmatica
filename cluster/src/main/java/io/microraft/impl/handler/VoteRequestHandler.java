@@ -17,21 +17,19 @@
 
 package io.microraft.impl.handler;
 
-import static io.microraft.RaftRole.LEARNER;
-import static java.util.Objects.requireNonNull;
-
-import javax.annotation.Nonnull;
-
-import io.microraft.RaftNode;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import io.microraft.RaftEndpoint;
+import io.microraft.RaftNode;
 import io.microraft.impl.task.LeaderElectionTask;
-import io.microraft.model.log.BaseLogEntry;
 import io.microraft.model.message.VoteRequest;
 import io.microraft.model.message.VoteResponse;
 import io.microraft.model.message.VoteResponse.VoteResponseBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.annotation.Nonnull;
+
+import static io.microraft.RaftRole.LEARNER;
+import static java.util.Objects.requireNonNull;
 
 /**
  * Handles a {@link VoteRequest} sent by a candidate and responds with a
@@ -62,18 +60,20 @@ public class VoteRequestHandler extends AbstractMessageHandler<VoteRequest> {
     protected void handle(@Nonnull VoteRequest request) {
         requireNonNull(request);
 
-        VoteResponseBuilder responseBuilder = modelFactory.createVoteResponseBuilder().setGroupId(node.groupId())
+        VoteResponseBuilder responseBuilder = modelFactory().createVoteResponseBuilder().setGroupId(node().groupId())
                 .setSender(localEndpoint());
 
         RaftEndpoint candidate = request.getSender();
         int candidateTerm = request.getTerm();
 
         // Reply false if term < currentTerm (§5.1)
-        if (state.term() > candidateTerm) {
-            LOGGER.info("{} Rejecting {} since current term: {} is bigger.", localEndpointStr(), request, state.term());
-            node.send(candidate, responseBuilder.setTerm(state.term()).setGranted(false).build());
-            if (state.leaderState() != null) {
-                node.sendAppendEntriesRequest(candidate);
+        if (state().term() > candidateTerm) {
+            LOGGER.info("{} Rejecting {} since current term: {} is bigger.", localEndpointStr(), request, state().term());
+            node().send(candidate, responseBuilder.setTerm(state().term())
+                                                  .setGranted(false)
+                                                  .build());
+            if (state().leaderState() != null) {
+                node().sendAppendEntriesRequest(candidate);
             }
 
             return;
@@ -89,65 +89,71 @@ public class VoteRequestHandler extends AbstractMessageHandler<VoteRequest> {
         // check is skipped.
         // Since the current leader may have restarted by recovering its persistent
         // state.
-        if (request.isSticky() && (state.leaderState() != null || !node.isLeaderHeartbeatTimeoutElapsed())
-                && !candidate.equals(state.leader())) {
+        if (request.isSticky() && (state().leaderState() != null || !node().isLeaderHeartbeatTimeoutElapsed())
+                && !candidate.equals(state().leader())) {
             LOGGER.info("{} Rejecting {} since the leader is still alive...", localEndpointStr(), request);
-            node.send(candidate, responseBuilder.setTerm(state.term()).setGranted(false).build());
+            node().send(candidate, responseBuilder.setTerm(state().term())
+                                                  .setGranted(false)
+                                                  .build());
             return;
         }
 
-        if (state.term() < candidateTerm) {
+        if (state().term() < candidateTerm) {
             // If the request term is greater than the local term, update the local term and
             // convert to follower (§5.1)
             LOGGER.info("{} Moving to new term: {} from current term: {} after {}", localEndpointStr(), candidateTerm,
-                    state.term(), request);
+                    state().term(), request);
 
-            node.toFollower(candidateTerm);
+            node().toFollower(candidateTerm);
         }
 
-        if (state.leader() != null && !candidate.equals(state.leader())) {
+        if (state().leader() != null && !candidate.equals(state().leader())) {
             LOGGER.warn("{} Rejecting {} since we have a leader: {}", localEndpointStr(), request,
-                    state.leader().id());
-            node.send(candidate, responseBuilder.setTerm(candidateTerm).setGranted(false).build());
+                    state().leader().id());
+            node().send(candidate, responseBuilder.setTerm(candidateTerm).setGranted(false).build());
 
             return;
         }
 
-        if (state.votedEndpoint() != null) {
-            boolean granted = (candidate.equals(state.votedEndpoint()));
+        if (state().votedEndpoint() != null) {
+            boolean granted = (candidate.equals(state().votedEndpoint()));
             if (granted) {
                 LOGGER.debug("{} Vote granted for {} (duplicate)", localEndpointStr(), request);
             } else {
                 LOGGER.debug("{} no vote for {}. currently voted-for: {}", localEndpointStr(), request,
-                        state.votedEndpoint().id());
+                        state().votedEndpoint().id());
             }
-            node.send(candidate, responseBuilder.setTerm(candidateTerm).setGranted(granted).build());
+            node().send(candidate, responseBuilder.setTerm(candidateTerm).setGranted(granted).build());
             return;
         }
 
-        BaseLogEntry lastLogEntry = state.log().lastLogOrSnapshotEntry();
+        var lastLogEntry = state().log().lastLogOrSnapshotEntry();
+
         if (lastLogEntry.getTerm() > request.getLastLogTerm()) {
             LOGGER.info("{} Rejecting {} since our last log term: {} is greater.", localEndpointStr(), request,
                     lastLogEntry.getTerm());
-            node.send(candidate, responseBuilder.setTerm(candidateTerm).setGranted(false).build());
+            node().send(candidate, responseBuilder.setTerm(candidateTerm)
+                                                .setGranted(false)
+                                                .build());
             return;
         }
 
         if (lastLogEntry.getTerm() == request.getLastLogTerm() && lastLogEntry.getIndex() > request.getLastLogIndex()) {
             LOGGER.info("{} Rejecting {} since our last log index: {} is greater.", localEndpointStr(), request,
                     lastLogEntry.getIndex());
-            node.send(candidate, responseBuilder.setTerm(candidateTerm).setGranted(false).build());
+            node().send(candidate, responseBuilder.setTerm(candidateTerm)
+                                                  .setGranted(false)
+                                                  .build());
             return;
         }
 
-        if (state.role() == LEARNER) {
+        if (state().role() == LEARNER) {
             LOGGER.info("{} is {} but {} asked for vote.", localEndpointStr(), LEARNER, candidate.id());
         }
 
         LOGGER.info("{} Granted vote for {}", localEndpointStr(), request);
-        state.grantVote(candidateTerm, candidate);
+        state().grantVote(candidateTerm, candidate);
 
-        node.send(candidate, responseBuilder.setTerm(candidateTerm).setGranted(true).build());
+        node().send(candidate, responseBuilder.setTerm(candidateTerm).setGranted(true).build());
     }
-
 }

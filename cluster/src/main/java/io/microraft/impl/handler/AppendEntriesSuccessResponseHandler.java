@@ -58,23 +58,23 @@ public class AppendEntriesSuccessResponseHandler extends AbstractResponseHandler
 
     @Override
     protected void handleResponse(@Nonnull AppendEntriesSuccessResponse response) {
-        if (state.role() != LEADER) {
+        if (state().role() != LEADER) {
             LOGGER.warn("{} Ignored {}. We are not LEADER anymore.", localEndpointStr(), response);
             return;
-        } else if (response.getTerm() > state.term()) {
+        } else if (response.getTerm() > state().term()) {
             LOGGER.warn("{} Ignored invalid response {} for current term: {}", localEndpointStr(), response,
-                    state.term());
+                    state().term());
             return;
         }
 
         LOGGER.debug("{} received {}.", localEndpointStr(), response);
 
         if (updateFollowerIndices(response)) {
-            if (!node.tryAdvanceCommitIndex()) {
+            if (!node().tryAdvanceCommitIndex()) {
                 trySendAppendRequest(response);
             }
         } else {
-            node.tryRunQueries();
+            node().tryRunQueries();
         }
 
         checkIfQueryAckNeeded(response);
@@ -83,7 +83,7 @@ public class AppendEntriesSuccessResponseHandler extends AbstractResponseHandler
     private boolean updateFollowerIndices(AppendEntriesSuccessResponse response) {
         // If successful: update nextIndex and matchIndex for follower (§5.3)
 
-        LeaderState leaderState = state.leaderState();
+        LeaderState leaderState = state().leaderState();
         RaftEndpoint follower = response.getSender();
         FollowerState followerState = leaderState.followerStateOrNull(follower);
 
@@ -92,7 +92,7 @@ public class AppendEntriesSuccessResponseHandler extends AbstractResponseHandler
             return false;
         }
 
-        if (state.isVotingMember(follower)
+        if (state().isVotingMember(follower)
                 && leaderState.queryState().tryAck(response.getQuerySequenceNumber(), follower)) {
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.debug(localEndpointStr() + " ack from " + follower.id() + " for query sequence number: "
@@ -103,7 +103,7 @@ public class AppendEntriesSuccessResponseHandler extends AbstractResponseHandler
         long matchIndex = followerState.matchIndex();
         long followerLastLogIndex = response.getLastLogIndex();
 
-        followerState.responseReceived(response.getFlowControlSequenceNumber(), node.clock().millis());
+        followerState.responseReceived(response.getFlowControlSequenceNumber(), node().clock().millis());
 
         if (followerLastLogIndex > matchIndex) {
             long newNextIndex = followerLastLogIndex + 1;
@@ -111,45 +111,50 @@ public class AppendEntriesSuccessResponseHandler extends AbstractResponseHandler
             followerState.nextIndex(newNextIndex);
 
             if (LOGGER.isDebugEnabled()) {
-                LOGGER.debug(localEndpointStr() + " Updated match index: " + followerLastLogIndex + " and next index: "
-                        + newNextIndex + " for follower: " + follower.id());
+                LOGGER.debug("{} Updated match index: {} and next index: {} for follower: {}",
+                             localEndpointStr(),
+                             followerLastLogIndex,
+                             newNextIndex,
+                             follower.id());
             }
 
             return true;
         } else if (followerLastLogIndex < matchIndex && LOGGER.isDebugEnabled()) {
-            LOGGER.debug(localEndpointStr() + " Will not update match index for follower: " + follower.id()
-                    + ". follower last log index: " + followerLastLogIndex + ", match index: " + matchIndex);
+            LOGGER.debug("{} Will not update match index for follower: {}. follower last log index: {}, match index: {}",
+                         localEndpointStr(),
+                         follower.id(),
+                         followerLastLogIndex,
+                         matchIndex);
         }
 
         return false;
     }
 
     private void checkIfQueryAckNeeded(AppendEntriesSuccessResponse response) {
-        LeaderState leaderState = state.leaderState();
+        LeaderState leaderState = state().leaderState();
         if (leaderState == null) {
             // this can happen if this node was removed from the group when
             // the commit index was advanced.
             return;
-        } else if (!state.isVotingMember(response.getSender())) {
+        } else if (!state().isVotingMember(response.getSender())) {
             // learners are not part of the replication quorum.
             return;
         }
 
         QueryState queryState = leaderState.queryState();
-        if (queryState.isAckNeeded(response.getSender(), state.logReplicationQuorumSize())) {
-            node.sendAppendEntriesRequest(response.getSender());
+        if (queryState.isAckNeeded(response.getSender(), state().logReplicationQuorumSize())) {
+            node().sendAppendEntriesRequest(response.getSender());
         }
     }
 
     private void trySendAppendRequest(AppendEntriesSuccessResponse response) {
         long followerLastLogIndex = response.getLastLogIndex();
-        if (state.log().lastLogOrSnapshotIndex() > followerLastLogIndex
-                || state.commitIndex() == followerLastLogIndex) {
+        if (state().log().lastLogOrSnapshotIndex() > followerLastLogIndex
+                || state().commitIndex() == followerLastLogIndex) {
             // If the follower is still missing some log entries or has not learnt the
             // latest commit index yet,
             // then send another append request.
-            node.sendAppendEntriesRequest(response.getSender());
+            node().sendAppendEntriesRequest(response.getSender());
         }
     }
-
 }

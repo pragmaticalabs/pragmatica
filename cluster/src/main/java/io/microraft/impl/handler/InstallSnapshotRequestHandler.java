@@ -96,16 +96,16 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
         RaftEndpoint sender = request.getSender();
 
         // Reply false if term < currentTerm (§5.1)
-        if (request.getTerm() < state.term()) {
+        if (request.getTerm() < state().term()) {
             LOGGER.info("{} received stale snapshot chunk: {} from {} at snapshot index: {}.", localEndpointStr(),
                         request.getSnapshotChunk() != null ? request.getSnapshotChunk().getSnapshotChunkIndex() : "-",
                         sender.id(), request.getSnapshotIndex());
 
             if (request.isSenderLeader()) {
-                RaftMessage response = modelFactory.createAppendEntriesFailureResponseBuilder()
-                                                   .setGroupId(node.groupId()).setSender(localEndpoint()).setTerm(state.term())
+                RaftMessage response = modelFactory().createAppendEntriesFailureResponseBuilder()
+                                                   .setGroupId(node().groupId()).setSender(localEndpoint()).setTerm(state().term())
                                                    .setExpectedNextIndex(0).setQuerySequenceNumber(0).setFlowControlSequenceNumber(0).build();
-                node.send(sender, response);
+                node().send(sender, response);
             }
 
             return;
@@ -125,13 +125,13 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
 
         // Transform into follower if a newer term is seen or another node wins the
         // election of the current term
-        if (request.getTerm() > state.term() || (state.role() != FOLLOWER && state.role() != LEARNER)) {
+        if (request.getTerm() > state().term() || (state().role() != FOLLOWER && state().role() != LEARNER)) {
             // If the request term is greater than the local term, update the local term and
             // convert to follower (§5.1)
             LOGGER.info("{} Moving to new term: {} from current term: {} and sender: {}", localEndpointStr(),
-                    request.getTerm(), state.term(), sender.id());
+                    request.getTerm(), state().term(), sender.id());
 
-            node.toFollower(request.getTerm());
+            node().toFollower(request.getTerm());
 
             if (!request.isSenderLeader()) {
                 return;
@@ -139,12 +139,12 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
         }
 
         if (request.isSenderLeader()) {
-            if (!sender.equals(state.leader())) {
+            if (!sender.equals(state().leader())) {
                 LOGGER.info("{} Setting leader: {}", localEndpointStr(), sender.id());
-                node.leader(sender);
+                node().leader(sender);
             }
 
-            node.leaderHeartbeatReceived();
+            node().leaderHeartbeatReceived();
         }
 
         SnapshotChunkCollector snapshotChunkCollector = getOrCreateSnapshotChunkCollector(request);
@@ -153,8 +153,8 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
         }
 
         if (handleSnapshotChunks(request, snapshotChunkCollector)) {
-            SnapshotEntryBuilder snapshotEntryBuilder = node.modelFactory().createSnapshotEntryBuilder();
-            node.installSnapshot(snapshotChunkCollector.buildSnapshotEntry(snapshotEntryBuilder));
+            SnapshotEntryBuilder snapshotEntryBuilder = node().modelFactory().createSnapshotEntryBuilder();
+            node().installSnapshot(snapshotChunkCollector.buildSnapshotEntry(snapshotEntryBuilder));
             sendAppendEntriesSuccessResponse(request);
         } else {
             requestMissingSnapshotChunks(request, snapshotChunkCollector);
@@ -162,13 +162,13 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
     }
 
     private boolean checkSnapshotIndex(InstallSnapshotRequest request) {
-        if (request.getSnapshotIndex() < state.commitIndex()) {
+        if (request.getSnapshotIndex() < state().commitIndex()) {
             LOGGER.debug("{} ignored stale snapshot chunk: {} at log index: {} from: {}. current commit index: {}",
                          localEndpointStr(),
                          request.getSnapshotChunk() != null ? request.getSnapshotChunk().getSnapshotChunkIndex() : "-",
-                         request.getSnapshotIndex(), request.getSender().id(), state.commitIndex());
+                         request.getSnapshotIndex(), request.getSender().id(), state().commitIndex());
             return false;
-        } else if (request.getSnapshotIndex() == state.commitIndex()) {
+        } else if (request.getSnapshotIndex() == state().commitIndex()) {
             LOGGER.debug("{} ignored snapshot chunk: {} at log index: {} from: {} since commit index is same.",
                     localEndpointStr(),
                     request.getSnapshotChunk() != null ? request.getSnapshotChunk().getSnapshotChunkIndex() : "-",
@@ -184,11 +184,11 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
     }
 
     private void sendAppendEntriesSuccessResponse(InstallSnapshotRequest request) {
-        RaftMessage response = modelFactory.createAppendEntriesSuccessResponseBuilder().setGroupId(node.groupId())
-                .setSender(localEndpoint()).setTerm(state.term()).setLastLogIndex(request.getSnapshotIndex())
+        RaftMessage response = modelFactory().createAppendEntriesSuccessResponseBuilder().setGroupId(node().groupId())
+                .setSender(localEndpoint()).setTerm(state().term()).setLastLogIndex(request.getSnapshotIndex())
                 .setQuerySequenceNumber(request.getQuerySequenceNumber())
                 .setFlowControlSequenceNumber(request.getFlowControlSequenceNumber()).build();
-        node.send(state.leader(), response);
+        node().send(state().leader(), response);
     }
 
     private SnapshotChunkCollector getOrCreateSnapshotChunkCollector(InstallSnapshotRequest request) {
@@ -196,10 +196,10 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
             return null;
         }
 
-        SnapshotChunkCollector snapshotChunkCollector = state.snapshotChunkCollector();
+        SnapshotChunkCollector snapshotChunkCollector = state().snapshotChunkCollector();
         if (snapshotChunkCollector == null) {
-            snapshotChunkCollector = new SnapshotChunkCollector(state.store(), request);
-            state.snapshotChunkCollector(snapshotChunkCollector);
+            snapshotChunkCollector = new SnapshotChunkCollector(state().store(), request);
+            state().snapshotChunkCollector(snapshotChunkCollector);
 
             return snapshotChunkCollector;
         } else if (snapshotChunkCollector.getSnapshotIndex() > request.getSnapshotIndex()) {
@@ -211,20 +211,20 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
 
             return null;
         } else if (snapshotChunkCollector.getSnapshotIndex() < request.getSnapshotIndex()) {
-            if (snapshotChunkCollector.getChunks().size() > 0) {
+            if (!snapshotChunkCollector.getChunks().isEmpty()) {
                 try {
-                    state.store().deleteSnapshotChunks(snapshotChunkCollector.getSnapshotIndex(),
+                    state().store().deleteSnapshotChunks(snapshotChunkCollector.getSnapshotIndex(),
                             snapshotChunkCollector.getChunkCount());
                     LOGGER.warn("{} truncated {} snapshot chunks at log index: {}", localEndpointStr(),
                             snapshotChunkCollector.getChunks().size(), snapshotChunkCollector.getSnapshotIndex());
                 } catch (IOException e) {
                     throw new RaftException("Could not truncate snapshot chunks at log index: "
-                            + snapshotChunkCollector.getSnapshotIndex(), node.leaderEndpoint(), e);
+                            + snapshotChunkCollector.getSnapshotIndex(), node().leaderEndpoint(), e);
                 }
             }
 
-            snapshotChunkCollector = new SnapshotChunkCollector(state.store(), request);
-            state.snapshotChunkCollector(snapshotChunkCollector);
+            snapshotChunkCollector = new SnapshotChunkCollector(state().store(), request);
+            state().snapshotChunkCollector(snapshotChunkCollector);
         } else {
             snapshotChunkCollector.updateSnapshottedMembers(request.getSnapshottedMembers());
         }
@@ -244,21 +244,23 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
         try {
             if (snapshotChunkCollector.handleReceivedSnapshotChunk(request.getSender(), request.getSnapshotIndex(),
                     snapshotChunk) && snapshotChunk != null) {
-                LOGGER.debug(localEndpointStr() + " added new snapshot chunk: " + snapshotChunk.getSnapshotChunkIndex()
-                        + " at snapshot index: " + request.getSnapshotIndex());
+                LOGGER.debug("{} added new snapshot chunk: {} at snapshot index: {}",
+                             localEndpointStr(),
+                             snapshotChunk.getSnapshotChunkIndex(),
+                             request.getSnapshotIndex());
             }
             return snapshotChunkCollector.isSnapshotCompleted();
         } catch (IOException e) {
             throw new RaftException("Could not persist snapshot chunk: " + snapshotChunk.getSnapshotChunkIndex()
                     + " at snapshot index: " + snapshotChunk.getIndex() + " and term: " + snapshotChunk.getTerm(),
-                                    node.leaderEndpoint(), e);
+                                    node().leaderEndpoint(), e);
         }
     }
 
     private void requestMissingSnapshotChunks(InstallSnapshotRequest request,
             SnapshotChunkCollector snapshotChunkCollector) {
         Map<RaftEndpoint, Integer> requestedSnapshotChunkIndices = snapshotChunkCollector
-                .requestSnapshotChunks(node.config().transferSnapshotsFromFollowersEnabled());
+                .requestSnapshotChunks(node().config().transferSnapshotsFromFollowersEnabled());
         if (requestedSnapshotChunkIndices.isEmpty()) {
             return;
         }
@@ -267,17 +269,17 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
 
         for (Entry<RaftEndpoint, Integer> e : requestedSnapshotChunkIndices.entrySet()) {
             RaftEndpoint target = e.getKey();
-            RaftMessage response = node.modelFactory().createInstallSnapshotResponseBuilder()
-                                       .setGroupId(node.groupId()).setSender(localEndpoint()).setTerm(state.term())
+            RaftMessage response = node().modelFactory().createInstallSnapshotResponseBuilder()
+                                       .setGroupId(node().groupId()).setSender(localEndpoint()).setTerm(state().term())
                                        .setSnapshotIndex(request.getSnapshotIndex()).setRequestedSnapshotChunkIndex(e.getValue())
-                                       .setQuerySequenceNumber(state.leader().equals(target) ? request.getQuerySequenceNumber() : 0)
+                                       .setQuerySequenceNumber(state().leader().equals(target) ? request.getQuerySequenceNumber() : 0)
                                        .setFlowControlSequenceNumber(request.getFlowControlSequenceNumber()).build();
 
-            node.send(target, response);
+            node().send(target, response);
 
-            if (node.config().transferSnapshotsFromFollowersEnabled()) {
-                node.executor().schedule(() -> handleUnresponsiveEndpoint(state.term(), target,
-                        request.getSnapshotIndex(), e.getValue()), node.config().leaderHeartbeatPeriodSecs(),
+            if (node().config().transferSnapshotsFromFollowersEnabled()) {
+                node().executor().schedule(() -> handleUnresponsiveEndpoint(state().term(), target,
+                        request.getSnapshotIndex(), e.getValue()), node().config().leaderHeartbeatPeriodSecs(),
                         SECONDS);
             }
         }
@@ -293,13 +295,13 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
 
     private void handleUnresponsiveEndpoint(int term, RaftEndpoint endpoint, long snapshotIndex,
             int snapshotChunkIndex) {
-        SnapshotChunkCollector snapshotChunkCollector = state.snapshotChunkCollector();
-        if (state.term() != term || snapshotChunkCollector == null
+        SnapshotChunkCollector snapshotChunkCollector = state().snapshotChunkCollector();
+        if (state().term() != term || snapshotChunkCollector == null
                 || snapshotChunkCollector.getSnapshotIndex() != snapshotIndex) {
             return;
         }
 
-        assert state.leaderState() == null;
+        assert state().leaderState() == null;
 
         if (!snapshotChunkCollector.cancelSnapshotChunkRequest(endpoint, snapshotChunkIndex)) {
             return;
@@ -317,14 +319,14 @@ public class InstallSnapshotRequestHandler extends AbstractMessageHandler<Instal
 
         for (Entry<RaftEndpoint, Integer> e : requestedSnapshotChunkIndices.entrySet()) {
             RaftEndpoint target = e.getKey();
-            RaftMessage response = node.modelFactory().createInstallSnapshotResponseBuilder()
-                                       .setGroupId(node.groupId()).setSender(localEndpoint()).setTerm(state.term())
+            RaftMessage response = node().modelFactory().createInstallSnapshotResponseBuilder()
+                                       .setGroupId(node().groupId()).setSender(localEndpoint()).setTerm(state().term())
                                        .setSnapshotIndex(snapshotIndex).setRequestedSnapshotChunkIndex(e.getValue())
                                        .setQuerySequenceNumber(0).setFlowControlSequenceNumber(0).build();
 
-            node.send(target, response);
-            node.executor().schedule(() -> handleUnresponsiveEndpoint(term, target, snapshotIndex, e.getValue()),
-                                     node.config().leaderHeartbeatPeriodSecs(), SECONDS);
+            node().send(target, response);
+            node().executor().schedule(() -> handleUnresponsiveEndpoint(term, target, snapshotIndex, e.getValue()),
+                                     node().config().leaderHeartbeatPeriodSecs(), SECONDS);
         }
     }
 

@@ -29,7 +29,7 @@ import io.microraft.RaftNode;
  * Raft node is still a follower and a leader is not yet available after the
  * leader election timeout.
  */
-public final class PreVoteTimeoutTask extends RaftNodeStatusAwareTask implements Runnable {
+public final class PreVoteTimeoutTask extends RaftNodeStatusAwareTask {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(PreVoteTimeoutTask.class);
 
@@ -42,12 +42,12 @@ public final class PreVoteTimeoutTask extends RaftNodeStatusAwareTask implements
 
     @Override
     protected void doRun() {
-        if (state.role() != FOLLOWER) {
+        if (state().role() != FOLLOWER) {
             return;
         }
 
-        LOGGER.debug("{} Pre-vote for term: {} has timed out!", localEndpointStr(), node.state().term());
-        new PreVoteTask(node, term).run();
+        LOGGER.debug("{} Pre-vote for term: {} has timed out!", localEndpointStr(), node().state().term());
+        new PreVoteTask(node(), term).run();
     }
 
 }

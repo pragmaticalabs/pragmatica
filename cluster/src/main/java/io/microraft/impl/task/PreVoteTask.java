@@ -47,23 +47,22 @@ public final class PreVoteTask extends RaftNodeStatusAwareTask implements Runnab
 
     @Override
     protected void doRun() {
-        if (state.leader() != null) {
+        if (state().leader() != null) {
             LOGGER.debug("{} No new pre-vote phase, we already have a LEADER: {}", localEndpointStr(),
-                    state.leader().id());
+                    state().leader().id());
             return;
-        } else if (state.term() != term) {
+        } else if (state().term() != term) {
             LOGGER.debug("{} No new pre-vote phase for term: {} because of new term: {}", localEndpointStr(), term,
-                    state.term());
+                    state().term());
             return;
         }
 
-        if (state.remoteVotingMembers().isEmpty()) {
+        if (state().remoteVotingMembers().isEmpty()) {
             // TODO(basri): why do we have this check?
             LOGGER.warn("{} Remote voting members is empty. No need for pre-voting.", localEndpointStr());
             return;
         }
 
-        node.preCandidate();
+        node().preCandidate();
     }
-
 }

@@ -55,32 +55,32 @@ public class AppendEntriesFailureResponseHandler extends AbstractResponseHandler
 
     @Override
     protected void handleResponse(@Nonnull AppendEntriesFailureResponse response) {
-        if (state.role() != LEADER) {
+        if (state().role() != LEADER) {
             LOGGER.warn("{} {} is ignored since we are not LEADER.", localEndpointStr(), response);
             return;
         }
 
-        if (response.getTerm() > state.term()) {
+        if (response.getTerm() > state().term()) {
             // If the response term is greater than the local term, update the local term
             // and convert to follower (§5.1)
             LOGGER.info("{} Switching to term: {} after {} from current term: {}", localEndpointStr(),
-                    response.getTerm(), response, state.term());
-            node.toFollower(response.getTerm());
+                    response.getTerm(), response, state().term());
+            node().toFollower(response.getTerm());
             return;
         }
 
         LOGGER.debug("{} received {}.", localEndpointStr(), response);
 
-        node.tryAckQuery(response.getQuerySequenceNumber(), response.getSender());
+        node().tryAckQuery(response.getQuerySequenceNumber(), response.getSender());
 
         if (updateNextIndex(response)) {
-            node.sendAppendEntriesRequest(response.getSender());
+            node().sendAppendEntriesRequest(response.getSender());
         }
     }
 
     private boolean updateNextIndex(AppendEntriesFailureResponse response) {
         RaftEndpoint follower = response.getSender();
-        LeaderState leaderState = state.leaderState();
+        LeaderState leaderState = state().leaderState();
         FollowerState followerState = leaderState.followerStateOrNull(follower);
 
         if (followerState == null) {
@@ -91,7 +91,7 @@ public class AppendEntriesFailureResponseHandler extends AbstractResponseHandler
         long nextIndex = followerState.nextIndex();
         long matchIndex = followerState.matchIndex();
 
-        followerState.responseReceived(response.getFlowControlSequenceNumber(), node.clock().millis());
+        followerState.responseReceived(response.getFlowControlSequenceNumber(), node().clock().millis());
 
         if (response.getExpectedNextIndex() == nextIndex) {
             // this is the response of the request I have sent for this nextIndex
@@ -113,5 +113,4 @@ public class AppendEntriesFailureResponseHandler extends AbstractResponseHandler
 
         return false;
     }
-
 }

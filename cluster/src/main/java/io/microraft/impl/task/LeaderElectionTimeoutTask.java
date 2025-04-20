@@ -38,12 +38,12 @@ public final class LeaderElectionTimeoutTask extends RaftNodeStatusAwareTask imp
 
     @Override
     protected void doRun() {
-        if (state.role() != CANDIDATE) {
+        if (state().role() != CANDIDATE) {
             return;
         }
 
-        LOGGER.warn("{} Leader election for term: {} has timed out!", localEndpointStr(), node.state().term());
-        new LeaderElectionTask(node, true).run();
+        LOGGER.warn("{} Leader election for term: {} has timed out!", localEndpointStr(), node().state().term());
+        new LeaderElectionTask(node(), true).run();
     }
 
 }

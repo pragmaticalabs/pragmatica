@@ -56,15 +56,15 @@ public class TriggerLeaderElectionHandler extends AbstractMessageHandler<Trigger
         // I will eventually accept it as the leader with a periodic append request.
         // Once I pass this if block, I know that I am follower and my log is same
         // with the leader's log.
-        if (!(request.getTerm() == state.term() && request.getSender().equals(state.leader()))) {
-            LOGGER.debug("{} Ignoring {} since term: {} and leader: {}", localEndpointStr(), request, state.term(),
-                    state.leader() != null ? state.leader().id() : "-");
+        if (!(request.getTerm() == state().term() && request.getSender().equals(state().leader()))) {
+            LOGGER.debug("{} Ignoring {} since term: {} and leader: {}", localEndpointStr(), request, state().term(),
+                    state().leader() != null ? state().leader().id() : "-");
 
             return;
         }
 
         // Verify the last log entry
-        BaseLogEntry entry = state.log().lastLogOrSnapshotEntry();
+        BaseLogEntry entry = state().log().lastLogOrSnapshotEntry();
         if (!(entry.getIndex() == request.getLastLogIndex() && entry.getTerm() == request.getLastLogTerm())) {
             if (LOGGER.isDebugEnabled()) {
                 LOGGER.debug(
@@ -76,7 +76,7 @@ public class TriggerLeaderElectionHandler extends AbstractMessageHandler<Trigger
             return;
         }
 
-        if (state.role() == LEARNER) {
+        if (state().role() == LEARNER) {
             // this should not happen!
             LOGGER.error("{} Could start leader election because the role is: {}. You should not see this log!",
                     localEndpointStr(), LEARNER);
@@ -86,8 +86,8 @@ public class TriggerLeaderElectionHandler extends AbstractMessageHandler<Trigger
         // I will send a non-sticky VoteRequest to bypass leader stickiness
         LOGGER.info("{} Starting a new leader election since the current leader: {} in term: {} asked for a "
                 + "leadership transfer!", localEndpointStr(), request.getSender().id(), request.getTerm());
-        node.leader(null);
-        new LeaderElectionTask(node, false).run();
+        node().leader(null);
+        new LeaderElectionTask(node(), false).run();
     }
 
 }

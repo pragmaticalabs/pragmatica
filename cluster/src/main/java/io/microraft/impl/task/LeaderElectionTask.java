@@ -18,13 +18,11 @@
 package io.microraft.impl.task;
 
 import io.microraft.RaftNode;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
-import io.microraft.RaftNode;
 import io.microraft.impl.handler.PreVoteResponseHandler;
 import io.microraft.impl.state.RaftState;
 import io.microraft.model.message.VoteRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Scheduled when the current leader is null, unreachable, or unknown by
@@ -33,7 +31,7 @@ import io.microraft.model.message.VoteRequest;
  * and sends {@link VoteRequest}s to the other Raft group members.
  * <p>
  * Also a {@link LeaderElectionTimeoutTask} is scheduled with the
- * {@link RaftNodeImpl#leaderElectionTimeoutMs()} delay to trigger another
+ * {@link RaftNode#leaderElectionTimeoutMs()} delay to trigger another
  * round of leader election if a leader is not elected yet.
  */
 public final class LeaderElectionTask extends RaftNodeStatusAwareTask implements Runnable {
@@ -49,13 +47,12 @@ public final class LeaderElectionTask extends RaftNodeStatusAwareTask implements
 
     @Override
     protected void doRun() {
-        if (state.leader() != null) {
+        if (state().leader() != null) {
             LOGGER.warn("{} No new election round, we already have a LEADER: {}", localEndpointStr(),
-                    state.leader().id());
+                    state().leader().id());
             return;
         }
 
-        node.toCandidate(sticky);
+        node().toCandidate(sticky);
     }
-
 }

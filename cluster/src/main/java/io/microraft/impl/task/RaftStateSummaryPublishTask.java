@@ -35,9 +35,9 @@ public class RaftStateSummaryPublishTask extends RaftNodeStatusAwareTask {
     @Override
     protected void doRun() {
         try {
-            node.publishRaftNodeReport(RaftNodeReportReason.PERIODIC);
+            node().publishRaftNodeReport(RaftNodeReportReason.PERIODIC);
         } finally {
-            node.executor().schedule(this, node.config().raftNodeReportPublishPeriodSecs(), SECONDS);
+            node().executor().schedule(this, node().config().raftNodeReportPublishPeriodSecs(), SECONDS);
         }
     }
 
