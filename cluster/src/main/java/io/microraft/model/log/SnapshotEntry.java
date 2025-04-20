@@ -68,5 +68,4 @@ public interface SnapshotEntry extends BaseLogEntry {
         SnapshotEntry build();
 
     }
-
 }

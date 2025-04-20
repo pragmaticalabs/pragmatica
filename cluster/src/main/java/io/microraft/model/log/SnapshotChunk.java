@@ -67,7 +67,5 @@ public interface SnapshotChunk extends BaseLogEntry {
 
         @Nonnull
         SnapshotChunk build();
-
     }
-
 }

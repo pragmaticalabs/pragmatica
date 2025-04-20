@@ -37,6 +37,7 @@ import io.microraft.model.RaftModelFactory;
  * @see RaftModel
  * @see RaftModelFactory
  */
+//TODO: make it sealed
 public interface RaftMessage extends RaftModel {
 
     /**

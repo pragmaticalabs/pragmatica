@@ -17,17 +17,12 @@
 
 package io.microraft.impl.task;
 
-import static io.microraft.RaftNodeStatus.INITIAL;
-import static io.microraft.RaftNodeStatus.isTerminal;
-
-import io.microraft.RaftNode;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import io.microraft.RaftEndpoint;
-import io.microraft.RaftNodeStatus;
+import io.microraft.RaftNode;
 import io.microraft.impl.state.RaftState;
 import io.microraft.model.RaftModelFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The base class for the tasks that should not run on some Raft node statuses.
@@ -49,8 +44,8 @@ public abstract class RaftNodeStatusAwareTask implements Runnable {
 
     @Override
     public final void run() {
-        RaftNodeStatus status = node.status();
-        if (isTerminal(status) || status == INITIAL) {
+        var status = node.status();
+        if (status.isTerminal() || status.isInitial()) {
             getLogger().debug("{} Won't run, since status is {}", localEndpointStr(), status);
             return;
         }
@@ -58,7 +53,7 @@ public abstract class RaftNodeStatusAwareTask implements Runnable {
         try {
             doRun();
         } catch (Throwable e) {
-            getLogger().error(localEndpointStr() + " got a failure in " + getClass().getSimpleName(), e);
+            getLogger().error("{} got a failure in {}", localEndpointStr(), getClass().getSimpleName(), e);
         }
     }
 
@@ -75,5 +70,4 @@ public abstract class RaftNodeStatusAwareTask implements Runnable {
     protected final String localEndpointStr() {
         return node.localEndpointName();
     }
-
 }

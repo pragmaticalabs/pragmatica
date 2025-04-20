@@ -54,19 +54,6 @@ public enum RaftNodeStatus {
      */
     TERMINATED;
 
-    /**
-     * Returns true if the given Raft node status is a terminal. A Raft node stops
-     * running the Raft consensus algorithm in a terminal status.
-     *
-     * @param status
-     *            the status object to check
-     *
-     * @return true if the given status is terminal, false otherwise
-     */
-    public static boolean isTerminal(RaftNodeStatus status) {
-        return status == TERMINATED;
-    }
-
     public boolean isTerminal() {
         return this == TERMINATED;
     }

@@ -551,7 +551,7 @@ public class PersistenceTest extends BaseTest {
         });
 
         RaftNode terminatedLearner = null;
-        for (var node : group.<RaftNode>nodesExcept(leader.localEndpoint())) {
+        for (var node : group.nodesExcept(leader.localEndpoint())) {
             if (role(node) == LEARNER) {
                 terminatedLearner = node;
                 break;

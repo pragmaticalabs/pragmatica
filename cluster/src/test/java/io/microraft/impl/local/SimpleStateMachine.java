@@ -162,17 +162,20 @@ public class SimpleStateMachine implements StateMachine, RaftNodeLifecycleAware,
         // no need for synchronized because we are not mutating the map
         // and we are on the RaftNode thread
 
-        Map<Long, Object> chunk = createMap();
-        for (Entry<Long, Object> e : map.entrySet()) {
+        var chunk = createMap();
+
+        for (var e : map.entrySet()) {
             assert e.getKey() <= commitIndex : "Key: " + e.getKey() + ", commit-index: " + commitIndex;
+
             chunk.put(e.getKey(), e.getValue());
+
             if (chunk.size() == 10) {
                 chunkConsumer.accept(chunk);
                 chunk = createMap();
             }
         }
 
-        if (map.size() == 0 || chunk.size() > 0) {
+        if (map.isEmpty() || !chunk.isEmpty()) {
             chunkConsumer.accept(chunk);
         }
     }
