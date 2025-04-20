@@ -8,12 +8,21 @@
     <artifactId>aether</artifactId>
     <version>1.0-SNAPSHOT</version>
     <packaging>pom</packaging>
+    <modules>
+        <module>cluster</module>
+    </modules>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <java.release>21</java.release>
         <java.enable-preview>--enable-preview</java.enable-preview>
-        <netty.version>4.1.111.Final</netty.version>
+
+        <!-- Dependencies -->
+        <netty.version>4.2.0.Final</netty.version>
+        <slf4j.version>2.0.12</slf4j.version>
+        <junit.version>5.11.4</junit.version>
+        <assertj-core.version>3.26.3</assertj-core.version>
+        <mockito.version>5.14.2</mockito.version>
     </properties>
 
     <dependencyManagement>
@@ -23,7 +32,40 @@
                 <artifactId>core</artifactId>
                 <version>0.6.5</version>
             </dependency>
-            
+
+            <!-- Logging -->
+            <dependency>
+                <groupId>org.slf4j</groupId>
+                <artifactId>slf4j-api</artifactId>
+                <version>${slf4j.version}</version>
+            </dependency>
+
+            <!-- Testing -->
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-api</artifactId>
+                <version>${junit.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.assertj</groupId>
+                <artifactId>assertj-core</artifactId>
+                <version>${assertj-core.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.mockito</groupId>
+                <artifactId>mockito-core</artifactId>
+                <version>${mockito.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.mockito</groupId>
+                <artifactId>mockito-junit-jupiter</artifactId>
+                <version>${mockito.version}</version>
+                <scope>test</scope>
+            </dependency>
+
             <!-- Netty dependencies -->
             <dependency>
                 <groupId>io.netty</groupId>
