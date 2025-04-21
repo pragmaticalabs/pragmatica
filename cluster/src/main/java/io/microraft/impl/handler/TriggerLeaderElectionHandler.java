@@ -23,10 +23,10 @@ import static java.util.Objects.requireNonNull;
 import javax.annotation.Nonnull;
 
 import io.microraft.RaftNode;
+import io.microraft.impl.task.RaftNodeStatusAwareTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import io.microraft.impl.task.LeaderElectionTask;
 import io.microraft.model.log.BaseLogEntry;
 import io.microraft.model.message.TriggerLeaderElectionRequest;
 
@@ -37,7 +37,7 @@ import io.microraft.model.message.TriggerLeaderElectionRequest;
  *
  * @see TriggerLeaderElectionRequest
  */
-public class TriggerLeaderElectionHandler extends AbstractMessageHandler<TriggerLeaderElectionRequest> {
+public class TriggerLeaderElectionHandler extends RaftNodeStatusAwareTask.AbstractMessageHandler<TriggerLeaderElectionRequest> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(TriggerLeaderElectionHandler.class);
 
@@ -89,5 +89,4 @@ public class TriggerLeaderElectionHandler extends AbstractMessageHandler<Trigger
         node().leader(null);
         new LeaderElectionTask(node(), false).run();
     }
-
 }

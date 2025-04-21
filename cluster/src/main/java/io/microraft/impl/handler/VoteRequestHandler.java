@@ -19,7 +19,7 @@ package io.microraft.impl.handler;
 
 import io.microraft.RaftEndpoint;
 import io.microraft.RaftNode;
-import io.microraft.impl.task.LeaderElectionTask;
+import io.microraft.impl.task.RaftNodeStatusAwareTask;
 import io.microraft.model.message.VoteRequest;
 import io.microraft.model.message.VoteResponse;
 import io.microraft.model.message.VoteResponse.VoteResponseBuilder;
@@ -45,7 +45,7 @@ import static java.util.Objects.requireNonNull;
  * @see VoteResponse
  * @see LeaderElectionTask
  */
-public class VoteRequestHandler extends AbstractMessageHandler<VoteRequest> {
+public class VoteRequestHandler extends RaftNodeStatusAwareTask.AbstractMessageHandler<VoteRequest> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VoteRequestHandler.class);
 

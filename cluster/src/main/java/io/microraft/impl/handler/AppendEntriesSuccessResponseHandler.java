@@ -23,6 +23,7 @@ import io.microraft.impl.state.FollowerState;
 import io.microraft.impl.state.LeaderState;
 import io.microraft.impl.state.QueryState;
 import io.microraft.impl.state.RaftState;
+import io.microraft.impl.task.RaftNodeStatusAwareTask;
 import io.microraft.model.message.AppendEntriesFailureResponse;
 import io.microraft.model.message.AppendEntriesRequest;
 import io.microraft.model.message.AppendEntriesSuccessResponse;
@@ -48,7 +49,7 @@ import static io.microraft.RaftRole.LEADER;
  * @see AppendEntriesSuccessResponse
  * @see AppendEntriesFailureResponse
  */
-public class AppendEntriesSuccessResponseHandler extends AbstractResponseHandler<AppendEntriesSuccessResponse> {
+public class AppendEntriesSuccessResponseHandler extends RaftNodeStatusAwareTask.AbstractResponseHandler<AppendEntriesSuccessResponse> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(AppendEntriesSuccessResponseHandler.class);
 

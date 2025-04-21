@@ -23,6 +23,7 @@ import static io.microraft.RaftRole.LEARNER;
 import javax.annotation.Nonnull;
 
 import io.microraft.RaftNode;
+import io.microraft.impl.task.RaftNodeStatusAwareTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -57,7 +58,7 @@ import io.microraft.model.message.InstallSnapshotResponse;
  * @see InstallSnapshotRequest
  * @see InstallSnapshotResponse
  */
-public class InstallSnapshotResponseHandler extends AbstractResponseHandler<InstallSnapshotResponse> {
+public class InstallSnapshotResponseHandler extends RaftNodeStatusAwareTask.AbstractResponseHandler<InstallSnapshotResponse> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(InstallSnapshotResponseHandler.class);
 

@@ -19,7 +19,7 @@ package io.microraft.impl.handler;
 
 import io.microraft.RaftEndpoint;
 import io.microraft.RaftNode;
-import io.microraft.impl.task.PreVoteTask;
+import io.microraft.impl.task.RaftNodeStatusAwareTask;
 import io.microraft.model.message.PreVoteRequest;
 import io.microraft.model.message.PreVoteResponse;
 import io.microraft.model.message.PreVoteResponse.PreVoteResponseBuilder;
@@ -47,7 +47,7 @@ import static java.util.Objects.requireNonNull;
  * @see PreVoteResponse
  * @see PreVoteTask
  */
-public class PreVoteRequestHandler extends AbstractMessageHandler<PreVoteRequest> {
+public class PreVoteRequestHandler extends RaftNodeStatusAwareTask.AbstractMessageHandler<PreVoteRequest> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(PreVoteRequestHandler.class);
 

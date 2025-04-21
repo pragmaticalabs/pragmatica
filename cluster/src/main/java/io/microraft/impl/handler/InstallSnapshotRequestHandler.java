@@ -31,6 +31,7 @@ import java.util.stream.Collectors;
 import javax.annotation.Nonnull;
 
 import io.microraft.RaftNode;
+import io.microraft.impl.task.RaftNodeStatusAwareTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -80,7 +81,7 @@ import io.microraft.model.message.RaftMessage;
  * @see AppendEntriesSuccessResponse
  * @see AppendEntriesFailureResponse
  */
-public class InstallSnapshotRequestHandler extends AbstractMessageHandler<InstallSnapshotRequest> {
+public class InstallSnapshotRequestHandler extends RaftNodeStatusAwareTask.AbstractMessageHandler<InstallSnapshotRequest> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(InstallSnapshotRequestHandler.class);
 

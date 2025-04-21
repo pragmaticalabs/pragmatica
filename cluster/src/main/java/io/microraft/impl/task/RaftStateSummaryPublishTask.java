@@ -26,19 +26,13 @@ import io.microraft.report.RaftNodeReport.RaftNodeReportReason;
 /**
  * Publishes a {@link RaftNodeReport} for the current state of the Raft node
  */
-public class RaftStateSummaryPublishTask extends RaftNodeStatusAwareTask {
-
-    public RaftStateSummaryPublishTask(RaftNode node) {
-        super(node);
-    }
-
+public interface RaftStateSummaryPublishTask extends RaftNodeStatusAwareTask {
     @Override
-    protected void doRun() {
+    default void doRun() {
         try {
             node().publishRaftNodeReport(RaftNodeReportReason.PERIODIC);
         } finally {
             node().executor().schedule(this, node().config().raftNodeReportPublishPeriodSecs(), SECONDS);
         }
     }
-
 }

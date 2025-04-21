@@ -32,6 +32,7 @@ import java.util.Map.Entry;
 import javax.annotation.Nonnull;
 
 import io.microraft.RaftNode;
+import io.microraft.impl.task.RaftNodeStatusAwareTask;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -58,7 +59,7 @@ import io.microraft.model.message.RaftMessage;
  * @see AppendEntriesSuccessResponse
  * @see AppendEntriesFailureResponse
  */
-public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEntriesRequest> {
+public class AppendEntriesRequestHandler extends RaftNodeStatusAwareTask.AbstractMessageHandler<AppendEntriesRequest> {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(AppendEntriesRequestHandler.class);
 
@@ -294,7 +295,7 @@ public class AppendEntriesRequestHandler extends AbstractMessageHandler<AppendEn
 
     private RaftMessage createAppendEntriesFailureResponse(int term, long queryRound, long sequenceNumber) {
         return modelFactory().createAppendEntriesFailureResponseBuilder().setGroupId(node().groupId())
-                .setSender(localEndpoint()).setTerm(term).setExpectedNextIndex(message.getPreviousLogIndex() + 1)
+                .setSender(localEndpoint()).setTerm(term).setExpectedNextIndex(message().getPreviousLogIndex() + 1)
                 .setQuerySequenceNumber(queryRound).setFlowControlSequenceNumber(sequenceNumber).build();
     }
 

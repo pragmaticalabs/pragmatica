@@ -57,6 +57,7 @@ import java.util.concurrent.CompletableFuture;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 
+import io.microraft.impl.task.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -95,17 +96,6 @@ import io.microraft.impl.state.RaftTermState;
 import io.microraft.impl.state.QueryState.QueryContainer;
 import io.microraft.impl.statemachine.InternalCommitAware;
 import io.microraft.impl.statemachine.NoOp;
-import io.microraft.impl.task.HeartbeatTask;
-import io.microraft.impl.task.LeaderBackoffResetTask;
-import io.microraft.impl.task.LeaderElectionTimeoutTask;
-import io.microraft.impl.task.FlushTask;
-import io.microraft.impl.task.MembershipChangeTask;
-import io.microraft.impl.task.PreVoteTask;
-import io.microraft.impl.task.PreVoteTimeoutTask;
-import io.microraft.impl.task.QueryTask;
-import io.microraft.impl.task.RaftStateSummaryPublishTask;
-import io.microraft.impl.task.ReplicateTask;
-import io.microraft.impl.task.TransferLeadershipTask;
 import io.microraft.impl.util.OrderedFuture;
 import io.microraft.lifecycle.RaftNodeLifecycleAware;
 import io.microraft.model.RaftModelFactory;
@@ -584,10 +574,10 @@ final class RaftNodeImpl implements RaftNode {
 
     private void initTasks() {
         if (!(store instanceof NopRaftStore)) {
-            leaderFlushTask = new FlushTask(this);
+            leaderFlushTask = new RaftNodeStatusAwareTask.FlushTask(this);
         }
-        leaderBackoffResetTask = new LeaderBackoffResetTask(this);
-        executor.schedule(new HeartbeatTask(this), config.leaderHeartbeatPeriodSecs(), SECONDS);
+        leaderBackoffResetTask = new RaftNodeStatusAwareTask.LeaderBackoffResetTask(this);
+        executor.schedule(new RaftNodeStatusAwareTask.HeartbeatTask(this), config.leaderHeartbeatPeriodSecs(), SECONDS);
         executor.schedule(new RaftStateSummaryPublishTask(this), config.raftNodeReportPublishPeriodSecs(), SECONDS);
     }
 
@@ -1068,7 +1058,7 @@ final class RaftNodeImpl implements RaftNode {
         // this will flush the truncation of the stale log entries
         // asynchronously. if this node is the leader, it can append new log
         // entries in the meantime, this task will flush them to the storage.
-        executor.submit(new FlushTask(this));
+        executor.submit(new RaftNodeStatusAwareTask.FlushTask(this));
     }
 
     private long findHighestLogIndexToTruncateUntilSnapshotIndex(long snapshotIndex) {
@@ -1157,7 +1147,7 @@ final class RaftNodeImpl implements RaftNode {
         // log.setSnapshot() truncates stale log entries from disk.
         // we are submitting an async flush task here to flush those
         // changes to the storage.
-        executor.submit(new FlushTask(this));
+        executor.submit(new RaftNodeStatusAwareTask.FlushTask(this));
     }
 
     /**
@@ -1531,7 +1521,7 @@ final class RaftNodeImpl implements RaftNode {
             send(member, request);
         }
 
-        executor.schedule(new LeaderElectionTimeoutTask(this), leaderElectionTimeoutMs(), MILLISECONDS);
+        executor.schedule(new RaftNodeStatusAwareTask.LeaderElectionTimeoutTask(this), leaderElectionTimeoutMs(), MILLISECONDS);
     }
 
     /**
@@ -1568,7 +1558,7 @@ final class RaftNodeImpl implements RaftNode {
             send(member, request);
         }
 
-        executor.schedule(new PreVoteTimeoutTask(this, state.term()), leaderElectionTimeoutMs(), MILLISECONDS);
+        executor.schedule(new RaftNodeStatusAwareTask.PreVoteTimeoutTask(this, state.term()), leaderElectionTimeoutMs(), MILLISECONDS);
     }
 
     @Override
@@ -1891,7 +1881,7 @@ final class RaftNodeImpl implements RaftNode {
 
     @Override
     public void runPreVote() {
-        new PreVoteTask(this, state.term()).run();
+        new RaftNodeStatusAwareTask.PreVoteTask(this, state.term()).run();
     }
 
     /**

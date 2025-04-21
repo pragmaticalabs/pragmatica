@@ -22,6 +22,8 @@ import static io.microraft.RaftRole.CANDIDATE;
 import javax.annotation.Nonnull;
 
 import io.microraft.RaftNode;
+import io.microraft.impl.task.RaftNodeStatusAwareTask;
+import io.microraft.impl.task.RaftNodeStatusAwareTask.AbstractResponseHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -50,16 +52,11 @@ import io.microraft.statemachine.StateMachine;
  * @see VoteRequest
  * @see VoteResponse
  */
-public class VoteResponseHandler extends AbstractResponseHandler<VoteResponse> {
-
-    private static final Logger LOGGER = LoggerFactory.getLogger(VoteResponseHandler.class);
-
-    public VoteResponseHandler(RaftNode raftNode, VoteResponse response) {
-        super(raftNode, response);
-    }
+public interface VoteResponseHandler extends AbstractResponseHandler<VoteResponse> {
+    Logger LOGGER = LoggerFactory.getLogger(VoteResponseHandler.class);
 
     @Override
-    protected void handleResponse(@Nonnull VoteResponse response) {
+    default void handleResponse(@Nonnull VoteResponse response) {
         if (state().role() != CANDIDATE) {
             LOGGER.debug("{} Ignored {}. We are not CANDIDATE anymore.", localEndpointStr(), response);
             return;
@@ -75,7 +72,8 @@ public class VoteResponseHandler extends AbstractResponseHandler<VoteResponse> {
             return;
         }
 
-        CandidateState candidateState = state().candidateState();
+        var candidateState = state().candidateState();
+
         if (response.isGranted() && candidateState.grantVote(response.getSender())) {
             LOGGER.info("{} Vote granted from {} for term: {}, number of votes: {}, majority: {}", localEndpointStr(),
                         response.getSender().id(), state().term(), candidateState.voteCount(), candidateState.majority());
@@ -86,5 +84,4 @@ public class VoteResponseHandler extends AbstractResponseHandler<VoteResponse> {
             node().toLeader();
         }
     }
-
 }

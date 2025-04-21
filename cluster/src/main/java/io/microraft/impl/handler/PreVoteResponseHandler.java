@@ -18,8 +18,8 @@
 package io.microraft.impl.handler;
 
 import io.microraft.RaftNode;
-import io.microraft.impl.task.LeaderElectionTask;
-import io.microraft.impl.task.PreVoteTask;
+import io.microraft.impl.task.RaftNodeStatusAwareTask;
+import io.microraft.impl.task.RaftNodeStatusAwareTask.AbstractResponseHandler;
 import io.microraft.model.message.PreVoteRequest;
 import io.microraft.model.message.PreVoteResponse;
 import org.slf4j.Logger;
@@ -28,6 +28,7 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nonnull;
 
 import static io.microraft.RaftRole.FOLLOWER;
+import static org.pragmatica.lang.Tuple.tuple;
 
 /**
  * Handles a {@link PreVoteResponse} sent for a {@link PreVoteRequest}.
@@ -39,16 +40,11 @@ import static io.microraft.RaftRole.FOLLOWER;
  * @see PreVoteTask
  * @see LeaderElectionTask
  */
-public class PreVoteResponseHandler extends AbstractResponseHandler<PreVoteResponse> {
-
-    private static final Logger LOGGER = LoggerFactory.getLogger(PreVoteResponseHandler.class);
-
-    public PreVoteResponseHandler(RaftNode raftNode, PreVoteResponse response) {
-        super(raftNode, response);
-    }
+public interface PreVoteResponseHandler extends AbstractResponseHandler<PreVoteResponse> {
+    Logger LOGGER = LoggerFactory.getLogger(PreVoteResponseHandler.class);
 
     @Override
-    protected void handleResponse(@Nonnull PreVoteResponse response) {
+    default void handleResponse(@Nonnull PreVoteResponse response) {
         LOGGER.debug("{} received {}.", localEndpointStr(), response);
 
         if (state().role() != FOLLOWER) {
@@ -76,8 +72,8 @@ public class PreVoteResponseHandler extends AbstractResponseHandler<PreVoteRespo
         if (preCandidateState.isMajorityGranted()) {
             LOGGER.info("{} We have the majority during pre-vote phase. Let's start real election!",
                     localEndpointStr());
-            new LeaderElectionTask(node(), true).run();
+            LeaderElectionTask task = () -> tuple(node(), true);
+            task.run();
         }
     }
-
 }
