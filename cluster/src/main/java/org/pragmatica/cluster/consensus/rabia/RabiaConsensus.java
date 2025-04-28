@@ -79,15 +79,22 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
         Comparator.comparingLong(CommandSelection::getSelectionTimestamp)
     );
     
+    private final StateMachine<StateMachineCommand> stateMachine;
+    private final AtomicLong sequenceNumber = new AtomicLong(0);
+    private final ConcurrentHashMap<UUID, StateSyncRequest> pendingSyncRequests = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService syncScheduler = Executors.newSingleThreadScheduledExecutor();
+    
     public RabiaConsensus(NodeId nodeId, 
                          Set<NodeId> clusterNodes, 
                          ClusterNetwork<RabiaMessage> network,
-                         Consumer<byte[]> commandExecutor) {
+                         Consumer<byte[]> commandExecutor,
+                         StateMachine<StateMachineCommand> stateMachine) {
         this.nodeId = nodeId;
         this.clusterNodes = new ConcurrentHashMap.KeySetView<>(clusterNodes, false);
         this.quorumSize = (clusterNodes.size() / 2) + 1;
         this.network = network;
         this.commandExecutor = commandExecutor;
+        this.stateMachine = stateMachine;
         
         // Start periodic batching
         scheduler.scheduleAtFixedRate(this::processCommandBuffer, 
@@ -101,16 +108,20 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
     
     @Override
     public void processMessage(RabiaMessage message) {
-        if (message instanceof ProposalMessage proposal) {
+        if (message instanceof StateSyncRequest request) {
+            handleStateSyncRequest(request);
+        } else if (message instanceof StateSyncResponse response) {
+            handleStateSyncResponse(response);
+        } else if (message instanceof SelectionProposal proposal) {
+            handleSelectionProposal(proposal);
+        } else if (message instanceof SelectionVote vote) {
+            handleSelectionVote(vote);
+        } else if (message instanceof ProposalMessage proposal) {
             handleProposal(proposal);
         } else if (message instanceof VoteMessage vote) {
             handleVote(vote);
         } else if (message instanceof CommitMessage commit) {
             handleCommit(commit);
-        } else if (message instanceof SelectionProposal selectionProposal) {
-            handleSelectionProposal(selectionProposal);
-        } else if (message instanceof SelectionVote selectionVote) {
-            handleSelectionVote(selectionVote);
         }
     }
     
@@ -309,14 +320,93 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
         batches.remove(batchId);
     }
     
+    private void handleStateSyncRequest(StateSyncRequest request) {
+        // Only respond if we have a more recent state
+        if (sequenceNumber.get() > request.lastKnownSequence()) {
+            stateMachine.makeSnapshot()
+                       .onSuccess(snapshot -> {
+                           StateSyncResponse response = new StateSyncResponse(
+                               UUID.randomUUID(),
+                               System.currentTimeMillis(),
+                               nodeId.id(),
+                               sequenceNumber.get(),
+                               snapshot,
+                               true
+                           );
+                           network.send(NodeId.create(request.senderId()), response);
+                       })
+                       .onFailure(error -> {
+                           // Log error but don't respond
+                           System.err.println("Failed to create snapshot: " + error);
+                       });
+        }
+    }
+    
+    private void handleStateSyncResponse(StateSyncResponse response) {
+        // Only process if this is a response to our pending request
+        StateSyncRequest request = pendingSyncRequests.get(response.messageId());
+        if (request != null && response.sequenceNumber() > sequenceNumber.get()) {
+            stateMachine.restoreSnapshot()
+                       .onSuccess(unit -> {
+                           sequenceNumber.set(response.sequenceNumber());
+                           pendingSyncRequests.remove(response.messageId());
+                           // Now we can start participating in consensus
+                           startConsensusParticipation();
+                       })
+                       .onFailure(error -> {
+                           System.err.println("Failed to restore snapshot: " + error);
+                           // Retry state sync after a delay
+                           syncScheduler.schedule(() -> requestStateSync(), 5, TimeUnit.SECONDS);
+                       });
+        }
+    }
+    
+    public void joinCluster() {
+        // Request state synchronization from the cluster
+        requestStateSync();
+    }
+    
+    private void requestStateSync() {
+        StateSyncRequest request = new StateSyncRequest(
+            UUID.randomUUID(),
+            System.currentTimeMillis(),
+            nodeId.id(),
+            sequenceNumber.get()
+        );
+        
+        pendingSyncRequests.put(request.messageId(), request);
+        network.broadcast(request);
+        
+        // Set a timeout for the sync request
+        syncScheduler.schedule(() -> {
+            if (pendingSyncRequests.containsKey(request.messageId())) {
+                // Sync request timed out, retry
+                pendingSyncRequests.remove(request.messageId());
+                requestStateSync();
+            }
+        }, 30, TimeUnit.SECONDS);
+    }
+    
+    private void startConsensusParticipation() {
+        // Start participating in consensus after state sync
+        // This could include joining the view change protocol,
+        // starting to process commands, etc.
+        System.out.println("Node " + nodeId + " joined consensus with sequence number " + sequenceNumber.get());
+    }
+    
     public void shutdown() {
         scheduler.shutdown();
+        syncScheduler.shutdown();
         try {
             if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
                 scheduler.shutdownNow();
             }
+            if (!syncScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                syncScheduler.shutdownNow();
+            }
         } catch (InterruptedException e) {
             scheduler.shutdownNow();
+            syncScheduler.shutdownNow();
             Thread.currentThread().interrupt();
         }
     }
