@@ -31,9 +31,9 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
     private static final long RETRY_DELAY_MS = 100;
     
     // Enhanced state tracking
-    private final ConcurrentHashMap<UUID, ProposalState> proposalStates = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<UUID, Long> lastProposalTimes = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<UUID, Integer> retryCounts = new ConcurrentHashMap<>();
+    private static final long CLEANUP_INTERVAL_MS = 30000; // 30 seconds
+    private static final long MAX_ENTRY_AGE_MS = 300000; // 5 minutes
+    private final ScheduledExecutorService cleanupScheduler = Executors.newSingleThreadScheduledExecutor();
     
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
     
@@ -74,14 +74,32 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
         }
     }
     
-    private final ConcurrentHashMap<UUID, CommandSelection> commandSelections = new ConcurrentHashMap<>();
+    private static class TimestampedEntry<T> {
+        private final T value;
+        private final long timestamp;
+
+        TimestampedEntry(T value) {
+            this.value = value;
+            this.timestamp = System.currentTimeMillis();
+        }
+
+        T getValue() {
+            return value;
+        }
+
+        long getTimestamp() {
+            return timestamp;
+        }
+    }
+    
+    private final ConcurrentHashMap<UUID, TimestampedEntry<CommandSelection>> commandSelections = new ConcurrentHashMap<>();
     private final PriorityQueue<CommandSelection> selectionQueue = new PriorityQueue<>(
         Comparator.comparingLong(CommandSelection::getSelectionTimestamp)
     );
     
     private final StateMachine<StateMachineCommand> stateMachine;
     private final AtomicLong sequenceNumber = new AtomicLong(0);
-    private final ConcurrentHashMap<UUID, StateSyncRequest> pendingSyncRequests = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, TimestampedEntry<StateSyncRequest>> pendingSyncRequests = new ConcurrentHashMap<>();
     private final ScheduledExecutorService syncScheduler = Executors.newSingleThreadScheduledExecutor();
     
     public RabiaConsensus(NodeId nodeId, 
@@ -101,6 +119,12 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
                                     BATCH_TIMEOUT_MS, 
                                     BATCH_TIMEOUT_MS, 
                                     TimeUnit.MILLISECONDS);
+        
+        // Start periodic cleanup
+        cleanupScheduler.scheduleAtFixedRate(this::cleanupOldEntries,
+                                           CLEANUP_INTERVAL_MS,
+                                           CLEANUP_INTERVAL_MS,
+                                           TimeUnit.MILLISECONDS);
         
         // Register network listener
         network.listen(this::processMessage);
@@ -140,7 +164,7 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
         if (!batchCommands.isEmpty()) {
             // Create a new command selection
             CommandSelection selection = new CommandSelection(batchCommands);
-            commandSelections.put(selection.getSelectionId(), selection);
+            commandSelections.put(selection.getSelectionId(), new TimestampedEntry<>(selection));
             selectionQueue.offer(selection);
             
             // Start the selection process
@@ -170,13 +194,13 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
     private void handleSelectionProposal(SelectionProposal proposal) {
         CommandSelection selection = commandSelections.computeIfAbsent(
             proposal.selectionId(),
-            k -> new CommandSelection(proposal.commands())
-        );
+            k -> new TimestampedEntry<>(new CommandSelection(proposal.commands()))
+        ).getValue();
         
         // Only process if this is a newer selection
         if (proposal.selectionTimestamp() > selection.getSelectionTimestamp()) {
             selection = new CommandSelection(proposal.commands());
-            commandSelections.put(proposal.selectionId(), selection);
+            commandSelections.put(proposal.selectionId(), new TimestampedEntry<>(selection));
         }
         
         // Vote on the selection
@@ -184,17 +208,20 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
     }
     
     private void handleSelectionVote(SelectionVote vote) {
-        CommandSelection selection = commandSelections.get(vote.selectionId());
-        if (selection != null && !selection.isSelected()) {
-            VoteSet voteSet = voteSets.computeIfAbsent(vote.selectionId(), k -> new VoteSet());
+        TimestampedEntry<CommandSelection> timestamped = commandSelections.get(vote.selectionId());
+        if (timestamped != null && !timestamped.getValue().isSelected()) {
+            VoteSet voteSet = voteSets.computeIfAbsent(
+                vote.selectionId(),
+                k -> new TimestampedEntry<>(new VoteSet())
+            ).getValue();
             
             if (vote.accepted()) {
                 voteSet.addAcceptedVote(NodeId.create(vote.senderId()));
                 
                 // Check for quorum
                 if (voteSet.hasQuorum(quorumSize)) {
-                    selection.setSelected(true);
-                    executeCommands(selection.getCommands());
+                    timestamped.getValue().setSelected(true);
+                    executeCommands(timestamped.getValue().getCommands());
                     cleanupSelection(vote.selectionId());
                 }
             }
@@ -336,7 +363,6 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
                            network.send(NodeId.create(request.senderId()), response);
                        })
                        .onFailure(error -> {
-                           // Log error but don't respond
                            System.err.println("Failed to create snapshot: " + error);
                        });
         }
@@ -344,18 +370,16 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
     
     private void handleStateSyncResponse(StateSyncResponse response) {
         // Only process if this is a response to our pending request
-        StateSyncRequest request = pendingSyncRequests.get(response.messageId());
-        if (request != null && response.sequenceNumber() > sequenceNumber.get()) {
+        TimestampedEntry<StateSyncRequest> timestamped = pendingSyncRequests.get(response.messageId());
+        if (timestamped != null && response.sequenceNumber() > sequenceNumber.get()) {
             stateMachine.restoreSnapshot()
                        .onSuccess(unit -> {
                            sequenceNumber.set(response.sequenceNumber());
                            pendingSyncRequests.remove(response.messageId());
-                           // Now we can start participating in consensus
                            startConsensusParticipation();
                        })
                        .onFailure(error -> {
                            System.err.println("Failed to restore snapshot: " + error);
-                           // Retry state sync after a delay
                            syncScheduler.schedule(() -> requestStateSync(), 5, TimeUnit.SECONDS);
                        });
         }
@@ -374,13 +398,11 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
             sequenceNumber.get()
         );
         
-        pendingSyncRequests.put(request.messageId(), request);
+        pendingSyncRequests.put(request.messageId(), new TimestampedEntry<>(request));
         network.broadcast(request);
         
-        // Set a timeout for the sync request
         syncScheduler.schedule(() -> {
             if (pendingSyncRequests.containsKey(request.messageId())) {
-                // Sync request timed out, retry
                 pendingSyncRequests.remove(request.messageId());
                 requestStateSync();
             }
@@ -397,6 +419,7 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
     public void shutdown() {
         scheduler.shutdown();
         syncScheduler.shutdown();
+        cleanupScheduler.shutdown();
         try {
             if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
                 scheduler.shutdownNow();
@@ -404,9 +427,13 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
             if (!syncScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
                 syncScheduler.shutdownNow();
             }
+            if (!cleanupScheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                cleanupScheduler.shutdownNow();
+            }
         } catch (InterruptedException e) {
             scheduler.shutdownNow();
             syncScheduler.shutdownNow();
+            cleanupScheduler.shutdownNow();
             Thread.currentThread().interrupt();
         }
     }
@@ -555,5 +582,36 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
         }
         
         return selected;
+    }
+    
+    private void cleanupOldEntries() {
+        long currentTime = System.currentTimeMillis();
+        
+        // Cleanup command selections
+        commandSelections.entrySet().removeIf(entry -> {
+            TimestampedEntry<CommandSelection> timestamped = entry.getValue();
+            return currentTime - timestamped.getTimestamp() > MAX_ENTRY_AGE_MS &&
+                   timestamped.getValue().isSelected();
+        });
+        
+        // Cleanup vote sets
+        voteSets.entrySet().removeIf(entry -> {
+            TimestampedEntry<VoteSet> timestamped = entry.getValue();
+            return currentTime - timestamped.getTimestamp() > MAX_ENTRY_AGE_MS &&
+                   timestamped.getValue().isCommitted();
+        });
+        
+        // Cleanup proposal states
+        proposalStates.entrySet().removeIf(entry -> {
+            TimestampedEntry<ProposalState> timestamped = entry.getValue();
+            return currentTime - timestamped.getTimestamp() > MAX_ENTRY_AGE_MS &&
+                   timestamped.getValue().isCommitted();
+        });
+        
+        // Cleanup pending sync requests
+        pendingSyncRequests.entrySet().removeIf(entry -> {
+            TimestampedEntry<StateSyncRequest> timestamped = entry.getValue();
+            return currentTime - timestamped.getTimestamp() > MAX_ENTRY_AGE_MS;
+        });
     }
 } 
