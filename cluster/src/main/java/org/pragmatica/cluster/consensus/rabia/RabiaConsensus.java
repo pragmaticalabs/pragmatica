@@ -14,7 +14,8 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
     private final Set<NodeId> clusterNodes;
     private final int quorumSize;
     private final ClusterNetwork<RabiaMessage> network;
-    private final Consumer<byte[]> commandExecutor;
+    private final Consumer<Command> commandExecutor;
+    private final Serializer<Command> commandSerializer;
     
     // Local state
     private final ConcurrentLinkedQueue<byte[]> commandBuffer = new ConcurrentLinkedQueue<>();
@@ -97,7 +98,7 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
         Comparator.comparingLong(CommandSelection::getSelectionTimestamp)
     );
     
-    private final StateMachine<StateMachineCommand> stateMachine;
+    private final StateMachine stateMachine;
     private final AtomicLong sequenceNumber = new AtomicLong(0);
     private final ConcurrentHashMap<UUID, TimestampedEntry<StateSyncRequest>> pendingSyncRequests = new ConcurrentHashMap<>();
     private final ScheduledExecutorService syncScheduler = Executors.newSingleThreadScheduledExecutor();
@@ -105,14 +106,16 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
     public RabiaConsensus(NodeId nodeId, 
                          Set<NodeId> clusterNodes, 
                          ClusterNetwork<RabiaMessage> network,
-                         Consumer<byte[]> commandExecutor,
-                         StateMachine<StateMachineCommand> stateMachine) {
+                         Consumer<Command> commandExecutor,
+                         StateMachine stateMachine,
+                         Serializer<Command> commandSerializer) {
         this.nodeId = nodeId;
         this.clusterNodes = new ConcurrentHashMap.KeySetView<>(clusterNodes, false);
         this.quorumSize = (clusterNodes.size() / 2) + 1;
         this.network = network;
         this.commandExecutor = commandExecutor;
         this.stateMachine = stateMachine;
+        this.commandSerializer = commandSerializer;
         
         // Start periodic batching
         scheduler.scheduleAtFixedRate(this::processCommandBuffer, 
@@ -333,8 +336,13 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
     }
     
     private void executeCommands(List<byte[]> commands) {
-        for (byte[] command : commands) {
-            commandExecutor.accept(command);
+        for (byte[] commandBytes : commands) {
+            try {
+                Command command = commandSerializer.decode(commandBytes, Command.class);
+                commandExecutor.accept(command);
+            } catch (Exception e) {
+                System.err.println("Failed to execute command: " + e.getMessage());
+            }
         }
     }
     
@@ -369,10 +377,9 @@ public class RabiaConsensus implements Consensus<RabiaMessage> {
     }
     
     private void handleStateSyncResponse(StateSyncResponse response) {
-        // Only process if this is a response to our pending request
         TimestampedEntry<StateSyncRequest> timestamped = pendingSyncRequests.get(response.messageId());
         if (timestamped != null && response.sequenceNumber() > sequenceNumber.get()) {
-            stateMachine.restoreSnapshot()
+            stateMachine.restoreSnapshot(response.stateSnapshot())
                        .onSuccess(unit -> {
                            sequenceNumber.set(response.sequenceNumber());
                            pendingSyncRequests.remove(response.messageId());
