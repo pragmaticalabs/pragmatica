@@ -4,14 +4,12 @@ import org.pragmatica.cluster.consensus.ProtocolMessage;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.state.Command;
 
-import java.util.List;
-
 public sealed interface RabiaProtocolMessage extends ProtocolMessage {
     NodeId sender();
 
     record Propose<C extends Command>(NodeId sender, int slot, Batch<C> batch) implements RabiaProtocolMessage {}
 
-    record Vote(NodeId sender, int slot, boolean match) implements RabiaProtocolMessage {}
+    record Vote(NodeId sender, int slot, boolean vote) implements RabiaProtocolMessage {}
 
     record Decide<C extends Command>(NodeId sender, int slot, Batch<C> batch) implements RabiaProtocolMessage {}
 

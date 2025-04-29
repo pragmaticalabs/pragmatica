@@ -99,19 +99,18 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
 
         // Only try to vote if we're in round 1 and haven't voted yet
         if (instance.phase.get() == Phase.ROUND1 && !instance.voted.get()) {
-            // Check if we have enough proposals to make a decision
-            if (instance.proposals.size() >= addressBook.consensusSize()) {
-                // Find the batch with majority support
-                var majorityBatch = findMajorityBatch(instance);
-
-                if (majorityBatch != null && instance.voted.compareAndSet(false, true)) {
-                    // We have a majority, lock the value and vote positively
-                    instance.lockValue(majorityBatch);
-                    network.broadcast(new Vote(self, msg.slot(), true));
-                } else if (instance.voted.compareAndSet(false, true)) {
-                    // No majority yet, vote negatively
-                    network.broadcast(new Vote(self, msg.slot(), false));
-                }
+            // Find the batch with majority support
+            var majorityBatch = findMajorityBatch(instance);
+            
+            if (majorityBatch != null && instance.voted.compareAndSet(false, true)) {
+                // We have a majority, lock the value and vote positively
+                instance.lockValue(majorityBatch);
+                network.broadcast(new Vote(self, msg.slot(), true));
+            } else if (instance.voted.compareAndSet(false, true)) {
+                // No majority yet, but we should still vote based on what we know
+                // If this is the only proposal we've seen, vote positively for it
+                boolean shouldVotePositively = instance.proposals.size() == 1;
+                network.broadcast(new Vote(self, msg.slot(), shouldVotePositively));
             }
         }
     }
@@ -141,7 +140,7 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
             return;
         }
 
-        instance.votes.merge(msg.match(), 1, Integer::sum);
+        instance.votes.merge(msg.vote(), 1, Integer::sum);
 
         if (instance.phase.get() == Phase.ROUND1) {
             handleRound1Vote(instance);
