@@ -50,6 +50,11 @@ public class NettyClusterNetwork<T extends ProtocolMessage> implements ClusterNe
                                                                    this::messageReceived));
     }
 
+    @Override
+    public boolean quorumConnected() {
+        return peerLinks.size() >= addressBook.quorumSize();
+    }
+
     private void messageReceived(T protocolMessage) {
         messageListener.onPresent(listener -> listener.accept(protocolMessage));
     }

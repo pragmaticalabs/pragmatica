@@ -21,4 +21,6 @@ public interface ClusterNetwork<T extends ProtocolMessage> {
     void start();
 
     void stop();
+
+    boolean quorumConnected();
 }

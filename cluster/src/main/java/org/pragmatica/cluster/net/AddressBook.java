@@ -9,7 +9,7 @@ public interface AddressBook {
 
     int clusterSize();
 
-    default int consensusSize() {
+    default int quorumSize() {
         return clusterSize()/2 + 1;
     }
 

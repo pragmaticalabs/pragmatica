@@ -1,6 +1,7 @@
 package org.pragmatica.cluster.net.local;
 
 import org.pragmatica.cluster.consensus.ProtocolMessage;
+import org.pragmatica.cluster.net.AddressBook;
 import org.pragmatica.cluster.net.ViewChange;
 import org.pragmatica.cluster.net.ClusterNetwork;
 import org.pragmatica.cluster.net.NodeId;
@@ -15,21 +16,21 @@ import java.util.function.Consumer;
 public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T> {
     private static final Logger logger = LoggerFactory.getLogger(LocalNetwork.class);
     private final Map<NodeId, Consumer<T>> nodes = new ConcurrentHashMap<>();
+    private final AddressBook addressBook;
 
-    @SuppressWarnings("unchecked")
+    public LocalNetwork(AddressBook addressBook) {
+        this.addressBook = addressBook;
+    }
+
     @Override
     public <M extends ProtocolMessage> void broadcast(M message) {
-        Thread.ofVirtual().start(() -> {
-            logger.info("Broadcasting message: {}", message);
-            nodes.values().forEach(consumer -> consumer.accept((T) message));
-        });
+        nodes.keySet().forEach(nodeId -> send(nodeId, message));
     }
 
     @SuppressWarnings("unchecked")
     @Override
     public <M extends ProtocolMessage> void send(NodeId nodeId, M message) {
         Thread.ofVirtual().start(() -> {
-            logger.info("Sending message: {} to {}", message, nodeId);
             nodes.get(nodeId).accept((T) message);
         });
     }
@@ -57,6 +58,11 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
 
     @Override
     public void stop() {
+    }
+
+    @Override
+    public boolean quorumConnected() {
+        return nodes.size() >= addressBook.quorumSize();
     }
 
     public void addNode(NodeId nodeId, Consumer<T> listener) {
