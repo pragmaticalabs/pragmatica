@@ -24,6 +24,8 @@
         <assertj-core.version>3.26.3</assertj-core.version>
         <mockito.version>5.14.2</mockito.version>
         <pragmatica.version>0.6.6</pragmatica.version>
+        <awaitility.version>4.2.1</awaitility.version>
+        <tinylog.version>2.7.0</tinylog.version>
     </properties>
 
     <dependencyManagement>
@@ -39,6 +41,16 @@
                 <groupId>org.slf4j</groupId>
                 <artifactId>slf4j-api</artifactId>
                 <version>${slf4j.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.tinylog</groupId>
+                <artifactId>slf4j-tinylog</artifactId>
+                <version>${tinylog.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.tinylog</groupId>
+                <artifactId>tinylog-impl</artifactId>
+                <version>${tinylog.version}</version>
             </dependency>
 
             <!-- Testing -->
@@ -64,6 +76,12 @@
                 <groupId>org.mockito</groupId>
                 <artifactId>mockito-junit-jupiter</artifactId>
                 <version>${mockito.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.awaitility</groupId>
+                <artifactId>awaitility</artifactId>
+                <version>${awaitility.version}</version>
                 <scope>test</scope>
             </dependency>
 

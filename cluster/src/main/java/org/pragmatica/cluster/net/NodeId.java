@@ -2,14 +2,12 @@ package org.pragmatica.cluster.net;
 
 import org.pragmatica.utility.ULID;
 
-public record NodeId(String id) {
-    @Override
-    public String toString() {
-        return id;
-    }
+public interface NodeId {
+    String id();
 
     static NodeId create(String id) {
-        return new NodeId(id);
+        record nodeId(String id) implements NodeId {}
+        return new nodeId(id);
     }
 
     static NodeId createRandom() {

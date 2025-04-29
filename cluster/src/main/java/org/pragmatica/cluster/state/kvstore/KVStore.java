@@ -73,4 +73,8 @@ public class KVStore<K, V> implements StateMachine<KVCommand> {
     public void observeStateChanges(Consumer<? super Notification> observer) {
         this.observer = observer;
     }
+
+    public Map<K, V> snapshot() {
+        return new HashMap<>(storage);
+    }
 }

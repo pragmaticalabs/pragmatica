@@ -12,12 +12,14 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /// Implementation of the Rabia state machine replication consensus protocol for distributed systems.
 ///
@@ -31,7 +33,7 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
     private final StateMachine<C> stateMachine;
 
     //TODO: make queue size configurable
-    private final BlockingQueue<C> pendingCommands = new ArrayBlockingQueue<>(1024);
+    private final Queue<Batch<C>> pendingBatches = new ConcurrentLinkedQueue<>();
     private final Map<Integer, RoundData<C>> instances = new ConcurrentHashMap<>();
     private final AtomicInteger nextSlot = new AtomicInteger(1);
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -50,7 +52,7 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
 
     @Override
     public void submitCommands(List<C> commands) {
-        pendingCommands.addAll(commands);
+        pendingBatches.add(Batch.create(commands));
 
         if (mode == NodeMode.NORMAL) {
             executor.execute(this::startRound);
@@ -64,16 +66,16 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
             return;
         }
 
-        var batch = new ArrayList<C>();
-        pendingCommands.drainTo(batch, 10);
+        var batch = pendingBatches.poll();
 
-        if (batch.isEmpty()) {
+        if (batch == null) {
             return;
         }
 
         var instance = RoundData.create(slot, batch);
         instances.put(slot, instance);
         network.broadcast(new Propose<>(self, slot, batch));
+        // Remove the immediate vote - we'll vote when we see enough proposals
     }
 
     @SuppressWarnings("unchecked")
@@ -91,19 +93,45 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
     }
 
     private void onPropose(Propose<C> msg) {
-        var instance = instances.computeIfAbsent(msg.slot(), s -> RoundData.create(s, msg.commands()));
+        var instance = instances.computeIfAbsent(msg.slot(), s -> RoundData.create(s, msg.batch()));
 
-        instance.proposals.put(msg.sender(), msg.commands());
+        instance.proposals.put(msg.sender(), msg.batch());
 
-        if (instance.proposals.size() >= addressBook.consensusSize() && !instance.voted.get()) {
-            boolean match = instance.proposals.values()
-                                              .stream()
-                                              .filter(commands -> commands.equals(instance.commands))
-                                              .count() >= addressBook.consensusSize();
+        // Only try to vote if we're in round 1 and haven't voted yet
+        if (instance.phase.get() == Phase.ROUND1 && !instance.voted.get()) {
+            // Check if we have enough proposals to make a decision
+            if (instance.proposals.size() >= addressBook.consensusSize()) {
+                // Find the batch with majority support
+                var majorityBatch = findMajorityBatch(instance);
 
-            network.broadcast(new Vote(self, msg.slot(), match));
-            instance.voted.set(true);
+                if (majorityBatch != null && instance.voted.compareAndSet(false, true)) {
+                    // We have a majority, lock the value and vote positively
+                    instance.lockValue(majorityBatch);
+                    network.broadcast(new Vote(self, msg.slot(), true));
+                } else if (instance.voted.compareAndSet(false, true)) {
+                    // No majority yet, vote negatively
+                    network.broadcast(new Vote(self, msg.slot(), false));
+                }
+            }
         }
+    }
+
+    private Batch<C> findMajorityBatch(RoundData<C> instance) {
+        // Group proposals by batch ID and count occurrences
+        var batchCounts = instance.proposals.values().stream()
+                                            .collect(Collectors.groupingBy(
+                                                    Batch::id,
+                                                    Collectors.counting()));
+
+        // Find any batch that has majority support
+        return batchCounts.entrySet().stream()
+                          .filter(entry -> entry.getValue() >= addressBook.consensusSize())
+                          .findFirst()
+                          .flatMap(entry -> instance.proposals.values()
+                                                              .stream()
+                                                              .filter(batch -> batch.id().equals(entry.getKey()))
+                                                              .findFirst())
+                          .orElse(null);
     }
 
     private void onVote(Vote msg) {
@@ -115,24 +143,54 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
 
         instance.votes.merge(msg.match(), 1, Integer::sum);
 
-        if (instance.votes.getOrDefault(true, 0) >= addressBook.consensusSize()) {
-            decide(instance, instance.commands);
-        } else if (instance.votes.getOrDefault(false, 0) >= addressBook.consensusSize()) {
-            decide(instance, List.of());
+        if (instance.phase.get() == Phase.ROUND1) {
+            handleRound1Vote(instance);
+        } else {
+            handleRound2Vote(instance);
+        }
+    }
+
+    private void handleRound1Vote(RoundData<C> instance) {
+        int positiveVotes = instance.votes.getOrDefault(true, 0);
+        int negativeVotes = instance.votes.getOrDefault(false, 0);
+
+        if (positiveVotes >= addressBook.consensusSize()) {
+            // Majority voted positively in round 1, move to round 2
+            instance.phase.set(Phase.ROUND2);
+            // Reset votes for round 2
+            instance.votes.clear();
+            instance.voted.set(false);
+        } else if (negativeVotes >= addressBook.consensusSize()) {
+            // Majority voted negatively in round 1, decide empty
+            decide(instance, Batch.create(List.of()));
+        }
+    }
+
+    private void handleRound2Vote(RoundData<C> instance) {
+        int positiveVotes = instance.votes.getOrDefault(true, 0);
+        int negativeVotes = instance.votes.getOrDefault(false, 0);
+
+        if (positiveVotes >= addressBook.consensusSize()) {
+            // If we have a locked value, use it; otherwise use the current batch
+            var batch = instance.isValueLocked()
+                    ? instance.lockedValue.get()
+                    : instance.batch;
+            decide(instance, batch);
+        } else if (negativeVotes >= addressBook.consensusSize()) {
+            decide(instance, Batch.create(List.of()));
         }
     }
 
     private void onDecide(Decide<C> msg) {
-        var instance = instances.computeIfAbsent(msg.slot(), s -> RoundData.create(s, msg.commands()));
-        decide(instance, msg.commands());
+        var instance = instances.computeIfAbsent(msg.slot(), s -> RoundData.create(s, msg.batch()));
+        decide(instance, msg.batch());
     }
 
-    private void decide(RoundData<C> instance, List<C> commands) {
+    private void decide(RoundData<C> instance, Batch<C> batch) {
         if (instance.decided.compareAndSet(false, true)) {
-            if (!commands.isEmpty()) {
-                commands.forEach(stateMachine::process);
-            }
-            network.broadcast(new Decide<>(self, instance.slot, commands));
+            batch.commands().forEach(stateMachine::process);
+
+            network.broadcast(new Decide<>(self, instance.slot, batch));
             nextSlot.incrementAndGet();
             startRound();
         }
@@ -166,18 +224,33 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
 
     enum NodeMode {FOLLOWER, NORMAL}
 
+    enum Phase {ROUND1, ROUND2}
+
     record RoundData<C extends Command>(int slot,
-                                        List<C> commands,
-                                        Map<NodeId, List<C>> proposals,
+                                        Batch<C> batch,
+                                        Map<NodeId, Batch<C>> proposals,
                                         Map<Boolean, Integer> votes,
                                         AtomicBoolean voted,
-                                        AtomicBoolean decided) {
-        static <C extends Command> RoundData<C> create(int slot, List<C> commands) {
-            return new RoundData<>(slot, commands,
+                                        AtomicBoolean decided,
+                                        AtomicReference<Phase> phase,
+                                        AtomicReference<Batch<C>> lockedValue) {
+        static <C extends Command> RoundData<C> create(int slot, Batch<C> batch) {
+            return new RoundData<>(slot,
+                                   batch,
                                    new ConcurrentHashMap<>(),
                                    new ConcurrentHashMap<>(),
                                    new AtomicBoolean(false),
-                                   new AtomicBoolean(false));
+                                   new AtomicBoolean(false),
+                                   new AtomicReference<>(Phase.ROUND1),
+                                   new AtomicReference<>());
+        }
+
+        boolean isValueLocked() {
+            return lockedValue.get() != null;
+        }
+
+        void lockValue(Batch<C> value) {
+            this.lockedValue.set(value);
         }
     }
 }
