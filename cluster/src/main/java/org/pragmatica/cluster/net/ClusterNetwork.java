@@ -4,12 +4,7 @@ import org.pragmatica.cluster.consensus.ProtocolMessage;
 
 import java.util.function.Consumer;
 
-public interface ClusterNetwork<T extends ProtocolMessage> {
-
-    <M extends ProtocolMessage> void broadcast(M message);
-
-    <M extends ProtocolMessage> void send(NodeId nodeId, M message);
-
+public interface ClusterNetwork<T extends ProtocolMessage> extends ProtocolNetwork<T> {
     void connect(NodeId nodeId);
 
     void disconnect(NodeId nodeId);
@@ -21,6 +16,4 @@ public interface ClusterNetwork<T extends ProtocolMessage> {
     void start();
 
     void stop();
-
-    boolean quorumConnected();
 }
