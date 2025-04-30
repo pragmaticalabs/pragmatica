@@ -2,7 +2,6 @@ package org.pragmatica.cluster.consensus.weakmvc;
 
 import org.pragmatica.cluster.state.Command;
 
-import java.util.Comparator;
 import java.util.List;
 
 /// Represents a proposal value in the Weak MVC protocol.
@@ -13,11 +12,11 @@ public record Batch<C extends Command>(BatchId id, long timestamp, List<C> comma
     }
 
     public static <C extends Command> Batch<C> create(List<C> commands) {
-        return new Batch<>(BatchId.createRandom(), commands);
+        return new Batch<C>(BatchId.createRandom(), System.nanoTime(), commands);
     }
 
     public static <C extends Command> Batch<C> empty() {
-        return new Batch<>(BatchId.createEmpty(), List.of());
+        return new Batch<>(BatchId.createEmpty(), System.nanoTime(), List.of());
     }
 
     @Override

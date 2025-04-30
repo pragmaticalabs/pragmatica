@@ -41,10 +41,10 @@ public sealed interface WeakMVCProtocolMessage extends ProtocolMessage {
     /**
      * Phase synchronization request.
      */
-    record SyncRequest(NodeId sender) implements WeakMVCProtocolMessage {}
+    record SyncRequest(NodeId sender, long attempt) implements WeakMVCProtocolMessage {}
 
     /**
      * Phase synchronization response.
      */
-    record SyncResponse(NodeId sender, Phase phase) implements WeakMVCProtocolMessage {}
+    record SyncResponse(NodeId sender, Phase phase, byte[] snapshot) implements WeakMVCProtocolMessage {}
 }

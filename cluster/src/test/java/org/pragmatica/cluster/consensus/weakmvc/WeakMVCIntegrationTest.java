@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -221,12 +222,9 @@ class WeakMVCIntegrationTest {
         c.engines.get(node6)
                  .submitCommands(List.of(new KVCommand.Put<>("e", "5")));
 
-        Thread.sleep(3000);
-
-
-//        Awaitility.await()
-//                  .atMost(10, TimeUnit.SECONDS)
-//                  .until(() -> Stream.of(c.ids.get(3), c.ids.get(4), node6)
-//                                     .allMatch(id -> "5".equals(readStorage(c.stores.get(id)).get("e"))));
+        Awaitility.await()
+                  .atMost(10, TimeUnit.SECONDS)
+                  .until(() -> Stream.of(c.ids.get(3), c.ids.get(4), node6)
+                                     .allMatch(id -> "5".equals(readStorage(c.stores.get(id)).get("e"))));
     }
 }

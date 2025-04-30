@@ -44,11 +44,11 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
 
     /// Creates a new Weak MVC consensus engine.
     ///
-    /// @param self The node ID of this node
-    /// @param addressBook The address book for node communication
-    /// @param network The network implementation
+    /// @param self         The node ID of this node
+    /// @param addressBook  The address book for node communication
+    /// @param network      The network implementation
     /// @param stateMachine The state machine to apply commands to
-    /// @param config Configuration for the consensus engine
+    /// @param config       Configuration for the consensus engine
     public WeakMVCEngine(NodeId self,
                          AddressBook addressBook,
                          ClusterNetwork<T> network,
@@ -119,10 +119,10 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
 
         // Mark that we're in a phase now
         isInPhase.set(true);
-        
+
         // Send initial batch
         network.broadcast(new Propose<>(self, phase, batch));
-        
+
         // Vote in round 1
         var vote = evaluateInitialVote(phaseData);
         network.broadcast(new VoteRound1<>(self, phase, vote));
@@ -137,9 +137,10 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
             return;
         }
 
-        log.info("Node {} requesting phase synchronization", self);
-        network.broadcast(new SyncRequest(self));
-        syncAttempts.incrementAndGet();
+        SyncRequest request = new SyncRequest(self, syncAttempts.incrementAndGet());
+        log.info("Node {} requesting phase synchronization {}", self, request);
+        network.broadcast(request);
+
         // Schedule next synchronization attempt
         SharedScheduler.schedule(this::synchronize, config.syncRetryInterval());
     }
@@ -165,19 +166,58 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
     private void handlePropose(Propose<C> propose) {
         log.debug("Node {} received proposal from {} for phase {}", self, propose.sender(), propose.phase());
 
-        // Store the proposal
+        Phase currentPhaseValue = currentPhase.get();
+        // Ignore proposals for past phases
+        if (propose.phase().compareTo(currentPhaseValue) < 0) {
+            log.trace("Node {} ignoring proposal for past phase {}", self, propose.phase());
+            return;
+        }
+        // Potentially add check for proposals too far in the future
+
         PhaseData<C> phaseData = getOrCreatePhaseData(propose.phase());
-        phaseData.proposals.put(propose.sender(), propose.value());
 
-        // If we haven't voted in round 1 yet, and we're in this phase, vote
-        if (active.get() && 
-            isInPhase.get() && 
-            currentPhase.get().equals(propose.phase()) && 
-            !phaseData.round1Votes.containsKey(self)) {
+        // Ensure phase state is correct. If we receive a proposal for the current
+        // phase value but aren't "in" it, enter it now.
+        // This assumes currentPhaseValue is correctly managed by sync/moveToNextPhase
+        if (propose.phase().equals(currentPhaseValue) && !isInPhase.get() && active.get()) {
+            log.debug("Node {} entering phase {} triggered by proposal from {}",
+                      self,
+                      propose.phase(),
+                      propose.sender());
+            isInPhase.set(true);
+            // If this node has pending commands, it might need to propose too,
+            // but let's handle that separately if needed.
+        }
 
+        // Store the proposal *after* potential phase transition
+        // Use computeIfAbsent to avoid overwriting if multiple proposals are allowed per sender (though unlikely needed)
+        phaseData.proposals.putIfAbsent(propose.sender(), propose.value());
+
+        // If we are active, now in this phase, and haven't voted R1 yet... Vote!
+        if (active.get() &&
+                isInPhase.get() && // Should be true now if phase matches currentPhaseValue
+                currentPhase.get().equals(propose.phase()) &&
+                !phaseData.round1Votes.containsKey(self)) {
+
+            // Call the (modified) evaluateInitialVote and broadcast R1 vote
             var vote = evaluateInitialVote(phaseData);
+            log.debug("Node {} broadcasting R1 vote {} for phase {} based on received proposal from {}",
+                      self,
+                      vote,
+                      propose.phase(),
+                      propose.sender());
             network.broadcast(new VoteRound1<>(self, propose.phase(), vote));
-            phaseData.round1Votes.put(self, vote);
+            phaseData.round1Votes.put(self, vote); // Record our own vote
+        } else {
+            log.trace(
+                    "Node {} conditions not met to vote R1 on proposal from {} for phase {}. Active: {}, InPhase: {}, CurrentPhase: {}, HasVotedR1: {}",
+                    self,
+                    propose.sender(),
+                    propose.phase(),
+                    active.get(),
+                    isInPhase.get(),
+                    currentPhase.get(),
+                    phaseData.round1Votes.containsKey(self));
         }
     }
 
@@ -185,18 +225,18 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
      * Handles a round 1 vote from another node.
      */
     private void handleVoteRound1(VoteRound1<C> vote) {
-        log.debug("Node {} received round 1 vote from {} for phase {} with value {}", 
+        log.debug("Node {} received round 1 vote from {} for phase {} with value {}",
                   self, vote.sender(), vote.phase(), vote.stateValue());
 
         var phaseData = getOrCreatePhaseData(vote.phase());
         phaseData.round1Votes.put(vote.sender(), vote.stateValue());
 
         // If we're active and in this phase, check if we can proceed to round 2
-        if (active.get() && 
-            isInPhase.get() && 
-            currentPhase.get().equals(vote.phase()) && 
-            !phaseData.round2Votes.containsKey(self)) {
-            
+        if (active.get() &&
+                isInPhase.get() &&
+                currentPhase.get().equals(vote.phase()) &&
+                !phaseData.round2Votes.containsKey(self)) {
+
             if (hasRound1MajorityVotes(phaseData)) {
                 var round2Vote = evaluateRound2Vote(phaseData);
                 network.broadcast(new VoteRound2<>(self, vote.phase(), round2Vote));
@@ -209,18 +249,18 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
      * Handles a round 2 vote from another node.
      */
     private void handleVoteRound2(VoteRound2<C> vote) {
-        log.debug("Node {} received round 2 vote from {} for phase {} with value {}", 
+        log.debug("Node {} received round 2 vote from {} for phase {} with value {}",
                   self, vote.sender(), vote.phase(), vote.stateValue());
 
         var phaseData = getOrCreatePhaseData(vote.phase());
         phaseData.round2Votes.put(vote.sender(), vote.stateValue());
 
         // If we're active and in this phase, check if we can make a decision
-        if (active.get() && 
-            isInPhase.get() && 
-            currentPhase.get().equals(vote.phase()) && 
-            !phaseData.hasDecided.get()) {
-            
+        if (active.get() &&
+                isInPhase.get() &&
+                currentPhase.get().equals(vote.phase()) &&
+                !phaseData.hasDecided.get()) {
+
             if (hasRound2MajorityVotes(phaseData)) {
                 processRound2Completion(phaseData);
             }
@@ -231,18 +271,18 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
      * Handles a decision message from another node.
      */
     private void handleDecision(Decision<C> decision) {
-        log.info("Node {} received decision from {} for phase {} with value {} and proposal {}", 
-                 self, decision.sender(), decision.phase(), decision.stateValue(), 
+        log.info("Node {} received decision from {} for phase {} with value {} and proposal {}",
+                 self, decision.sender(), decision.phase(), decision.stateValue(),
                  decision.value() != null ? decision.value().id() : "null");
 
         var phaseData = getOrCreatePhaseData(decision.phase());
-        
+
         if (phaseData.hasDecided.compareAndSet(false, true)) {
             // Apply commands to the state machine if the decision is positive
             if (decision.stateValue() == StateValue.V1 && decision.value() != null) {
                 decision.value().commands().forEach(stateMachine::process);
             }
-            
+
             // Move to the next phase
             moveToNextPhase(decision.phase());
         }
@@ -253,14 +293,28 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
      */
     private void handleSyncRequest(SyncRequest request) {
         if (request.sender().equals(self)) {
+            log.debug("Node {} ignoring self-initiated synchronization request", self);
             return;
         }
+
+        log.debug("Node {} is {}active, request {}, max attempts {}, network {} quorum",
+                  self,
+                  active.get() ? "" : "not ",
+                  request,
+                  config.maxSyncAttempts(),
+                  network.quorumConnected() ? "connected" : "not connected");
 
         // Only respond if:
         // - node is active
         // - there are enough nodes and we have reached the maximum number of sync attempts
-        if (active.get() || (syncAttempts.get() >= config.maxSyncAttempts() && network.quorumConnected())) {
-            network.send(request.sender(), new SyncResponse(self, currentPhase.get()));
+        if (active.get() || (request.attempt() >= config.maxSyncAttempts() && network.quorumConnected())) {
+            stateMachine.makeSnapshot()
+                        .onSuccess(snapshot -> {
+                            SyncResponse response = new SyncResponse(self, currentPhase.get(), snapshot);
+                            log.debug("Node {} responds with {}", self, response);
+                            network.send(request.sender(), response);
+                        })
+                        .onFailure(cause -> log.error("Node {} failed to create snapshot: {}", self, cause));
         }
     }
 
@@ -269,21 +323,38 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
      */
     private void handleSyncResponse(SyncResponse response) {
         if (!active.get() && !response.sender().equals(self)) {
+            log.debug("Node {} received synchronization response {}", self, response);
             // Update our current phase if needed
             var responsePhase = response.phase();
             var currentPhase = this.currentPhase.get();
-            
+
             if (responsePhase.compareTo(currentPhase) > 0) {
+                log.debug("Node {} received phase {} from {}. Updating current phase to {}",
+                          self,
+                          responsePhase,
+                          response.sender(),
+                          responsePhase);
                 this.currentPhase.set(responsePhase);
             }
-            
-            // Activate the node if we've received a response
-            active.set(true);
-            
-            // Start a new phase if we have pending commands
-            if (!pendingCommands.isEmpty() && !isInPhase.get()) {
-                executor.execute(this::startPhase);
-            }
+
+            stateMachine.restoreSnapshot(response.snapshot())
+                        .onSuccessRun(() -> {
+                            // Activate the node if we've received a response
+                            active.set(true);
+                            log.info("Node {} activated", self);
+                            // Start a new phase if we have pending commands
+                            if (!pendingCommands.isEmpty() && !isInPhase.get()) {
+                                log.debug("Node {} starting phase {} with pending commands", self, responsePhase);
+                                executor.execute(this::startPhase);
+                            } else {
+                                log.debug("Node {} not starting phase. Pending commands {}, isInPhase {}",
+                                          self,
+                                          pendingCommands.size(),
+                                          isInPhase.get());
+                            }
+                        })
+                        .onFailureRun(() -> log.error("Node {} failed to restore snapshot", self));
+
         }
     }
 
@@ -291,51 +362,70 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
      * Processes the completion of round 2 voting.
      */
     private void processRound2Completion(PhaseData<C> phaseData) {
-        StateValue decisionValue = null;
-        Batch<C> batch = null;
-        
-        // Check for a majority of non-question votes
-        for (var value : List.of(StateValue.V0, StateValue.V1)) {
-            if (countVotesForValue(phaseData.round2Votes, value) >= quorumSize()) {
-                decisionValue = value;
-                break;
-            }
+        // Check if already decided to prevent redundant processing
+        if (!phaseData.hasDecided.compareAndSet(false, true)) {
+            log.debug("Phase {} already decided, skipping.", phaseData.phase);
+            return; // Already decided in a concurrent execution or previous invocation
         }
-        
-        // If no clear majority, check for f+1 votes
-        if (decisionValue == null) {
-            for (var value : List.of(StateValue.V0, StateValue.V1)) {
-                if (countVotesForValue(phaseData.round2Votes, value) >= fPlusOneSize()) {
-                    decisionValue = value;
-                    break;
+
+        StateValue decisionValue;
+        Batch<C> batch = null; // Batch is only relevant for V1 decisions
+
+        // 1. Check for quorum majority for V1
+        if (countVotesForValue(phaseData.round2Votes, StateValue.V1) >= quorumSize()) {
+            decisionValue = StateValue.V1;
+            batch = findAgreedProposal(phaseData); // Need the batch for V1 decision
+            // 2. Check for quorum majority for V0
+        } else if (countVotesForValue(phaseData.round2Votes, StateValue.V0) >= quorumSize()) {
+            decisionValue = StateValue.V0;
+            // 3. Check for f+1 votes for V1 (Paxos-like optimization/condition)
+        } else if (countVotesForValue(phaseData.round2Votes, StateValue.V1) >= fPlusOneSize()) {
+            decisionValue = StateValue.V1;
+            batch = findAgreedProposal(phaseData); // Need the batch for V1 decision
+            // 4. Check for f+1 votes for V0 (Paxos-like optimization/condition)
+        } else if (countVotesForValue(phaseData.round2Votes, StateValue.V0) >= fPlusOneSize()) {
+            decisionValue = StateValue.V0;
+            // 5. Fallback: If none of the above conditions are met, use the coin flip.
+            //    This covers the ambiguous cases (mixed votes, including VQUESTION,
+            //    that don't meet thresholds) and the "all VQUESTION" case implicitly.
+        } else {
+            decisionValue = getCoinFlip(phaseData.phase);
+            // If coin flip is V1, we still need to try and find *an* agreed proposal.
+            // The definition of findAgreedProposal might need review for this case,
+            // but typically it would look for *any* proposal associated with V1 votes
+            // or a default empty batch if none found.
+            if (decisionValue == StateValue.V1) {
+                batch = findAgreedProposal(phaseData);
+                // If findAgreedProposal can return null when no clear proposal exists
+                // even with a V1 decision (e.g., via coin flip), handle it.
+                // Often, a V1 decision without an agreed proposal defaults to an empty batch.
+                if (batch == null) {
+                    log.warn("Phase {}: V1 decision by coin flip, but no agreed proposal found. Using empty batch.",
+                             phaseData.phase);
+                    batch = Batch.empty(); // Assuming Batch has an empty static factory
                 }
             }
         }
-        
-        // If still no decision, but all votes are VQUESTION, use/create a coin flip
-        if (decisionValue == null && allVotesAreQuestion(phaseData.round2Votes)) {
-            decisionValue = getCoinFlip(phaseData.phase);
+
+        // Decision has been made (either by majority, f+1, or coin flip)
+        log.info("Node {} decided phase {} with value {} and batch ID {}",
+                 self, phaseData.phase, decisionValue, (batch != null ? batch.id() : "N/A"));
+
+        // Broadcast the decision
+        // Note: Send the batch only if the decision is V1
+        network.broadcast(new Decision<>(self, phaseData.phase, decisionValue,
+                                         decisionValue == StateValue.V1 ? batch : null));
+
+        // Apply commands to state machine ONLY if it was a V1 decision with a non-empty batch
+        if (decisionValue == StateValue.V1 && batch != null && !batch.commands().isEmpty()) {
+            log.debug("Node {} applying batch {} commands for phase {}", self, batch.id(), phaseData.phase);
+            batch.commands().forEach(stateMachine::process);
+        } else {
+            log.debug("Node {} decided {} for phase {}, no commands to apply.", self, decisionValue, phaseData.phase);
         }
-        
-        // If we have a decision, proceed
-        if (decisionValue != null) {
-            if (decisionValue == StateValue.V1) {
-                // For positive decisions (V1), find the agreed proposal
-                batch = findAgreedProposal(phaseData);
-            }
-            
-            // Broadcast decision
-            phaseData.hasDecided.set(true);
-            network.broadcast(new Decision<>(self, phaseData.phase, decisionValue, batch));
-            
-            // Apply commands to state machine if positive decision
-            if (decisionValue == StateValue.V1 && batch != null) {
-                batch.commands().forEach(stateMachine::process);
-            }
-            
-            // Move to the next phase
-            moveToNextPhase(phaseData.phase);
-        }
+
+        // ALWAYS move to the next phase now that a decision value is determined
+        moveToNextPhase(phaseData.phase);
     }
 
     /**
@@ -345,25 +435,32 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
         var nextPhase = currentPhase.successor();
         this.currentPhase.set(nextPhase);
         isInPhase.set(false);
-        
+
         // If we have more commands to process, start a new phase
         if (!pendingCommands.isEmpty()) {
             executor.execute(this::startPhase);
         }
     }
 
-    /**
-     * Evaluates the initial vote for a phase based on the proposals received.
-     */
     private StateValue evaluateInitialVote(PhaseData<C> phaseData) {
-        // If proposals from a majority of nodes are the same, vote V1
-        if (phaseData.proposals.size() >= quorumSize() && 
-            phaseData.proposals.values().stream().distinct().count() == 1) {
+        // Vote V1 if *any* known proposal for this phase contains actual commands.
+        // Check own proposal first if available, otherwise check any received proposals.
+        Batch<C> ownProposal = phaseData.proposals.get(self);
+        if (ownProposal != null && !ownProposal.commands().isEmpty()) {
             return StateValue.V1;
         }
-        
-        // Otherwise, vote V0
-        return StateValue.V0;
+
+        // If own proposal is empty or doesn't exist, check received proposals
+        boolean anyNonEmptyProposal = phaseData.proposals.values().stream()
+                                                         .anyMatch(batch -> batch != null && !batch.commands()
+                                                                                                   .isEmpty());
+
+        if (anyNonEmptyProposal) {
+            return StateValue.V1;
+        } else {
+            // Vote V0 only if all known proposals (own included, if any) are empty.
+            return StateValue.V0;
+        }
     }
 
     /**
@@ -376,7 +473,7 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
                 return value;
             }
         }
-        
+
         // Otherwise, vote VQUESTION
         return StateValue.VQUESTION;
     }
@@ -396,10 +493,10 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
     private Batch<C> findAgreedProposal(PhaseData<C> phaseData) {
         // If all proposals are the same, return that one
         if (!phaseData.proposals.isEmpty() &&
-            phaseData.proposals.values().stream().distinct().count() == 1) {
+                phaseData.proposals.values().stream().distinct().count() == 1) {
             return phaseData.proposals.values().iterator().next();
         }
-        
+
         // Otherwise, just use our own proposal or an empty one
         return phaseData.proposals.getOrDefault(self, Batch.empty());
     }
