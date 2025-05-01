@@ -1,10 +1,7 @@
 package org.pragmatica.cluster.net.local;
 
 import org.pragmatica.cluster.consensus.ProtocolMessage;
-import org.pragmatica.cluster.net.AddressBook;
-import org.pragmatica.cluster.net.ViewChange;
-import org.pragmatica.cluster.net.ClusterNetwork;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.cluster.net.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -17,6 +14,7 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
     private static final Logger logger = LoggerFactory.getLogger(LocalNetwork.class);
     private final Map<NodeId, Consumer<T>> nodes = new ConcurrentHashMap<>();
     private final AddressBook addressBook;
+    private Consumer<QuorumState> quorumObserver = _ -> {};
 
     public LocalNetwork(AddressBook addressBook) {
         this.addressBook = addressBook;
@@ -30,9 +28,7 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
     @SuppressWarnings("unchecked")
     @Override
     public <M extends ProtocolMessage> void send(NodeId nodeId, M message) {
-        Thread.ofVirtual().start(() -> {
-            nodes.get(nodeId).accept((T) message);
-        });
+        Thread.ofVirtual().start(() -> nodes.get(nodeId).accept((T) message));
     }
 
     @Override
@@ -42,10 +38,13 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
     @Override
     public void disconnect(NodeId nodeId) {
         nodes.remove(nodeId);
+        if (nodes.size() < addressBook.quorumSize() - 1) {
+            quorumObserver.accept(QuorumState.DISAPPEARED);
+        }
     }
 
     @Override
-    public void observeViewChanges(Consumer<ViewChange> observer) {
+    public void observeViewChanges(Consumer<TopologyChange> observer) {
     }
 
     @Override
@@ -67,5 +66,13 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
 
     public void addNode(NodeId nodeId, Consumer<T> listener) {
         nodes.put(nodeId, listener);
+        if (nodes.size() == addressBook.quorumSize()) {
+            quorumObserver.accept(QuorumState.APPEARED);
+        }
+    }
+
+    @Override
+    public void observeQuorumState(Consumer<QuorumState> quorumObserver) {
+        this.quorumObserver = quorumObserver;
     }
 }

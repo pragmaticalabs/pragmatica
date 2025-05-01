@@ -3,6 +3,7 @@ package org.pragmatica.cluster.net;
 import java.net.InetSocketAddress;
 
 // TODO: generalize it???
+/// Network node address. At present TCP/IP address structure is assumed
 public interface NodeAddress {
     String host();
 

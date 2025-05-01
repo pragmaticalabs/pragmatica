@@ -6,6 +6,7 @@ import org.pragmatica.cluster.net.AddressBook;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.net.NodeInfo;
 import org.pragmatica.cluster.net.local.LocalNetwork;
+import org.pragmatica.cluster.net.netty.Serializer;
 import org.pragmatica.cluster.state.Notification;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -22,16 +23,14 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.stream.Stream;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.*;
 
 class RabiaIntegrationTest {
-    /**
-     * A very simple Serializer that uses Java built-in object streams
-     * to encode/decode snapshots of the KVStore.
-     */
-    static class TestSerializer implements org.pragmatica.cluster.net.netty.Serializer {
+    /// A very simple Serializer that uses Java built-in object streams
+    /// to encode/decode snapshots of the KVStore.
+    static class TestSerializer implements Serializer {
         @Override
         public byte[] encode(Object msg) {
             try (var baos = new ByteArrayOutputStream();
@@ -68,9 +67,7 @@ class RabiaIntegrationTest {
         }
     }
 
-    /**
-     * Holds a small Rabia cluster wired over a single LocalNetwork.
-     */
+    /// Holds a small Rabia cluster wired over a single LocalNetwork.
     static class Cluster {
         final LocalNetwork<RabiaProtocolMessage> network;
         final List<NodeId> ids = new ArrayList<>();
@@ -98,7 +95,7 @@ class RabiaIntegrationTest {
 
         void addNewNode(NodeId id) {
             var store = new KVStore<String, String>(serializer);
-            var engine = new RabiaEngine<>(id, addressBook, network, store, RabiaEngineConfig.testConfig());
+            var engine = new RabiaEngine<>(id, addressBook, network, store, ProtocolConfig.testConfig());
             network.addNode(id, engine::processMessage);
             stores.put(id, store);
             engines.put(id, engine);
@@ -116,18 +113,14 @@ class RabiaIntegrationTest {
         }
     }
 
-    /**
-     * Reflectively pull out the private `storage` map from KVStore.
-     */
     private static Map<String, String> readStorage(KVStore<String, String> store) {
         return store.snapshot();
     }
 
     @Test
     void threeNodeCluster_agreesAndPropagates() {
-        Cluster c = new Cluster(3);
+        var c = new Cluster(3);
 
-        // submit on node1
         c.engines.get(c.ids.get(0))
                  .submitCommands(List.of(new KVCommand.Put<>("k1", "v1")));
 
@@ -150,12 +143,12 @@ class RabiaIntegrationTest {
     }
 
     @Test
-    void fiveNodeCluster_withFailures_andSnapshotJoin() throws InterruptedException {
-        Cluster c = new Cluster(5);
+    void fiveNodeCluster_withFailures_andSnapshotJoin() {
+        var c = new Cluster(5);
 
-        // initial entry a->1
         c.engines.get(c.ids.getFirst())
                  .submitCommands(List.of(new KVCommand.Put<>("a", "1")));
+
         Awaitility.await()
                   .atMost(10, TimeUnit.SECONDS)
                   .until(() -> c.stores.values()
@@ -168,6 +161,7 @@ class RabiaIntegrationTest {
         // still quorum on 4 nodes: put b->2
         c.engines.get(c.ids.get(1))
                  .submitCommands(List.of(new KVCommand.Put<>("b", "2")));
+
         Awaitility.await()
                   .atMost(10, TimeUnit.SECONDS)
                   .until(() -> c.ids.subList(1, 5)
@@ -191,19 +185,18 @@ class RabiaIntegrationTest {
         c.disconnect(c.ids.get(2));
         var beforeSize = readStorage(c.stores.get(c.ids.get(3))).size();
 
-        c.engines.get(c.ids.get(3))
-                 .submitCommands(List.of(new KVCommand.Put<>("d", "4")));
+        assertFalse(c.engines.get(c.ids.get(3)).trySubmitCommands(List.of(new KVCommand.Put<>("d", "4"))));
+
         Awaitility.await()
                   .during(Duration.ofSeconds(1))
-                  .atMost(2, TimeUnit.SECONDS)
+                  .atMost(10, TimeUnit.SECONDS)
                   .untilAsserted(() -> assertEquals(beforeSize, readStorage(c.stores.get(c.ids.get(3))).size()));
 
         // bring up node-6 as a replacement
         var node6 = NodeId.create("node-6");
         c.addNewNode(node6);
 
-        Thread.sleep(3000);
-
+        //TODO: reset state machine. so far we have no method for that
         // node-6 should eventually have all values: a,b,c
         Awaitility.await()
                   .atMost(10, TimeUnit.SECONDS)
@@ -220,12 +213,9 @@ class RabiaIntegrationTest {
         c.engines.get(node6)
                  .submitCommands(List.of(new KVCommand.Put<>("e", "5")));
 
-        Thread.sleep(3000);
-
-
-//        Awaitility.await()
-//                  .atMost(10, TimeUnit.SECONDS)
-//                  .until(() -> Stream.of(c.ids.get(3), c.ids.get(4), node6)
-//                                     .allMatch(id -> "5".equals(readStorage(c.stores.get(id)).get("e"))));
+        Awaitility.await()
+                  .atMost(10, TimeUnit.SECONDS)
+                  .until(() -> Stream.of(c.ids.get(3), c.ids.get(4), node6)
+                                     .allMatch(id -> "5".equals(readStorage(c.stores.get(id)).get("e"))));
     }
 }

@@ -30,4 +30,9 @@ public interface StateMachine<T extends Command> {
     ///
     /// @param observer Internal state change observer
     void observeStateChanges(Consumer<? super Notification> observer);
+
+    /// Reset state machine to its initial state
+    default void reset() {
+        // TODO: implement reset method, do not forget to fix the tests.
+    }
 }

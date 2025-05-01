@@ -3,7 +3,7 @@ package org.pragmatica.cluster.net.netty;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandler;
 import org.pragmatica.cluster.consensus.ProtocolMessage;
-import org.pragmatica.cluster.net.ViewChange;
+import org.pragmatica.cluster.net.TopologyChange;
 import org.pragmatica.cluster.net.*;
 import org.pragmatica.lang.Option;
 import org.slf4j.Logger;
@@ -32,8 +32,9 @@ public class NettyClusterNetwork<T extends ProtocolMessage> implements ClusterNe
     private final Supplier<List<ChannelHandler>> handlers;
 
     private Server server;
-    private Option<Consumer<ViewChange>> viewObserver = Option.empty();
+    private Option<Consumer<TopologyChange>> viewObserver = Option.empty();
     private Option<Consumer<T>> messageListener = Option.empty();
+    private Consumer<QuorumState> quorumObserver = _ -> {};
 
     enum ViewChangeOperation {
         ADD, REMOVE, SHUTDOWN
@@ -48,6 +49,11 @@ public class NettyClusterNetwork<T extends ProtocolMessage> implements ClusterNe
                                       new ProtocolMessageHandler<>(this::peerConnected,
                                                                    this::peerDisconnected,
                                                                    this::messageReceived));
+    }
+
+    @Override
+    public void observeQuorumState(Consumer<QuorumState> quorumObserver) {
+        this.quorumObserver = quorumObserver;
     }
 
     @Override
@@ -165,7 +171,7 @@ public class NettyClusterNetwork<T extends ProtocolMessage> implements ClusterNe
     }
 
     @Override
-    public void observeViewChanges(Consumer<ViewChange> observer) {
+    public void observeViewChanges(Consumer<TopologyChange> observer) {
         viewObserver = Option.option(observer);
     }
 
@@ -176,9 +182,22 @@ public class NettyClusterNetwork<T extends ProtocolMessage> implements ClusterNe
 
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
         var viewChange = switch (operation) {
-            case ADD -> ViewChange.nodeAdded(peerId, currentView());
-            case REMOVE -> ViewChange.nodeRemoved(peerId, currentView());
-            case SHUTDOWN -> ViewChange.nodeDown(peerId);
+            case ADD -> {
+                if (peerLinks.size() == addressBook.quorumSize()) {
+                    quorumObserver.accept(QuorumState.APPEARED);
+                }
+                yield TopologyChange.nodeAdded(peerId, currentView());
+            }
+            case REMOVE -> {
+                if (peerLinks.size() == addressBook.quorumSize() - 1) {
+                    quorumObserver.accept(QuorumState.DISAPPEARED);
+                }
+                yield TopologyChange.nodeRemoved(peerId, currentView());
+            }
+            case SHUTDOWN -> {
+                quorumObserver.accept(QuorumState.APPEARED);
+                yield TopologyChange.nodeDown(peerId);
+            }
         };
 
         viewObserver.onPresent(observer -> observer.accept(viewChange));

@@ -5,8 +5,10 @@ import org.pragmatica.cluster.consensus.rabia.RabiaProtocolMessage.*;
 import org.pragmatica.cluster.net.AddressBook;
 import org.pragmatica.cluster.net.ClusterNetwork;
 import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.cluster.net.QuorumState;
 import org.pragmatica.cluster.state.Command;
 import org.pragmatica.cluster.state.StateMachine;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -17,8 +19,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
-
+/// Implementation of the Rabia consensus protocol.
 public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> implements Consensus<T, C> {
     private static final Logger log = LoggerFactory.getLogger(RabiaEngine.class);
 
@@ -26,277 +27,546 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
     private final AddressBook addressBook;
     private final ClusterNetwork<T> network;
     private final StateMachine<C> stateMachine;
-    private final RabiaEngineConfig config;
-
-    private final Queue<Batch<C>> pendingBatches = new ConcurrentLinkedQueue<>();
-    private final Map<Long, RoundData<C>> instances = new ConcurrentHashMap<>();
-    private final Map<NodeId, Long> nodePhases = new ConcurrentHashMap<>();
-    private final Map<Long, StateValue> coinFlips = new ConcurrentHashMap<>();
-
-    private final AtomicLong nextSlot = new AtomicLong(1);
-    private final AtomicLong syncAttempts = new AtomicLong(0);
+    private final ProtocolConfig config;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final Random random = new Random();
+    private final Queue<List<C>> pendingCommands = new ConcurrentLinkedQueue<>();
+    private final Map<NodeId, SyncResponse> syncResponses = new ConcurrentHashMap<>();
 
-    private volatile NodeMode mode = NodeMode.FOLLOWER;
+    //--------------------------------- Node State Start
+    private final Map<Phase, PhaseData<C>> phases = new ConcurrentHashMap<>();
+    private final Map<Phase, StateValue> coinFlips = new ConcurrentHashMap<>();
+    private final AtomicReference<Phase> currentPhase = new AtomicReference<>(Phase.ZERO);
+    private final AtomicBoolean active = new AtomicBoolean(false);
+    private final AtomicBoolean isInPhase = new AtomicBoolean(false);
+    //--------------------------------- Node State End
 
-    enum NodeMode {FOLLOWER, ACTIVE}
-
-    enum VotePhase {ROUND1, ROUND2}
-
-    enum StateValue {V0, V1, VQUESTION}
-
+    /// Creates a new Rabia consensus engine.
+    ///
+    /// @param self         The node ID of this node
+    /// @param addressBook  The address book for node communication
+    /// @param network      The network implementation
+    /// @param stateMachine The state machine to apply commands to
+    /// @param config       Configuration for the consensus engine
     public RabiaEngine(NodeId self,
                        AddressBook addressBook,
                        ClusterNetwork<T> network,
                        StateMachine<C> stateMachine,
-                       RabiaEngineConfig config) {
+                       ProtocolConfig config) {
         this.self = self;
         this.addressBook = addressBook;
         this.network = network;
         this.stateMachine = stateMachine;
         this.config = config;
 
-        SharedScheduler.scheduleAtFixedRate(this::cleanupOldInstances, timeSpan(config.cleanupInterval()).seconds());
-        SharedScheduler.schedule(this::trySynchronize, timeSpan(config.syncRetryInterval()).millis());
+        // Subscribe to network events
+        network.observeQuorumState(this::quorumState);
+        // Setup periodic tasks
+        SharedScheduler.scheduleAtFixedRate(this::cleanupOldPhases, config.cleanupInterval());
+        SharedScheduler.schedule(this::synchronize, config.syncRetryInterval());
     }
 
-    private void trySynchronize() {
-        if (mode == NodeMode.ACTIVE) {
-            return;
+    private void quorumState(QuorumState quorumState) {
+        switch (quorumState) {
+            case APPEARED -> clusterConnected();
+            case DISAPPEARED -> clusterDisconnected();
         }
+    }
 
-        log.info("Node {} requests snapshot", self);
-        network.broadcast(new SnapshotRequest(self));
-        syncAttempts.incrementAndGet();
-        SharedScheduler.schedule(this::trySynchronize, timeSpan(config.syncRetryInterval()).millis());
+    private void clusterConnected() {
+        // Start synchronization attempts
+        // TODO: restore persisted state if available
+        SharedScheduler.schedule(this::synchronize, randomize(config.syncRetryInterval()));
+    }
+
+    private void clusterDisconnected() {
+        if (active.compareAndSet(true, false)) {
+            //TODO: Persist state machine state and last committed phase
+            phases.clear();
+            coinFlips.clear();
+            currentPhase.set(Phase.ZERO);
+            active.set(false);
+            isInPhase.set(false);
+            stateMachine.reset();
+        }
+    }
+
+    private boolean nodeIsDormant() {
+        return !active.get() || !network.quorumConnected();
+    }
+
+    private TimeSpan randomize(TimeSpan timeSpan) {
+        var nanos = timeSpan.nanos() + timeSpan.nanos() * (random.nextDouble() - 0.5d);
+
+        return TimeSpan.timeSpan((long) nanos).nanos();
     }
 
     @Override
-    public boolean submitCommands(List<C> commands) {
-        var batch = Batch.create(commands);
-        pendingBatches.add(batch);
+    public boolean trySubmitCommands(List<C> commands) {
+        if (commands.isEmpty() || nodeIsDormant()) {
+            return false;
+        }
 
-        log.info("Node {} received batch {}", self, pendingBatches.peek());
+        log.trace("Node {} received commands batch with {} commands", self, commands.size());
+        pendingCommands.add(commands);
 
-        if (mode == NodeMode.ACTIVE) {
-            executor.execute(this::startRound);
+        if (!isInPhase.get()) {
+            executor.execute(this::startPhase);
         }
         return true;
-    }
-
-    private void startRound() {
-        var slot = nextSlot.get();
-
-        if (instances.containsKey(slot)) {
-            return;
-        }
-
-        var batch = pendingBatches.poll();
-
-        if (batch == null) {
-            return;
-        }
-
-        log.info("Node {} starts round {} with batch {}", self, slot, batch);
-
-        instances.put(slot, RoundData.create(slot, batch));
-        network.broadcast(new Propose<>(self, slot, batch));
     }
 
     @Override
     @SuppressWarnings("unchecked")
     public void processMessage(RabiaProtocolMessage message) {
         executor.execute(() -> {
-            switch (message) {
-                case Propose<?> propose -> onPropose((Propose<C>) propose);
-                case Vote vote -> onVote(vote);
-                case Decide<?> decide -> onDecide((Decide<C>) decide);
-                case SnapshotRequest snapshotRequest -> onSnapshotRequest(snapshotRequest);
-                case SnapshotResponse snapshotResponse -> onSnapshotResponse(snapshotResponse);
+            try {
+                switch (message) {
+                    case Propose<?> propose -> handlePropose((Propose<C>) propose);
+                    case VoteRound1 voteRnd1 -> handleVoteRound1(voteRnd1);
+                    case VoteRound2 voteRnd2 -> handleVoteRound2(voteRnd2);
+                    case Decision<?> decision -> handleDecision((Decision<C>) decision);
+                    case SyncRequest syncRequest -> handleSyncRequest(syncRequest);
+                    case SyncResponse syncResponse -> handleSyncResponse(syncResponse);
+                    default -> log.warn("Unknown message type: {}", message.getClass().getSimpleName());
+                }
+            } catch (Exception e) {
+                // Unlikely anything like that will happen, but better safe than sorry
+                log.error("Error processing message: {}", message, e);
             }
         });
     }
 
-    private void onPropose(Propose<C> msg) {
-        log.info("Node {} received proposal for slot {} with batch {}", self, msg.slot(), msg.batch());
-
-        var instance = instances.computeIfAbsent(msg.slot(), s -> RoundData.create(s, msg.batch()));
-
-        instance.proposals.put(msg.sender(), msg.batch());
-
-        nodePhases.merge(msg.sender(),
-                         msg.slot(),
-                         (oldPhase, newPhase) -> oldPhase.equals(newPhase) ? oldPhase : throwPhaseError());
-
-        if (instance.phase.get() == VotePhase.ROUND1 && !instance.voted.get()) {
-            var value = evaluateConsensusState(instance);
-            network.broadcast(new Vote(self, msg.slot(), mapStateToBatchId(value, instance.batch), true));
-            instance.voted.set(true);
-        }
-    }
-
-    private void onVote(Vote msg) {
-        log.info("Node {} received vote from {} for slot {} with batch {} and match {}",
-                 self,
-                 msg.sender(),
-                 msg.slot(),
-                 msg.batchId(),
-                 msg.match());
-        var instance = instances.get(msg.slot());
-
-        if (instance == null || instance.decided.get()) {
-            log.info("Node {} ignores vote for slot {} with batch {} and match {}",
-                     self,
-                     msg.slot(),
-                     msg.batchId(),
-                     msg.match());
+    /// Starts a new phase with pending commands.
+    private void startPhase() {
+        if (isInPhase.get() || pendingCommands.isEmpty()) {
             return;
         }
 
-        instance.addVote(msg.batchId(), msg.match());
+        var phase = currentPhase.get();
+        var batch = Batch.create(pendingCommands.poll());
 
-        if (instance.phase.get() == VotePhase.ROUND1) {
-            handleRound1Vote(instance);
-        } else {
-            handleRound2Vote(instance);
-        }
+        log.trace("Node {} starting phase {} with batch {}", self, phase, batch.id());
+
+        // Initialize phase data
+        var phaseData = getOrCreatePhaseData(phase);
+        phaseData.proposals.put(self, batch);
+
+        // Mark that we're in a phase now
+        isInPhase.set(true);
+
+        // Send initial batch
+        network.broadcast(new Propose<>(self, phase, batch));
+
+        // Vote in round 1
+        var vote = evaluateInitialVote(phaseData);
+        network.broadcast(new VoteRound1(self, phase, vote));
+        phaseData.round1Votes.put(self, vote);
     }
 
-    private void handleRound1Vote(RoundData<C> instance) {
-        if (instance.hasMajorityPositive()) {
-            instance.phase.set(VotePhase.ROUND2);
-            instance.voted.set(false);
-            instance.votes.clear();
-        } else if (instance.hasMajorityNegative()) {
-            decide(instance, Batch.create(List.of()));
-        }
-    }
-
-    private void handleRound2Vote(RoundData<C> instance) {
-        if (instance.hasMajorityPositive()) {
-            decide(instance, instance.batch);
-        } else if (instance.hasMajorityNegative()) {
-            decide(instance, Batch.create(List.of()));
-        } else if (instance.allVotesVQuestion() && !coinFlips.containsKey(instance.slot)) {
-            var coin = generateCoin(instance.slot);
-            coinFlips.put(instance.slot, coin);
-            network.broadcast(new Vote(self, instance.slot, mapStateToBatchId(coin, instance.batch), true));
-        }
-    }
-
-    private void onDecide(Decide<C> msg) {
-        var instance = instances.computeIfAbsent(msg.slot(), s -> RoundData.create(s, msg.batch()));
-        decide(instance, msg.batch());
-    }
-
-    private void decide(RoundData<C> instance, Batch<C> batch) {
-        if (instance.decided.compareAndSet(false, true)) {
-            log.info("Node {} decides slot {} with batch {}", self, instance.slot, batch);
-            batch.commands().forEach(stateMachine::process);
-            network.broadcast(new Decide<>(self, instance.slot, batch));
-            nextSlot.incrementAndGet();
-            startRound();
-        }
-    }
-
-    private void onSnapshotRequest(SnapshotRequest request) {
-        if (request.sender().equals(self)) {
-            return;
-        }
-        if (mode != NodeMode.ACTIVE && (syncAttempts.get() <= config.maxSyncAttempts() || !network.quorumConnected())) {
+    /// Synchronizes with other nodes to catch up if needed.
+    private void synchronize() {
+        if (active.get()) {
             return;
         }
 
-        stateMachine.makeSnapshot()
-                    .onSuccess(snapshot -> network.send(request.sender(),
-                                                        new SnapshotResponse(self, snapshot, nextSlot.get())));
+        var request = new SyncRequest(self);
+        log.trace("Node {} requesting phase synchronization {}", self, request);
+        network.broadcast(request);
+
+        // Schedule next synchronization attempt
+        SharedScheduler.schedule(this::synchronize, randomize(config.syncRetryInterval()));
     }
 
-    private void onSnapshotResponse(SnapshotResponse response) {
-        if (mode == NodeMode.ACTIVE || response.sender().equals(self) || response.slot() < nextSlot.get()) {
+    /// Handles a synchronization response from another node.
+    private void handleSyncResponse(SyncResponse response) {
+        if (active.get()) {
+            log.trace("Node {} ignoring synchronization response {}. Node is active.", self, response);
             return;
         }
 
+        syncResponses.put(response.sender(), response);
+
+        if (syncResponses.size() < quorumSize()) {
+            log.trace("Node {} received {} responses, not enough to proceed", self, syncResponses.size());
+            return;
+        }
+
+        syncResponses.values()
+                     .stream()
+                     .max(Comparator.comparing(SyncResponse::phase))
+                     .ifPresent(this::tryActivateNode);
+    }
+
+    /// Try restoring snapshot and if everything is fine - activate node
+    private void tryActivateNode(SyncResponse response) {
         stateMachine.restoreSnapshot(response.snapshot())
-                    .onSuccessRun(() -> {
-                        mode = NodeMode.ACTIVE;
-                        nextSlot.set(response.slot());
-                        startRound();
-                    });
+                    .map(() -> response)
+                    .onSuccess(this::activate)
+                    .onFailure(cause -> log.error("Node {} failed to restore snapshot: {}", self, cause));
     }
 
-    private void cleanupOldInstances() {
-        var currentSlot = nextSlot.get();
-        instances.keySet().removeIf(slot -> slot < currentSlot - config.removeOlderThan());
+    /// Activate node and adjust phase, if necessary.
+    private void activate(SyncResponse response) {
+        active.set(true);
+        syncResponses.clear();
+
+        if (response.phase().compareTo(currentPhase.get()) > 0) {
+            currentPhase.set(response.phase());
+        }
+
+        log.trace("Node {} activated in phase {}", self, currentPhase.get());
+        executor.execute(this::startPhase);
     }
 
-    private StateValue evaluateConsensusState(RoundData<C> instance) {
-        if (instance.proposals.values().stream().distinct().count() == 1) {
+    /// Handles a synchronization request from another node.
+    private void handleSyncRequest(SyncRequest request) {
+        stateMachine.makeSnapshot()
+                    .onSuccess(snapshot -> sendSyncResponse(request, snapshot))
+                    .onFailure(cause -> log.error("Node {} failed to create snapshot: {}", self, cause));
+    }
+
+    private void sendSyncResponse(SyncRequest request, byte[] snapshot) {
+        var response = new SyncResponse(self, currentPhase.get(), snapshot);
+        network.send(request.sender(), response);
+        log.trace("Node {} responded with {}", self, response);
+    }
+
+    /// Cleans up old phase data to prevent memory leaks.
+    private void cleanupOldPhases() {
+        if (nodeIsDormant()) {
+            return;
+        }
+
+        var current = currentPhase.get();
+
+        phases.keySet()
+              .removeIf(phase -> isExpiredPhase(phase, current));
+    }
+
+    private boolean isExpiredPhase(Phase phase, Phase current) {
+        return phase.compareTo(current) < 0
+                && current.value() - phase.value() > config.removeOlderThanPhases();
+    }
+
+    /// Handles a Propose message from another node.
+    private void handlePropose(Propose<C> propose) {
+        if (nodeIsDormant()) {
+            log.warn("Node {} ignores proposal {}. Node is dormant.", self, propose);
+            return;
+        }
+
+        log.trace("Node {} received proposal from {} for phase {}", self, propose.sender(), propose.phase());
+
+        var currentPhaseValue = currentPhase.get();
+        // Ignore proposals for past phases
+        if (propose.phase().compareTo(currentPhaseValue) < 0) {
+            log.trace("Node {} ignoring proposal for past phase {}", self, propose.phase());
+            return;
+        }
+
+        // Potentially add check for proposals too far in the future
+        var phaseData = getOrCreatePhaseData(propose.phase());
+
+        // Ensure the phase state is correct. If we receive a proposal for the current
+        // phase value but aren't "in" it, enter it now.
+        // This assumes the currentPhaseValue is correctly managed by sync/moveToNextPhase
+        if (propose.phase().equals(currentPhaseValue) && !isInPhase.get() && active.get()) {
+            log.debug("Node {} entering phase {} triggered by proposal from {}",
+                      self,
+                      propose.phase(),
+                      propose.sender());
+            isInPhase.set(true);
+            // If this node has pending commands, it might need to propose too,
+            // but let's handle that separately if needed.
+        }
+
+        // Store the proposal *after* potential phase transition
+        // Use computeIfAbsent to avoid overwriting if multiple proposals are allowed per sender (though unlikely needed)
+        phaseData.proposals.putIfAbsent(propose.sender(), propose.value());
+
+        // If we are active, now in this phase, and haven't voted R1 yet... Vote!
+        if (active.get() &&
+                isInPhase.get() && // Should be true now if phase matches currentPhaseValue
+                currentPhase.get().equals(propose.phase()) &&
+                !phaseData.round1Votes.containsKey(self)) {
+
+            // Call the (modified) evaluateInitialVote and broadcast R1 vote
+            var vote = evaluateInitialVote(phaseData);
+            log.trace("Node {} broadcasting R1 vote {} for phase {} based on received proposal from {}",
+                      self,
+                      vote,
+                      propose.phase(),
+                      propose.sender());
+            network.broadcast(new VoteRound1(self, propose.phase(), vote));
+            phaseData.round1Votes.put(self, vote); // Record our own vote
+        } else {
+            log.trace(
+                    "Node {} conditions not met to vote R1 on proposal from {} for phase {}. Active: {}, InPhase: {}, CurrentPhase: {}, HasVotedR1: {}",
+                    self,
+                    propose.sender(),
+                    propose.phase(),
+                    active.get(),
+                    isInPhase.get(),
+                    currentPhase.get(),
+                    phaseData.round1Votes.containsKey(self));
+        }
+    }
+
+    /// Handles a round 1 vote from another node.
+    private void handleVoteRound1(VoteRound1 vote) {
+        if (nodeIsDormant()) {
+            log.warn("Node {} ignores vote1 {}. Node is dormant.", self, vote);
+            return;
+        }
+
+        log.trace("Node {} received round 1 vote from {} for phase {} with value {}",
+                  self, vote.sender(), vote.phase(), vote.stateValue());
+
+        var phaseData = getOrCreatePhaseData(vote.phase());
+        phaseData.round1Votes.put(vote.sender(), vote.stateValue());
+
+        // If we're active and in this phase, check if we can proceed to round 2
+        if (active.get()
+                && isInPhase.get()
+                && currentPhase.get().equals(vote.phase())
+                && !phaseData.round2Votes.containsKey(self)) {
+
+            if (hasRound1MajorityVotes(phaseData)) {
+                var round2Vote = evaluateRound2Vote(phaseData);
+                network.broadcast(new VoteRound2(self, vote.phase(), round2Vote));
+                phaseData.round2Votes.put(self, round2Vote);
+            }
+        }
+    }
+
+    /// Handles a round 2 vote from another node.
+    private void handleVoteRound2(VoteRound2 vote) {
+        if (nodeIsDormant()) {
+            log.warn("Node {} ignores vote2 {}. Node is dormant.", self, vote);
+            return;
+        }
+
+        log.trace("Node {} received round 2 vote from {} for phase {} with value {}",
+                  self, vote.sender(), vote.phase(), vote.stateValue());
+
+        var phaseData = getOrCreatePhaseData(vote.phase());
+        phaseData.round2Votes.put(vote.sender(), vote.stateValue());
+
+        // If we're active and in this phase, check if we can make a decision
+        if (active.get()
+                && isInPhase.get()
+                && currentPhase.get().equals(vote.phase())
+                && !phaseData.hasDecided.get()) {
+
+            if (hasRound2MajorityVotes(phaseData)) {
+                processRound2Completion(phaseData);
+            }
+        }
+    }
+
+    /// Handles a decision message from another node.
+    private void handleDecision(Decision<C> decision) {
+        if (nodeIsDormant()) {
+            log.warn("Node {} ignores decision {}. Node is dormant.", self, decision);
+            return;
+        }
+
+        log.trace("Node {} received decision from {} for phase {} with value {} and proposal {}",
+                  self, decision.sender(), decision.phase(), decision.stateValue(),
+                  decision.value() != null ? decision.value().id() : "null");
+
+        var phaseData = getOrCreatePhaseData(decision.phase());
+
+        if (phaseData.hasDecided.compareAndSet(false, true)) {
+            // Apply commands to the state machine if the decision is positive
+            if (decision.stateValue() == StateValue.V1 && decision.value() != null) {
+                decision.value().commands().forEach(stateMachine::process);
+            }
+
+            // Move to the next phase
+            moveToNextPhase(decision.phase());
+        }
+    }
+
+    /// Processes the completion of round 2 voting.
+    private void processRound2Completion(PhaseData<C> phaseData) {
+        // Check if already decided to prevent redundant processing
+        if (!phaseData.hasDecided.compareAndSet(false, true)) {
+            log.trace("Phase {} already decided, skipping.", phaseData.phase);
+            return; // Already decided in a concurrent execution or previous invocation
+        }
+
+        StateValue decisionValue;
+        Batch<C> batch = null; // Batch is only relevant for V1 decisions
+
+        // 1. Check for a quorum majority for V1
+        if (countVotesForValue(phaseData.round2Votes, StateValue.V1) >= quorumSize()) {
+            decisionValue = StateValue.V1;
+            batch = findAgreedProposal(phaseData); // Need the batch for V1 decision
+            // 2. Check for the quorum majority for V0
+        } else if (countVotesForValue(phaseData.round2Votes, StateValue.V0) >= quorumSize()) {
+            decisionValue = StateValue.V0;
+            // 3. Check for f+1 votes for V1 (Paxos-like optimization/condition)
+        } else if (countVotesForValue(phaseData.round2Votes, StateValue.V1) >= fPlusOneSize()) {
+            decisionValue = StateValue.V1;
+            batch = findAgreedProposal(phaseData); // Need the batch for V1 decision
+            // 4. Check for f+1 votes for V0 (Paxos-like optimization/condition)
+        } else if (countVotesForValue(phaseData.round2Votes, StateValue.V0) >= fPlusOneSize()) {
+            decisionValue = StateValue.V0;
+            // 5. Fallback: If none of the above conditions are met, use the coin flip.
+            //    This covers the ambiguous cases (mixed votes, including VQUESTION,
+            //    that don't meet thresholds) and the "all VQUESTION" case implicitly.
+        } else {
+            decisionValue = getCoinFlip(phaseData.phase);
+            // If coin flip is V1, we still need to try and find *an* agreed proposal.
+            // The definition of findAgreedProposal might need review for this case,
+            // but typically it would look for *any* proposal associated with V1 votes
+            // or a default empty batch if none is found.
+            if (decisionValue == StateValue.V1) {
+                batch = findAgreedProposal(phaseData);
+                // If findAgreedProposal can return null when no clear proposal exists
+                // even with a V1 decision (e.g., via coin flip), handle it.
+                // Often, a V1 decision without an agreed proposal defaults to an empty batch.
+                if (batch == null) {
+                    log.warn("Phase {}: V1 decision by coin flip, but no agreed proposal found. Using empty batch.",
+                             phaseData.phase);
+                    batch = Batch.empty(); // Assuming Batch has an empty static factory
+                }
+            }
+        }
+
+        // Decision has been made (either by majority, f+1, or coin flip)
+        log.trace("Node {} decided phase {} with value {} and batch ID {}",
+                  self, phaseData.phase, decisionValue, (batch != null ? batch.id() : "N/A"));
+
+        // Broadcast the decision
+        // Note: Send the batch only if the decision is V1
+        network.broadcast(new Decision<>(self, phaseData.phase, decisionValue,
+                                         decisionValue == StateValue.V1 ? batch : null));
+
+        // Apply commands to state machine ONLY if it was a V1 decision with a non-empty batch
+        if (decisionValue == StateValue.V1 && batch != null && !batch.commands().isEmpty()) {
+            log.trace("Node {} applying batch {} commands for phase {}", self, batch.id(), phaseData.phase);
+            // TODO: store more detailed information about the batch in the decision?
+            batch.commands().forEach(stateMachine::process);
+        } else {
+            log.trace("Node {} decided {} for phase {}, no commands to apply.", self, decisionValue, phaseData.phase);
+        }
+
+        // ALWAYS move to the next phase now that a decision value is determined
+        moveToNextPhase(phaseData.phase);
+    }
+
+    /// Moves to the next phase after a decision.
+    private void moveToNextPhase(Phase currentPhase) {
+        var nextPhase = currentPhase.successor();
+        this.currentPhase.set(nextPhase);
+        isInPhase.set(false);
+
+        log.trace("Node {} moving to phase {}", self, nextPhase);
+
+        // If we have more commands to process, start a new phase
+        if (!pendingCommands.isEmpty()) {
+            executor.execute(this::startPhase);
+        }
+    }
+
+    private StateValue evaluateInitialVote(PhaseData<C> phaseData) {
+        // Vote V1 if *any* known proposal for this phase contains actual commands.
+        // Check our own proposal first if available, otherwise check any received proposals.
+        var ownProposal = phaseData.proposals.get(self);
+
+        if (ownProposal != null && !ownProposal.commands().isEmpty()) {
             return StateValue.V1;
         }
-        if (instance.proposals.isEmpty()) {
-            return StateValue.VQUESTION;
+
+        // If our own proposal is empty or doesn't exist, check received proposals
+        boolean anyNonEmptyProposal = phaseData.proposals.values()
+                                                         .stream()
+                                                         .anyMatch(batch -> batch != null
+                                                                 && !batch.commands().isEmpty());
+
+        // Vote V0 only if all known proposals (own included, if any) are empty.
+        return anyNonEmptyProposal ? StateValue.V1 : StateValue.V0;
+    }
+
+    /// Evaluates the round 2 vote based on round 1 vote count.
+    private StateValue evaluateRound2Vote(PhaseData<C> phaseData) {
+        // If a majority voted for the same value in round 1, vote that value
+        for (var value : List.of(StateValue.V0, StateValue.V1)) {
+            if (countVotesForValue(phaseData.round1Votes, value) >= quorumSize()) {
+                return value;
+            }
         }
-        return StateValue.V0;
+
+        // Otherwise, vote VQUESTION
+        return StateValue.VQUESTION;
     }
 
-    private BatchId mapStateToBatchId(StateValue value, Batch<C> fallbackBatch) {
-        return switch (value) {
-            case V1 -> fallbackBatch.id();
-            case V0 -> BatchId.create("V0");
-            case VQUESTION -> BatchId.create("VQUESTION");
-        };
+    /// Gets a coin flip value for a phase, creating one if needed.
+    private StateValue getCoinFlip(Phase phase) {
+        return coinFlips.computeIfAbsent(phase, this::calculateCoinFlip);
     }
 
-    private StateValue generateCoin(long slot) {
-        var seed = slot ^ self.id().hashCode();
+    /// Simple deterministic coin flip based on phase and node id
+    private StateValue calculateCoinFlip(Phase phase1) {
+        long seed = phase1.value() ^ self.id().hashCode();
         return (Math.abs(seed) % 2 == 0) ? StateValue.V0 : StateValue.V1;
     }
 
-    private Long throwPhaseError() {
-        throw new IllegalStateException("Node appears in multiple phases simultaneously");
+    /// Finds the agreed proposal when a V1 decision is made.
+    private Batch<C> findAgreedProposal(PhaseData<C> phaseData) {
+        // If all proposals are the same, return that one
+        if (!phaseData.proposals.isEmpty()
+                && phaseData.proposals.values().stream().distinct().count() == 1) {
+            return phaseData.proposals.values().iterator().next();
+        }
+
+        // Otherwise, just use our own proposal or an empty one
+        return phaseData.proposals.getOrDefault(self, Batch.empty());
     }
 
-    record RoundData<C extends Command>(long slot,
-                                        Batch<C> batch,
-                                        Map<NodeId, Batch<C>> proposals,
-                                        Map<BatchId, Map<Boolean, Integer>> votes,
-                                        AtomicBoolean voted,
-                                        AtomicBoolean decided,
-                                        AtomicReference<VotePhase> phase) {
+    /// Checks if we have a majority of votes in round 1.
+    private boolean hasRound1MajorityVotes(PhaseData<C> phaseData) {
+        return phaseData.round1Votes.size() >= quorumSize();
+    }
 
-        static <C extends Command> RoundData<C> create(long slot, Batch<C> batch) {
-            return new RoundData<>(slot,
-                                   batch,
-                                   new ConcurrentHashMap<>(),
-                                   new ConcurrentHashMap<>(),
-                                   new AtomicBoolean(false),
-                                   new AtomicBoolean(false),
-                                   new AtomicReference<>(VotePhase.ROUND1));
-        }
+    /// Checks if we have a majority of votes in round 2.
+    private boolean hasRound2MajorityVotes(PhaseData<C> phaseData) {
+        return phaseData.round2Votes.size() >= quorumSize();
+    }
 
-        void addVote(BatchId batchId, boolean match) {
-            votes.computeIfAbsent(batchId, _ -> new ConcurrentHashMap<>()).merge(match, 1, Integer::sum);
-        }
+    /// Counts votes for a specific value.
+    private int countVotesForValue(Map<NodeId, StateValue> votes, StateValue value) {
+        return (int) votes.values().stream().filter(v -> v == value).count();
+    }
 
-        boolean hasMajorityPositive() {
-            return votes.values()
-                        .stream()
-                        .anyMatch(map -> map.getOrDefault(true, 0) >= quorum());
-        }
+    /// Gets the quorum size (majority) for the cluster.
+    private int quorumSize() {
+        return addressBook.quorumSize();
+    }
 
-        boolean hasMajorityNegative() {
-            return votes.values()
-                        .stream()
-                        .anyMatch(map -> map.getOrDefault(false, 0) >= quorum());
-        }
+    /// Gets the f+1 size for the cluster (where f is the maximum number of failures).
+    private int fPlusOneSize() {
+        return (addressBook.clusterSize() - quorumSize()) + 1;
+    }
 
-        boolean allVotesVQuestion() {
-            return votes.keySet().stream().allMatch(id -> id.id().equals("VQUESTION"));
-        }
+    /// Gets or creates phase data for a specific phase.
+    private PhaseData<C> getOrCreatePhaseData(Phase phase) {
+        return phases.computeIfAbsent(phase, PhaseData::new);
+    }
 
-        private int quorum() {
-            return (batch.commands().size() / 2) + 1;
+    /// Data structure to hold all state related to a specific phase.
+    private static class PhaseData<C extends Command> {
+        final Phase phase;
+        final Map<NodeId, Batch<C>> proposals = new ConcurrentHashMap<>();
+        final Map<NodeId, StateValue> round1Votes = new ConcurrentHashMap<>();
+        final Map<NodeId, StateValue> round2Votes = new ConcurrentHashMap<>();
+        final AtomicBoolean hasDecided = new AtomicBoolean(false);
+
+        PhaseData(Phase phase) {
+            this.phase = phase;
         }
     }
 }

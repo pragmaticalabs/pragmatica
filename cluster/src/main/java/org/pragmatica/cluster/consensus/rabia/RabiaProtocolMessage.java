@@ -4,16 +4,33 @@ import org.pragmatica.cluster.consensus.ProtocolMessage;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.state.Command;
 
+/// Message types for the Rabia consensus protocol.
 public sealed interface RabiaProtocolMessage extends ProtocolMessage {
     NodeId sender();
 
-    record Propose<C extends Command>(NodeId sender, long slot, Batch<C> batch) implements RabiaProtocolMessage {}
+    /// Initial proposal from a node.
+    record Propose<C extends Command>(NodeId sender, Phase phase, Batch<C> value)
+            implements RabiaProtocolMessage {}
 
-    record Vote(NodeId sender, long slot, BatchId batchId, boolean match) implements RabiaProtocolMessage {}
+    /// Round 1 vote message.
+    record VoteRound1(NodeId sender, Phase phase, StateValue stateValue)
+            implements RabiaProtocolMessage {}
 
-    record Decide<C extends Command>(NodeId sender, long slot, Batch<C> batch) implements RabiaProtocolMessage {}
+    /// Round 2 vote message.
+    record VoteRound2(NodeId sender, Phase phase, StateValue stateValue)
+            implements RabiaProtocolMessage {}
 
-    record SnapshotRequest(NodeId sender) implements RabiaProtocolMessage {}
+    /// Decision broadcast message.
+    record Decision<C extends Command>(
+            NodeId sender, 
+            Phase phase, 
+            StateValue stateValue,
+            Batch<C> value)
+            implements RabiaProtocolMessage {}
 
-    record SnapshotResponse(NodeId sender, byte[] snapshot, long slot) implements RabiaProtocolMessage {}
+    /// Phase synchronization request.
+    record SyncRequest(NodeId sender) implements RabiaProtocolMessage {}
+
+    /// Phase synchronization response.
+    record SyncResponse(NodeId sender, Phase phase, byte[] snapshot) implements RabiaProtocolMessage {}
 }

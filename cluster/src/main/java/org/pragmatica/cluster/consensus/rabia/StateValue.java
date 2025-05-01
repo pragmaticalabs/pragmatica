@@ -1,8 +1,6 @@
-package org.pragmatica.cluster.consensus.weakmvc;
+package org.pragmatica.cluster.consensus.rabia;
 
-/**
- * Represents the state values defined in the Weak MVC protocol (v0, v1, vquestion).
- */
+/// Represents the state values defined in the Rabia protocol (v0, v1, vquestion).
 public enum StateValue {
     /// Negative vote (no agreement).
     V0,
