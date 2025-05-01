@@ -7,5 +7,5 @@ import java.util.List;
 public interface Consensus<T extends ProtocolMessage, C extends Command> {
     void processMessage(T message);
 
-    void submitCommands(List<C> commands);
+    boolean submitCommands(List<C> commands);
 }

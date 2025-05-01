@@ -16,7 +16,6 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -73,7 +72,7 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
     }
 
     @Override
-    public void submitCommands(List<C> commands) {
+    public boolean submitCommands(List<C> commands) {
         var batch = Batch.create(commands);
         pendingBatches.add(batch);
 
@@ -82,6 +81,7 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
         if (mode == NodeMode.ACTIVE) {
             executor.execute(this::startRound);
         }
+        return true;
     }
 
     private void startRound() {

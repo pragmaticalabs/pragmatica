@@ -19,13 +19,13 @@ public sealed interface WeakMVCProtocolMessage extends ProtocolMessage {
     /**
      * Round 1 vote message.
      */
-    record VoteRound1<C extends Command>(NodeId sender, Phase phase, StateValue stateValue) 
+    record VoteRound1(NodeId sender, Phase phase, StateValue stateValue)
             implements WeakMVCProtocolMessage {}
 
     /**
      * Round 2 vote message.
      */
-    record VoteRound2<C extends Command>(NodeId sender, Phase phase, StateValue stateValue) 
+    record VoteRound2(NodeId sender, Phase phase, StateValue stateValue)
             implements WeakMVCProtocolMessage {}
 
     /**
@@ -46,5 +46,5 @@ public sealed interface WeakMVCProtocolMessage extends ProtocolMessage {
     /**
      * Phase synchronization response.
      */
-    record SyncResponse(NodeId sender, Phase phase, byte[] snapshot) implements WeakMVCProtocolMessage {}
+    record SyncResponse(NodeId sender, Phase phase, boolean inPhase, byte[] snapshot) implements WeakMVCProtocolMessage {}
 }

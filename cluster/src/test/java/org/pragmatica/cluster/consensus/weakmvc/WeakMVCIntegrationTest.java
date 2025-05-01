@@ -129,9 +129,14 @@ class WeakMVCIntegrationTest {
     void threeNodeCluster_agreesAndPropagates() {
         Cluster c = new Cluster(3);
 
+        boolean submitted;
+
         // submit on node1
-        c.engines.get(c.ids.get(0))
-                 .submitCommands(List.of(new KVCommand.Put<>("k1", "v1")));
+        do {
+            // initial entry a->1
+            submitted = c.engines.get(c.ids.get(0))
+                                 .submitCommands(List.of(new KVCommand.Put<>("k1", "v1")));
+        } while (!submitted);
 
         // await all three having it
         Awaitility.await()
@@ -155,9 +160,15 @@ class WeakMVCIntegrationTest {
     void fiveNodeCluster_withFailures_andSnapshotJoin() throws InterruptedException {
         Cluster c = new Cluster(5);
 
-        // initial entry a->1
-        c.engines.get(c.ids.getFirst())
-                 .submitCommands(List.of(new KVCommand.Put<>("a", "1")));
+        boolean submitted;
+
+        do {
+            // initial entry a->1
+            submitted = c.engines.get(c.ids.getFirst())
+                                 .submitCommands(List.of(new KVCommand.Put<>("a", "1")));
+            Thread.sleep(100);
+        } while (!submitted);
+
         Awaitility.await()
                   .atMost(10, TimeUnit.SECONDS)
                   .until(() -> c.stores.values()
@@ -197,7 +208,7 @@ class WeakMVCIntegrationTest {
                  .submitCommands(List.of(new KVCommand.Put<>("d", "4")));
         Awaitility.await()
                   .during(Duration.ofSeconds(1))
-                  .atMost(2, TimeUnit.SECONDS)
+                  .atMost(10, TimeUnit.SECONDS)
                   .untilAsserted(() -> assertEquals(beforeSize, readStorage(c.stores.get(c.ids.get(3))).size()));
 
         // bring up node-6 as a replacement

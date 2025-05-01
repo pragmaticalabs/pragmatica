@@ -11,13 +11,16 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
-
-import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
  * Implementation of the Weak MVC consensus protocol.
@@ -66,18 +69,23 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
         SharedScheduler.schedule(this::synchronize, config.syncRetryInterval());
     }
 
+    private boolean nodeIsDormant() {
+        return !network.quorumConnected() || !active.get();
+    }
+
     @Override
-    public void submitCommands(List<C> commands) {
-        if (commands.isEmpty()) {
-            return;
+    public boolean submitCommands(List<C> commands) {
+        if (commands.isEmpty() || nodeIsDormant()) {
+            return false;
         }
 
         log.info("Node {} received commands batch with {} commands", self, commands.size());
         pendingCommands.add(commands);
 
-        if (active.get() && !isInPhase.get()) {
+        if (!isInPhase.get()) {
             executor.execute(this::startPhase);
         }
+        return true;
     }
 
     @Override
@@ -87,8 +95,8 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
             try {
                 switch (message) {
                     case Propose<?> propose -> handlePropose((Propose<C>) propose);
-                    case VoteRound1<?> voteRnd1 -> handleVoteRound1((VoteRound1<C>) voteRnd1);
-                    case VoteRound2<?> voteRnd2 -> handleVoteRound2((VoteRound2<C>) voteRnd2);
+                    case VoteRound1 voteRnd1 -> handleVoteRound1(voteRnd1);
+                    case VoteRound2 voteRnd2 -> handleVoteRound2(voteRnd2);
                     case Decision<?> decision -> handleDecision((Decision<C>) decision);
                     case SyncRequest syncRequest -> handleSyncRequest(syncRequest);
                     case SyncResponse syncResponse -> handleSyncResponse(syncResponse);
@@ -125,7 +133,7 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
 
         // Vote in round 1
         var vote = evaluateInitialVote(phaseData);
-        network.broadcast(new VoteRound1<>(self, phase, vote));
+        network.broadcast(new VoteRound1(self, phase, vote));
         phaseData.round1Votes.put(self, vote);
     }
 
@@ -164,6 +172,11 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
      * Handles a Propose message from another node.
      */
     private void handlePropose(Propose<C> propose) {
+        if (nodeIsDormant()) {
+            log.info("Node {} ignores proposal {}. Node is dormant.", self, propose);
+            return;
+        }
+
         log.debug("Node {} received proposal from {} for phase {}", self, propose.sender(), propose.phase());
 
         Phase currentPhaseValue = currentPhase.get();
@@ -206,7 +219,7 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
                       vote,
                       propose.phase(),
                       propose.sender());
-            network.broadcast(new VoteRound1<>(self, propose.phase(), vote));
+            network.broadcast(new VoteRound1(self, propose.phase(), vote));
             phaseData.round1Votes.put(self, vote); // Record our own vote
         } else {
             log.trace(
@@ -224,7 +237,12 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
     /**
      * Handles a round 1 vote from another node.
      */
-    private void handleVoteRound1(VoteRound1<C> vote) {
+    private void handleVoteRound1(VoteRound1 vote) {
+        if (nodeIsDormant()) {
+            log.info("Node {} ignores vote1 {}. Node is dormant.", self, vote);
+            return;
+        }
+
         log.debug("Node {} received round 1 vote from {} for phase {} with value {}",
                   self, vote.sender(), vote.phase(), vote.stateValue());
 
@@ -239,7 +257,7 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
 
             if (hasRound1MajorityVotes(phaseData)) {
                 var round2Vote = evaluateRound2Vote(phaseData);
-                network.broadcast(new VoteRound2<>(self, vote.phase(), round2Vote));
+                network.broadcast(new VoteRound2(self, vote.phase(), round2Vote));
                 phaseData.round2Votes.put(self, round2Vote);
             }
         }
@@ -248,7 +266,12 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
     /**
      * Handles a round 2 vote from another node.
      */
-    private void handleVoteRound2(VoteRound2<C> vote) {
+    private void handleVoteRound2(VoteRound2 vote) {
+        if (nodeIsDormant()) {
+            log.info("Node {} ignores vote2 {}. Node is dormant.", self, vote);
+            return;
+        }
+
         log.debug("Node {} received round 2 vote from {} for phase {} with value {}",
                   self, vote.sender(), vote.phase(), vote.stateValue());
 
@@ -271,6 +294,11 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
      * Handles a decision message from another node.
      */
     private void handleDecision(Decision<C> decision) {
+        if (nodeIsDormant()) {
+            log.info("Node {} ignores decision {}. Node is dormant.", self, decision);
+            return;
+        }
+
         log.info("Node {} received decision from {} for phase {} with value {} and proposal {}",
                  self, decision.sender(), decision.phase(), decision.stateValue(),
                  decision.value() != null ? decision.value().id() : "null");
@@ -310,7 +338,7 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
         if (active.get() || (request.attempt() >= config.maxSyncAttempts() && network.quorumConnected())) {
             stateMachine.makeSnapshot()
                         .onSuccess(snapshot -> {
-                            SyncResponse response = new SyncResponse(self, currentPhase.get(), snapshot);
+                            SyncResponse response = new SyncResponse(self, currentPhase.get(), isInPhase.get(), snapshot);
                             log.debug("Node {} responds with {}", self, response);
                             network.send(request.sender(), response);
                         })
@@ -329,11 +357,7 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
             var currentPhase = this.currentPhase.get();
 
             if (responsePhase.compareTo(currentPhase) > 0) {
-                log.debug("Node {} received phase {} from {}. Updating current phase to {}",
-                          self,
-                          responsePhase,
-                          response.sender(),
-                          responsePhase);
+                log.debug("Node {} updates current phase to {}", self, responsePhase);
                 this.currentPhase.set(responsePhase);
             }
 
@@ -341,17 +365,13 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
                         .onSuccessRun(() -> {
                             // Activate the node if we've received a response
                             active.set(true);
-                            log.info("Node {} activated", self);
-                            // Start a new phase if we have pending commands
-                            if (!pendingCommands.isEmpty() && !isInPhase.get()) {
-                                log.debug("Node {} starting phase {} with pending commands", self, responsePhase);
+                            log.info("Node {} activated in phase {}", self, this.currentPhase.get());
+
+//                            if (response.inPhase()) {
+//                                moveToNextPhase(this.currentPhase.get());
+//                            } else {
                                 executor.execute(this::startPhase);
-                            } else {
-                                log.debug("Node {} not starting phase. Pending commands {}, isInPhase {}",
-                                          self,
-                                          pendingCommands.size(),
-                                          isInPhase.get());
-                            }
+//                            }
                         })
                         .onFailureRun(() -> log.error("Node {} failed to restore snapshot", self));
 
@@ -435,6 +455,8 @@ public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> 
         var nextPhase = currentPhase.successor();
         this.currentPhase.set(nextPhase);
         isInPhase.set(false);
+
+        log.info("Node {} moving to phase {}", self, nextPhase);
 
         // If we have more commands to process, start a new phase
         if (!pendingCommands.isEmpty()) {
