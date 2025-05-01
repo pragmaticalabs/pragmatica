@@ -22,9 +22,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * Implementation of the Weak MVC consensus protocol.
- */
+/// Implementation of the Weak MVC consensus protocol.
+///
+//TODO: implement watching for notifications for forum appearance and disappearance
+//TODO: reset state upon quorum disappearance, so custer always starts from scratch
+//TODO: actual state restoration should be triggered once majority of votes are received
+//      and state is validated. Use priority queue to ensure most recent state is used
+//TODO: implement triggering of synchronization by timeout upon appearance of the quorum
 public class WeakMVCEngine<T extends WeakMVCProtocolMessage, C extends Command> implements Consensus<T, C> {
     private static final Logger log = LoggerFactory.getLogger(WeakMVCEngine.class);
 
