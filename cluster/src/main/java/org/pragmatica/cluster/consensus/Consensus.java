@@ -1,6 +1,8 @@
 package org.pragmatica.cluster.consensus;
 
 import org.pragmatica.cluster.state.Command;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.utility.Sleep;
 
 import java.util.List;
@@ -22,4 +24,6 @@ public interface Consensus<T extends ProtocolMessage, C extends Command> {
             Sleep.sleep(timeSpan(100).millis());
         }
     }
+
+    Promise<Unit> startPromise();
 }

@@ -6,8 +6,6 @@ import org.pragmatica.cluster.state.Command;
 
 /// Message types for the Rabia consensus protocol.
 public sealed interface RabiaProtocolMessage extends ProtocolMessage {
-    NodeId sender();
-
     /// Initial proposal from a node.
     record Propose<C extends Command>(NodeId sender, Phase phase, Batch<C> value)
             implements RabiaProtocolMessage {}

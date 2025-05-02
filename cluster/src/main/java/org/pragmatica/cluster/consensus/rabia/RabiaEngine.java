@@ -8,15 +8,19 @@ import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.net.QuorumState;
 import org.pragmatica.cluster.state.Command;
 import org.pragmatica.cluster.state.StateMachine;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /// Implementation of the Rabia consensus protocol.
@@ -39,6 +43,7 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
     private final AtomicReference<Phase> currentPhase = new AtomicReference<>(Phase.ZERO);
     private final AtomicBoolean active = new AtomicBoolean(false);
     private final AtomicBoolean isInPhase = new AtomicBoolean(false);
+    private final AtomicReference<Promise<Unit>> startPromise = new AtomicReference<>(Promise.promise());
     //--------------------------------- Node State End
 
     /// Creates a new Rabia consensus engine.
@@ -85,9 +90,10 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
             phases.clear();
             coinFlips.clear();
             currentPhase.set(Phase.ZERO);
-            active.set(false);
             isInPhase.set(false);
             stateMachine.reset();
+            active.set(false);
+            startPromise.set(Promise.promise());
         }
     }
 
@@ -114,6 +120,11 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
             executor.execute(this::startPhase);
         }
         return true;
+    }
+
+    @Override
+    public Promise<Unit> startPromise() {
+        return startPromise.get();
     }
 
     @Override
@@ -209,6 +220,7 @@ public class RabiaEngine<T extends RabiaProtocolMessage, C extends Command> impl
     /// Activate node and adjust phase, if necessary.
     private void activate(SyncResponse response) {
         active.set(true);
+        startPromise.get().succeed(Unit.unit());
         syncResponses.clear();
 
         if (response.phase().compareTo(currentPhase.get()) > 0) {
