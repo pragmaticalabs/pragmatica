@@ -5,13 +5,16 @@ import org.pragmatica.cluster.net.*;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
 import java.util.function.Consumer;
 
 /// Local network implementation suitable for testing purposes
 public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T> {
     private final Map<NodeId, Consumer<T>> nodes = new ConcurrentHashMap<>();
     private final AddressBook addressBook;
-    private Consumer<QuorumState> quorumObserver = _ -> {};
+    private Consumer<QuorumState> quorumObserver = _ -> {
+    };
 
     public List<NodeId> connectedNodes() {
         return List.copyOf(nodes.keySet());
@@ -27,15 +30,16 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
         NODE_PARTITION,
         NODE_BYZANTINE
     }
-    
+
     // Fault injection configuration
     private FaultInjector faultInjector;
     private final Map<NodeId, List<NodeId>> partitions = new ConcurrentHashMap<>();
+    private final Executor executor = Executors.newFixedThreadPool(5);
 
     public LocalNetwork(AddressBook addressBook) {
         this(addressBook, new FaultInjector());
     }
-    
+
     public LocalNetwork(AddressBook addressBook, FaultInjector faultInjector) {
         this.addressBook = addressBook;
         this.faultInjector = faultInjector;
@@ -43,7 +47,8 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
 
     @Override
     public <M extends ProtocolMessage> void broadcast(M message) {
-        nodes.keySet().forEach(nodeId -> send(nodeId, message));
+        nodes.keySet()
+             .forEach(nodeId -> send(nodeId, message));
     }
 
     @SuppressWarnings("unchecked")
@@ -55,12 +60,10 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
             // Handle Byzantine behavior - for now, just drop the message
             return;
         }
-            
-        Thread.ofVirtual().start(() -> {
-            if (nodes.containsKey(nodeId)) {
-                processWithFaultInjection(nodeId, (T) message);
-            }
-        });
+
+        if (nodes.containsKey(nodeId)) {
+            processWithFaultInjection(nodeId, (T) message);
+        }
     }
 
     @Override
@@ -103,27 +106,27 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
             quorumObserver.accept(QuorumState.APPEARED);
         }
     }
-    
+
     // Method to process messages with fault injection
     protected <M extends T> void processWithFaultInjection(NodeId destination, M message) {
         var sender = message.sender();
-        
+
         // Check for node crash
         if (sender != null && faultInjector.isFaultyNode(destination, FaultType.NODE_CRASH)) {
             return; // Dropped
         }
-        
+
         // Check for node partition
-        if (sender != null && partitions.containsKey(sender) && 
-            partitions.get(sender).contains(destination)) {
+        if (sender != null && partitions.containsKey(sender) &&
+                partitions.get(sender).contains(destination)) {
             return; // Dropped due to partition
         }
-        
+
         // Check for message loss
         if (faultInjector.shouldDropMessage()) {
             return; // Dropped
         }
-        
+
         // Check for message delay
         if (faultInjector.shouldDelayMessage()) {
             long delay = faultInjector.getMessageDelay();
@@ -133,17 +136,20 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
                 Thread.currentThread().interrupt();
             }
         }
-        
+
         // Process the message
         Consumer<T> listener = nodes.get(destination);
-        if (listener != null) {
-            listener.accept(message);
-            
-            // Check for message duplication
-            if (faultInjector.shouldDuplicateMessage()) {
+
+        executor.execute(() -> {
+            if (listener != null) {
                 listener.accept(message);
+
+                // Check for message duplication
+                if (faultInjector.shouldDuplicateMessage()) {
+                    listener.accept(message);
+                }
             }
-        }
+        });
     }
 
     // Network partition management
@@ -155,15 +161,15 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
             }
         }
     }
-    
+
     public void healPartitions() {
         partitions.clear();
     }
-    
+
     public FaultInjector getFaultInjector() {
         return faultInjector;
     }
-    
+
     public void setFaultInjector(FaultInjector faultInjector) {
         this.faultInjector = faultInjector;
     }
@@ -172,7 +178,7 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
     public void observeQuorumState(Consumer<QuorumState> quorumObserver) {
         this.quorumObserver = quorumObserver;
     }
-    
+
     // Fault injector implementation
     public static class FaultInjector {
         private final Map<FaultType, Boolean> activeFaults = new EnumMap<>(FaultType.class);
@@ -180,17 +186,17 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
         private final Random random = new Random();
         private double messageLossRate = 0.0;
         private long messageDelayMillis = 0;
-        
+
         public FaultInjector() {
             for (FaultType type : FaultType.values()) {
                 activeFaults.put(type, false);
             }
         }
-        
+
         public void setFault(FaultType type, boolean active) {
             activeFaults.put(type, active);
         }
-        
+
         public void setNodeFault(NodeId nodeId, FaultType type, boolean active) {
             nodeSpecificFaults.computeIfAbsent(nodeId, _ -> EnumSet.noneOf(FaultType.class));
             if (active) {
@@ -199,36 +205,36 @@ public class LocalNetwork<T extends ProtocolMessage> implements ClusterNetwork<T
                 nodeSpecificFaults.get(nodeId).remove(type);
             }
         }
-        
+
         public void setMessageLossRate(double rate) {
             this.messageLossRate = Math.max(0.0, Math.min(1.0, rate));
         }
-        
+
         public void setMessageDelayMillis(long delayMillis) {
             this.messageDelayMillis = Math.max(0, delayMillis);
         }
-        
+
         public boolean shouldDropMessage() {
             return activeFaults.get(FaultType.MESSAGE_LOSS) && random.nextDouble() < messageLossRate;
         }
-        
+
         public boolean shouldDelayMessage() {
             return activeFaults.get(FaultType.MESSAGE_DELAY);
         }
-        
+
         public long getMessageDelay() {
             return messageDelayMillis;
         }
-        
+
         public boolean shouldDuplicateMessage() {
             return activeFaults.get(FaultType.MESSAGE_DUPLICATE);
         }
-        
+
         public boolean isFaultyNode(NodeId nodeId, FaultType type) {
-            return nodeSpecificFaults.containsKey(nodeId) && 
-                   nodeSpecificFaults.get(nodeId).contains(type);
+            return nodeSpecificFaults.containsKey(nodeId) &&
+                    nodeSpecificFaults.get(nodeId).contains(type);
         }
-        
+
         public void clearAllFaults() {
             for (FaultType type : FaultType.values()) {
                 activeFaults.put(type, false);
