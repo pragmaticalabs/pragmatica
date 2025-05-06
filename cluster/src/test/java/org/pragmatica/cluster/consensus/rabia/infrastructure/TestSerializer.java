@@ -1,11 +1,12 @@
-package org.pragmatica.cluster.consensus.rabia.setup;
+package org.pragmatica.cluster.consensus.rabia.infrastructure;
 
 import org.pragmatica.cluster.net.netty.Serializer;
 
 import java.io.*;
 
-// A simple Serializer that uses Java built-in object streams
-class TestSerializer implements Serializer {
+/// A very simple Serializer that uses Java built-in object streams
+/// to encode/decode snapshots of the KVStore.
+public class TestSerializer implements Serializer {
     @Override
     public byte[] encode(Object msg) {
         try (var baos = new ByteArrayOutputStream();

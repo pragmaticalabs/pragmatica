@@ -30,27 +30,36 @@ public class KVStore<K, V> implements StateMachine<KVCommand> {
 
     @SuppressWarnings("unchecked")
     @Override
-    public void process(KVCommand command) {
-        switch (command) {
+    public Option<V> process(KVCommand command) {
+        return switch (command) {
             case Get<?> get -> handleGet((Get<K>) get);
             case Put<?, ?> put -> handlePut((Put<K, V>) put);
             case Remove<?> remove -> handleRemove((Remove<K>) remove);
-        }
+        };
     }
 
-    private void handleGet(Get<K> get) {
-        var value = storage.get(get.key());
-        observer.accept(new ValueGet<>(get, Option.option(value)));
+    private Option<V> handleGet(Get<K> get) {
+        var value = Option.option(storage.get(get.key()));
+
+        observer.accept(new ValueGet<>(get, value));
+
+        return value;
     }
 
-    private void handlePut(Put<K, V> put) {
-        var oldValue = storage.put(put.key(), put.value());
-        observer.accept(new ValuePut<>(put, Option.option(oldValue)));
+    private Option<V> handlePut(Put<K, V> put) {
+        var oldValue = Option.option(storage.put(put.key(), put.value()));
+
+        observer.accept(new ValuePut<>(put, oldValue));
+
+        return oldValue;
     }
 
-    private void handleRemove(Remove<K> remove) {
-        var oldValue = storage.remove(remove.key());
-        observer.accept(new ValueRemove<>(remove, Option.option(oldValue)));
+    private Option<V> handleRemove(Remove<K> remove) {
+        var oldValue = Option.option(storage.remove(remove.key()));
+
+        observer.accept(new ValueRemove<>(remove, oldValue));
+
+        return oldValue;
     }
 
     @Override
@@ -72,6 +81,11 @@ public class KVStore<K, V> implements StateMachine<KVCommand> {
     @Override
     public void observeStateChanges(Consumer<? super Notification> observer) {
         this.observer = observer;
+    }
+
+    @Override
+    public void reset() {
+        storage.clear();
     }
 
     public Map<K, V> snapshot() {

@@ -5,22 +5,38 @@ import org.pragmatica.cluster.state.Command;
 import java.util.List;
 
 /// Represents a proposal value in the Rabia protocol.
-public record Batch<C extends Command>(BatchId id, long timestamp, List<C> commands) implements Comparable<Batch<C>> {
+public record Batch<C extends Command>(BatchId id, CorrelationId correlationId, long timestamp, List<C> commands) implements Comparable<Batch<C>> {
     @Override
     public int compareTo(Batch<C> o) {
-        return Long.compare(timestamp(), o.timestamp());
+        var timestampCompare = Long.compare(timestamp, o.timestamp);
+
+        if (timestampCompare != 0) {
+            return timestampCompare;
+        }
+
+        var idCompare = Integer.compare(id.hashCode(), o.id.hashCode());
+
+        if (idCompare != 0) {
+            return idCompare;
+        }
+
+        return correlationId.id().compareTo(o.correlationId.id());
     }
 
     public static <C extends Command> Batch<C> create(List<C> commands) {
-        return new Batch<>(BatchId.createRandom(), System.nanoTime(), commands);
+        return new Batch<>(BatchId.createRandom(), CorrelationId.createRandom(), System.nanoTime(), commands);
     }
 
     public static <C extends Command> Batch<C> empty() {
-        return new Batch<>(BatchId.createEmpty(), System.nanoTime(), List.of());
+        return new Batch<>(BatchId.createEmpty(), CorrelationId.none(), System.nanoTime(), List.of());
     }
 
     @Override
     public int hashCode() {
         return id.hashCode();
+    }
+
+    public boolean isNotEmpty() {
+        return !commands.isEmpty();
     }
 }

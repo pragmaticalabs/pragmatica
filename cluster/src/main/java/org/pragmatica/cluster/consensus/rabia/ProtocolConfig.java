@@ -10,14 +10,12 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 public record ProtocolConfig(
         TimeSpan cleanupInterval,
         TimeSpan syncRetryInterval,
-        int maxSyncAttempts,
         long removeOlderThanPhases
 ) {
     /// Creates a default (production) configuration.
     public static ProtocolConfig defaultConfig() {
         return new ProtocolConfig(timeSpan(60).seconds(),
                                   timeSpan(5).seconds(),
-                                  10,
                                   100);
     }
 
@@ -25,7 +23,6 @@ public record ProtocolConfig(
     public static ProtocolConfig testConfig() {
         return new ProtocolConfig(timeSpan(60).seconds(),
                                   timeSpan(100).millis(),
-                                  3,
                                   100);
     }
 }

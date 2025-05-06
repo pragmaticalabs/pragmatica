@@ -3,6 +3,7 @@ package org.pragmatica.cluster.state;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import java.util.List;
 import java.util.function.Consumer;
 
 /// Generalized state machine which can be replicated across cluster.
@@ -11,7 +12,13 @@ public interface StateMachine<T extends Command> {
     /// The command must be immutable and its execution must be deterministic.
     ///
     /// @param command The command to process
-    void process(T command);
+    <R> R process(T command);
+
+    @SuppressWarnings("unchecked")
+    default <R> List<R> process(List<T> commands) {
+        return commands.stream().map(command -> (R) process(command))
+                       .toList();
+    }
 
     /// Create a snapshot of the current state machine state.
     /// The snapshot should be serializable and should capture the complete state.
@@ -32,7 +39,5 @@ public interface StateMachine<T extends Command> {
     void observeStateChanges(Consumer<? super Notification> observer);
 
     /// Reset state machine to its initial state
-    default void reset() {
-        // TODO: implement reset method, do not forget to fix the tests.
-    }
+    void reset();
 }

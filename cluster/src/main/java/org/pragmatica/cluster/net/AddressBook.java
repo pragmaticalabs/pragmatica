@@ -13,9 +13,14 @@ public interface AddressBook {
     /// Configured cluster size
     int clusterSize();
 
-    /// Quorum size
+    /// The quorum size (majority) for the cluster.
     default int quorumSize() {
         return clusterSize()/2 + 1;
+    }
+
+    /// Gets the f+1 size for the cluster (where f is the maximum number of failures).
+    default int fPlusOne() {
+        return clusterSize() - quorumSize() + 1;
     }
 
     /// Mapping from IP address (host and port) to node ID
