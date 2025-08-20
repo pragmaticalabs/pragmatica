@@ -32,7 +32,7 @@ class ArtifactTest {
                     assertThat(artifact.version().major()).isEqualTo(5);
                     assertThat(artifact.version().minor()).isEqualTo(3);
                     assertThat(artifact.version().patch()).isEqualTo(21);
-                    assertThat(artifact.version().qualifier()).isEqualTo("-RELEASE");
+                    assertThat(artifact.version().qualifier()).isEqualTo("RELEASE");
                 });
     }
 
