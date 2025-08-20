@@ -34,7 +34,7 @@ public interface LocalRepository extends Repository {
                 return localRepo
                         .resolve(artifact.groupId().id().replace('.', '/'))
                         .resolve(artifactId)
-                        .resolve(version.raw())
+                        .resolve(version.bareVersion())
                         .resolve(artifactId + "-" + version.withQualifier() + "." + packaging);
             }
         }

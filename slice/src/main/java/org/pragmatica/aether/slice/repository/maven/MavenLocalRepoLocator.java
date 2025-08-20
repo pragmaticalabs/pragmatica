@@ -1,10 +1,10 @@
 package org.pragmatica.aether.slice.repository.maven;
 
-import java.io.File;
-import javax.xml.parsers.*;
-
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Verify;
+
+import javax.xml.parsers.DocumentBuilderFactory;
+import java.io.File;
 
 public sealed interface MavenLocalRepoLocator {
     static String findLocalRepository() {

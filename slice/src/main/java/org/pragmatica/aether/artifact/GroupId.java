@@ -4,7 +4,8 @@ import org.pragmatica.lang.Result;
 
 import java.util.regex.Pattern;
 
-import static org.pragmatica.lang.Verify.*;
+import static org.pragmatica.lang.Verify.Is;
+import static org.pragmatica.lang.Verify.ensure;
 
 public record GroupId(String id) {
     public static Result<GroupId> groupId(String id) {
