@@ -9,7 +9,7 @@
         <version>0.1.0</version>
     </parent>
 
-    <artifactId>node</artifactId>
+    <artifactId>cluster</artifactId>
 
     <dependencies>
         <!-- Internal -->
@@ -22,19 +22,14 @@
             <artifactId>common</artifactId>
         </dependency>
 
+        <!-- Serialization -->
         <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>cluster</artifactId>
+            <groupId>com.esotericsoftware</groupId>
+            <artifactId>kryo</artifactId>
         </dependency>
-
         <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>slice-api</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>slice</artifactId>
+            <groupId>org.apache.fury</groupId>
+            <artifactId>fury-core</artifactId>
         </dependency>
 
         <!-- Logging -->
@@ -55,20 +50,29 @@
             <artifactId>junit-jupiter-api</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-core</artifactId>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.mockito</groupId>
             <artifactId>mockito-junit-jupiter</artifactId>
+            <scope>test</scope>
         </dependency>
         <dependency>
             <groupId>org.awaitility</groupId>
             <artifactId>awaitility</artifactId>
+            <scope>test</scope>
         </dependency>
 
         <dependency>

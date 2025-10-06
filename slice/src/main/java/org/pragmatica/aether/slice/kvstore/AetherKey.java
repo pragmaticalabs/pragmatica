@@ -1,0 +1,185 @@
+package org.pragmatica.aether.slice.kvstore;
+
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.EntryPointId;
+import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
+import org.pragmatica.cluster.state.kvstore.StructuredPattern;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.parse.Number;
+import org.pragmatica.lang.utils.Causes;
+
+import java.util.regex.Pattern;
+
+/// Aether KV-Store structured keys for cluster state management
+public sealed interface AetherKey extends StructuredKey {
+
+    /// String representation of the key
+    String asString();
+
+    /// Blueprint-key format:
+    /// ```
+    /// blueprint/{groupId}:{artifactId}:{version}
+    ///```
+    record BlueprintKey(Artifact artifact) implements AetherKey {
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            if (!(pattern instanceof AetherKeyPattern.BlueprintPattern blueprintPattern)) {
+                return false;
+            }
+
+            return blueprintPattern.matches(this);
+        }
+
+        @Override
+        public String asString() {
+            return "blueprint/" + artifact.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static Result<BlueprintKey> blueprintKey(String key) {
+            if (!key.startsWith("blueprint/")) {
+                return BLUEPRINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var artifactPart = key.substring(10); // Remove "blueprint/"
+            return Artifact.artifact(artifactPart)
+                           .map(BlueprintKey::new);
+        }
+    }
+
+    /// Slice-node-key format:
+    /// ```
+    /// slices/{nodeId}/{groupId}:{artifactId}:{version}
+    ///```
+    record SliceNodeKey(Artifact artifact, NodeId nodeId) implements AetherKey {
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            if (!(pattern instanceof AetherKeyPattern.SliceNodePattern sliceNodePattern)) {
+                return false;
+            }
+
+            return sliceNodePattern.matches(this);
+        }
+
+        @Override
+        public String asString() {
+            return "slices/" + nodeId.id() + "/" + artifact.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static Result<SliceNodeKey> sliceNodeKey(String key) {
+            var parts = key.split("/");
+
+            if (parts.length != 3) {
+                return SLICE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            if (!"slices".equals(parts[0])) {
+                return SLICE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            if (parts[1].isEmpty()) {
+                return SLICE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            return Artifact.artifact(parts[2])
+                           .map(artifact -> new SliceNodeKey(artifact, NodeId.nodeId(parts[1])));
+        }
+    }
+
+    /// Endpoint-key format (for slice instance endpoints):
+    /// ```
+    /// endpoints/{groupId}:{artifactId}:{version}/{endpointName}:{instanceNumber}
+    ///```
+    record EndpointKey(Artifact artifact, EntryPointId entryPointId, int instanceNumber) implements AetherKey {
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            if (!(pattern instanceof AetherKeyPattern.EndpointPattern endpointPattern)) {
+                return false;
+            }
+            return endpointPattern.matches(this);
+        }
+        @Override
+        public String asString() {
+            return "endpoints/"
+                    + artifact.asString()
+                    + "/"
+                    + entryPointId.id()
+                    + ":"
+                    + instanceNumber;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static Result<EndpointKey> endpointKey(String key) {
+            if (!key.startsWith("endpoints/")) {
+                return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var content = key.substring(10); // Remove "endpoints/"
+            var slashIndex = content.indexOf('/');
+            if (slashIndex == -1) {
+                return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var artifactPart = content.substring(0, slashIndex);
+            var endpointPart = content.substring(slashIndex + 1);
+
+            var colonIndex = endpointPart.lastIndexOf(':');
+            if (colonIndex == -1) {
+                return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var entryPointPart = endpointPart.substring(0, colonIndex);
+            var instancePart = endpointPart.substring(colonIndex + 1);
+
+            return Result.all(
+                    Artifact.artifact(artifactPart),
+                    EntryPointId.entryPointId(entryPointPart),
+                    Number.parseInt(instancePart)
+            ).map(EndpointKey::new);
+        }
+    }
+
+    Fn1<Cause, String> BLUEPRINT_KEY_FORMAT_ERROR = Causes.forValue("Invalid blueprint key format: {0}");
+    Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forValue("Invalid slice key format: {0}");
+    Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forValue("Invalid endpoint key format: {0}");
+
+    /// Aether KV-Store structured patterns for key matching
+    sealed interface AetherKeyPattern extends StructuredPattern {
+        /// Pattern for blueprint keys: blueprint/*
+        record BlueprintPattern() implements AetherKeyPattern {
+            public boolean matches(BlueprintKey key) {
+                return false;
+            }
+        }
+
+        /// Pattern for slice-node keys: slices/*/*
+        record SliceNodePattern() implements AetherKeyPattern {
+            public boolean matches(SliceNodeKey key) {
+                return false;
+            }
+        }
+
+        /// Pattern for endpoint keys: endpoints/*/*
+        record EndpointPattern() implements AetherKeyPattern {
+            public boolean matches(EndpointKey key) {
+                return false;
+            }
+        }
+    }
+}

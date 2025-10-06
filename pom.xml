@@ -13,21 +13,26 @@
         <module>slice-api</module>
         <module>slice</module>
         <module>example-slice</module>
+        <module>mcp</module>
+        <module>cluster</module>
+        <module>common</module>
     </modules>
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <java.release>24</java.release>
+        <java.release>25</java.release>
 
         <!-- Dependencies -->
         <slf4j.version>2.0.12</slf4j.version>
-        <junit.version>5.11.4</junit.version>
+        <junit.version>5.13.4</junit.version>
         <assertj-core.version>3.26.3</assertj-core.version>
         <mockito.version>5.14.2</mockito.version>
-        <pragmatica.version>0.7.21</pragmatica.version>
+        <pragmatica.version>0.8.1</pragmatica.version>
         <awaitility.version>4.2.1</awaitility.version>
         <tinylog.version>2.7.0</tinylog.version>
         <netty.version>4.2.0.Final</netty.version>
+        <kryo.version>5.6.2</kryo.version>
+        <fury-core.version>0.10.2</fury-core.version>
     </properties>
 
     <dependencyManagement>
@@ -37,26 +42,35 @@
                 <artifactId>core</artifactId>
                 <version>${pragmatica.version}</version>
             </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>net-core</artifactId>
-                <version>${pragmatica.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>common</artifactId>
-                <version>${pragmatica.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>cluster</artifactId>
-                <version>${pragmatica.version}</version>
-            </dependency>
 
             <!-- Internal -->
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>slice-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>slice</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>node</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>common</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>cluster</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -81,6 +95,12 @@
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter-api</artifactId>
+                <version>${junit.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-engine</artifactId>
                 <version>${junit.version}</version>
                 <scope>test</scope>
             </dependency>
@@ -120,23 +140,16 @@
             <dependency>
                 <groupId>com.esotericsoftware</groupId>
                 <artifactId>kryo</artifactId>
-                <version>5.6.2</version>
+                <version>${kryo.version}</version>
             </dependency>
 
             <dependency>
                 <groupId>org.apache.fury</groupId>
                 <artifactId>fury-core</artifactId>
-                <version>0.10.2</version>
+                <version>${fury-core.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
-
-    <repositories>
-        <repository>
-            <id>github</id>
-            <url>https://maven.pkg.github.com/siy/pragmatica-lite</url>
-        </repository>
-    </repositories>
 
     <build>
         <pluginManagement>

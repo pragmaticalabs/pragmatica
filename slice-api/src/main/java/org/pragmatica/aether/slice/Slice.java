@@ -3,10 +3,12 @@ package org.pragmatica.aether.slice;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-public interface Slice {
-    Promise<ActiveSlice> start();
+import java.util.List;
 
-    interface ActiveSlice extends Slice {
-        Promise<Unit> stop();
-    }
+public interface Slice {
+    Promise<Unit> start();
+
+    Promise<Unit> stop();
+
+    List<SliceMethod<?, ?>> methods();
 }

@@ -17,11 +17,12 @@
             <artifactId>core</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.pragmatica-lite</groupId>
+            <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>common</artifactId>
         </dependency>
+
         <dependency>
-            <groupId>org.pragmatica-lite</groupId>
+            <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>cluster</artifactId>
         </dependency>
 

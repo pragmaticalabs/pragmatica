@@ -7,6 +7,7 @@ import java.util.regex.Pattern;
 
 import static org.pragmatica.lang.Verify.ensure;
 
+@Deprecated
 public record EntryPointId(String id) {
     public static Result<EntryPointId> entryPointId(String id) {
         return Result.all(ensure(id, Verify.Is::matches, ENTRYPOINT_ID_PATTERN))
