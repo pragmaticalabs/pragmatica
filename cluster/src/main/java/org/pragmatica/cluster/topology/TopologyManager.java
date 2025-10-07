@@ -38,6 +38,4 @@ public interface TopologyManager {
     void stop();
 
     TimeSpan pingInterval();
-
-    void configure(MessageRouter.MutableRouter router);
 }

@@ -68,15 +68,6 @@ public interface TcpTopologyManager extends TopologyManager {
                 SharedScheduler.scheduleAtFixedRate(this::initReconcile, config.reconciliationInterval());
             }
 
-            @Override
-            public void configure(MessageRouter.MutableRouter router) {
-                router.addRoute(TopologyManagementMessage.AddNode.class, this::handleAddNodeMessage);
-                router.addRoute(TopologyManagementMessage.RemoveNode.class, this::handleRemoveNodeMessage);
-                router.addRoute(TopologyManagementMessage.DiscoverNodes.class, this::handleDiscoverNodesMessage);
-                router.addRoute(TopologyManagementMessage.DiscoveredNodes.class, this::handleMergeNodesMessage);
-                router.addRoute(NetworkManagementOperation.ConnectedNodesList.class, this::reconcile);
-            }
-
             private void initReconcile() {
                 if (active.get()) {
                     router().route(new NetworkManagementOperation.ListConnectedNodes());

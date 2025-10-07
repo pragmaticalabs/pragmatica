@@ -78,14 +78,6 @@ public interface LeaderManager {
                 notifyLeaderChange();
                 active.set(false);
             }
-
-            @Override
-            public void configure(MessageRouter.MutableRouter router) {
-                router.addRoute(NodeAdded.class, this::nodeAdded);
-                router.addRoute(NodeRemoved.class, this::nodeRemoved);
-                router.addRoute(NodeDown.class, this::nodeDown);
-                router.addRoute(QuorumStateNotification.class, this::watchQuorumState);
-            }
         }
 
         return new leaderManager(self, router, new AtomicBoolean(false), new AtomicReference<>());
@@ -102,6 +94,4 @@ public interface LeaderManager {
 
     @MessageReceiver
     void watchQuorumState(QuorumStateNotification quorumState);
-
-    void configure(MessageRouter.MutableRouter router);
 }
