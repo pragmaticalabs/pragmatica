@@ -25,8 +25,8 @@ class DependencyDescriptorTest {
             .onSuccess(descriptor -> {
                 assertThat(descriptor.sliceClassName()).isEqualTo("com.example.EmailService");
                 assertThat(descriptor.versionPattern().asString()).isEqualTo("^1.0.0");
-                descriptor.parameterName().onNone(Assertions::fail)
-                    .onSome(name -> assertThat(name).isEqualTo("emailService"));
+                descriptor.parameterName().onEmpty(Assertions::fail)
+                    .onPresent(name -> assertThat(name).isEqualTo("emailService"));
             });
     }
 
@@ -37,8 +37,8 @@ class DependencyDescriptorTest {
             .onSuccess(descriptor -> {
                 assertThat(descriptor.sliceClassName()).isEqualTo("com.example.OrderProcessor");
                 assertThat(descriptor.versionPattern().asString()).isEqualTo("[1.0.0,2.0.0)");
-                descriptor.parameterName().onNone(Assertions::fail)
-                    .onSome(name -> assertThat(name).isEqualTo("orderProcessor"));
+                descriptor.parameterName().onEmpty(Assertions::fail)
+                    .onPresent(name -> assertThat(name).isEqualTo("orderProcessor"));
             });
     }
 
@@ -131,7 +131,7 @@ class DependencyDescriptorTest {
             .onSuccess(descriptor -> {
                 assertThat(descriptor.sliceClassName()).isEqualTo("com.example.UserService");
                 assertThat(descriptor.versionPattern().asString()).isEqualTo("1.2.3");
-                descriptor.parameterName().onSome(name -> assertThat(name).isEqualTo("userService"));
+                descriptor.parameterName().onPresent(name -> assertThat(name).isEqualTo("userService"));
             });
     }
 }

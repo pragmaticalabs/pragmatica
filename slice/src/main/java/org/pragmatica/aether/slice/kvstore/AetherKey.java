@@ -11,8 +11,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
 
-import java.util.regex.Pattern;
-
 /// Aether KV-Store structured keys for cluster state management
 public sealed interface AetherKey extends StructuredKey {
 
@@ -26,11 +24,11 @@ public sealed interface AetherKey extends StructuredKey {
     record BlueprintKey(Artifact artifact) implements AetherKey {
         @Override
         public boolean matches(StructuredPattern pattern) {
-            if (!(pattern instanceof AetherKeyPattern.BlueprintPattern blueprintPattern)) {
-                return false;
-            }
-
-            return blueprintPattern.matches(this);
+            return switch (pattern) {
+                case AetherKeyPattern.BlueprintPattern blueprintPattern ->
+                    blueprintPattern.matches(this);
+                default -> false;
+            };
         }
 
         @Override
@@ -61,11 +59,15 @@ public sealed interface AetherKey extends StructuredKey {
     record SliceNodeKey(Artifact artifact, NodeId nodeId) implements AetherKey {
         @Override
         public boolean matches(StructuredPattern pattern) {
-            if (!(pattern instanceof AetherKeyPattern.SliceNodePattern sliceNodePattern)) {
-                return false;
-            }
+            return switch (pattern) {
+                case AetherKeyPattern.SliceNodePattern sliceNodePattern ->
+                    sliceNodePattern.matches(this);
+                default -> false;
+            };
+        }
 
-            return sliceNodePattern.matches(this);
+        public boolean isForNode(NodeId nodeId) {
+            return this.nodeId.equals(nodeId);
         }
 
         @Override
@@ -105,10 +107,11 @@ public sealed interface AetherKey extends StructuredKey {
     record EndpointKey(Artifact artifact, EntryPointId entryPointId, int instanceNumber) implements AetherKey {
         @Override
         public boolean matches(StructuredPattern pattern) {
-            if (!(pattern instanceof AetherKeyPattern.EndpointPattern endpointPattern)) {
-                return false;
-            }
-            return endpointPattern.matches(this);
+            return switch (pattern) {
+                case AetherKeyPattern.EndpointPattern endpointPattern ->
+                    endpointPattern.matches(this);
+                default -> false;
+            };
         }
         @Override
         public String asString() {
@@ -155,9 +158,9 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    Fn1<Cause, String> BLUEPRINT_KEY_FORMAT_ERROR = Causes.forValue("Invalid blueprint key format: {0}");
-    Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forValue("Invalid slice key format: {0}");
-    Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forValue("Invalid endpoint key format: {0}");
+    Fn1<Cause, String> BLUEPRINT_KEY_FORMAT_ERROR = Causes.forValue("Invalid blueprint key format: %s");
+    Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forValue("Invalid slice key format: %s");
+    Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forValue("Invalid endpoint key format: %s");
 
     /// Aether KV-Store structured patterns for key matching
     sealed interface AetherKeyPattern extends StructuredPattern {

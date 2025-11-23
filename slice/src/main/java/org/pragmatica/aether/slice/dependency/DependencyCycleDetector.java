@@ -56,7 +56,7 @@ public interface DependencyCycleDetector {
             if (visiting.contains(dep)) {
                 // Found a cycle
                 var cyclePath = buildCyclePath(path, dep);
-                return CIRCULAR_DEPENDENCY.apply(cyclePath).result();
+                return Causes.cause("Circular dependency detected: " + cyclePath).result();
             }
 
             if (!visited.contains(dep)) {
@@ -83,5 +83,5 @@ public interface DependencyCycleDetector {
 
     // Error constants
     Fn1<Cause, String> CIRCULAR_DEPENDENCY =
-        Causes.forValue("Circular dependency detected: {0}");
+        Causes.forValue("Circular dependency detected: %s");
 }

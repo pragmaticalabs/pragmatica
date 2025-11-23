@@ -29,8 +29,8 @@ class SliceRegistryTest {
             .onFailureRun(Assertions::fail);
 
         registry.lookup(artifact)
-            .onNone(Assertions::fail)
-            .onSome(found -> assertThat(found).isSameAs(slice));
+            .onEmpty(Assertions::fail)
+            .onPresent(found -> assertThat(found).isSameAs(slice));
     }
 
     @Test
@@ -54,8 +54,8 @@ class SliceRegistryTest {
         var artifact = Artifact.artifact("org.example:missing:1.0.0").unwrap();
 
         registry.lookup(artifact)
-            .onSome(slice -> Assertions.fail("Should return none for missing artifact"))
-            .onNone(Assertions::pass);
+            .onPresent(slice -> Assertions.fail("Should return none for missing artifact"))
+            .onEmpty(()-> {});
     }
 
     @Test
@@ -71,8 +71,8 @@ class SliceRegistryTest {
             .onFailureRun(Assertions::fail);
 
         registry.lookup(artifact)
-            .onSome(found -> Assertions.fail("Slice should be unregistered"))
-            .onNone(Assertions::pass);
+            .onPresent(found -> Assertions.fail("Slice should be unregistered"))
+            .onEmpty(() -> {});
     }
 
     @Test
@@ -88,7 +88,7 @@ class SliceRegistryTest {
     @Test
     void find_by_class_name_and_exact_version() {
         var registry = SliceRegistry.create();
-        var artifact = Artifact.artifact("org.example:TestSlice:1.2.3").unwrap();
+        var artifact = Artifact.artifact("org.example:test-slice:1.2.3").unwrap();
         var slice = new TestSlice();
 
         registry.register(artifact, slice)
@@ -96,15 +96,15 @@ class SliceRegistryTest {
 
         var pattern = VersionPattern.parse("1.2.3").unwrap();
 
-        registry.find("org.example.TestSlice", pattern)
-            .onNone(Assertions::fail)
-            .onSome(found -> assertThat(found).isSameAs(slice));
+        registry.find("test-slice", pattern)
+            .onEmpty(Assertions::fail)
+            .onPresent(found -> assertThat(found).isSameAs(slice));
     }
 
     @Test
     void find_by_class_name_and_version_range() {
         var registry = SliceRegistry.create();
-        var artifact = Artifact.artifact("org.example:TestSlice:1.5.0").unwrap();
+        var artifact = Artifact.artifact("org.example:test-slice:1.5.0").unwrap();
         var slice = new TestSlice();
 
         registry.register(artifact, slice)
@@ -112,15 +112,15 @@ class SliceRegistryTest {
 
         var pattern = VersionPattern.parse("[1.0.0,2.0.0)").unwrap();
 
-        registry.find("org.example.TestSlice", pattern)
-            .onNone(Assertions::fail)
-            .onSome(found -> assertThat(found).isSameAs(slice));
+        registry.find("test-slice", pattern)
+            .onEmpty(Assertions::fail)
+            .onPresent(found -> assertThat(found).isSameAs(slice));
     }
 
     @Test
     void find_returns_none_when_version_doesnt_match() {
         var registry = SliceRegistry.create();
-        var artifact = Artifact.artifact("org.example:TestSlice:2.0.0").unwrap();
+        var artifact = Artifact.artifact("org.example:test-slice:2.0.0").unwrap();
         var slice = new TestSlice();
 
         registry.register(artifact, slice)
@@ -128,15 +128,15 @@ class SliceRegistryTest {
 
         var pattern = VersionPattern.parse("[1.0.0,2.0.0)").unwrap();
 
-        registry.find("org.example.TestSlice", pattern)
-            .onSome(found -> Assertions.fail("Version 2.0.0 should not match [1.0.0,2.0.0)"))
-            .onNone(Assertions::pass);
+        registry.find("test-slice", pattern)
+            .onPresent(found -> Assertions.fail("Version 2.0.0 should not match [1.0.0,2.0.0)"))
+            .onEmpty(() -> {});
     }
 
     @Test
     void find_returns_none_when_class_name_doesnt_match() {
         var registry = SliceRegistry.create();
-        var artifact = Artifact.artifact("org.example:TestSlice:1.0.0").unwrap();
+        var artifact = Artifact.artifact("org.example:test-slice:1.0.0").unwrap();
         var slice = new TestSlice();
 
         registry.register(artifact, slice)
@@ -144,9 +144,9 @@ class SliceRegistryTest {
 
         var pattern = VersionPattern.parse("1.0.0").unwrap();
 
-        registry.find("org.example.OtherSlice", pattern)
-            .onSome(found -> Assertions.fail("Class name should not match"))
-            .onNone(Assertions::pass);
+        registry.find("other-slice", pattern)
+            .onPresent(found -> Assertions.fail("Class name should not match"))
+            .onEmpty(() -> {});
     }
 
     @Test

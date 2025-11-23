@@ -126,9 +126,9 @@ public interface SliceRegistry {
         }
 
         private static final org.pragmatica.lang.Functions.Fn1<Cause, String> ALREADY_REGISTERED =
-            Causes.forValue("Artifact already registered: {0}");
+            Causes.forValue("Artifact already registered: %s");
 
         private static final org.pragmatica.lang.Functions.Fn1<Cause, String> NOT_FOUND =
-            Causes.forValue("Artifact not found in registry: {0}");
+            Causes.forValue("Artifact not found in registry: %s");
     }
 }

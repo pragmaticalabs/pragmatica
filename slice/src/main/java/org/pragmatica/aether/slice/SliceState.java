@@ -67,20 +67,18 @@ public enum SliceState {
         return validTransitions().contains(target);
     }
 
-    public SliceState nextState() {
+    public Result<SliceState> nextState() {
         return switch (this) {
-            case LOAD -> LOADING;
-            case LOADING, DEACTIVATING -> LOADED;
-            case LOADED -> ACTIVATE;
-            case ACTIVATE -> ACTIVATING;
-            case ACTIVATING -> ACTIVE;
-            case ACTIVE -> DEACTIVATE;
-            case DEACTIVATE -> DEACTIVATING;
-            case FAILED -> UNLOAD;
-            case UNLOAD -> UNLOADING;
-            // Throw exception here as this is an unrecoverable error, we can't expect transition from
-            // terminal state.
-            case UNLOADING -> throw new IllegalStateException("UNLOADING is terminal state");
+            case LOAD -> Result.success(LOADING);
+            case LOADING, DEACTIVATING -> Result.success(LOADED);
+            case LOADED -> Result.success(ACTIVATE);
+            case ACTIVATE -> Result.success(ACTIVATING);
+            case ACTIVATING -> Result.success(ACTIVE);
+            case ACTIVE -> Result.success(DEACTIVATE);
+            case DEACTIVATE -> Result.success(DEACTIVATING);
+            case FAILED -> Result.success(UNLOAD);
+            case UNLOAD -> Result.success(UNLOADING);
+            case UNLOADING -> TERMINAL_STATE_ERROR.result();
         };
     }
 
@@ -111,5 +109,6 @@ public enum SliceState {
 
     }
 
-    private static final Fn1<Cause, String> UNKNOWN_STATE = Causes.forValue("Unknown slice state [{0}]");
+    private static final Fn1<Cause, String> UNKNOWN_STATE = Causes.forValue("Unknown slice state [{}]");
+    private static final Cause TERMINAL_STATE_ERROR = Causes.cause("Cannot transition from UNLOADING terminal state");
 }

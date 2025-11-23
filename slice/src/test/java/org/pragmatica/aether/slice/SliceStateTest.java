@@ -2,8 +2,9 @@ package org.pragmatica.aether.slice;
 
 import org.junit.jupiter.api.Test;
 
+import org.junit.jupiter.api.Assertions;
+
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class SliceStateTest {
@@ -74,25 +75,25 @@ class SliceStateTest {
 
     @Test
     void next_state_progression_works_correctly() {
-        assertThat(SliceState.LOAD.nextState()).isEqualTo(SliceState.LOADING);
-        assertThat(SliceState.LOADING.nextState()).isEqualTo(SliceState.LOADED);
-        assertThat(SliceState.LOADED.nextState()).isEqualTo(SliceState.ACTIVATE);
-        assertThat(SliceState.ACTIVATE.nextState()).isEqualTo(SliceState.ACTIVATING);
-        assertThat(SliceState.ACTIVATING.nextState()).isEqualTo(SliceState.ACTIVE);
-        assertThat(SliceState.ACTIVE.nextState()).isEqualTo(SliceState.DEACTIVATE);
-        assertThat(SliceState.DEACTIVATE.nextState()).isEqualTo(SliceState.DEACTIVATING);
-        assertThat(SliceState.DEACTIVATING.nextState()).isEqualTo(SliceState.LOADED);
-        assertThat(SliceState.FAILED.nextState()).isEqualTo(SliceState.UNLOAD);
-        assertThat(SliceState.UNLOAD.nextState()).isEqualTo(SliceState.UNLOADING);
+        assertThat(SliceState.LOAD.nextState().unwrap()).isEqualTo(SliceState.LOADING);
+        assertThat(SliceState.LOADING.nextState().unwrap()).isEqualTo(SliceState.LOADED);
+        assertThat(SliceState.LOADED.nextState().unwrap()).isEqualTo(SliceState.ACTIVATE);
+        assertThat(SliceState.ACTIVATE.nextState().unwrap()).isEqualTo(SliceState.ACTIVATING);
+        assertThat(SliceState.ACTIVATING.nextState().unwrap()).isEqualTo(SliceState.ACTIVE);
+        assertThat(SliceState.ACTIVE.nextState().unwrap()).isEqualTo(SliceState.DEACTIVATE);
+        assertThat(SliceState.DEACTIVATE.nextState().unwrap()).isEqualTo(SliceState.DEACTIVATING);
+        assertThat(SliceState.DEACTIVATING.nextState().unwrap()).isEqualTo(SliceState.LOADED);
+        assertThat(SliceState.FAILED.nextState().unwrap()).isEqualTo(SliceState.UNLOAD);
+        assertThat(SliceState.UNLOAD.nextState().unwrap()).isEqualTo(SliceState.UNLOADING);
     }
 
     @Test
     void unloading_is_terminal_state() {
         assertThat(SliceState.UNLOADING.validTransitions()).isEmpty();
 
-        assertThatThrownBy(() -> SliceState.UNLOADING.nextState())
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessage("UNLOADING is terminal state");
+        SliceState.UNLOADING.nextState()
+            .onSuccessRun(() -> Assertions.fail("Should fail for terminal state"))
+            .onFailure(cause -> assertThat(cause.message()).contains("Cannot transition from UNLOADING terminal state"));
     }
 
     @Test

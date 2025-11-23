@@ -49,5 +49,5 @@ public record SliceActionConfig(
     }
 
     private static final Fn1<Cause, SliceState> NO_TIMEOUT_CONFIGURED =
-        Causes.forValue("No timeout configured for state: {0}");
+        Causes.forValue("No timeout configured for state: %s");
 }
