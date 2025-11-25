@@ -24,8 +24,8 @@ import static org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.
 /**
  * Test Suite 2: Message Semantics
  */
-public class MessageSemanticsTest {
-    private static final Logger log = LoggerFactory.getLogger(MessageSemanticsTest.class);
+public class MessageSemanticsIT {
+    private static final Logger log = LoggerFactory.getLogger(MessageSemanticsIT.class);
     private static final int CLUSTER_SIZE = 5;
     private static final int COMMAND_COUNT = 1000;
     private static final Duration TIMEOUT = Duration.ofSeconds(60);

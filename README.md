@@ -1,12 +1,36 @@
 # Pragmatica Aether
 
-Pragmatica Aether is a clusterized run-time environment for Java.
+**AI-driven distributed runtime environment for Java applications**
 
-## Purpose 
+Aether enables predictive scaling, intelligent orchestration, and seamless multi-cloud deployment without requiring changes to business logic.
 
-Pragmatica Aether targets two main use cases:
-- Transformation of the traditional monolithic applications into distributed ones with all relevant benefits like scalability and fault tolerance. The intent is to provide environment which is as close to monolith as possible, including transparence of the distributed invocations and similar to traditional transaction handling.
-- Run-time environment for highly scalable distributed applications which have no limitations nor drawbacks of the legacy microservices approach. It reduces infrastructure complexity and complicated deployment burden, enabling transparent (and simultaneous, if necessary) deployment across different public clouds, private clouds and data centers.   
+## What Makes Aether Different
+
+- **Predictive, Not Reactive**: AI learns traffic patterns and scales BEFORE load increases
+- **Intelligent Orchestration**: Complex deployments (rolling updates, canary, blue/green, cloud migration) handled automatically
+- **Transparent Distribution**: Write business logic without distributed systems concerns
+- **Slice-Based Deployment**: Deploy use cases (lean slices) or services (service slices) with unified management
+
+## Core Concepts
+
+### Slices
+Independently deployable units with well-defined entry points:
+- **Service Slices**: Traditional microservices with multiple entry points
+- **Lean Slices**: Single use case or event handler with one entry point
+
+### AI-Driven Management
+External AI observes metrics, learns patterns, and makes topology decisions:
+- When to scale slice instances
+- When to start/stop compute nodes
+- How to perform complex deployments
+- Where to deploy across clouds
+
+### Convergence Model
+Runtime continuously reconciles actual deployment with desired state stored in consensus KV-Store.
+
+## Quick Start
+
+See **[docs/vision-and-goals.md](docs/vision-and-goals.md)** for complete architecture and design principles.   
 
 ## License
 The Aether is licensed under the terms and conditions of Apache Software License 2.0

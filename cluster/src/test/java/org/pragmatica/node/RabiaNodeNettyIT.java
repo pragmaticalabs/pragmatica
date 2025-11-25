@@ -34,8 +34,8 @@ import static org.pragmatica.net.NodeAddress.nodeAddress;
 import static org.pragmatica.net.serialization.binary.fury.FuryDeserializer.furyDeserializer;
 import static org.pragmatica.net.serialization.binary.fury.FurySerializer.furySerializer;
 
-class RabiaNodeNettyIntegrationTest {
-    private static final Logger log = LoggerFactory.getLogger(RabiaNodeNettyIntegrationTest.class);
+class RabiaNodeNettyIT {
+    private static final Logger log = LoggerFactory.getLogger(RabiaNodeNettyIT.class);
 
     private static final int CLUSTER_SIZE = 5;
     private static final int BASE_PORT = 3040;

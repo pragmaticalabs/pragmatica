@@ -18,8 +18,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Test Suite 4: Byzantine Behaviors
 /// Tests the resilience of Rabia consensus algorithm under Byzantine fault scenarios.
-public class ByzantineBehaviorsTest {
-    private static final Logger log = LoggerFactory.getLogger(ByzantineBehaviorsTest.class);
+public class ByzantineBehaviorsIT {
+    private static final Logger log = LoggerFactory.getLogger(ByzantineBehaviorsIT.class);
     private static final int CLUSTER_SIZE = 5; // f=1 in 3f+1 model allows handling one Byzantine node
 
     private TestCluster cluster;

@@ -18,8 +18,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.StringKey.key;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-class RabiaIntegrationTest {
-    private static final Logger log = LoggerFactory.getLogger(RabiaIntegrationTest.class);
+class RabiaIntegrationIT {
+    private static final Logger log = LoggerFactory.getLogger(RabiaIntegrationIT.class);
 
     @Test
     void threeNodeCluster_agreesAndPropagates() {

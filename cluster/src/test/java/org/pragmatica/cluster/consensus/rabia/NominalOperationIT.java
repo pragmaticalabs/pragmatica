@@ -30,8 +30,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /**
  * Test Suite 1: Nominal Operation
  */
-public class NominalOperationTest {
-    private static final Logger log = LoggerFactory.getLogger(NominalOperationTest.class);
+public class NominalOperationIT {
+    private static final Logger log = LoggerFactory.getLogger(NominalOperationIT.class);
     private static final int CLUSTER_SIZE = 5;
     private static final int REQUEST_COUNT = 10_000;
 

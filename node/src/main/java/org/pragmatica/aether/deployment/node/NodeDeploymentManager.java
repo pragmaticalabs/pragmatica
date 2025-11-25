@@ -2,24 +2,41 @@ package org.pragmatica.aether.deployment.node;
 
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.SliceStore;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.cluster.topology.QuorumStateNotification;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.message.MessageReceiver;
 import org.pragmatica.message.MessageRouter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.regex.Pattern;
+import java.util.function.Consumer;
 
 public interface NodeDeploymentManager {
     record SliceDeployment(SliceNodeKey key, SliceState state, long timestamp) {}
+
+    @MessageReceiver
+    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+
+    @MessageReceiver
+    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+
+    @MessageReceiver
+    void onQuorumStateChange(QuorumStateNotification quorumStateNotification);
 
     sealed interface NodeDeploymentState {
         default void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
@@ -31,112 +48,107 @@ public interface NodeDeploymentManager {
         record DormantNodeDeploymentState() implements NodeDeploymentState {}
 
         record ActiveNodeDeploymentState(
-                Pattern pattern,
                 NodeId self,
                 SliceStore sliceStore,
                 SliceActionConfig configuration,
+                ClusterNode<KVCommand<AetherKey>> cluster,
                 ConcurrentHashMap<SliceNodeKey, SliceDeployment> deployments
         ) implements NodeDeploymentState {
 
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
+            private static final Fn1<Cause, Class<?>> UNEXPECTED_VALUE_TYPE =
+                Causes.forValue("Unexpected value type for slice-node key: {}");
+            private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED =
+                Causes.forValue("Failed to cleanup slice {} during abrupt removal");
+            private static final Fn1<Cause, SliceNodeKey> STATE_UPDATE_FAILED =
+                Causes.forValue("Failed to update slice state for {}");
+            private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED =
+                Causes.forValue("Failed to unload slice {}");
 
-            // TODO: We're should use KVStore with dedicated structured keys. This, in turn, should
-            //       simplify matching patterns and destructuring keys into elements. Take further look into
-            //       SliceKVSchema, perhaps it can be a starting point for this.
-            //
-            @Override
-            public void onValuePut(ValuePut<?, ?> valuePut) {
-                // Extract key from the command within the notification
-                var keyString = valuePut.cause().key().toString();
-                if (!pattern.matcher(keyString).matches()) {
-                    return;
+            public void whenOurKeyMatches(AetherKey key, Consumer<SliceNodeKey> action) {
+                switch (key) {
+                    case SliceNodeKey sliceKey when sliceKey.isForNode(self) ->
+                        action.accept(sliceKey);
+                    default -> {}
                 }
-
-                log.debug("ValuePut received for key: {}", keyString);
-
-                // Parse the key and value to handle slice state updates
-                SliceNodeKey.sliceNodeKey(keyString)
-                            .onSuccess(sliceKey -> {
-                                // Process string value directly
-                                if (valuePut.cause().value() instanceof String stateValue) {
-                                    handleSliceStateUpdate(sliceKey, stateValue);
-                                }
-                            })
-                            .onFailure(cause -> log.debug("Key doesn't match slice pattern: {}", keyString));
             }
 
             @Override
-            public void onValueRemove(ValueRemove<?, ?> valueRemove) {
-                // Extract key from the command within the notification
-                var keyString = valueRemove.cause().key().toString();
-                if (!pattern.matcher(keyString).matches()) {
-                    return;
-                }
+            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
+                whenOurKeyMatches(valuePut.cause().key(), sliceKey -> {
+                    var value = valuePut.cause().value();
 
-                log.debug("ValueRemove received for key: {}", keyString);
-
-
-                // TODO: WARNING: unlike other notifications, removal may happen
-                //  not during normal operation but also during abrupt stop due to
-                //  lack of consensus. In this case slice might be activa and we should
-                //  immediately stop it, unload and remove, ignoring errors.
-
-                // Parse the key to handle slice removal
-                SliceNodeKey.sliceNodeKey(keyString)
-                            .onSuccess(sliceKey -> {
-                                // Remove the deployment entry
-                                deployments.remove(sliceKey);
-                                log.debug("Removed slice deployment: {}", sliceKey);
-                            })
-                            .onFailure(cause -> log.debug("Key doesn't match slice pattern: {}", keyString));
+                    switch (value) {
+                        case SliceNodeValue(SliceState state) -> {
+                            log.debug("ValuePut received for key: {}, state: {}", sliceKey, state);
+                            recordDeployment(sliceKey, state);
+                            processStateTransition(sliceKey, state);
+                        }
+                        default -> log.warn(UNEXPECTED_VALUE_TYPE.apply(value.getClass()).message());
+                    }
+                });
             }
 
-            // TODO: we may need to rework it
-            private void handleSliceStateUpdate(SliceNodeKey sliceKey, String stateValue) {
-                // Simple parsing of state from string (format: "STATE:timestamp:version")
-                var parts = stateValue.split(":");
-                if (parts.length >= 1) {
-                    var state = SliceState.valueOf(parts[0]);
-                    var timestamp = parts.length >= 2 ? Long.parseLong(parts[1]) : System.currentTimeMillis();
-                    var newDeployment = new SliceDeployment(sliceKey, state, timestamp);
-                    deployments.put(sliceKey, newDeployment);
+            @Override
+            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
+                whenOurKeyMatches(valueRemove.cause().key(), sliceKey -> {
+                    log.debug("ValueRemove received for key: {}", sliceKey);
 
-                    // Process state transition
-                    processStateTransition(sliceKey, state);
-                }
+                    // WARNING: Removal may happen during abrupt stop due to lack of consensus.
+                    // In this case slice might be active and we should immediately stop it,
+                    // unload and remove, ignoring errors.
+                    var deployment = deployments.remove(sliceKey);
+
+                    if (shouldForceCleanup(deployment)) {
+                        forceCleanupSlice(sliceKey);
+                    }
+                });
             }
 
+            private void recordDeployment(SliceNodeKey sliceKey, SliceState state) {
+                var timestamp = System.currentTimeMillis();
+                var deployment = new SliceDeployment(sliceKey, state, timestamp);
+                deployments.put(sliceKey, deployment);
+            }
+
+            private boolean shouldForceCleanup(SliceDeployment deployment) {
+                return deployment != null && deployment.state() == SliceState.ACTIVE;
+            }
+
+            private void forceCleanupSlice(SliceNodeKey sliceKey) {
+                sliceStore.deactivateSlice(sliceKey.artifact())
+                    .flatMap(_ -> sliceStore.unloadSlice(sliceKey.artifact()))
+                    .onFailure(cause -> logCleanupFailure(sliceKey, cause));
+            }
+
+            private void logCleanupFailure(SliceNodeKey sliceKey, Cause cause) {
+                logError(CLEANUP_FAILED, sliceKey, cause);
+            }
 
             private void processStateTransition(SliceNodeKey sliceKey, SliceState state) {
                 switch (state) {
-                    case SliceState.LOADING -> handleLoading(sliceKey);
-                    case SliceState.LOADED -> handleLoaded(sliceKey);
-                    case SliceState.ACTIVATING -> handleActivating(sliceKey);
-                    case SliceState.ACTIVE -> handleActive(sliceKey);
-                    case SliceState.DEACTIVATING -> handleDeactivating(sliceKey);
-                    case SliceState.FAILED -> handleFailed(sliceKey);
-                    case SliceState.UNLOADING -> handleUnloading(sliceKey);
-                    default -> { /* No action needed for other states */ }
+                    case LOAD -> handleLoading(sliceKey);
+                    case LOADING -> {} // Transitional state, no action
+                    case LOADED -> handleLoaded(sliceKey);
+                    case ACTIVATE -> handleActivating(sliceKey);
+                    case ACTIVATING -> {} // Transitional state, no action
+                    case ACTIVE -> handleActive(sliceKey);
+                    case DEACTIVATE -> handleDeactivating(sliceKey);
+                    case DEACTIVATING -> {} // Transitional state, no action
+                    case FAILED -> handleFailed(sliceKey);
+                    case UNLOAD -> handleUnloading(sliceKey);
+                    case UNLOADING -> {} // Transitional state, no action
                 }
             }
 
             private void handleLoading(SliceNodeKey sliceKey) {
-                // Delegate to SliceStore for actual slice loading
-                sliceStore.loadSlice(sliceKey.artifact())
-                          // TODO: move timeouts to SliceStore.
-                          //  Timeouts should be inserted as close to actual operations as possible.
-                          //  Otherwise they don't cancel the operation itself, but subsequent transformations.
-                          //  This may result in incorrect handling of subsequent operations as they will
-                          //  be executed only when original operation is completed.
-                          .timeout(configuration.timeoutFor(SliceState.LOADING))
-                          .onSuccess(slice -> {
-                              // Transition to LOADED state
-                              updateSliceState(sliceKey, SliceState.LOADED);
-                          })
-                          .onFailure(cause -> {
-                              // Transition to FAILED state
-                              updateSliceState(sliceKey, SliceState.FAILED);
-                          });
+                executeWithStateTransition(
+                    sliceKey,
+                    SliceState.LOADING,
+                    sliceStore.loadSlice(sliceKey.artifact()),
+                    SliceState.LOADED,
+                    SliceState.FAILED
+                );
             }
 
             private void handleLoaded(SliceNodeKey sliceKey) {
@@ -146,17 +158,13 @@ public interface NodeDeploymentManager {
             }
 
             private void handleActivating(SliceNodeKey sliceKey) {
-                // Delegate to SliceStore for slice activation
-                sliceStore.activateSlice(sliceKey.artifact())
-                          .timeout(configuration.timeoutFor(SliceState.ACTIVATING))
-                          .onSuccess(slice -> {
-                              // Transition to ACTIVE state
-                              updateSliceState(sliceKey, SliceState.ACTIVE);
-                          })
-                          .onFailure(cause -> {
-                              // Transition to FAILED state
-                              updateSliceState(sliceKey, SliceState.FAILED);
-                          });
+                executeWithStateTransition(
+                    sliceKey,
+                    SliceState.ACTIVATING,
+                    sliceStore.activateSlice(sliceKey.artifact()),
+                    SliceState.ACTIVE,
+                    SliceState.FAILED
+                );
             }
 
             private void handleActive(SliceNodeKey sliceKey) {
@@ -166,17 +174,13 @@ public interface NodeDeploymentManager {
             }
 
             private void handleDeactivating(SliceNodeKey sliceKey) {
-                // Delegate to SliceStore for slice deactivation
-                sliceStore.deactivateSlice(sliceKey.artifact())
-                          .timeout(configuration.timeoutFor(SliceState.DEACTIVATING))
-                          .onSuccess(slice -> {
-                              // Transition back to LOADED state
-                              updateSliceState(sliceKey, SliceState.LOADED);
-                          })
-                          .onFailure(cause -> {
-                              // Transition to FAILED state
-                              updateSliceState(sliceKey, SliceState.FAILED);
-                          });
+                executeWithStateTransition(
+                    sliceKey,
+                    SliceState.DEACTIVATING,
+                    sliceStore.deactivateSlice(sliceKey.artifact()),
+                    SliceState.LOADED,
+                    SliceState.FAILED
+                );
             }
 
             private void handleFailed(SliceNodeKey sliceKey) {
@@ -185,93 +189,127 @@ public interface NodeDeploymentManager {
             }
 
             private void handleUnloading(SliceNodeKey sliceKey) {
-                // Delegate to SliceStore for slice unloading
-                sliceStore.unloadSlice(sliceKey.artifact())
-                          .timeout(configuration.timeoutFor(SliceState.UNLOADING))
-                          .onSuccess(result -> {
-                              // Remove from deployments map
-                              deployments.remove(sliceKey);
-                          })
-                          .onFailure(cause -> {
-                              // Log error but still remove from tracking
-                              log.error("Failed to unload slice {}: {}", sliceKey, cause.message());
-                              deployments.remove(sliceKey);
-                          });
+                // TODO: move timeouts to SliceStore.
+                //  Timeouts should be inserted as close to actual operations as possible.
+                //  Otherwise they don't cancel the operation itself, but subsequent transformations.
+                //  This may result in incorrect handling of subsequent operations as they will
+                //  be executed only when original operation is completed.
+                configuration.timeoutFor(SliceState.UNLOADING)
+                    .onSuccess(timeout ->
+                        sliceStore.unloadSlice(sliceKey.artifact())
+                            .timeout(timeout)
+                            .onSuccess(_ -> removeFromDeployments(sliceKey))
+                            .onFailure(cause -> handleUnloadFailure(sliceKey, cause))
+                    )
+                    .onFailure(cause -> handleUnloadFailure(sliceKey, cause));
+            }
+
+            private void executeWithStateTransition(
+                SliceNodeKey sliceKey,
+                SliceState currentState,
+                org.pragmatica.lang.Promise<?> operation,
+                SliceState successState,
+                SliceState failureState
+            ) {
+                configuration.timeoutFor(currentState)
+                    .onSuccess(timeout ->
+                        operation.timeout(timeout)
+                            .onSuccess(_ -> transitionTo(sliceKey, successState))
+                            .onFailure(_ -> transitionTo(sliceKey, failureState))
+                    )
+                    .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
+            }
+
+            private void transitionTo(SliceNodeKey sliceKey, SliceState newState) {
+                updateSliceState(sliceKey, newState);
+            }
+
+            private void removeFromDeployments(SliceNodeKey sliceKey) {
+                deployments.remove(sliceKey);
+            }
+
+            private void handleUnloadFailure(SliceNodeKey sliceKey, Cause cause) {
+                logError(UNLOAD_FAILED, sliceKey, cause);
+                deployments.remove(sliceKey);
             }
 
             private void updateSliceState(SliceNodeKey sliceKey, SliceState newState) {
-                var timestamp = System.currentTimeMillis();
-                var version = deployments.containsKey(sliceKey) ? deployments.get(sliceKey).timestamp() + 1 : 1;
-                var newStateValue = newState.toString() + ":" + timestamp + ":" + version;
+                var value = new SliceNodeValue(newState);
+                KVCommand<AetherKey> command = new KVCommand.Put<>(sliceKey, value);
 
-                // This would typically update the cluster KV store
-                // For now, we'll simulate by handling the state update locally
-                // TODO: link with consensus
-                handleSliceStateUpdate(sliceKey, newStateValue);
+                // Submit command to cluster for consensus
+                cluster.apply(List.of(command))
+                    .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
+            }
+
+            private void logStateUpdateFailure(SliceNodeKey sliceKey, Cause cause) {
+                logError(STATE_UPDATE_FAILED, sliceKey, cause);
+            }
+
+            private void logError(Fn1<Cause, SliceNodeKey> errorTemplate, SliceNodeKey sliceKey, Cause cause) {
+                log.error(errorTemplate.apply(sliceKey).message() + ": {}", cause.message());
             }
         }
-    }
-
-    static NodeDeploymentManager nodeDeploymentManager(NodeId self, MessageRouter router, SliceStore sliceStore) {
-        return nodeDeploymentManager(self, router, sliceStore, SliceActionConfig.defaultConfiguration());
     }
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
                                                        MessageRouter router,
                                                        SliceStore sliceStore,
+                                                       ClusterNode<KVCommand<AetherKey>> cluster) {
+        return nodeDeploymentManager(self, router, sliceStore, cluster, SliceActionConfig.defaultConfiguration());
+    }
+
+    static NodeDeploymentManager nodeDeploymentManager(NodeId self,
+                                                       MessageRouter router,
+                                                       SliceStore sliceStore,
+                                                       ClusterNode<KVCommand<AetherKey>> cluster,
                                                        SliceActionConfig configuration) {
         record deploymentManager(
                 NodeId self,
-                SliceStore sliceManager,
+                SliceStore sliceStore,
+                ClusterNode<KVCommand<AetherKey>> cluster,
                 SliceActionConfig configuration,
+                MessageRouter router,
                 AtomicReference<NodeDeploymentState> state
         ) implements NodeDeploymentManager {
 
-            public void onValuePut(ValuePut<?, ?> valuePut) {
+            @Override
+            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
                 state.get().onValuePut(valuePut);
             }
 
-            public void onValueRemove(ValueRemove<?, ?> valueRemove) {
+            @Override
+            public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
                 state.get().onValueRemove(valueRemove);
             }
 
+            @Override
             public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
                 switch (quorumStateNotification) {
-                    case QuorumStateNotification.ESTABLISHED ->
+                    case ESTABLISHED ->
                             state().set(new NodeDeploymentState.ActiveNodeDeploymentState(
-                                    buildPattern(),
                                     self(),
-                                    sliceManager(),
+                                    sliceStore(),
                                     configuration(),
+                                    cluster(),
                                     new ConcurrentHashMap<>()
                             ));
-                    case QuorumStateNotification.DISAPPEARED -> {
+                    case DISAPPEARED -> {
                         // Clean up any pending operations before going dormant
                         // Individual Promise timeouts will handle their own cleanup
                         state().set(new NodeDeploymentState.DormantNodeDeploymentState());
                     }
                 }
             }
-
-            private Pattern buildPattern() {
-                // Create pattern based on node ID for slice deployment matching
-                return Pattern.compile("slices/" + self.id() + "/.*");
-            }
         }
 
-        var deploymentManager = new deploymentManager(
+        return new deploymentManager(
                 self,
                 sliceStore,
+                cluster,
                 configuration,
+                router,
                 new AtomicReference<>(new NodeDeploymentState.DormantNodeDeploymentState())
         );
-
-        // TODO: rework for immutable MessageRouter builder API
-        var mutableRouter = (MessageRouter.MutableRouter) router;
-        mutableRouter.addRoute(ValuePut.class, deploymentManager::onValuePut);
-        mutableRouter.addRoute(ValueRemove.class, deploymentManager::onValueRemove);
-        mutableRouter.addRoute(QuorumStateNotification.class, deploymentManager::onQuorumStateChange);
-
-        return deploymentManager;
     }
 }

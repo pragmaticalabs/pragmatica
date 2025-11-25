@@ -23,8 +23,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /**
  * Test Suite 5: Cluster Reconfiguration
  */
-public class ReconfigurationTest {
-    private static final Logger log = LoggerFactory.getLogger(ReconfigurationTest.class);
+public class ReconfigurationIT {
+    private static final Logger log = LoggerFactory.getLogger(ReconfigurationIT.class);
     private static final int INITIAL_CLUSTER_SIZE = 5;
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
 

@@ -19,7 +19,7 @@ This example slice provides basic string processing functionality (converting st
 ```xml
 <groupId>org.pragmatica-lite.aether</groupId>
 <artifactId>example-slice</artifactId>
-<version>0.1.0</version>
+<version>0.2.0</version>
 ```
 
 ## Usage
@@ -30,12 +30,12 @@ This example slice provides basic string processing functionality (converting st
 mvn package
 ```
 
-This produces `target/example-slice-0.1.0.jar` which can be loaded by the Aether runtime.
+This produces `target/example-slice-0.2.0.jar` which can be loaded by the Aether runtime.
 
 ### Loading with SliceStore
 
 ```java
-var artifact = Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.1.0");
+var artifact = Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.2.0");
 var sliceStore = SliceStore.sliceManager();
 
 // Load the slice

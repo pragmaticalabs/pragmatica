@@ -37,19 +37,11 @@ public interface DependencyResolver {
      */
     static Result<Slice> resolve(Artifact artifact, ClassLoader classLoader, SliceRegistry registry) {
         // Check if already loaded
-        var existing = registry.lookup(artifact);
-
-        // Need to check if Option is present and return early if so
-        // If not present, proceed with resolution
-        // Use a holder pattern to extract value from Option
-        final Slice[] holder = new Slice[1];
-        existing.onPresent(slice -> holder[0] = slice);
-
-        if (holder[0] != null) {
-            return Result.success(holder[0]);
-        }
-
-        return resolveNew(artifact, classLoader, registry, new HashSet<>());
+        return registry.lookup(artifact)
+            .fold(
+                () -> resolveNew(artifact, classLoader, registry, new HashSet<>()),
+                Result::success
+            );
     }
 
     private static Result<Slice> resolveNew(

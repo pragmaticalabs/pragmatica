@@ -28,8 +28,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /**
  * Test Suite 3: Crash-Stop Failures
  */
-public class CrashStopFailuresTest {
-    private static final Logger log = LoggerFactory.getLogger(CrashStopFailuresTest.class);
+public class CrashStopFailuresIT {
+    private static final Logger log = LoggerFactory.getLogger(CrashStopFailuresIT.class);
     private static final int CLUSTER_SIZE = 5;
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
 
