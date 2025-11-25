@@ -12,6 +12,7 @@ This document provides a comprehensive, actionable implementation plan for build
 - **Slice Lifecycle States**: SliceState enum with transitions and timeouts
 - **Test Infrastructure**: Comprehensive testing patterns established
 - **Documentation**: Architecture and vision documents aligned
+- **Dependency Injection Infrastructure**: Complete resolution framework (VersionPattern, DependencyDescriptor, SliceDependencies, DependencyCycleDetector, SliceFactory, SliceRegistry, DependencyResolver) - 119 tests passing
 
 ### Partially Implemented 🔄
 - **NodeDeploymentManager**: Skeleton exists but consensus integration commented out
@@ -63,27 +64,51 @@ This document provides a comprehensive, actionable implementation plan for build
 **Priority**: CRITICAL
 **Estimated Effort**: 5-7 days
 **Depends On**: None (can start in parallel with 1.1)
+**Prerequisites**: ✅ Dependency injection infrastructure complete (DependencyResolver, SliceRegistry, etc.)
 
 **Tasks**:
-1. Implement basic ClassLoader-based slice loading
-2. Implement ServiceLoader discovery
-3. Add lifecycle management (LOAD → LOADING → LOADED)
-4. Add activation/deactivation (ACTIVATE → ACTIVATING → ACTIVE)
-5. Implement timeout handling at operation level
-6. Add resource cleanup on unload
-7. Write comprehensive tests (lifecycle, timeouts, errors)
+1. ⚠️ **Implement artifact resolution from repository** (BLOCKER)
+   - Integrate with LocalRepository.locate() to download JARs
+   - Resolve transitive dependencies
+   - Cache downloaded artifacts
+2. **Design className ↔ artifact mapping**
+   - Mechanism to convert class name to artifact coordinates
+   - Consider META-INF manifest entries or separate registry
+3. **Implement isolated ClassLoader management**
+   - Create isolated ClassLoader per slice
+   - Share Pragmatica framework classes
+   - Proper parent delegation
+4. **Integrate DependencyResolver**
+   - Use DependencyResolver.resolve() in slice loading
+   - Pre-load dependencies into SliceRegistry
+   - Handle resolution failures
+5. Implement basic ClassLoader-based slice loading
+6. Implement ServiceLoader discovery
+7. Add lifecycle management (LOAD → LOADING → LOADED)
+8. Add activation/deactivation (ACTIVATE → ACTIVATING → ACTIVE)
+9. Implement timeout handling at operation level
+10. Add resource cleanup on unload
+11. Write comprehensive tests (lifecycle, timeouts, errors, dependency resolution)
 
 **Acceptance Criteria**:
-- Can load slice from Maven artifact
-- Lifecycle transitions work correctly
-- Timeouts cancel operations properly
-- Resources cleaned up on unload
-- Integration test with example-slice passes
+- ✅ Can resolve dependencies from repository (LocalRepository integration)
+- ✅ Isolated ClassLoader created per slice
+- ✅ Dependencies resolved and loaded recursively
+- ✅ Can load slice from Maven artifact
+- ✅ Lifecycle transitions work correctly
+- ✅ Timeouts cancel operations properly
+- ✅ Resources cleaned up on unload
+- ✅ Integration test with example-slice and dependencies passes
+- ✅ Circular dependency detection prevents infinite loops
 
 **Files to Create/Modify**:
+- `slice/src/main/java/org/pragmatica/aether/slice/repository/LocalRepository.java` (new - artifact resolution)
+- `slice/src/main/java/org/pragmatica/aether/slice/repository/ArtifactCache.java` (new - caching)
 - `slice/src/main/java/org/pragmatica/aether/slice/SliceStore.java` (implement)
-- `slice/src/main/java/org/pragmatica/aether/slice/SliceClassLoader.java` (new)
+- `slice/src/main/java/org/pragmatica/aether/slice/SliceClassLoader.java` (new - isolation)
+- `slice/src/main/java/org/pragmatica/aether/slice/ArtifactMapper.java` (new - className ↔ artifact)
 - `slice/src/test/java/org/pragmatica/aether/slice/SliceStoreTest.java` (new)
+- `slice/src/test/java/org/pragmatica/aether/slice/repository/LocalRepositoryTest.java` (new)
 
 ---
 
