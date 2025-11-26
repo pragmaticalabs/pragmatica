@@ -240,7 +240,7 @@ public record Email(String value) {
 }
 ```
 
-**Examples in Aether**: `Artifact`, `GroupId`, `ArtifactId`, `Version`, `SliceState`, `EntryPointId`, `MethodName`
+**Examples in Aether**: `Artifact`, `GroupId`, `ArtifactId`, `Version`, `SliceState`, `MethodName`
 
 ### No Business Exceptions
 Business logic never throws exceptions. All failures flow through `Result` or `Promise` as typed `Cause`:

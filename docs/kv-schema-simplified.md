@@ -16,7 +16,7 @@ After reviewing the slice lifecycle document, we determined that the **allocatio
    - Stores slice state on each specific node
    - Example: `slices/node-1/org.example:slice:1.0.0` → `{"state": "ACTIVE", "timestamp": 1234567890}`
 
-3. **Endpoint Keys**: `endpoints/{artifact}/{entry-point-id}:{instance}`
+3. **Endpoint Keys**: `endpoints/{artifact}/{method-name}:{instance}`
    - Stores endpoint registrations for remote calls
    - Example: `endpoints/org.example:slice:1.0.0/process:1` → `{"node-id": "node-1", "instance": 1, "state": "ACTIVE"}`
 
@@ -138,6 +138,6 @@ By eliminating the allocations key:
 
 This aligns perfectly with the slice lifecycle document, which references only:
 - `slice-node-key` (our `slices/{node-id}/{artifact}`)
-- `slice-instance-endpoint-key` (our `endpoints/{artifact}/{entry-point-id}:{instance}`)
+- `slice-instance-endpoint-key` (our `endpoints/{artifact}/{method-name}:{instance}`)
 
 No allocations mentioned because they're not needed.

@@ -241,7 +241,7 @@ slices/{node-id}/{group-id}:{artifact-id}:{version} → {
 
 ### Endpoint Schema
 ```
-endpoints/{group-id}:{artifact-id}:{version}/{entry-point-id}:{instance} → {
+endpoints/{group-id}:{artifact-id}:{version}/{method-name}:{instance} → {
   "node-id": "node-1",
   "instance": 1,
   "state": "ACTIVE",

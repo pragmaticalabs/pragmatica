@@ -10,7 +10,7 @@ Aether (v0.2.0) is a clusterized runtime environment built on Pragmatica Lite th
 
 ### Slice-Based Deployment
 - **Slices**: Containerized application components with independent lifecycle
-- **Entry Points**: Type-safe service interfaces with parameter validation
+- **Slice Methods**: Type-safe service methods with parameter validation
 - **Slice Registry**: Discovery and lifecycle management for deployed components
 - **Dynamic Loading**: Maven artifact resolution with ClassLoader isolation
 
@@ -33,8 +33,8 @@ Aether (v0.2.0) is a clusterized runtime environment built on Pragmatica Lite th
 
 ### Slice API Components
 - **Slice.java** - Core lifecycle interface (start/stop)
-- **EntryPoint.java** - Service entry point definitions
-- **EntryPointId.java**, **ArtifactId.java** - Type-safe identifiers
+- **SliceMethod.java** - Method definitions with type tokens
+- **MethodName.java**, **ArtifactId.java** - Type-safe identifiers
 - **SliceRegistry.java** - Registry interface for slice discovery
 
 ### Slice Management
@@ -84,7 +84,7 @@ List<LoadedSlice> loadedSlices()
 
 ### Service Discovery
 - ServiceLoader pattern for slice discovery
-- Type-safe entry point registration
+- Type-safe method registration via SliceMethod
 - Automatic lifecycle management
 - Resource cleanup on unload
 

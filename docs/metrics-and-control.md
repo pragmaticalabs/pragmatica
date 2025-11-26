@@ -63,7 +63,7 @@ record MetricsUpdate(
     NodeId nodeId,
     long timestamp,
     double cpuUsage,          // 0.0 to 1.0
-    Map<EntryPointId, CallStats> entryPointStats,
+    Map<MethodName, CallStats> methodStats,
     long sequenceNumber       // Monotonic counter for detecting gaps
 ) {
     record CallStats(
@@ -75,7 +75,7 @@ record MetricsUpdate(
 
 **Frequency**: Every 1 second
 **Transport**: MessageRouter (non-blocking send)
-**Size**: ~50-200 bytes depending on entry point count
+**Size**: ~50-200 bytes depending on method count
 
 #### ClusterMetricsSnapshot (Leader → All Nodes)
 ```java
@@ -87,14 +87,14 @@ record ClusterMetricsSnapshot(
 ) {
     record NodeMetrics(
         double cpuUsage,
-        Map<EntryPointId, CallStats> entryPointStats,
+        Map<MethodName, CallStats> methodStats,
         boolean healthy          // Based on recent heartbeat
     ) {}
 
     record ClusterAggregates(
         double totalCpuUsage,
         double avgCpuUsage,
-        Map<EntryPointId, AggregateCallStats> entryPointAggregates
+        Map<MethodName, AggregateCallStats> methodAggregates
     ) {}
 
     record AggregateCallStats(

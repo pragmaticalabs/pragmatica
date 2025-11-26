@@ -1,7 +1,7 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.EntryPointId;
+import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.cluster.state.kvstore.StructuredPattern;
@@ -102,9 +102,9 @@ public sealed interface AetherKey extends StructuredKey {
 
     /// Endpoint-key format (for slice instance endpoints):
     /// ```
-    /// endpoints/{groupId}:{artifactId}:{version}/{endpointName}:{instanceNumber}
+    /// endpoints/{groupId}:{artifactId}:{version}/{methodName}:{instanceNumber}
     ///```
-    record EndpointKey(Artifact artifact, EntryPointId entryPointId, int instanceNumber) implements AetherKey {
+    record EndpointKey(Artifact artifact, MethodName methodName, int instanceNumber) implements AetherKey {
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
@@ -118,7 +118,7 @@ public sealed interface AetherKey extends StructuredKey {
             return "endpoints/"
                     + artifact.asString()
                     + "/"
-                    + entryPointId.id()
+                    + methodName.name()
                     + ":"
                     + instanceNumber;
         }
@@ -147,12 +147,12 @@ public sealed interface AetherKey extends StructuredKey {
                 return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();
             }
 
-            var entryPointPart = endpointPart.substring(0, colonIndex);
+            var methodNamePart = endpointPart.substring(0, colonIndex);
             var instancePart = endpointPart.substring(colonIndex + 1);
 
             return Result.all(
                     Artifact.artifact(artifactPart),
-                    EntryPointId.entryPointId(entryPointPart),
+                    MethodName.methodName(methodNamePart),
                     Number.parseInt(instancePart)
             ).map(EndpointKey::new);
         }
