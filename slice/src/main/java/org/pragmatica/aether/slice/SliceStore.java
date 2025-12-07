@@ -1,6 +1,8 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -8,6 +10,18 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 public interface SliceStore {
+
+    /**
+     * Create a new SliceStore instance.
+     *
+     * @param registry     Registry for tracking loaded slices
+     * @param repositories Repositories to search for slice JARs
+     * @return SliceStore implementation
+     */
+    static SliceStore sliceStore(SliceRegistry registry, List<Repository> repositories) {
+        return SliceStoreImpl.sliceStore(registry, repositories);
+    }
+
     interface LoadedSlice {
         Artifact artifact();
 

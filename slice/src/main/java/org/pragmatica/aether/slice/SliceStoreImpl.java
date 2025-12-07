@@ -1,0 +1,234 @@
+package org.pragmatica.aether.slice;
+
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.dependency.DependencyResolver;
+import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.aether.slice.repository.Location;
+import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.net.URL;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
+/**
+ * Production implementation of SliceStore that manages slice lifecycle.
+ * <p>
+ * Responsibilities:
+ * <ul>
+ *   <li>Load slices from repository via DependencyResolver</li>
+ *   <li>Activate slices by calling start()</li>
+ *   <li>Deactivate slices by calling stop()</li>
+ *   <li>Unload slices and cleanup ClassLoaders</li>
+ *   <li>Track slice state (LOADED/ACTIVE)</li>
+ * </ul>
+ * <p>
+ * Thread-safe: Uses ConcurrentHashMap for entry tracking.
+ */
+public interface SliceStoreImpl {
+
+    enum EntryState {
+        LOADED,
+        ACTIVE
+    }
+
+    record LoadedSliceEntry(
+        Artifact artifact,
+        Slice sliceInstance,
+        SliceClassLoader classLoader,
+        EntryState state
+    ) implements SliceStore.LoadedSlice {
+
+        @Override
+        public Result<Slice> slice() {
+            return Result.success(sliceInstance);
+        }
+
+        LoadedSliceEntry withState(EntryState newState) {
+            return new LoadedSliceEntry(artifact, sliceInstance, classLoader, newState);
+        }
+    }
+
+    static SliceStore sliceStore(SliceRegistry registry, List<Repository> repositories) {
+        return new SliceStoreRecord(registry, repositories, new ConcurrentHashMap<>());
+    }
+
+    record SliceStoreRecord(
+        SliceRegistry registry,
+        List<Repository> repositories,
+        Map<Artifact, LoadedSliceEntry> entries
+    ) implements SliceStore {
+
+        private static final Logger log = LoggerFactory.getLogger(SliceStoreRecord.class);
+
+        @Override
+        public Promise<LoadedSlice> loadSlice(Artifact artifact) {
+            var existing = entries.get(artifact);
+            if (existing != null) {
+                log.debug("Slice {} already loaded", artifact);
+                return Promise.success(existing);
+            }
+
+            log.info("Loading slice {}", artifact);
+            return locateInRepositories(artifact)
+                .flatMap(location -> loadFromLocation(artifact, location));
+        }
+
+        private Promise<LoadedSlice> loadFromLocation(Artifact artifact, Location location) {
+            var classLoader = new SliceClassLoader(new URL[]{location.url()}, SliceStoreRecord.class.getClassLoader());
+
+            return DependencyResolver.resolve(artifact, compositeRepository(), registry)
+                .map(slice -> createEntry(artifact, slice, classLoader))
+                .onFailure(cause -> handleLoadFailure(artifact, classLoader, cause));
+        }
+
+        private LoadedSlice createEntry(Artifact artifact, Slice slice, SliceClassLoader classLoader) {
+            var entry = new LoadedSliceEntry(artifact, slice, classLoader, EntryState.LOADED);
+            entries.put(artifact, entry);
+            log.info("Slice {} loaded successfully", artifact);
+            return entry;
+        }
+
+        private void handleLoadFailure(Artifact artifact, SliceClassLoader classLoader, Cause cause) {
+            closeClassLoader(classLoader);
+            log.error("Failed to load slice {}: {}", artifact, cause.message());
+        }
+
+        @Override
+        public Promise<LoadedSlice> activateSlice(Artifact artifact) {
+            var entry = entries.get(artifact);
+            if (entry == null) {
+                return SLICE_NOT_LOADED.apply(artifact.asString()).promise();
+            }
+
+            if (entry.state() == EntryState.ACTIVE) {
+                log.debug("Slice {} already active", artifact);
+                return Promise.success(entry);
+            }
+
+            if (entry.state() != EntryState.LOADED) {
+                return INVALID_STATE_TRANSITION.apply(entry.state() + " → ACTIVE").promise();
+            }
+
+            log.info("Activating slice {}", artifact);
+            return entry.sliceInstance().start()
+                .map(_ -> transitionToActive(artifact, entry))
+                .onFailure(cause -> log.error("Failed to activate slice {}: {}", artifact, cause.message()));
+        }
+
+        private LoadedSlice transitionToActive(Artifact artifact, LoadedSliceEntry entry) {
+            var activeEntry = entry.withState(EntryState.ACTIVE);
+            entries.put(artifact, activeEntry);
+            log.info("Slice {} activated successfully", artifact);
+            return activeEntry;
+        }
+
+        @Override
+        public Promise<LoadedSlice> deactivateSlice(Artifact artifact) {
+            var entry = entries.get(artifact);
+            if (entry == null) {
+                return SLICE_NOT_LOADED.apply(artifact.asString()).promise();
+            }
+
+            if (entry.state() == EntryState.LOADED) {
+                log.debug("Slice {} already deactivated", artifact);
+                return Promise.success(entry);
+            }
+
+            if (entry.state() != EntryState.ACTIVE) {
+                return INVALID_STATE_TRANSITION.apply(entry.state() + " → LOADED").promise();
+            }
+
+            log.info("Deactivating slice {}", artifact);
+            return entry.sliceInstance().stop()
+                .map(_ -> transitionToLoaded(artifact, entry))
+                .onFailure(cause -> log.error("Failed to deactivate slice {}: {}", artifact, cause.message()));
+        }
+
+        private LoadedSlice transitionToLoaded(Artifact artifact, LoadedSliceEntry entry) {
+            var loadedEntry = entry.withState(EntryState.LOADED);
+            entries.put(artifact, loadedEntry);
+            log.info("Slice {} deactivated successfully", artifact);
+            return loadedEntry;
+        }
+
+        @Override
+        public Promise<Unit> unloadSlice(Artifact artifact) {
+            var entry = entries.get(artifact);
+            if (entry == null) {
+                log.debug("Slice {} not loaded, nothing to unload", artifact);
+                return Promise.success(Unit.unit());
+            }
+
+            log.info("Unloading slice {}", artifact);
+
+            Promise<Unit> deactivatePromise = entry.state() == EntryState.ACTIVE
+                ? entry.sliceInstance().stop()
+                : Promise.success(Unit.unit());
+
+            return deactivatePromise
+                .map(_ -> cleanup(artifact, entry))
+                .onFailure(cause -> log.error("Failed to unload slice {}: {}", artifact, cause.message()));
+        }
+
+        private Unit cleanup(Artifact artifact, LoadedSliceEntry entry) {
+            registry.unregister(artifact);
+            closeClassLoader(entry.classLoader());
+            entries.remove(artifact);
+            log.info("Slice {} unloaded successfully", artifact);
+            return Unit.unit();
+        }
+
+        @Override
+        public Promise<Unit> unload(Artifact artifact) {
+            return unloadSlice(artifact);
+        }
+
+        @Override
+        public List<LoadedSlice> loaded() {
+            return entries.values().stream()
+                .map(entry -> (LoadedSlice) entry)
+                .toList();
+        }
+
+        private Promise<Location> locateInRepositories(Artifact artifact) {
+            for (var repo : repositories) {
+                var result = repo.locate(artifact).await();
+                if (result.isSuccess()) {
+                    return result.async();
+                }
+            }
+            return ARTIFACT_NOT_FOUND.apply(artifact.asString()).promise();
+        }
+
+        private Repository compositeRepository() {
+            return this::locateInRepositories;
+        }
+
+        private void closeClassLoader(SliceClassLoader classLoader) {
+            try {
+                classLoader.close();
+            } catch (IOException e) {
+                log.warn("Failed to close ClassLoader: {}", e.getMessage());
+            }
+        }
+
+        private static final Fn1<Cause, String> SLICE_NOT_LOADED =
+            Causes.forValue("Slice not loaded: %s");
+
+        private static final Fn1<Cause, String> INVALID_STATE_TRANSITION =
+            Causes.forValue("Invalid state transition: %s");
+
+        private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND =
+            Causes.forValue("Artifact not found in any repository: %s");
+    }
+}
