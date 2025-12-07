@@ -18,6 +18,8 @@ import static org.pragmatica.cluster.net.NodeInfo.nodeInfo;
 import static org.pragmatica.cluster.topology.ip.TcpTopologyManager.tcpTopologyManager;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
+import org.pragmatica.cluster.topology.TopologyManagementMessage;
+
 class TcpTopologyManagerIT {
     private final MessageRouter.MutableRouter router = MessageRouter.mutable();
 
@@ -46,8 +48,15 @@ class TcpTopologyManagerIT {
 
         var config = new TopologyConfig(nodeId1, timeSpan(100).hours(), TimeSpan.timeSpan(10).seconds(), List.of(nodeInfo1, nodeInfo2));
 
-        topologyManager = tcpTopologyManager(config, router);
-        topologyManager.configure(router);
+        var tcpManager = tcpTopologyManager(config, router);
+        topologyManager = tcpManager;
+
+        // Register routes for @MessageReceiver methods
+        router.addRoute(TopologyManagementMessage.AddNode.class, tcpManager::handleAddNodeMessage);
+        router.addRoute(TopologyManagementMessage.RemoveNode.class, tcpManager::handleRemoveNodeMessage);
+        router.addRoute(TopologyManagementMessage.DiscoverNodes.class, tcpManager::handleDiscoverNodesMessage);
+        router.addRoute(TopologyManagementMessage.DiscoveredNodes.class, tcpManager::handleMergeNodesMessage);
+        router.addRoute(NetworkManagementOperation.ConnectedNodesList.class, tcpManager::reconcile);
     }
 
     @Test

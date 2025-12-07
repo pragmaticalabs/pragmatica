@@ -19,6 +19,10 @@ import static org.pragmatica.cluster.topology.TopologyChangeNotification.nodeAdd
 import static org.pragmatica.cluster.topology.TopologyChangeNotification.nodeRemoved;
 import static org.pragmatica.message.MessageRouter.mutable;
 
+import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
+import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeDown;
+
 class LeaderManagerTest {
     record Watcher<T>(List<T> collected) {
         @MessageReceiver
@@ -38,9 +42,12 @@ class LeaderManagerTest {
         watcher.collected().clear();
         router.addRoute(LeaderChange.class, watcher::watch);
 
-        // It still does it work, but we don't have to keep reference to it
+        // LeaderManager uses @MessageReceiver annotations, routes added manually
         var leaderManager = LeaderManager.leaderManager(self, router);
-        leaderManager.configure(router);
+        router.addRoute(NodeAdded.class, leaderManager::nodeAdded);
+        router.addRoute(NodeRemoved.class, leaderManager::nodeRemoved);
+        router.addRoute(NodeDown.class, leaderManager::nodeDown);
+        router.addRoute(QuorumStateNotification.class, leaderManager::watchQuorumState);
     }
 
     @Test

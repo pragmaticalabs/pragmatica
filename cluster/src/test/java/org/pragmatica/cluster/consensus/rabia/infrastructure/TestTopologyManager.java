@@ -5,8 +5,6 @@ import org.pragmatica.cluster.net.NodeInfo;
 import org.pragmatica.cluster.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.message.MessageRouter;
-
 import java.net.SocketAddress;
 
 public record TestTopologyManager(int clusterSize, NodeInfo self) implements TopologyManager {
@@ -31,9 +29,5 @@ public record TestTopologyManager(int clusterSize, NodeInfo self) implements Top
     @Override
     public TimeSpan pingInterval() {
         return TimeSpan.timeSpan(1).seconds();
-    }
-
-    @Override
-    public void configure(MessageRouter.MutableRouter router) {
     }
 }
