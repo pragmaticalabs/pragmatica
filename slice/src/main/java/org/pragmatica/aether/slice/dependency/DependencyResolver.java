@@ -3,12 +3,16 @@ package org.pragmatica.aether.slice.dependency;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceClassLoader;
+import org.pragmatica.aether.slice.SliceManifest;
+import org.pragmatica.aether.slice.SliceManifest.SliceManifestInfo;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.net.URL;
 import java.util.*;
@@ -19,16 +23,19 @@ import java.util.*;
  * Resolution process:
  * 1. Check registry for already-loaded slice
  * 2. Locate JAR via repository
- * 3. Create ClassLoader with JAR URL
- * 4. Load dependencies from META-INF/dependencies/ file
- * 5. Build dependency graph and check for cycles
- * 6. Recursively resolve dependencies (depth-first)
- * 7. Instantiate slice via factory method
- * 8. Register in registry
+ * 3. Read manifest to get slice class name and verify artifact
+ * 4. Create ClassLoader with JAR URL
+ * 5. Load dependencies from META-INF/dependencies/ file
+ * 6. Build dependency graph and check for cycles
+ * 7. Recursively resolve dependencies (depth-first)
+ * 8. Instantiate slice via factory method
+ * 9. Register in registry
  * <p>
  * Thread-safe: Uses SliceRegistry for synchronization.
  */
 public interface DependencyResolver {
+
+    Logger log = LoggerFactory.getLogger(DependencyResolver.class);
 
     static Promise<Slice> resolve(Artifact artifact, Repository repository, SliceRegistry registry) {
         return registry.lookup(artifact)
@@ -52,41 +59,61 @@ public interface DependencyResolver {
         SliceRegistry registry,
         Set<String> resolutionPath
     ) {
-        var className = ArtifactMapper.toClassName(artifact);
+        var artifactKey = artifact.asString();
 
-        if (resolutionPath.contains(className)) {
-            return circularDependencyDetected(className).promise();
+        if (resolutionPath.contains(artifactKey)) {
+            return circularDependencyDetected(artifactKey).promise();
         }
 
-        resolutionPath.add(className);
+        resolutionPath.add(artifactKey);
 
         return repository.locate(artifact)
-            .flatMap(location -> createClassLoaderAndResolve(artifact, location, repository, registry, resolutionPath))
-            .onSuccess(_ -> resolutionPath.remove(className))
-            .onFailure(_ -> resolutionPath.remove(className));
+            .flatMap(location -> loadFromLocation(artifact, location, repository, registry, resolutionPath))
+            .onSuccess(_ -> resolutionPath.remove(artifactKey))
+            .onFailure(_ -> resolutionPath.remove(artifactKey));
     }
 
-    private static Promise<Slice> createClassLoaderAndResolve(
+    private static Promise<Slice> loadFromLocation(
         Artifact artifact,
         Location location,
         Repository repository,
         SliceRegistry registry,
         Set<String> resolutionPath
     ) {
-        var classLoader = new SliceClassLoader(new URL[]{location.url()}, DependencyResolver.class.getClassLoader());
-        return resolveWithClassLoader(artifact, classLoader, repository, registry, resolutionPath);
+        // Read manifest first to get slice class name
+        return SliceManifest.read(location.url())
+            .onFailure(cause -> log.error("Invalid slice JAR {}: {}", artifact, cause.message()))
+            .async()
+            .flatMap(manifest -> validateAndLoad(artifact, location, manifest, repository, registry, resolutionPath));
     }
 
-    private static Promise<Slice> resolveWithClassLoader(
+    private static Promise<Slice> validateAndLoad(
         Artifact artifact,
+        Location location,
+        SliceManifestInfo manifest,
+        Repository repository,
+        SliceRegistry registry,
+        Set<String> resolutionPath
+    ) {
+        // Verify manifest artifact matches requested artifact
+        if (!manifest.artifact().equals(artifact)) {
+            log.error("Artifact mismatch: requested {} but JAR declares {}", artifact, manifest.artifact());
+            return artifactMismatch(artifact, manifest.artifact()).promise();
+        }
+
+        var classLoader = new SliceClassLoader(new URL[]{location.url()}, DependencyResolver.class.getClassLoader());
+        return resolveWithManifest(manifest, classLoader, repository, registry, resolutionPath);
+    }
+
+    private static Promise<Slice> resolveWithManifest(
+        SliceManifestInfo manifest,
         ClassLoader classLoader,
         Repository repository,
         SliceRegistry registry,
         Set<String> resolutionPath
     ) {
-        var className = ArtifactMapper.toClassName(artifact);
-        return loadClass(className, classLoader)
-            .flatMap(sliceClass -> resolveWithClass(artifact, sliceClass, classLoader, repository, registry, resolutionPath));
+        return loadClass(manifest.sliceClassName(), classLoader)
+            .flatMap(sliceClass -> resolveWithClass(manifest.artifact(), sliceClass, classLoader, repository, registry, resolutionPath));
     }
 
     private static Promise<Slice> resolveWithClass(
@@ -184,18 +211,30 @@ public interface DependencyResolver {
         SliceRegistry registry,
         Set<String> resolutionPath
     ) {
-        var className = ArtifactMapper.toClassName(artifact);
+        var artifactKey = artifact.asString();
 
-        if (resolutionPath.contains(className)) {
-            return circularDependencyDetected(className).result();
+        if (resolutionPath.contains(artifactKey)) {
+            return circularDependencyDetected(artifactKey).result();
         }
 
-        resolutionPath.add(className);
+        resolutionPath.add(artifactKey);
 
-        return loadClassSync(className, classLoader)
-            .flatMap(sliceClass -> resolveWithClassSync(artifact, sliceClass, classLoader, registry, resolutionPath))
-            .onSuccess(_ -> resolutionPath.remove(className))
-            .onFailure(_ -> resolutionPath.remove(className));
+        // For sync resolution from ClassLoader, read manifest to get class name
+        return SliceManifest.readFromClassLoader(classLoader)
+            .onFailure(cause -> log.error("Invalid slice ClassLoader for {}: {}", artifact, cause.message()))
+            .flatMap(manifest -> validateManifestSync(artifact, manifest))
+            .flatMap(manifest -> loadClassSync(manifest.sliceClassName(), classLoader)
+                .flatMap(sliceClass -> resolveWithClassSync(manifest.artifact(), sliceClass, classLoader, registry, resolutionPath)))
+            .onSuccess(_ -> resolutionPath.remove(artifactKey))
+            .onFailure(_ -> resolutionPath.remove(artifactKey));
+    }
+
+    private static Result<SliceManifestInfo> validateManifestSync(Artifact artifact, SliceManifestInfo manifest) {
+        if (!manifest.artifact().equals(artifact)) {
+            log.error("Artifact mismatch: requested {} but ClassLoader declares {}", artifact, manifest.artifact());
+            return artifactMismatch(artifact, manifest.artifact()).result();
+        }
+        return Result.success(manifest);
     }
 
     private static Result<Slice> resolveWithClassSync(
@@ -314,7 +353,12 @@ public interface DependencyResolver {
         return Result.lift(Causes::fromThrowable, () -> classLoader.loadClass(className));
     }
 
-    private static Cause circularDependencyDetected(String className) {
-        return Causes.cause("Circular dependency detected during resolution: " + className);
+    private static Cause circularDependencyDetected(String artifactKey) {
+        return Causes.cause("Circular dependency detected during resolution: " + artifactKey);
+    }
+
+    private static Cause artifactMismatch(Artifact requested, Artifact declared) {
+        return Causes.cause("Artifact mismatch: requested " + requested.asString() +
+            " but JAR manifest declares " + declared.asString());
     }
 }
