@@ -3,6 +3,7 @@ package org.pragmatica.aether.slice.dependency;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -125,10 +126,10 @@ public interface SliceRegistry {
             return lastDot >= 0 ? className.substring(lastDot + 1) : className;
         }
 
-        private static final org.pragmatica.lang.Functions.Fn1<Cause, String> ALREADY_REGISTERED =
+        private static final Fn1<Cause, String> ALREADY_REGISTERED =
             Causes.forValue("Artifact already registered: %s");
 
-        private static final org.pragmatica.lang.Functions.Fn1<Cause, String> NOT_FOUND =
+        private static final Fn1<Cause, String> NOT_FOUND =
             Causes.forValue("Artifact not found in registry: %s");
     }
 }

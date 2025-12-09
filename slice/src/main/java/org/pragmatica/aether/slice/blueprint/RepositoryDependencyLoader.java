@@ -4,6 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.dependency.ArtifactMapper;
+import org.pragmatica.aether.slice.dependency.DependencyDescriptor;
 import org.pragmatica.aether.slice.dependency.SliceDependencies;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
@@ -13,6 +14,7 @@ import org.pragmatica.lang.Result;
 import java.net.URL;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -56,7 +58,7 @@ public interface RepositoryDependencyLoader {
     }
 
     private static Result<Set<Artifact>> convertToArtifacts(
-        java.util.List<org.pragmatica.aether.slice.dependency.DependencyDescriptor> descriptors
+        List<DependencyDescriptor> descriptors
     ) {
         var artifacts = new HashSet<Artifact>();
 
@@ -67,7 +69,7 @@ public interface RepositoryDependencyLoader {
             );
 
             if (result.isFailure()) {
-                return result.map(_ -> Set.<Artifact>of());
+                return result.map(_ -> Set.of());
             }
 
             result.onSuccess(artifacts::add);
