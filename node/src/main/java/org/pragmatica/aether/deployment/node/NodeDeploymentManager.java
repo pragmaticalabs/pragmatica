@@ -15,6 +15,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.cluster.topology.QuorumStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.message.MessageReceiver;
 import org.pragmatica.message.MessageRouter;
@@ -207,7 +208,7 @@ public interface NodeDeploymentManager {
             private void executeWithStateTransition(
                 SliceNodeKey sliceKey,
                 SliceState currentState,
-                org.pragmatica.lang.Promise<?> operation,
+                Promise<?> operation,
                 SliceState successState,
                 SliceState failureState
             ) {

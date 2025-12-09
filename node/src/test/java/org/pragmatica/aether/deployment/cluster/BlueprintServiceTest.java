@@ -18,8 +18,11 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -183,18 +186,18 @@ class BlueprintServiceTest {
         }
 
         @Override
-        public org.pragmatica.cluster.net.NodeId self() {
-            return org.pragmatica.cluster.net.NodeId.nodeId("test-node");
+        public NodeId self() {
+            return NodeId.nodeId("test-node");
         }
 
         @Override
-        public Promise<org.pragmatica.lang.Unit> start() {
-            return Promise.success(org.pragmatica.lang.Unit.unit());
+        public Promise<Unit> start() {
+            return Promise.success(Unit.unit());
         }
 
         @Override
-        public Promise<org.pragmatica.lang.Unit> stop() {
-            return Promise.success(org.pragmatica.lang.Unit.unit());
+        public Promise<Unit> stop() {
+            return Promise.success(Unit.unit());
         }
 
         @Override
