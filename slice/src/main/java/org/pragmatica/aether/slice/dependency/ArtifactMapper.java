@@ -64,6 +64,10 @@ public interface ArtifactMapper {
         return toArtifact(className, extractVersion(versionPattern));
     }
 
+    static Result<Artifact> toArtifact(DependencyDescriptor descriptor) {
+        return toArtifact(descriptor.sliceClassName(), descriptor.versionPattern());
+    }
+
     /**
      * Convert artifact coordinates to a fully qualified class name.
      *

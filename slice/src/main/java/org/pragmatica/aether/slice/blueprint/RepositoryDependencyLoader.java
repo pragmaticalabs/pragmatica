@@ -16,6 +16,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Stream;
 
 /**
  * Default DependencyLoader implementation using Repository.
@@ -47,18 +48,13 @@ public interface RepositoryDependencyLoader {
     }
 
     private static Result<Set<Artifact>> convertToArtifacts(List<DependencyDescriptor> descriptors) {
-        var artifacts = new HashSet<Artifact>();
+        return Result.allOf(toArtifacts(descriptors))
+                     .map(Set::copyOf);
 
-        for (var descriptor : descriptors) {
-            var result = ArtifactMapper.toArtifact(descriptor.sliceClassName(), descriptor.versionPattern());
+    }
 
-            if (result.isFailure()) {
-                return result.map(_ -> Set.of());
-            }
-
-            result.onSuccess(artifacts::add);
-        }
-
-        return Result.success(Collections.unmodifiableSet(artifacts));
+    private static Stream<Result<Artifact>> toArtifacts(List<DependencyDescriptor> descriptors) {
+        return descriptors.stream()
+                          .map(ArtifactMapper::toArtifact);
     }
 }
