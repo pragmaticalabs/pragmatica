@@ -16,15 +16,15 @@ public record LintConfig(
      * Default lint configuration.
      */
     public static final LintConfig DEFAULT = new LintConfig(
-            Map.of(
-                    "JBCT-RET-01", DiagnosticSeverity.ERROR,
-                    "JBCT-RET-02", DiagnosticSeverity.ERROR,
-                    "JBCT-VO-01", DiagnosticSeverity.WARNING,
-                    "JBCT-VO-02", DiagnosticSeverity.WARNING,
-                    "JBCT-EX-01", DiagnosticSeverity.ERROR,
-                    "JBCT-NAM-01", DiagnosticSeverity.WARNING,
-                    "JBCT-NAM-02", DiagnosticSeverity.WARNING,
-                    "JBCT-PKG-01", DiagnosticSeverity.WARNING
+            Map.ofEntries(
+                    Map.entry("JBCT-RET-01", DiagnosticSeverity.ERROR),
+                    Map.entry("JBCT-RET-02", DiagnosticSeverity.ERROR),
+                    Map.entry("JBCT-RET-03", DiagnosticSeverity.ERROR),
+                    Map.entry("JBCT-VO-01", DiagnosticSeverity.WARNING),
+                    Map.entry("JBCT-EX-01", DiagnosticSeverity.ERROR),
+                    Map.entry("JBCT-NAM-01", DiagnosticSeverity.WARNING),
+                    Map.entry("JBCT-NAM-02", DiagnosticSeverity.WARNING),
+                    Map.entry("JBCT-LAM-01", DiagnosticSeverity.WARNING)
             ),
             Set.of(),
             false

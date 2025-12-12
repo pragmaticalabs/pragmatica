@@ -4,10 +4,13 @@ import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
 import org.pragmatica.jbct.lint.rules.FactoryNamingRule;
+import org.pragmatica.jbct.lint.rules.LambdaComplexityRule;
 import org.pragmatica.jbct.lint.rules.LintRule;
 import org.pragmatica.jbct.lint.rules.NestedWrapperRule;
 import org.pragmatica.jbct.lint.rules.NoBusinessExceptionsRule;
+import org.pragmatica.jbct.lint.rules.NullReturnRule;
 import org.pragmatica.jbct.lint.rules.ReturnKindRule;
+import org.pragmatica.jbct.lint.rules.ValidatedNamingRule;
 import org.pragmatica.jbct.lint.rules.ValueObjectFactoryRule;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
@@ -117,9 +120,12 @@ public class JbctLinter implements Linter {
         return List.of(
                 new ReturnKindRule(),
                 new NestedWrapperRule(),
+                new NullReturnRule(),
                 new ValueObjectFactoryRule(),
                 new FactoryNamingRule(),
-                new NoBusinessExceptionsRule()
+                new ValidatedNamingRule(),
+                new NoBusinessExceptionsRule(),
+                new LambdaComplexityRule()
         );
     }
 }
