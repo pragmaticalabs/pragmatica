@@ -105,12 +105,9 @@ public class MultilineParameters {
         }
     }
 
-    @interface NotNull {
-    }
+    @interface NotNull {}
 
-    @interface Nullable {
-    }
+    @interface Nullable {}
 
-    @interface Valid {
-    }
+    @interface Valid {}
 }

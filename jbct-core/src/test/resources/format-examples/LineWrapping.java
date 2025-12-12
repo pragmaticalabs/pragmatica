@@ -21,7 +21,10 @@ public class LineWrapping {
     private Map<String, List<Result<Option<String>>>> complexMap;
 
     // Long method signature - wrap parameters
-    public Result<String> methodWithLongSignature(String firstParameter, String secondParameter, String thirdParameter, Option<String> optionalParameter) {
+    public Result<String> methodWithLongSignature(String firstParameter,
+                                                  String secondParameter,
+                                                  String thirdParameter,
+                                                  Option<String> optionalParameter) {
         return Result.success(firstParameter);
     }
 
@@ -45,11 +48,7 @@ public class LineWrapping {
 
     // Long boolean expression
     public boolean longCondition(String value) {
-        return value != null
-               && !value.isEmpty()
-               && value.length() > 5
-               && value.length() < 100
-               && isValid(value);
+        return value != null && !value.isEmpty() && value.length() > 5 && value.length() < 100 && isValid(value);
     }
 
     // Long arithmetic expression
@@ -65,8 +64,7 @@ public class LineWrapping {
     }
 
     // Long array initializer
-    private static final String[] LONG_ARRAY = {"first element", "second element", "third element", "fourth element",
-                                                "fifth element"};
+    private static final String[] LONG_ARRAY = {"first element", "second element", "third element", "fourth element", "fifth element"};
 
     // Long list literal
     private static final List<String> LONG_LIST = List.of("first", "second", "third", "fourth", "fifth");

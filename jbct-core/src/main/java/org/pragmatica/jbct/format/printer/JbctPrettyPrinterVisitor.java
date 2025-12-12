@@ -457,8 +457,9 @@ public class JbctPrettyPrinterVisitor extends VoidVisitorAdapter<Void> {
         print(" ");
         n.getName().accept(this, arg);
 
+        int parenColumn = currentColumn;
         print("(");
-        printSeparated(n.getParameters(), ", ", arg);
+        printParametersAligned(n.getParameters(), parenColumn, arg);
         print(")");
 
         if (!n.getThrownExceptions().isEmpty()) {
@@ -908,16 +909,23 @@ public class JbctPrettyPrinterVisitor extends VoidVisitorAdapter<Void> {
 
     /**
      * Check if method is a fork-join pattern method (.all()) that should wrap arguments.
-     * Wraps if: method is .all() with 2+ args AND is part of a chain (has parent method call).
+     * Wraps if: method is .all() with 2+ args AND is part of a chain AND has complex arguments.
+     * Simple variable references don't trigger wrapping.
      */
     private boolean isForkJoinMethod(MethodCallExpr n) {
         if (!n.getNameAsString().equals("all") || n.getArguments().size() < 2) {
             return false;
         }
         // Check if this is part of a chain - look for parent method call
-        return n.getParentNode()
+        boolean inChain = n.getParentNode()
                 .filter(parent -> parent instanceof MethodCallExpr)
                 .isPresent();
+        if (!inChain) {
+            return false;
+        }
+        // Only wrap if arguments are complex (method calls, not simple names)
+        return n.getArguments().stream()
+                .anyMatch(arg -> arg instanceof MethodCallExpr);
     }
 
     /**
@@ -1030,6 +1038,87 @@ public class JbctPrettyPrinterVisitor extends VoidVisitorAdapter<Void> {
                 argumentAlignStack.pop();
             }
         }
+    }
+
+    /**
+     * Print method parameters with alignment if needed.
+     * Breaks if total line length would exceed max.
+     */
+    private void printParametersAligned(NodeList<Parameter> params, int parenColumn, Void arg) {
+        if (params.isEmpty()) {
+            return;
+        }
+
+        boolean shouldBreak = shouldBreakParameters(params, parenColumn);
+
+        if (!shouldBreak) {
+            // All params fit on one line
+            printSeparated(params, ", ", arg);
+        } else {
+            // Break parameters, align to opening paren
+            int alignColumn = parenColumn + 1;
+            for (int i = 0; i < params.size(); i++) {
+                if (i > 0) {
+                    print(",");
+                    println();
+                    printAlignedTo(alignColumn);
+                }
+                params.get(i).accept(this, arg);
+            }
+        }
+    }
+
+    /**
+     * Check if parameters would exceed line length and need to break.
+     */
+    private boolean shouldBreakParameters(NodeList<Parameter> params, int parenColumn) {
+        // Measure total length of parameters if on one line
+        int totalLength = parenColumn + 1; // Account for opening (
+        for (int i = 0; i < params.size(); i++) {
+            if (i > 0) {
+                totalLength += 2; // ", "
+            }
+            totalLength += measureParameter(params.get(i));
+        }
+        totalLength += 1; // Closing )
+
+        return totalLength > config.maxLineLength();
+    }
+
+    /**
+     * Measure the length of a parameter when printed.
+     */
+    private int measureParameter(Parameter param) {
+        int length = 0;
+        // Annotations
+        for (var ann : param.getAnnotations()) {
+            length += measureAnnotation(ann) + 1; // +1 for space after
+        }
+        // Modifiers
+        for (var mod : param.getModifiers()) {
+            length += mod.getKeyword().asString().length() + 1;
+        }
+        // Type
+        length += measureType(param.getType());
+        // Name
+        length += 1 + param.getNameAsString().length(); // +1 for space before name
+        return length;
+    }
+
+    /**
+     * Measure annotation length.
+     */
+    private int measureAnnotation(AnnotationExpr ann) {
+        // Simplified measurement - just the string representation
+        return ann.toString().length();
+    }
+
+    /**
+     * Measure type length.
+     */
+    private int measureType(Type type) {
+        // Simplified measurement - just the string representation
+        return type.toString().length();
     }
 
     @Override

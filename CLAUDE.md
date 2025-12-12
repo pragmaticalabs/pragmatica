@@ -3,17 +3,9 @@
 ## Project Overview
 CLI tool and Maven plugin for JBCT (Java Backend Coding Technology) code formatting and linting.
 
-## Current Status: Formatter Implementation (12/15 tests passing)
+## Current Status: Formatter Implementation Complete (15/15 tests passing)
 
-### Passing Tests
-- ChainAlignment, Lambdas, Records, TernaryOperators, Comments
-- MultilineArguments, Imports, Annotations, SwitchExpressions
-- Plus 3 others
-
-### Failing Tests (3 remaining)
-1. **BlankLines** - orphan comments, nested class blank line handling
-2. **LineWrapping** - method parameter wrapping, line length enforcement
-3. **MultilineParameters** - method parameter declaration wrapping
+All golden tests pass. The formatter handles JBCT-style formatting.
 
 ## Key JBCT Formatting Rules
 
@@ -23,12 +15,11 @@ CLI tool and Maven plugin for JBCT (Java Backend Coding Technology) code formatt
                .map(String::toUpperCase);
    ```
 
-2. **Fork-join pattern**: `.all()` in chains always wraps arguments
+2. **Fork-join pattern**: `.all()` in chains wraps arguments when complex
    ```java
-   return Result.all(first(),
-                     second(),
-                     third())
-                .flatMap(this::process);
+   return Result.all(Email.email(raw.email()),
+                     Password.password(raw.password()))
+                .flatMap(ValidRequest::validRequest);
    ```
 
 3. **Ternary**: `?` and `:` align to opening `(` of expression
@@ -59,9 +50,19 @@ CLI tool and Maven plugin for JBCT (Java Backend Coding Technology) code formatt
                .toList();
    ```
 
-6. **Import grouping**: Blank lines between groups (org.pragmatica, java/javax, static)
+6. **Method parameters**: Wrap and align when exceeding line length
+   ```java
+   Result<Response> manyParams(String userId,
+                               String token,
+                               long expiresAt,
+                               Option<String> refreshToken) {
+   ```
 
-7. **Blank lines**: Between methods, between type declarations, no blank after opening brace
+7. **Import grouping**: Blank lines between groups (org.pragmatica, java/javax, static)
+
+8. **Blank lines**: Between methods, between type declarations, no blank after opening brace
+
+9. **Empty types**: Single line `{}` for empty interfaces, records, annotations
 
 ## Implementation Architecture
 
@@ -74,18 +75,11 @@ CLI tool and Maven plugin for JBCT (Java Backend Coding Technology) code formatt
 - `argumentAlignStack`: Tracks when inside broken argument lists
 - `currentColumn`: Tracks output column for alignment calculations
 
-## Remaining Work
+## Known Limitations
 
-### High Priority
-1. **Method parameter wrapping** - Wrap long parameter declarations like golden examples
-2. **Orphan comment handling** - Comments not attached to nodes (like first comment after `{`)
-
-### Medium Priority
-3. **Nested class blank lines** - BlankLines.java expects blank line after `static class NestedClass {`
-4. **Line length enforcement** - Break long lines automatically
-
-### Low Priority
-5. **Markdown doc comments (`///`)** - Requires JavaParser master branch for JEP 467
+1. **Orphan comments** - Comments not attached to nodes (e.g., standalone line between class brace and first member) may be dropped
+2. **Binary expression wrapping** - Long boolean/arithmetic expressions not auto-wrapped
+3. **Array initializer wrapping** - Long array initializers not auto-wrapped
 
 ## Commands
 

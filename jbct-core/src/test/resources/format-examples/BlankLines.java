@@ -7,7 +7,6 @@ import org.pragmatica.lang.Result;
  * Blank line formatting examples.
  */
 public class BlankLines {
-    // No blank line before first member
     // Fields grouped together - no blank lines between related fields
     private final String name;
     private final int age;
@@ -68,7 +67,6 @@ public class BlankLines {
 
     // Blank line before nested class
     static class NestedClass {
-
         private final String value;
 
         NestedClass(String value) {
