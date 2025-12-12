@@ -3,15 +3,20 @@ package org.pragmatica.jbct.lint;
 import com.github.javaparser.JavaParser;
 import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.ast.CompilationUnit;
+import org.pragmatica.jbct.lint.rules.ConstructorBypassRule;
 import org.pragmatica.jbct.lint.rules.FactoryNamingRule;
 import org.pragmatica.jbct.lint.rules.LambdaComplexityRule;
 import org.pragmatica.jbct.lint.rules.LintRule;
+import org.pragmatica.jbct.lint.rules.NestedRecordFactoryRule;
 import org.pragmatica.jbct.lint.rules.NestedWrapperRule;
 import org.pragmatica.jbct.lint.rules.NoBusinessExceptionsRule;
 import org.pragmatica.jbct.lint.rules.NullReturnRule;
+import org.pragmatica.jbct.lint.rules.OrElseThrowRule;
+import org.pragmatica.jbct.lint.rules.RawLoopRule;
 import org.pragmatica.jbct.lint.rules.ReturnKindRule;
 import org.pragmatica.jbct.lint.rules.ValidatedNamingRule;
 import org.pragmatica.jbct.lint.rules.ValueObjectFactoryRule;
+import org.pragmatica.jbct.lint.rules.VoidTypeRule;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -121,11 +126,16 @@ public class JbctLinter implements Linter {
                 new ReturnKindRule(),
                 new NestedWrapperRule(),
                 new NullReturnRule(),
+                new VoidTypeRule(),
                 new ValueObjectFactoryRule(),
+                new ConstructorBypassRule(),
                 new FactoryNamingRule(),
                 new ValidatedNamingRule(),
                 new NoBusinessExceptionsRule(),
-                new LambdaComplexityRule()
+                new OrElseThrowRule(),
+                new LambdaComplexityRule(),
+                new NestedRecordFactoryRule(),
+                new RawLoopRule()
         );
     }
 }
