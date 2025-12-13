@@ -35,7 +35,7 @@ Add to your `pom.xml`:
         <plugin>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>jbct-maven-plugin</artifactId>
-            <version>0.1.0-SNAPSHOT</version>
+            <version>0.2.0</version>
         </plugin>
     </plugins>
 </build>
@@ -137,7 +137,7 @@ Add executions to run automatically:
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.2.0</version>
     <executions>
         <execution>
             <id>check</id>
@@ -155,7 +155,7 @@ Add executions to run automatically:
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>0.2.0</version>
     <configuration>
         <!-- Source directories to process (default: src/main/java) -->
         <sourceDirectories>
