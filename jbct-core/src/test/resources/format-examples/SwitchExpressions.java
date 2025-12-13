@@ -3,9 +3,6 @@ package format.examples;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-/**
- * Switch expression formatting examples.
- */
 public class SwitchExpressions {
     // Classic switch expression with arrow
     String classicSwitch(int value) {

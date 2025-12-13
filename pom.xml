@@ -11,6 +11,31 @@
 
     <name>JBCT Tools Parent</name>
     <description>CLI tool and Maven plugin for JBCT code formatting and linting</description>
+    <url>https://github.com/siy/jbct-cli</url>
+
+    <scm>
+        <url>https://github.com/siy/jbct-cli.git</url>
+        <connection>scm:git:ssh://git@github.com/siy/jbct-cli.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/siy/jbct-cli.git</developerConnection>
+        <tag>HEAD</tag>
+    </scm>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <developers>
+        <developer>
+            <name>Sergiy Yevtushenko</name>
+            <email>sergiy.yevtushenko@gmail.com</email>
+            <organization>Pragmatica Lite</organization>
+            <organizationUrl>https://www.pragmatica-lite.org</organizationUrl>
+        </developer>
+    </developers>
 
     <modules>
         <module>jbct-core</module>
@@ -27,7 +52,7 @@
 
         <!-- Dependencies -->
         <pragmatica-lite.version>0.8.3</pragmatica-lite.version>
-        <javaparser.version>master-SNAPSHOT</javaparser.version>
+        <javaparser.version>3.27.2-SNAPSHOT</javaparser.version>
         <picocli.version>4.7.6</picocli.version>
         <maven-plugin-api.version>3.9.9</maven-plugin-api.version>
         <maven-plugin-annotations.version>3.15.1</maven-plugin-annotations.version>
@@ -59,9 +84,9 @@
                 <version>${pragmatica-lite.version}</version>
             </dependency>
 
-            <!-- JavaParser (from JitPack - master branch with JEP 467 support) -->
+            <!-- JavaParser -->
             <dependency>
-                <groupId>com.github.javaparser.javaparser</groupId>
+                <groupId>com.github.javaparser</groupId>
                 <artifactId>javaparser-symbol-solver-core</artifactId>
                 <version>${javaparser.version}</version>
             </dependency>
@@ -108,12 +133,16 @@
         </dependencies>
     </dependencyManagement>
 
-    <repositories>
+    <distributionManagement>
+        <snapshotRepository>
+            <id>ossrh</id>
+            <url>https://s01.oss.sonatype.org/content/repositories/snapshots</url>
+        </snapshotRepository>
         <repository>
-            <id>jitpack.io</id>
-            <url>https://jitpack.io</url>
+            <id>ossrh</id>
+            <url>https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/</url>
         </repository>
-    </repositories>
+    </distributionManagement>
 
     <build>
         <pluginManagement>
@@ -149,6 +178,61 @@
                         </dependency>
                     </dependencies>
                 </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-source-plugin</artifactId>
+                    <version>3.3.1</version>
+                    <executions>
+                        <execution>
+                            <id>attach-sources</id>
+                            <phase>package</phase>
+                            <goals>
+                                <goal>jar-no-fork</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-javadoc-plugin</artifactId>
+                    <version>3.10.1</version>
+                    <executions>
+                        <execution>
+                            <id>attach-javadocs</id>
+                            <goals>
+                                <goal>jar</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                    <configuration>
+                        <doclint>none</doclint>
+                        <failOnError>false</failOnError>
+                        <quiet>true</quiet>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-gpg-plugin</artifactId>
+                    <version>3.2.7</version>
+                    <executions>
+                        <execution>
+                            <id>sign-artifacts</id>
+                            <phase>verify</phase>
+                            <goals>
+                                <goal>sign</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.sonatype.central</groupId>
+                    <artifactId>central-publishing-maven-plugin</artifactId>
+                    <version>0.9.0</version>
+                    <extensions>true</extensions>
+                    <configuration>
+                        <publishingServerId>central</publishingServerId>
+                    </configuration>
+                </plugin>
             </plugins>
         </pluginManagement>
 
@@ -161,6 +245,42 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
             </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
+            </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>release</id>
+            <activation>
+                <property>
+                    <name>performRelease</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-gpg-plugin</artifactId>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

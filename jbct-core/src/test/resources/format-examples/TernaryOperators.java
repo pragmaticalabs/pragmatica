@@ -3,9 +3,6 @@ package format.examples;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-/**
- * Ternary operator formatting examples.
- */
 public class TernaryOperators {
     // Simple ternary - fits on one line
     String simpleTernary(boolean condition) {

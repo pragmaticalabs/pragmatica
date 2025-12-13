@@ -3,9 +3,6 @@ package format.examples;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-/**
- * Multi-line method parameter declaration examples.
- */
 public class MultilineParameters {
     // Short parameters - fits on one line
     Result<String> shortParams(String a, String b) {

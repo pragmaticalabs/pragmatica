@@ -3,9 +3,6 @@ package format.examples;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-/**
- * Record declaration formatting examples.
- */
 public class Records {
     // Simple record - single line
     record Point(int x, int y) {}

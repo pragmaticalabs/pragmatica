@@ -4,9 +4,6 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
-/**
- * Method chain alignment examples.
- */
 public class ChainAlignment {
     // Short chain - fits on one line
     Result<String> shortChain(Result<String> input) {

@@ -3,9 +3,6 @@ package format.examples;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-/**
- * Multi-line method argument examples.
- */
 public class MultilineArguments {
     // Short arguments - fits on one line
     Result<String> shortArgs() {

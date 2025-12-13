@@ -3,9 +3,6 @@ package format.examples;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.Result;
 
-/**
- * Blank line formatting examples.
- */
 public class BlankLines {
     // Fields grouped together - no blank lines between related fields
     private final String name;

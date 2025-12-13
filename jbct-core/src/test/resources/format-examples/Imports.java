@@ -27,20 +27,6 @@ import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Result.success;
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * Import organization examples.
- *
- * Import ordering:
- * 1. Project imports (org.pragmatica.*)
- * 2. Third-party imports (other org.*, com.*, etc.)
- * 3. Java imports (java.*, javax.*)
- * 4. Static imports
- *
- * Within each group:
- * - Alphabetical order
- * - No blank lines within group
- * - One blank line between groups
- */
 public class Imports {
     // Use imports to verify they're all needed
     Result<String> useImports() {

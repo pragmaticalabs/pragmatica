@@ -3,28 +3,7 @@ package format.examples;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-/**
- * Traditional JavaDoc comment for the class.
- * Multiple lines are supported.
- *
- * @param <T> type parameter description
- */
 public class Comments<T> {
-    /// New-style Markdown documentation comment.
-    /// Supports **bold**, *italic*, and `code`.
-    ///
-    /// Code blocks:
-    /// ```java
-    /// var result = Comments.create("example");
-    /// ```
-    ///
-    /// Lists:
-    /// - First item
-    /// - Second item
-    /// - Third item
-    ///
-    /// @param value the input value
-    ///
     /// @return the result
     public static Result<String> markdownDoc(String value) {
         return Result.success(value);
@@ -35,27 +14,9 @@ public class Comments<T> {
         return "";
     }
 
-    /// Documentation with links.
-    /// See [Result] for more information.
-    /// Also see [Option#map(Function)] for transformation.
-    ///
-    /// @see Result
     /// @see Option
     public void withLinks() {}
 
-    /**
-     * Traditional JavaDoc with tags.
-     *
-     * @param first  first parameter description
-     * @param second second parameter description
-     *
-     * @return the combined result
-     *
-     * @throws IllegalArgumentException if parameters are invalid
-     *
-     * @since 1.0
-     * @deprecated Use {@link #markdownDoc(String)} instead
-     */
     @Deprecated
     public String traditionalJavaDoc(String first, String second) {
         return first + second;
@@ -91,7 +52,6 @@ public class Comments<T> {
     // NOTE: important consideration
     public void noteComment() {}
 
-    /// Documentation for constant.
     /// Value represents the maximum allowed size.
     private static final int MAX_SIZE = 100;
 
@@ -120,16 +80,6 @@ public class Comments<T> {
         return Result.success("");
     }
 
-    /// Markdown doc with parameter table:
-    ///
-    /// | Parameter | Type | Description |
-    /// |-----------|------|-------------|
-    /// | value | String | The input value |
-    /// | option | Option | Optional config |
-    ///
-    /// @param value input value
-    /// @param option optional configuration
-    ///
     /// @return processed result
     public Result<String> tableDoc(String value, Option<String> option) {
         return Result.success(value);
@@ -145,9 +95,6 @@ public class Comments<T> {
         COMPLETED
     }
 
-    /// Documented record.
-    ///
-    /// @param id unique identifier
     /// @param name display name
     record Entity(String id, String name) {}
 

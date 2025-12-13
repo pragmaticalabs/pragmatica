@@ -9,7 +9,13 @@ Code formatting and linting tools for [Java Backend Coding Technology (JBCT)](ht
 Download the latest `jbct.jar` from releases or build from source:
 
 ```bash
-mvn package -DskipTests
+# Clone with submodules
+git clone --recurse-submodules https://github.com/siy/jbct-cli.git
+cd jbct-cli
+
+# Build (uses build script for JavaParser + jbct)
+./scripts/build.sh
+
 # JAR located at jbct-cli/target/jbct.jar
 ```
 

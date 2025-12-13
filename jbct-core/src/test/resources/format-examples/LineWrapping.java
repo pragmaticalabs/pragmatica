@@ -6,9 +6,6 @@ import org.pragmatica.lang.Result;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Line wrapping examples for long lines.
- */
 public class LineWrapping {
     // Long string literal - wrap at reasonable point
     private static final String LONG_MESSAGE = "This is a very long message that exceeds the maximum line length and needs to be wrapped";

@@ -5,9 +5,6 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 
-/**
- * Annotation formatting examples.
- */
 public class Annotations {
     // Single annotation on class
     @SuppressWarnings("unused")

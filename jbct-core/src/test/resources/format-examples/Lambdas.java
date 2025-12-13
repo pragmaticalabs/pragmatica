@@ -7,9 +7,6 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
-/**
- * Lambda expression formatting examples.
- */
 public class Lambdas {
     // Single expression lambda - inline
     Function<String, String> inlineLambda = s -> s.trim();
