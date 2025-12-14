@@ -3,7 +3,12 @@
 ## [0.2.0] - 2025-12-13
 
 ### Added
-- CLI tool (`jbct`) with format, lint, and check commands
+- CLI tool (`jbct`) with format, lint, check, upgrade, init, and update commands
+- `jbct upgrade` command for self-updating from GitHub Releases
+- `jbct init` command for scaffolding new JBCT projects with AI tools
+- `jbct update` command for syncing AI tools from coding-technology repo
+- TOML configuration system with priority chain (CLI > project > user > defaults)
+- Distribution packaging (tar.gz/zip with shell wrappers)
 - Maven plugin with format, format-check, lint, and check goals
 - 13 lint rules for JBCT compliance:
   - JBCT-RET-01: Business methods must use T, Option, Result, or Promise
@@ -29,4 +34,5 @@
 
 ### Technical
 - JavaParser included as git submodule with shading/relocation
+- Uses pragmatica-lite http-client for HTTP operations
 - Supports Java 25
