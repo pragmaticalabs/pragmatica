@@ -11,7 +11,7 @@ curl -fsSL https://raw.githubusercontent.com/siy/jbct-cli/main/install.sh | sh
 ```
 
 The installer:
-- Verifies Java is installed (JDK 21+ required)
+- Verifies Java is installed (JDK 25+ required)
 - Downloads latest release from GitHub
 - Installs to `~/.jbct/lib/jbct.jar`
 - Creates wrapper script at `~/.jbct/bin/jbct`
@@ -103,6 +103,67 @@ Exit codes:
 - `1` - Format or lint issues found
 - `2` - Internal error (parse failure, etc.)
 
+### Upgrade
+
+Self-update to the latest version:
+
+```bash
+jbct upgrade           # Check and install latest
+jbct upgrade --check   # Check only, don't install
+jbct upgrade --force   # Force reinstall
+```
+
+### Init
+
+Create a new JBCT-compliant project:
+
+```bash
+jbct init my-project                           # Create in new directory
+jbct init .                                    # Initialize current directory
+jbct init --group-id com.example my-project    # Custom group ID
+```
+
+Creates Maven project with:
+- JBCT-compliant `pom.xml`
+- `jbct.toml` configuration
+- AI tools installed to `~/.claude/`
+
+### Update
+
+Update AI tools from coding-technology repository:
+
+```bash
+jbct update           # Update if new version available
+jbct update --force   # Force update
+jbct update --check   # Check only
+```
+
+## Configuration
+
+JBCT uses `jbct.toml` for configuration:
+
+```toml
+[format]
+maxLineLength = 120
+indentSize = 4
+alignChainedCalls = true
+
+[lint]
+failOnWarning = false
+businessPackages = ["**.usecase.**", "**.domain.**"]
+
+[lint.rules]
+JBCT-RET-01 = "error"
+JBCT-STY-01 = "warning"
+JBCT-LOG-01 = "off"
+```
+
+Priority chain:
+1. CLI arguments (highest)
+2. `./jbct.toml` (project)
+3. `~/.jbct/config.toml` (user)
+4. Built-in defaults (lowest)
+
 ## Maven Plugin Usage
 
 ### Goals
@@ -185,7 +246,7 @@ Add executions to run automatically:
 </plugin>
 ```
 
-## Lint Rules
+## Lint Rules (23 total)
 
 ### Return Kinds
 
@@ -195,6 +256,7 @@ Add executions to run automatically:
 | `JBCT-RET-02` | ERROR | No nested wrappers (Promise<Result<T>>, Option<Option<T>>) |
 | `JBCT-RET-03` | ERROR | Never return null - use Option<T> |
 | `JBCT-RET-04` | ERROR | Use Unit instead of Void |
+| `JBCT-RET-05` | WARNING | Avoid always-succeeding Result (return T directly) |
 
 ### Value Objects
 
@@ -217,13 +279,42 @@ Add executions to run automatically:
 | `JBCT-NAM-01` | WARNING | Factory methods: TypeName.typeName() |
 | `JBCT-NAM-02` | WARNING | Use Valid prefix, not Validated |
 
-### Composition
+### Lambda/Composition
 
 | Rule | Severity | Description |
 |------|----------|-------------|
 | `JBCT-LAM-01` | WARNING | No complex logic in lambdas (if, switch, try-catch) |
+| `JBCT-LAM-02` | WARNING | No braces in lambdas - extract to methods |
+| `JBCT-LAM-03` | WARNING | No ternary in lambdas - use filter() or extract |
 | `JBCT-UC-01` | WARNING | Use case factories should return lambdas, not nested records |
+
+### Patterns
+
+| Rule | Severity | Description |
+|------|----------|-------------|
 | `JBCT-PAT-01` | WARNING | Use functional iteration instead of raw loops |
+| `JBCT-SEQ-01` | WARNING | Chain length limit (2-5 steps) |
+
+### Style
+
+| Rule | Severity | Description |
+|------|----------|-------------|
+| `JBCT-STY-01` | WARNING | Prefer fluent failure: `cause.result()` not `Result.failure(cause)` |
+| `JBCT-STY-02` | WARNING | Prefer constructor references: `X::new` not `v -> new X(v)` |
+| `JBCT-STY-03` | WARNING | No fully qualified class names in code |
+
+### Logging
+
+| Rule | Severity | Description |
+|------|----------|-------------|
+| `JBCT-LOG-01` | WARNING | No conditional logging - let log level handle filtering |
+| `JBCT-LOG-02` | WARNING | No logger as method parameter - component owns its logger |
+
+### Architecture
+
+| Rule | Severity | Description |
+|------|----------|-------------|
+| `JBCT-MIX-01` | ERROR | No I/O operations in domain packages |
 
 ## Formatter Style
 

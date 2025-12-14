@@ -15,7 +15,7 @@ main() {
 
 check_java() {
     if ! command -v java >/dev/null 2>&1; then
-        echo "Error: Java is not installed. Please install JDK 21+ first."
+        echo "Error: Java is not installed. Please install JDK 25+ first."
         exit 1
     fi
 }
@@ -48,9 +48,9 @@ download_and_install() {
     curl -fsSL "$DOWNLOAD_URL" -o "$INSTALL_DIR/lib/jbct.jar"
 
     # Create wrapper script
-    cat > "$INSTALL_DIR/bin/jbct" << 'WRAPPER'
+    cat > "$INSTALL_DIR/bin/jbct" << WRAPPER
 #!/bin/sh
-exec java -jar "$HOME/.jbct/lib/jbct.jar" "$@"
+exec java -jar "$INSTALL_DIR/lib/jbct.jar" "\$@"
 WRAPPER
 
     chmod +x "$INSTALL_DIR/bin/jbct"

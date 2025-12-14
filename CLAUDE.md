@@ -92,7 +92,7 @@ JBCT-VO-01 = "warning"
 
 ### Core Components
 - `JbctFormatter` - Entry point for formatting
-- `JbctLinter` - Entry point for linting with 13 lint rules
+- `JbctLinter` - Entry point for linting with 23 lint rules
 - `ConfigLoader` - TOML config loading with priority chain
 - `GitHubReleaseChecker` - Check GitHub Releases for updates
 - `JarInstaller` - Download and install JAR updates

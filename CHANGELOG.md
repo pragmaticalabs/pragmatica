@@ -39,7 +39,8 @@
   - Argument/parameter alignment to opening paren
   - Import grouping (pragmatica, java/javax, static)
 - Build scripts for JavaParser submodule integration
-- GitHub Actions CI workflow
+- GitHub Actions CI workflow with release automation
+- Installation script (`install.sh`) for quick setup
 - Maven Central publishing configuration
 
 ### Technical
