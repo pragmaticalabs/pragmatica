@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.0] - Unreleased
+
+### Changed
+- TBD
+
 ## [0.2.0] - 2025-12-13
 
 ### Added

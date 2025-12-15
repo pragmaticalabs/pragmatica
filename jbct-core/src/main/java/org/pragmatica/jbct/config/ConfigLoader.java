@@ -22,13 +22,6 @@ public final class ConfigLoader {
     private ConfigLoader() {}
 
     /**
-     * Load configuration with full priority chain.
-     */
-    public static JbctConfig load() {
-        return load(Option.none(), Option.none());
-    }
-
-    /**
      * Load configuration with optional explicit config file and working directory.
      *
      * @param explicitConfigPath Optional path to explicit config file (highest priority)
@@ -45,7 +38,7 @@ public final class ConfigLoader {
         }
 
         // Layer 2: Project config (./jbct.toml)
-        var projectDir = workingDirectory.fold(() -> Path.of(System.getProperty("user.dir")), p -> p);
+        var projectDir = workingDirectory.or(() -> Path.of(System.getProperty("user.dir")));
         var projectConfig = loadProjectConfig(projectDir);
         if (projectConfig.isPresent()) {
             config = config.merge(projectConfig.unwrap());

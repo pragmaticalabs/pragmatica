@@ -1,0 +1,116 @@
+# Java 25 PEG Grammar for JBCT
+# Generates CST with trivia preservation for formatting and linting
+
+CompilationUnit <- PackageDecl? ImportDecl* TypeDecl*
+PackageDecl <- 'package' QualifiedName ';'
+ImportDecl  <- 'import' 'static'? QualifiedName ('.' '*')? ';'
+
+TypeDecl <- Annotation* Modifier* TypeKind
+TypeKind <- ClassDecl / InterfaceDecl / EnumDecl / RecordDecl
+ClassDecl <- 'class' Identifier TypeParams? ('extends' Type)? ImplementsClause? PermitsClause? ClassBody
+InterfaceDecl <- 'interface' Identifier TypeParams? ('extends' TypeList)? ClassBody
+EnumDecl <- 'enum' Identifier ImplementsClause? EnumBody
+RecordDecl <- 'record' Identifier '(' RecordComponents? ')' ImplementsClause? RecordBody
+ImplementsClause <- 'implements' TypeList
+PermitsClause <- 'permits' TypeList
+TypeList <- Type (',' Type)*
+TypeParams <- '<' TypeParam (',' TypeParam)* '>'
+TypeParam <- Identifier ('extends' Type ('&' Type)*)?
+
+ClassBody <- '{' ClassMember* '}'
+ClassMember <- Annotation* Modifier* Member / StaticBlock / ';'
+Member <- ConstructorDecl / MethodDecl / FieldDecl / TypeKind
+StaticBlock <- 'static' Block
+EnumBody <- '{' EnumConsts? (';' ClassMember*)? '}'
+EnumConsts <- EnumConst (',' EnumConst)* ','?
+EnumConst <- Identifier ('(' Args? ')')? ClassBody?
+RecordComponents <- RecordComp (',' RecordComp)*
+RecordComp <- Annotation* Type Identifier
+RecordBody <- '{' ClassMember* '}'
+
+FieldDecl <- Type VarDecls ';'
+VarDecls <- VarDecl (',' VarDecl)*
+VarDecl <- Identifier Dims? ('=' VarInit)?
+VarInit <- '{' (VarInit (',' VarInit)* ','?)? '}' / Expr
+MethodDecl <- TypeParams? Type Identifier '(' Params? ')' Dims? Throws? (Block / ';')
+Params <- Param (',' Param)*
+Param <- Annotation* Modifier* Type '...'? Identifier Dims?
+Throws <- 'throws' TypeList
+ConstructorDecl <- TypeParams? Identifier '(' Params? ')' Throws? Block
+
+Block <- '{' BlockStmt* '}'
+BlockStmt <- LocalVar / TypeKind / Stmt
+LocalVar <- Modifier* Type VarDecls ';'
+Stmt <- Block
+     / 'if' '(' Expr ')' Stmt ('else' Stmt)?
+     / 'while' '(' Expr ')' Stmt
+     / 'for' '(' ForCtrl ')' Stmt
+     / 'do' Stmt 'while' '(' Expr ')' ';'
+     / 'try' ResourceSpec? Block Catch* Finally?
+     / 'switch' '(' Expr ')' SwitchBlock
+     / 'return' Expr? ';'
+     / 'throw' Expr ';'
+     / 'break' Identifier? ';'
+     / 'continue' Identifier? ';'
+     / 'assert' Expr (':' Expr)? ';'
+     / 'synchronized' '(' Expr ')' Block
+     / 'yield' Expr ';'
+     / Expr ';'
+     / ';'
+ForCtrl <- ForInit? ';' Expr? ';' ExprList? / Type Identifier ':' Expr
+ForInit <- LocalVarNoSemi / ExprList
+LocalVarNoSemi <- Modifier* Type VarDecls
+ResourceSpec <- '(' Resource (';' Resource)* ';'? ')'
+Resource <- Modifier* Type Identifier '=' Expr / QualifiedName
+Catch <- 'catch' '(' Modifier* Type ('|' Type)* Identifier ')' Block
+Finally <- 'finally' Block
+SwitchBlock <- '{' SwitchRule* '}'
+SwitchRule <- SwitchLabel '->' (Expr ';' / Block / 'throw' Expr ';') / SwitchLabel ':' BlockStmt*
+SwitchLabel <- 'case' CaseItem (',' CaseItem)* / 'default'
+CaseItem <- Type Identifier / Expr
+
+Expr <- Ternary
+Ternary <- LogOr ('?' Expr ':' Ternary)?
+LogOr <- LogAnd ('||' LogAnd)*
+LogAnd <- BitOr ('&&' BitOr)*
+BitOr <- BitXor ('|' BitXor)*
+BitXor <- BitAnd ('^' BitAnd)*
+BitAnd <- Equality ('&' Equality)*
+Equality <- Relational (('==' / '!=') Relational)*
+Relational <- Shift (('<=' / '>=' / '<' / '>') Shift / 'instanceof' Type Identifier?)?
+Shift <- Additive (('<<' / '>>>' / '>>') Additive)*
+Additive <- Multiplicative (('+' / '-') Multiplicative)*
+Multiplicative <- Unary (('*' / '/' / '%') Unary)*
+Unary <- ('++' / '--' / '+' / '-' / '!' / '~') Unary / '(' Type ')' Unary / Postfix
+Postfix <- Primary PostOp*
+PostOp <- '.' Identifier ('(' Args? ')')? / '.' 'class' / '.' 'this' / '[' Expr ']' / '(' Args? ')' / '++' / '--' / '::' TypeArgs? (Identifier / 'new')
+Primary <- Literal / 'this' / 'super' / 'new' TypeArgs? Type ('(' Args? ')' ClassBody? / Dims? VarInit?) / '(' Expr ')' / Lambda / 'switch' '(' Expr ')' SwitchBlock / QualifiedName
+Lambda <- LambdaParams '->' (Expr / Block)
+LambdaParams <- Identifier / '(' LambdaParam? (',' LambdaParam)* ')'
+LambdaParam <- Modifier* Type? Identifier
+Args <- Expr (',' Expr)*
+ExprList <- Expr (',' Expr)*
+
+Type <- (PrimType / RefType) Dims?
+PrimType <- 'boolean' / 'byte' / 'short' / 'int' / 'long' / 'float' / 'double' / 'char' / 'void'
+RefType <- QualifiedName TypeArgs?
+Dims <- ('[' ']')+
+TypeArgs <- '<' TypeArg (',' TypeArg)* '>'
+TypeArg <- Type / '?' (('extends' / 'super') Type)?
+
+QualifiedName <- Identifier ('.' Identifier)*
+Identifier <- !Keyword < [a-zA-Z_$] [a-zA-Z0-9_$]* >
+
+Modifier <- 'public' / 'protected' / 'private' / 'static' / 'final' / 'abstract' / 'native' / 'synchronized' / 'transient' / 'volatile' / 'strictfp' / 'default' / 'sealed' / 'non-sealed'
+Annotation <- '@' QualifiedName ('(' AnnotationValue? ')')?
+AnnotationValue <- Identifier '=' AnnotationElem (',' Identifier '=' AnnotationElem)* / AnnotationElem
+AnnotationElem <- Annotation / '{' (AnnotationElem (',' AnnotationElem)* ','?)? '}' / Ternary
+
+Literal <- 'null' / 'true' / 'false' / CharLit / StringLit / NumLit
+CharLit <- < '\'' ([^'\\] / '\\' .)* '\'' >
+StringLit <- < '"' ([^"\\] / '\\' .)* '"' > / < '"""' (!'"""' .)* '"""' >
+NumLit <- < '0' [xX] [0-9a-fA-F_]+ [lL]? > / < '0' [bB] [01_]+ [lL]? > / < [0-9]+ ('.' [0-9]*)? ([eE] [+\-]? [0-9]+)? [fFdDlL]? > / < '.' [0-9]+ ([eE] [+\-]? [0-9]+)? [fFdD]? >
+
+Keyword <- ('abstract' / 'assert' / 'boolean' / 'break' / 'byte' / 'case' / 'catch' / 'char' / 'class' / 'const' / 'continue' / 'default' / 'do' / 'double' / 'else' / 'enum' / 'extends' / 'false' / 'final' / 'finally' / 'float' / 'for' / 'goto' / 'if' / 'implements' / 'import' / 'instanceof' / 'int' / 'interface' / 'long' / 'native' / 'new' / 'non-sealed' / 'null' / 'package' / 'permits' / 'private' / 'protected' / 'public' / 'record' / 'return' / 'sealed' / 'short' / 'static' / 'strictfp' / 'super' / 'switch' / 'synchronized' / 'this' / 'throw' / 'throws' / 'transient' / 'true' / 'try' / 'var' / 'void' / 'volatile' / 'when' / 'while' / 'yield' / '_') ![a-zA-Z0-9_$]
+
+%whitespace <- ([ \t\r\n] / '//' [^\n]* / '/*' (!'*/' .)* '*/')*

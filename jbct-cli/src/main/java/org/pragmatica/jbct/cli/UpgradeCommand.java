@@ -171,6 +171,6 @@ public class UpgradeCommand implements Callable<Integer> {
         }
 
         // Fall back to build-time constant
-        return "0.2.0";
+        return "0.3.0";
     }
 }

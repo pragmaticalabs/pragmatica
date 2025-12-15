@@ -11,7 +11,7 @@ import picocli.CommandLine.Option;
         name = "jbct",
         description = "JBCT code formatting and linting tool",
         mixinStandardHelpOptions = true,
-        version = "0.2.0",
+        version = "0.3.0",
         subcommands = {
                 FormatCommand.class,
                 LintCommand.class,
