@@ -28,9 +28,18 @@ public class CstPrinter {
     private final StringBuilder output;
     private int currentColumn;
     private int indentLevel;
+    private char lastChar = 0;  // Track last printed character for spacing
+    private char prevChar = 0;  // Track second-to-last character
+    private String lastWord = "";  // Track last printed identifier/keyword
+
+    // Measurement mode - calculates width without actually printing
+    private boolean measuringMode = false;
+    private int measureBuffer = 0;
 
     // Alignment tracking
     private final Deque<Integer> alignmentStack = new ArrayDeque<>();
+    private final Deque<Integer> argumentAlignStack = new ArrayDeque<>();
+    private final Deque<Integer> lambdaAlignStack = new ArrayDeque<>();
     private int chainAlignColumn = -1;
 
     // Keywords that shouldn't have preceding newlines removed
@@ -38,12 +47,71 @@ public class CstPrinter {
         "if", "else", "for", "while", "do", "try", "catch", "finally", "switch", "case", "default"
     );
 
+    // Control flow keywords that need space before (
+    private static final Set<String> SPACE_BEFORE_PAREN_KEYWORDS = Set.of(
+        "if", "else", "for", "while", "do", "try", "catch", "finally", "switch", "synchronized", "assert"
+    );
+
+    // Binary operators that need space around them (excluding <> which are also used for generics)
+    private static final Set<String> BINARY_OPS = Set.of(
+        "=", "==", "!=", "<=", ">=", "+", "-", "*", "/", "%",
+        "&", "|", "^", "&&", "||", "->", "?", ":", "+=", "-=", "*=", "/=",
+        "%=", "&=", "|=", "^=", "<<=", ">>=", ">>>="
+    );
+
+    // Comparison operators (need special handling vs generics)
+    private static final Set<String> COMPARISON_OPS = Set.of("<", ">");
+
+    // Operators/punctuation that need space after (comma, semicolon in for)
+    private static final Set<String> SPACE_AFTER = Set.of(",");
+
     public CstPrinter(FormatterConfig config, String source) {
         this.config = config;
         this.source = source;
         this.output = new StringBuilder();
         this.currentColumn = 0;
         this.indentLevel = 0;
+    }
+
+    // ===== Measurement methods =====
+
+    /**
+     * Measure the single-line width of a node without printing.
+     * This traverses the node and counts characters as if printed on one line.
+     */
+    private int measureWidth(CstNode node) {
+        boolean wasMeasuring = measuringMode;
+        int oldBuffer = measureBuffer;
+        char oldLastChar = lastChar;
+        char oldPrevChar = prevChar;
+        String oldLastWord = lastWord;
+        measuringMode = true;
+        measureBuffer = 0;
+
+        printNode(node);
+
+        int width = measureBuffer;
+        measuringMode = wasMeasuring;
+        measureBuffer = oldBuffer;
+        lastChar = oldLastChar;
+        prevChar = oldPrevChar;
+        lastWord = oldLastWord;
+        return width;
+    }
+
+    /**
+     * Check if a node would fit on current line.
+     */
+    private boolean fitsOnLine(CstNode node) {
+        int width = measureWidth(node);
+        return currentColumn + width <= config.maxLineLength();
+    }
+
+    /**
+     * Check if text would fit on current line.
+     */
+    private boolean fitsOnLine(String text) {
+        return currentColumn + text.length() <= config.maxLineLength();
     }
 
     public String print(CstNode root) {
@@ -78,6 +146,20 @@ public class CstPrinter {
         printCommentsOnly(node.trailingTrivia());
     }
 
+    private void printNodeSkipLeadingTrivia(CstNode node) {
+        // Skip leading whitespace trivia but preserve comments
+        printCommentsOnly(node.leadingTrivia());
+
+        switch (node) {
+            case CstNode.Terminal t -> printTerminal(t);
+            case CstNode.Token tok -> printToken(tok);
+            case CstNode.NonTerminal nt -> printNonTerminal(nt);
+        }
+
+        // Print trailing trivia normally
+        printTrivia(node.trailingTrivia());
+    }
+
     private void printCommentsOnly(List<Trivia> triviaList) {
         for (var trivia : triviaList) {
             switch (trivia) {
@@ -97,11 +179,155 @@ public class CstPrinter {
     }
 
     private void printTerminal(CstNode.Terminal terminal) {
-        print(terminal.text());
+        var text = terminal.text();
+        printWithSpacing(text);
     }
 
     private void printToken(CstNode.Token token) {
-        print(token.text());
+        var text = token.text();
+        printWithSpacing(text);
+    }
+
+    /**
+     * Print text with appropriate spacing based on Java syntax rules.
+     */
+    private void printWithSpacing(String text) {
+        if (!text.isEmpty() && needsSpaceBefore(text)) {
+            print(" ");
+        }
+        print(text);
+    }
+
+    /**
+     * Determine if a space is needed before the given text based on Java syntax rules.
+     */
+    private boolean needsSpaceBefore(String text) {
+        if (lastChar == 0 || lastChar == '\n' || lastChar == ' ' || lastChar == '\t') {
+            return false;
+        }
+
+        char firstChar = text.charAt(0);
+
+        // Space after comma
+        if (lastChar == ',') {
+            return true;
+        }
+
+        // No space after '(' or before ')'
+        if (lastChar == '(' || firstChar == ')') {
+            return false;
+        }
+
+        // No space after '[' or before ']'
+        if (lastChar == '[' || firstChar == ']') {
+            return false;
+        }
+
+        // No space before '(' in method calls, but space after control flow keywords
+        if (firstChar == '(') {
+            return SPACE_BEFORE_PAREN_KEYWORDS.contains(lastWord);
+        }
+
+        // No space before ';'
+        if (firstChar == ';') {
+            return false;
+        }
+
+        // No space before ','
+        if (firstChar == ',') {
+            return false;
+        }
+
+        // No space before or after '.'
+        if (lastChar == '.' || firstChar == '.') {
+            return false;
+        }
+
+        // No space after '@'
+        if (lastChar == '@') {
+            return false;
+        }
+
+        // No space before or after '::'
+        if (text.equals("::") || lastChar == ':' && text.charAt(0) == ':') {
+            return false;
+        }
+
+        // Handle < and > specially (comparison vs generics)
+        // In generics (after type name): no space - List<String>
+        // In comparison (after variable): space - if (x < 5)
+        if (text.equals("<") || text.equals(">")) {
+            // If last char is alphanumeric, check if it's likely a type name (generics) or variable (comparison)
+            if (Character.isLetterOrDigit(lastChar)) {
+                // Type names typically start with uppercase, variables with lowercase
+                if (!lastWord.isEmpty() && Character.isUpperCase(lastWord.charAt(0))) {
+                    return false;  // Likely generics: List<String>
+                }
+                return true;  // Likely comparison: value < 5
+            }
+            // After non-alphanumeric (like ')'), it's comparison
+            return true;
+        }
+
+        // Space around binary operators
+        if (BINARY_OPS.contains(text)) {
+            return true;
+        }
+
+        // Space after binary operators (check last printed was an operator)
+        // This handles the space AFTER the operator
+        if (isBinaryOpLastChar()) {
+            return true;
+        }
+
+        // Space between alphanumeric tokens (keywords, identifiers, types)
+        if (Character.isLetterOrDigit(lastChar) && Character.isLetterOrDigit(firstChar)) {
+            return true;
+        }
+
+        // Space after > when:
+        // 1. Followed by identifier (e.g., "Result<String> name")
+        // 2. Part of -> (lambda arrow) followed by anything but {
+        if (lastChar == '>') {
+            // Check if it's after -> (lambda arrow)
+            if (prevChar == '-') {
+                // After -> in lambda, need space unless followed by {
+                return firstChar != '{';
+            }
+            // After > in generics, space before identifier
+            if (Character.isLetter(firstChar)) {
+                return true;
+            }
+        }
+
+        // No space after < (inside generics)
+        if (lastChar == '<') {
+            return false;
+        }
+
+        // No space before >
+        if (firstChar == '>') {
+            return false;
+        }
+
+        return false;
+    }
+
+    private boolean isBinaryOpLastChar() {
+        // Check if the output ends with a binary operator
+        if (output.length() < 1) return false;
+
+        // Check common single-char operators
+        if (lastChar == '=' || lastChar == '+' || lastChar == '-' || lastChar == '*' ||
+            lastChar == '/' || lastChar == '%' || lastChar == '&' || lastChar == '|' ||
+            lastChar == '^' || lastChar == '?' || lastChar == ':') {
+            // But not after :: (method reference)
+            if (lastChar == ':' && output.length() >= 2 && output.charAt(output.length() - 2) == ':') {
+                return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     private void printNonTerminal(CstNode.NonTerminal nt) {
@@ -110,13 +336,18 @@ public class CstPrinter {
         // Handle special formatting rules
         switch (rule) {
             case "CompilationUnit" -> printCompilationUnit(nt);
+            case "OrdinaryUnit" -> printOrdinaryUnit(nt);
             case "ImportDecl" -> printImportDecl(nt);
             case "ClassDecl", "InterfaceDecl", "EnumDecl", "RecordDecl" -> printTypeDecl(nt);
+            case "EnumBody" -> printEnumBody(nt);
+            case "RecordBody" -> printRecordBody(nt);
             case "MethodDecl", "ConstructorDecl" -> printMethodDecl(nt);
+            case "FieldDecl" -> printFieldDecl(nt);
             case "ClassBody" -> printClassBody(nt);
             case "Block" -> printBlock(nt);
             case "Stmt" -> printStatement(nt);
-            case "Expr" -> printExpression(nt);
+            case "Expr", "Assignment" -> printExpression(nt);
+            case "Postfix" -> printPostfix(nt);
             case "Primary" -> printPrimary(nt);
             case "PostOp" -> printPostOp(nt);
             case "Args" -> printArgs(nt);
@@ -127,8 +358,14 @@ public class CstPrinter {
     }
 
     private void printCompilationUnit(CstNode.NonTerminal cu) {
+        // New grammar: CompilationUnit <- ModuleDecl / OrdinaryUnit
+        // Just print children which will dispatch to the right handler
+        printChildren(cu);
+    }
+
+    private void printOrdinaryUnit(CstNode.NonTerminal ou) {
         // Print package declaration
-        childByRule(cu, "PackageDecl").fold(
+        childByRule(ou, "PackageDecl").fold(
             () -> null,
             pkg -> {
                 printNode(pkg);
@@ -137,19 +374,25 @@ public class CstPrinter {
         );
 
         // Collect and organize imports
-        var imports = childrenByRule(cu, "ImportDecl");
+        var imports = childrenByRule(ou, "ImportDecl");
         if (!imports.isEmpty()) {
             println();
             println();
             printOrganizedImports(imports);
         }
 
-        // Print type declarations
-        var types = childrenByRule(cu, "TypeDecl");
+        // Print type declarations (one blank line after imports)
+        var types = childrenByRule(ou, "TypeDecl");
+        boolean first = true;
         for (var type : types) {
-            println();
-            println();
-            printNodeSkipTrivia(type);  // Skip leading trivia - we control blank lines
+            if (first) {
+                println();  // Single blank line between imports and first type
+            } else {
+                println();
+                println();  // Double blank line between types
+            }
+            printNodeSkipLeadingTrivia(type);  // Skip leading trivia - we control blank lines
+            first = false;
         }
     }
 
@@ -223,6 +466,132 @@ public class CstPrinter {
         printChildren(method);
     }
 
+    private void printFieldDecl(CstNode.NonTerminal field) {
+        // FieldDecl <- Type VarDecls ';'
+        // Print without trivia to avoid double spacing between Type and VarDecls
+        for (var child : children(field)) {
+            printNodeContent(child);
+        }
+    }
+
+    private void printEnumBody(CstNode.NonTerminal enumBody) {
+        // EnumBody <- '{' EnumConsts? (';' ClassMember*)? '}'
+        var children = children(enumBody);
+
+        // Find and print opening brace
+        for (var child : children) {
+            if (isTerminalWithText(child, "{")) {
+                printNode(child);
+                break;
+            }
+        }
+
+        indentLevel++;
+        println();
+
+        // Print enum constants
+        childByRule(enumBody, "EnumConsts").fold(
+            () -> null,
+            consts -> {
+                printIndent();
+                printEnumConsts((CstNode.NonTerminal) consts);
+                return null;
+            }
+        );
+
+        // Print class members if any (after semicolon)
+        var classMembers = childrenByRule(enumBody, "ClassMember");
+        for (var member : classMembers) {
+            println();
+            printIndent();
+            printNodeSkipTrivia(member);
+        }
+
+        indentLevel--;
+        println();
+        printIndent();
+
+        // Find and print closing brace
+        for (var child : children) {
+            if (isTerminalWithText(child, "}")) {
+                printNode(child);
+                break;
+            }
+        }
+    }
+
+    private void printRecordBody(CstNode.NonTerminal recordBody) {
+        // RecordBody <- '{' RecordMember* '}'
+        var allChildren = children(recordBody);
+
+        // Check if body is actually empty (only braces, no content)
+        boolean hasContent = allChildren.stream()
+            .anyMatch(c -> !isTerminalWithText(c, "{") && !isTerminalWithText(c, "}"));
+
+        if (!hasContent) {
+            // Empty body - print {}
+            print("{}");
+        } else {
+            // Non-empty - format like class body but with RecordMember
+            for (var child : allChildren) {
+                if (isTerminalWithText(child, "{")) {
+                    printNode(child);
+                    break;
+                }
+            }
+
+            indentLevel++;
+            println();
+
+            boolean first = true;
+            CstNode prevMember = null;
+            for (var child : allChildren) {
+                if (child.rule().equals("RecordMember")) {
+                    boolean hasBlankLineInTrivia = hasBlankLineInLeadingTrivia(child);
+                    if (!first && (needsBlankLineBefore(child, prevMember) || hasBlankLineInTrivia)) {
+                        println();
+                    }
+                    printIndent();
+                    printNodeSkipTrivia(child);
+                    println();
+                    first = false;
+                    prevMember = child;
+                }
+            }
+
+            indentLevel--;
+            printIndent();
+
+            for (var child : allChildren) {
+                if (isTerminalWithText(child, "}")) {
+                    printNode(child);
+                    break;
+                }
+            }
+        }
+    }
+
+    private void printEnumConsts(CstNode.NonTerminal enumConsts) {
+        // EnumConsts <- EnumConst (',' EnumConst)* ','?
+        var children = children(enumConsts);
+        boolean first = true;
+        for (var child : children) {
+            if (isTerminalWithText(child, ",")) {
+                print(",");
+                println();
+                printIndent();
+            } else if ("EnumConst".equals(child.rule())) {
+                if (!first) {
+                    // Already printed newline after comma
+                }
+                printNodeContent(child);
+                first = false;
+            } else {
+                printNode(child);
+            }
+        }
+    }
+
     private void printClassBody(CstNode.NonTerminal classBody) {
         var children = children(classBody);
 
@@ -241,7 +610,9 @@ public class CstPrinter {
         CstNode prevMember = null;
         for (var child : children) {
             if (child.rule().equals("ClassMember")) {
-                if (!first && needsBlankLineBefore(child, prevMember)) {
+                // Check if original source has a blank line before this member
+                boolean hasBlankLineInTrivia = hasBlankLineInLeadingTrivia(child);
+                if (!first && (needsBlankLineBefore(child, prevMember) || hasBlankLineInTrivia)) {
                     println();
                 }
                 printIndent();
@@ -264,6 +635,20 @@ public class CstPrinter {
                 break;
             }
         }
+    }
+
+    private boolean hasBlankLineInLeadingTrivia(CstNode node) {
+        // Count total newlines across all leading whitespace trivia
+        int totalNewlines = 0;
+        for (var trivia : node.leadingTrivia()) {
+            if (trivia instanceof Trivia.Whitespace ws) {
+                totalNewlines += ws.text().chars().filter(c -> c == '\n').count();
+                if (totalNewlines >= 2) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void printBlock(CstNode.NonTerminal block) {
@@ -312,52 +697,138 @@ public class CstPrinter {
         printChildren(expr);
     }
 
-    private void printPrimary(CstNode.NonTerminal primary) {
-        var primaryText = text(primary, source);
+    /**
+     * Print a Postfix expression (Primary PostOp*).
+     * This handles method chains with JBCT alignment rules.
+     */
+    private void printPostfix(CstNode.NonTerminal postfix) {
+        var children = children(postfix);
 
-        // Check for method chain
-        if (primaryText.contains(".") && primaryText.contains("(")) {
-            printMethodChain(primary);
-        } else {
-            printChildren(primary);
-        }
-    }
+        // Find Primary and all PostOp children
+        CstNode primary = null;
+        var postOps = new java.util.ArrayList<CstNode>();
 
-    private void printMethodChain(CstNode.NonTerminal primary) {
-        // Find all PostOp children (method calls in chain)
-        var children = children(primary);
-
-        // Print first part (receiver)
-        boolean inChain = false;
-        int chainStart = currentColumn;
-
-        for (int i = 0; i < children.size(); i++) {
-            var child = children.get(i);
-
-            if ("PostOp".equals(child.rule())) {
-                var postOpText = text(child, source);
-                if (postOpText.startsWith(".") && postOpText.contains("(")) {
-                    // This is a method call in chain
-                    if (!inChain) {
-                        // First chained call - print on same line, record align column
-                        inChain = true;
-                        chainAlignColumn = chainStart;
-                    } else {
-                        // Subsequent chained calls - align to chain start
-                        println();
-                        printAlignedTo(chainAlignColumn);
-                    }
-                }
-                printNode(child);
-            } else {
-                printNode(child);
-                if (!inChain) {
-                    chainStart = currentColumn;
-                }
+        for (var child : children) {
+            if ("Primary".equals(child.rule())) {
+                primary = child;
+            } else if ("PostOp".equals(child.rule())) {
+                postOps.add(child);
             }
         }
 
-        chainAlignColumn = -1;
+        // Count method call PostOps (those with parentheses)
+        var methodCallPostOps = postOps.stream()
+            .filter(op -> text(op, source).contains("("))
+            .toList();
+
+        boolean shouldBreakChain = methodCallPostOps.size() >= 2;
+
+        if (shouldBreakChain && !measuringMode) {
+            printMethodChainAligned(primary, postOps);
+        } else {
+            // No chain or measuring - print normally
+            if (primary != null) {
+                printNode(primary);
+            }
+            for (var postOp : postOps) {
+                printNode(postOp);
+            }
+        }
+    }
+
+    /**
+     * Print a method chain with JBCT alignment.
+     * Chain continuation dots align to the position after the Primary.
+     *
+     * Example:
+     * return input.map(String::trim)
+     *             .map(String::toUpperCase);
+     *        ^--- alignColumn (position of first `.`)
+     */
+    private void printMethodChainAligned(CstNode primary, java.util.List<CstNode> postOps) {
+        int startColumn = currentColumn;
+        int alignColumn = startColumn;
+
+        // Print primary and calculate alignment column
+        if (primary != null) {
+            var primaryText = text(primary, source);
+            int dotPos = primaryText.indexOf('.');
+            if (dotPos >= 0) {
+                // First `.` is inside Primary - align to that position
+                alignColumn = startColumn + dotPos;
+            }
+            printNodeContent(primary);
+        }
+
+        // Save chain align for nested lambdas
+        int previousChainAlign = chainAlignColumn;
+        chainAlignColumn = alignColumn;
+
+        try {
+            boolean firstMethodCall = true;
+            for (var postOp : postOps) {
+                var postOpText = text(postOp, source).trim();
+                boolean isMethodCall = postOpText.contains("(");
+
+                if (isMethodCall && !firstMethodCall) {
+                    // Continuation - break and align
+                    println();
+                    printAlignedTo(alignColumn);
+                }
+
+                // Print PostOp content directly without trivia interference
+                printNodeContent(postOp);
+
+                if (isMethodCall) {
+                    firstMethodCall = false;
+                }
+            }
+        } finally {
+            chainAlignColumn = previousChainAlign;
+        }
+    }
+
+    /**
+     * Print a node's content without trivia (for controlled layout).
+     * Uses printWithSpacing for proper inter-token spacing.
+     */
+    private void printNodeContent(CstNode node) {
+        switch (node) {
+            case CstNode.Terminal t -> printWithSpacing(t.text());
+            case CstNode.Token tok -> printWithSpacing(tok.text());
+            case CstNode.NonTerminal nt -> {
+                var rule = nt.rule();
+                // For Lambda nodes, use printLambda to ensure proper arrow formatting
+                if ("Lambda".equals(rule)) {
+                    printLambdaContent(nt);
+                } else if ("Args".equals(rule)) {
+                    // Dispatch to printArgs for proper line breaking
+                    printArgs(nt);
+                } else {
+                    for (var child : children(nt)) {
+                        printNodeContent(child);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Print lambda content with proper arrow spacing (without trivia).
+     */
+    private void printLambdaContent(CstNode.NonTerminal lambda) {
+        var children = children(lambda);
+        for (var child : children) {
+            if (isTerminalWithText(child, "->")) {
+                print(" -> ");  // Ensure spacing around arrow
+            } else {
+                printNodeContent(child);
+            }
+        }
+    }
+
+    private void printPrimary(CstNode.NonTerminal primary) {
+        printChildren(primary);
     }
 
     private void printPostOp(CstNode.NonTerminal postOp) {
@@ -365,12 +836,27 @@ public class CstPrinter {
     }
 
     private void printArgs(CstNode.NonTerminal args) {
-        var argsText = text(args, source);
-        int totalWidth = currentColumn + argsText.length();
+        // In measuring mode, just print children without trivia (avoid infinite recursion)
+        if (measuringMode) {
+            for (var child : children(args)) {
+                printNodeContent(child);
+            }
+            return;
+        }
+
+        // Measure formatted width (single-line), not raw source width
+        int argsWidth = measureWidth(args);
+        int totalWidth = currentColumn + argsWidth;
+
+        // DEBUG - uncomment to trace
+        // System.out.println("printArgs: currentColumn=" + currentColumn + " argsWidth=" + argsWidth + " total=" + totalWidth + " lastChar='" + lastChar + "'");
+        // new Exception("printArgs called from").printStackTrace(System.out);
 
         if (totalWidth <= config.maxLineLength()) {
-            // Fits on one line
-            printChildren(args);
+            // Fits on one line - print without trivia to avoid extra spaces
+            for (var child : children(args)) {
+                printNodeContent(child);
+            }
         } else {
             // Break arguments onto multiple lines
             printBrokenArgs(args);
@@ -425,15 +911,21 @@ public class CstPrinter {
             var children = children(ternary);
             int alignCol = currentColumn;
 
+            boolean skipNextTrivia = false;
             for (var child : children) {
                 if (isTerminalWithText(child, "?")) {
                     println();
                     printAlignedTo(alignCol);
                     print("? ");
+                    skipNextTrivia = true;  // Skip trivia - we already added space
                 } else if (isTerminalWithText(child, ":")) {
                     println();
                     printAlignedTo(alignCol);
                     print(": ");
+                    skipNextTrivia = true;  // Skip trivia - we already added space
+                } else if (skipNextTrivia) {
+                    printNodeSkipLeadingTrivia(child);
+                    skipNextTrivia = false;
                 } else {
                     printNode(child);
                 }
@@ -477,6 +969,12 @@ public class CstPrinter {
     // ===== Helper methods =====
 
     private void print(String text) {
+        if (measuringMode) {
+            // In measuring mode, just count characters (no newlines in measurement)
+            measureBuffer += text.length();
+            updateLastChars(text);
+            return;
+        }
         output.append(text);
         int lastNewline = text.lastIndexOf('\n');
         if (lastNewline >= 0) {
@@ -484,19 +982,45 @@ public class CstPrinter {
         } else {
             currentColumn += text.length();
         }
+        updateLastChars(text);
+    }
+
+    private void updateLastChars(String text) {
+        if (!text.isEmpty()) {
+            if (text.length() >= 2) {
+                prevChar = text.charAt(text.length() - 2);
+            } else {
+                prevChar = lastChar;
+            }
+            lastChar = text.charAt(text.length() - 1);
+            // Track last word (identifier/keyword)
+            if (Character.isLetter(text.charAt(0))) {
+                lastWord = text;
+            }
+        }
     }
 
     private void println() {
+        if (measuringMode) {
+            return; // Don't print newlines when measuring
+        }
         output.append("\n");
         currentColumn = 0;
+        lastChar = '\n';
     }
 
     private void printIndent() {
+        if (measuringMode) {
+            return; // Skip indent in measuring mode
+        }
         String indent = " ".repeat(indentLevel * config.indentSize());
         print(indent);
     }
 
     private void printAlignedTo(int column) {
+        if (measuringMode) {
+            return; // Skip alignment in measuring mode
+        }
         if (currentColumn < column) {
             print(" ".repeat(column - currentColumn));
         }

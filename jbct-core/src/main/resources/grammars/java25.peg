@@ -1,16 +1,31 @@
 # Java 25 PEG Grammar for JBCT
-# Generates CST with trivia preservation for formatting and linting
+# Synced from java-peglib Java25GrammarExample.java
 
-CompilationUnit <- PackageDecl? ImportDecl* TypeDecl*
-PackageDecl <- 'package' QualifiedName ';'
-ImportDecl  <- 'import' 'static'? QualifiedName ('.' '*')? ';'
+# === Compilation Units (JLS 7.3-7.8) ===
+CompilationUnit <- ModuleDecl / OrdinaryUnit
+OrdinaryUnit <- PackageDecl? ImportDecl* TypeDecl*
+PackageDecl <- Annotation* 'package' QualifiedName ';'
+ImportDecl  <- 'import' 'module' QualifiedName ';' / 'import' 'static'? QualifiedName ('.' '*')? ';'
+
+# === Module Declarations (JLS 7.7) ===
+ModuleDecl <- Annotation* 'open'? 'module' QualifiedName '{' ModuleDirective* '}'
+ModuleDirective <- RequiresDirective / ExportsDirective / OpensDirective / UsesDirective / ProvidesDirective
+RequiresDirective <- 'requires' ('transitive' / 'static')* QualifiedName ';'
+ExportsDirective <- 'exports' QualifiedName ('to' QualifiedName (',' QualifiedName)*)? ';'
+OpensDirective <- 'opens' QualifiedName ('to' QualifiedName (',' QualifiedName)*)? ';'
+UsesDirective <- 'uses' QualifiedName ';'
+ProvidesDirective <- 'provides' QualifiedName 'with' QualifiedName (',' QualifiedName)* ';'
 
 TypeDecl <- Annotation* Modifier* TypeKind
-TypeKind <- ClassDecl / InterfaceDecl / EnumDecl / RecordDecl
+TypeKind <- ClassDecl / InterfaceDecl / EnumDecl / RecordDecl / AnnotationDecl
 ClassDecl <- 'class' Identifier TypeParams? ('extends' Type)? ImplementsClause? PermitsClause? ClassBody
-InterfaceDecl <- 'interface' Identifier TypeParams? ('extends' TypeList)? ClassBody
+InterfaceDecl <- 'interface' Identifier TypeParams? ('extends' TypeList)? PermitsClause? ClassBody
+AnnotationDecl <- '@' 'interface' Identifier AnnotationBody
+AnnotationBody <- '{' AnnotationMember* '}'
+AnnotationMember <- Annotation* Modifier* (AnnotationElemDecl / FieldDecl / TypeKind) / ';'
+AnnotationElemDecl <- Type Identifier '(' ')' ('default' AnnotationElem)? ';'
 EnumDecl <- 'enum' Identifier ImplementsClause? EnumBody
-RecordDecl <- 'record' Identifier '(' RecordComponents? ')' ImplementsClause? RecordBody
+RecordDecl <- 'record' Identifier TypeParams? '(' RecordComponents? ')' ImplementsClause? RecordBody
 ImplementsClause <- 'implements' TypeList
 PermitsClause <- 'permits' TypeList
 TypeList <- Type (',' Type)*
@@ -18,15 +33,17 @@ TypeParams <- '<' TypeParam (',' TypeParam)* '>'
 TypeParam <- Identifier ('extends' Type ('&' Type)*)?
 
 ClassBody <- '{' ClassMember* '}'
-ClassMember <- Annotation* Modifier* Member / StaticBlock / ';'
-Member <- ConstructorDecl / MethodDecl / FieldDecl / TypeKind
-StaticBlock <- 'static' Block
+ClassMember <- Annotation* Modifier* Member / InitializerBlock / ';'
+Member <- ConstructorDecl / TypeKind / MethodDecl / FieldDecl
+InitializerBlock <- 'static'? Block
 EnumBody <- '{' EnumConsts? (';' ClassMember*)? '}'
 EnumConsts <- EnumConst (',' EnumConst)* ','?
 EnumConst <- Identifier ('(' Args? ')')? ClassBody?
 RecordComponents <- RecordComp (',' RecordComp)*
 RecordComp <- Annotation* Type Identifier
-RecordBody <- '{' ClassMember* '}'
+RecordBody <- '{' RecordMember* '}'
+RecordMember <- CompactConstructor / ClassMember
+CompactConstructor <- Annotation* Modifier* Identifier Block
 
 FieldDecl <- Type VarDecls ';'
 VarDecls <- VarDecl (',' VarDecl)*
@@ -38,9 +55,11 @@ Param <- Annotation* Modifier* Type '...'? Identifier Dims?
 Throws <- 'throws' TypeList
 ConstructorDecl <- TypeParams? Identifier '(' Params? ')' Throws? Block
 
+# === Blocks and Statements (JLS 14) ===
 Block <- '{' BlockStmt* '}'
 BlockStmt <- LocalVar / TypeKind / Stmt
-LocalVar <- Modifier* Type VarDecls ';'
+LocalVar <- Modifier* LocalVarType VarDecls ';'
+LocalVarType <- 'var' / Type
 Stmt <- Block
      / 'if' '(' Expr ')' Stmt ('else' Stmt)?
      / 'while' '(' Expr ')' Stmt
@@ -55,21 +74,29 @@ Stmt <- Block
      / 'assert' Expr (':' Expr)? ';'
      / 'synchronized' '(' Expr ')' Block
      / 'yield' Expr ';'
+     / Identifier ':' Stmt
      / Expr ';'
      / ';'
-ForCtrl <- ForInit? ';' Expr? ';' ExprList? / Type Identifier ':' Expr
+ForCtrl <- ForInit? ';' Expr? ';' ExprList? / LocalVarType Identifier ':' Expr
 ForInit <- LocalVarNoSemi / ExprList
-LocalVarNoSemi <- Modifier* Type VarDecls
+LocalVarNoSemi <- Modifier* LocalVarType VarDecls
 ResourceSpec <- '(' Resource (';' Resource)* ';'? ')'
-Resource <- Modifier* Type Identifier '=' Expr / QualifiedName
+Resource <- Modifier* LocalVarType Identifier '=' Expr / QualifiedName
 Catch <- 'catch' '(' Modifier* Type ('|' Type)* Identifier ')' Block
 Finally <- 'finally' Block
 SwitchBlock <- '{' SwitchRule* '}'
 SwitchRule <- SwitchLabel '->' (Expr ';' / Block / 'throw' Expr ';') / SwitchLabel ':' BlockStmt*
-SwitchLabel <- 'case' CaseItem (',' CaseItem)* / 'default'
-CaseItem <- Type Identifier / Expr
+# === Switch Labels and Patterns (JLS 14.11, 14.30) ===
+SwitchLabel <- 'case' 'null' (',' 'default')? / 'case' CaseItem (',' CaseItem)* Guard? / 'default'
+CaseItem <- Pattern / QualifiedName &('->' / ',' / ':' / 'when') / Expr
+Pattern <- RecordPattern / TypePattern
+TypePattern <- &(LocalVarType Identifier) LocalVarType Identifier / '_'
+RecordPattern <- RefType '(' PatternList? ')'
+PatternList <- Pattern (',' Pattern)*
+Guard <- 'when' Expr
 
-Expr <- Ternary
+Expr <- Assignment
+Assignment <- Ternary (('=' / '>>>=' / '>>=' / '<<=' / '+=' / '-=' / '*=' / '/=' / '%=' / '&=' / '|=' / '^=') Assignment)?
 Ternary <- LogOr ('?' Expr ':' Ternary)?
 LogOr <- LogAnd ('||' LogAnd)*
 LogAnd <- BitOr ('&&' BitOr)*
@@ -77,40 +104,42 @@ BitOr <- BitXor ('|' BitXor)*
 BitXor <- BitAnd ('^' BitAnd)*
 BitAnd <- Equality ('&' Equality)*
 Equality <- Relational (('==' / '!=') Relational)*
-Relational <- Shift (('<=' / '>=' / '<' / '>') Shift / 'instanceof' Type Identifier?)?
+Relational <- Shift (('<=' / '>=' / '<' / '>') Shift / 'instanceof' (Pattern / Type))?
 Shift <- Additive (('<<' / '>>>' / '>>') Additive)*
 Additive <- Multiplicative (('+' / '-') Multiplicative)*
 Multiplicative <- Unary (('*' / '/' / '%') Unary)*
-Unary <- ('++' / '--' / '+' / '-' / '!' / '~') Unary / '(' Type ')' Unary / Postfix
+Unary <- ('++' / '--' / '+' / '-' / '!' / '~') Unary / '(' Type ('&' Type)* ')' Unary / Postfix
 Postfix <- Primary PostOp*
 PostOp <- '.' Identifier ('(' Args? ')')? / '.' 'class' / '.' 'this' / '[' Expr ']' / '(' Args? ')' / '++' / '--' / '::' TypeArgs? (Identifier / 'new')
-Primary <- Literal / 'this' / 'super' / 'new' TypeArgs? Type ('(' Args? ')' ClassBody? / Dims? VarInit?) / '(' Expr ')' / Lambda / 'switch' '(' Expr ')' SwitchBlock / QualifiedName
+Primary <- Literal / 'this' / 'super' / 'new' TypeArgs? Type ('(' Args? ')' ClassBody? / Dims? VarInit?) / 'switch' '(' Expr ')' SwitchBlock / Lambda / '(' Expr ')' / QualifiedName
 Lambda <- LambdaParams '->' (Expr / Block)
-LambdaParams <- Identifier / '(' LambdaParam? (',' LambdaParam)* ')'
-LambdaParam <- Modifier* Type? Identifier
+LambdaParams <- Identifier / '_' / '(' LambdaParam? (',' LambdaParam)* ')'
+LambdaParam <- Annotation* Modifier* (('var' / Type) &('...' / Identifier / '_'))? '...'? (Identifier / '_')
 Args <- Expr (',' Expr)*
 ExprList <- Expr (',' Expr)*
 
-Type <- (PrimType / RefType) Dims?
+# === Types with Type-Use Annotations (JSR 308 / JLS 4.11) ===
+Type <- Annotation* (PrimType / RefType) Dims?
 PrimType <- 'boolean' / 'byte' / 'short' / 'int' / 'long' / 'float' / 'double' / 'char' / 'void'
-RefType <- QualifiedName TypeArgs?
-Dims <- ('[' ']')+
-TypeArgs <- '<' TypeArg (',' TypeArg)* '>'
-TypeArg <- Type / '?' (('extends' / 'super') Type)?
+RefType <- AnnotatedTypeName ('.' AnnotatedTypeName)*
+AnnotatedTypeName <- Annotation* Identifier TypeArgs?
+Dims <- (Annotation* '[' ']')+
+TypeArgs <- '<' '>' / '<' TypeArg (',' TypeArg)* '>'
+TypeArg <- Type / '?' (Annotation* ('extends' / 'super') Type)?
 
 QualifiedName <- Identifier ('.' Identifier)*
 Identifier <- !Keyword < [a-zA-Z_$] [a-zA-Z0-9_$]* >
 
 Modifier <- 'public' / 'protected' / 'private' / 'static' / 'final' / 'abstract' / 'native' / 'synchronized' / 'transient' / 'volatile' / 'strictfp' / 'default' / 'sealed' / 'non-sealed'
-Annotation <- '@' QualifiedName ('(' AnnotationValue? ')')?
+Annotation <- '@' !'interface' QualifiedName ('(' AnnotationValue? ')')?
 AnnotationValue <- Identifier '=' AnnotationElem (',' Identifier '=' AnnotationElem)* / AnnotationElem
 AnnotationElem <- Annotation / '{' (AnnotationElem (',' AnnotationElem)* ','?)? '}' / Ternary
 
 Literal <- 'null' / 'true' / 'false' / CharLit / StringLit / NumLit
 CharLit <- < '\'' ([^'\\] / '\\' .)* '\'' >
-StringLit <- < '"' ([^"\\] / '\\' .)* '"' > / < '"""' (!'"""' .)* '"""' >
-NumLit <- < '0' [xX] [0-9a-fA-F_]+ [lL]? > / < '0' [bB] [01_]+ [lL]? > / < [0-9]+ ('.' [0-9]*)? ([eE] [+\-]? [0-9]+)? [fFdDlL]? > / < '.' [0-9]+ ([eE] [+\-]? [0-9]+)? [fFdD]? >
+StringLit <- < '"""' (!'"""' .)* '"""' > / < '"' ([^"\\] / '\\' .)* '"' >
+NumLit <- < '0' [xX] [0-9a-fA-F_]+ [lL]? > / < '0' [bB] [01_]+ [lL]? > / < [0-9][0-9_]* ('.' [0-9_]*)? ([eE] [+\-]? [0-9_]+)? [fFdDlL]? > / < '.' [0-9_]+ ([eE] [+\-]? [0-9_]+)? [fFdD]? >
 
-Keyword <- ('abstract' / 'assert' / 'boolean' / 'break' / 'byte' / 'case' / 'catch' / 'char' / 'class' / 'const' / 'continue' / 'default' / 'do' / 'double' / 'else' / 'enum' / 'extends' / 'false' / 'final' / 'finally' / 'float' / 'for' / 'goto' / 'if' / 'implements' / 'import' / 'instanceof' / 'int' / 'interface' / 'long' / 'native' / 'new' / 'non-sealed' / 'null' / 'package' / 'permits' / 'private' / 'protected' / 'public' / 'record' / 'return' / 'sealed' / 'short' / 'static' / 'strictfp' / 'super' / 'switch' / 'synchronized' / 'this' / 'throw' / 'throws' / 'transient' / 'true' / 'try' / 'var' / 'void' / 'volatile' / 'when' / 'while' / 'yield' / '_') ![a-zA-Z0-9_$]
+Keyword <- ('abstract' / 'assert' / 'boolean' / 'break' / 'byte' / 'case' / 'catch' / 'char' / 'class' / 'const' / 'continue' / 'default' / 'double' / 'do' / 'else' / 'enum' / 'extends' / 'false' / 'finally' / 'final' / 'float' / 'for' / 'goto' / 'implements' / 'import' / 'instanceof' / 'interface' / 'int' / 'if' / 'long' / 'module' / 'native' / 'new' / 'non-sealed' / 'null' / 'package' / 'permits' / 'private' / 'protected' / 'public' / 'record' / 'return' / 'sealed' / 'short' / 'static' / 'strictfp' / 'super' / 'switch' / 'synchronized' / 'this' / 'throws' / 'throw' / 'transient' / 'true' / 'try' / 'var' / 'void' / 'volatile' / 'when' / 'while' / 'yield' / '_') ![a-zA-Z0-9_$]
 
 %whitespace <- ([ \t\r\n] / '//' [^\n]* / '/*' (!'*/' .)* '*/')*
