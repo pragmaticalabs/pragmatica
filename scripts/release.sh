@@ -26,18 +26,6 @@ if [ -n "$(git status --porcelain)" ]; then
     exit 1
 fi
 
-# Initialize submodules if needed
-git submodule update --init --recursive
-
-# Build JavaParser (install to local .m2)
-# Use -Dmaven.compiler.release=8 to work around Java 21+ SequencedCollection incompatibility
-# See: https://github.com/javaparser/javaparser/issues/4022
-echo "Building JavaParser..."
-cd "$PROJECT_DIR/javaparser"
-mvn install -DskipTests -Dmaven.compiler.release=8 -q
-
-cd "$PROJECT_DIR"
-
 # Verify tests pass
 echo "Running tests..."
 mvn clean test -q

@@ -12,18 +12,12 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: actions/setup-java@v4
         with:
           java-version: '25'
           distribution: 'temurin'
           cache: maven
-
-      - name: Build JavaParser
-        run: mvn install -DskipTests -Dmaven.compiler.release=8 -q
-        working-directory: javaparser
 
       - name: Build
         run: mvn package -DskipTests -B
@@ -34,7 +28,6 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
 
-          # Check if release exists
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             echo "Release $GITHUB_REF_NAME exists, uploading artifacts..."
             gh release upload "$GITHUB_REF_NAME" \

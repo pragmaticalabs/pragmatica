@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, release-*]
   pull_request:
     branches: [main]
 
@@ -11,18 +11,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - uses: actions/setup-java@v4
         with:
           java-version: '25'
           distribution: 'temurin'
           cache: maven
-
-      # Build JavaParser with release=8 to work around Java 21+ SequencedCollection incompatibility
-      - name: Build JavaParser
-        run: mvn install -DskipTests -Dmaven.compiler.release=8 -q
-        working-directory: javaparser
 
       - run: mvn verify -B
