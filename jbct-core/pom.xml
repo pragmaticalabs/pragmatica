@@ -29,12 +29,6 @@
             <artifactId>http-client</artifactId>
         </dependency>
 
-        <!-- JavaParser -->
-        <dependency>
-            <groupId>com.github.javaparser</groupId>
-            <artifactId>javaparser-symbol-solver-core</artifactId>
-        </dependency>
-
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
@@ -45,54 +39,4 @@
             <artifactId>assertj-core</artifactId>
         </dependency>
     </dependencies>
-
-    <build>
-        <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-shade-plugin</artifactId>
-                <version>3.6.0</version>
-                <dependencies>
-                    <dependency>
-                        <groupId>org.ow2.asm</groupId>
-                        <artifactId>asm</artifactId>
-                        <version>9.8</version>
-                    </dependency>
-                </dependencies>
-                <executions>
-                    <execution>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>shade</goal>
-                        </goals>
-                        <configuration>
-                            <createDependencyReducedPom>true</createDependencyReducedPom>
-                            <artifactSet>
-                                <includes>
-                                    <include>com.github.javaparser:*</include>
-                                </includes>
-                            </artifactSet>
-                            <relocations>
-                                <relocation>
-                                    <pattern>com.github.javaparser</pattern>
-                                    <shadedPattern>org.pragmatica.jbct.shaded.javaparser</shadedPattern>
-                                </relocation>
-                            </relocations>
-                            <filters>
-                                <filter>
-                                    <artifact>*:*</artifact>
-                                    <excludes>
-                                        <exclude>META-INF/*.SF</exclude>
-                                        <exclude>META-INF/*.DSA</exclude>
-                                        <exclude>META-INF/*.RSA</exclude>
-                                        <exclude>META-INF/MANIFEST.MF</exclude>
-                                    </excludes>
-                                </filter>
-                            </filters>
-                        </configuration>
-                    </execution>
-                </executions>
-            </plugin>
-        </plugins>
-    </build>
 </project>

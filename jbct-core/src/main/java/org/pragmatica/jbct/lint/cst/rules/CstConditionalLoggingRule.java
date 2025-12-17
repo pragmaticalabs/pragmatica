@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.stream.Stream;
 
@@ -28,8 +29,8 @@ public class CstConditionalLoggingRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -38,7 +39,7 @@ public class CstConditionalLoggingRule implements CstLintRule {
         }
 
         // Find if statements wrapping log calls
-        return findAll(root, "Stmt").stream()
+        return findAll(root, RuleId.Stmt.class).stream()
             .filter(stmt -> isConditionalLogging(stmt, source))
             .map(stmt -> createDiagnostic(stmt, ctx));
     }

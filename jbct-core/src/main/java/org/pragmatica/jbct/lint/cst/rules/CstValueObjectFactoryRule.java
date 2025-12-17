@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.stream.Stream;
 
@@ -28,8 +29,8 @@ public class CstValueObjectFactoryRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -38,7 +39,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         }
 
         // Check records
-        var recordDiagnostics = findAll(root, "RecordDecl").stream()
+        var recordDiagnostics = findAll(root, RuleId.RecordDecl.class).stream()
             .filter(record -> needsFactoryMethod(record, source))
             .map(record -> createDiagnostic(record, source, ctx));
 
@@ -46,7 +47,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private boolean needsFactoryMethod(CstNode record, String source) {
-        var recordName = childByRule(record, "Identifier")
+        var recordName = childByRule(record, RuleId.Identifier.class)
             .map(id -> text(id, source))
             .or("");
 
@@ -59,7 +60,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(CstNode record, String source, LintContext ctx) {
-        var name = childByRule(record, "Identifier")
+        var name = childByRule(record, RuleId.Identifier.class)
             .map(id -> text(id, source))
             .or("(unknown)");
         var camelName = camelCase(name);

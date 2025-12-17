@@ -336,7 +336,7 @@ class CstFormatterTest {
             case CstNode.Terminal t -> {}
             case CstNode.Token tok -> {}
             case CstNode.NonTerminal nt -> {
-                if (nt.rule().equals("ClassMember")) {
+                if (nt.rule().name().equals("ClassMember")) {
                     System.out.println(indent + "ClassMember:");
                     for (var tr : nt.leadingTrivia()) {
                         System.out.println(indent + "  LTrivia: " + triviaDesc(tr));
@@ -357,18 +357,18 @@ class CstFormatterTest {
         switch (node) {
             case CstNode.Terminal t -> {
                 if (t.text().equals("->") || t.text().equals("s") || t.text().equals("filter")) {
-                    System.out.println(indent + "Terminal(" + t.rule() + "): '" + t.text() + "'");
+                    System.out.println(indent + "Terminal(" + t.rule().name() + "): '" + t.text() + "'");
                 }
             }
             case CstNode.Token tok -> {
                 if (tok.text().equals("->") || tok.text().equals("s") || tok.text().equals("filter")) {
-                    System.out.println(indent + "Token(" + tok.rule() + "): '" + tok.text() + "'");
+                    System.out.println(indent + "Token(" + tok.rule().name() + "): '" + tok.text() + "'");
                 }
             }
             case CstNode.NonTerminal nt -> {
-                if (nt.rule().equals("Lambda") || nt.rule().equals("Primary") || nt.rule().equals("Postfix") ||
-                    nt.rule().equals("Args") || nt.rule().equals("Expr")) {
-                    System.out.println(indent + "NonTerminal(" + nt.rule() + ")");
+                if (nt.rule().name().equals("Lambda") || nt.rule().name().equals("Primary") || nt.rule().name().equals("Postfix") ||
+                    nt.rule().name().equals("Args") || nt.rule().name().equals("Expr")) {
+                    System.out.println(indent + "NonTerminal(" + nt.rule().name() + ")");
                 }
                 for (var child : nt.children()) {
                     dumpCstLambda(child, depth + 1);
@@ -381,7 +381,7 @@ class CstFormatterTest {
         var indent = "  ".repeat(depth);
         switch (node) {
             case CstNode.Terminal t -> {
-                System.out.println(indent + "Terminal(" + t.rule() + "): '" + t.text() + "'");
+                System.out.println(indent + "Terminal(" + t.rule().name() + "): '" + t.text() + "'");
                 for (var tr : t.leadingTrivia()) {
                     System.out.println(indent + "  LTrivia: " + triviaDesc(tr));
                 }
@@ -390,7 +390,7 @@ class CstFormatterTest {
                 }
             }
             case CstNode.Token tok -> {
-                System.out.println(indent + "Token(" + tok.rule() + "): '" + tok.text() + "'");
+                System.out.println(indent + "Token(" + tok.rule().name() + "): '" + tok.text() + "'");
                 for (var tr : tok.leadingTrivia()) {
                     System.out.println(indent + "  LTrivia: " + triviaDesc(tr));
                 }
@@ -399,7 +399,7 @@ class CstFormatterTest {
                 }
             }
             case CstNode.NonTerminal nt -> {
-                System.out.println(indent + "NonTerminal(" + nt.rule() + ")");
+                System.out.println(indent + "NonTerminal(" + nt.rule().name() + ")");
                 for (var child : nt.children()) {
                     dumpCstWithTrivia(child, depth + 1);
                 }
@@ -419,10 +419,10 @@ class CstFormatterTest {
         var indent = "  ".repeat(depth);
         var trivia = "leading=" + node.leadingTrivia().size() + ", trailing=" + node.trailingTrivia().size();
         switch (node) {
-            case CstNode.Terminal t -> System.out.println(indent + "Terminal(" + t.rule() + "): '" + t.text() + "' [" + trivia + "]");
-            case CstNode.Token tok -> System.out.println(indent + "Token(" + tok.rule() + "): '" + tok.text() + "' [" + trivia + "]");
+            case CstNode.Terminal t -> System.out.println(indent + "Terminal(" + t.rule().name() + "): '" + t.text() + "' [" + trivia + "]");
+            case CstNode.Token tok -> System.out.println(indent + "Token(" + tok.rule().name() + "): '" + tok.text() + "' [" + trivia + "]");
             case CstNode.NonTerminal nt -> {
-                System.out.println(indent + "NonTerminal(" + nt.rule() + ") [" + trivia + "]");
+                System.out.println(indent + "NonTerminal(" + nt.rule().name() + ") [" + trivia + "]");
                 for (var child : nt.children()) {
                     dumpCst(child, depth + 1, source);
                 }

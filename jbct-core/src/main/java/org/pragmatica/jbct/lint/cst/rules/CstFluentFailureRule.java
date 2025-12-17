@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.stream.Stream;
 
@@ -28,8 +29,8 @@ public class CstFluentFailureRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -38,7 +39,7 @@ public class CstFluentFailureRule implements CstLintRule {
         }
 
         // Find Result.failure( patterns
-        return findAll(root, "Primary").stream()
+        return findAll(root, RuleId.Primary.class).stream()
             .filter(node -> text(node, source).contains("Result.failure("))
             .map(node -> createDiagnostic(node, ctx));
     }

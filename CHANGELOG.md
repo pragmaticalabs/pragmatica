@@ -3,7 +3,15 @@
 ## [0.3.0] - Unreleased
 
 ### Changed
-- TBD
+- Complete migration from JavaParser to CST-based implementation
+- JbctFormatter now delegates to CstFormatter
+- JbctLinter now delegates to CstLinter
+- Removed JavaParser dependency entirely
+
+### Removed
+- JavaParser-based formatter (printer package)
+- JavaParser-based lint rules (rules package)
+- JavaParser git submodule dependency
 
 ## [0.2.0] - 2025-12-13
 
@@ -43,12 +51,11 @@
   - Method chain alignment to receiver
   - Argument/parameter alignment to opening paren
   - Import grouping (pragmatica, java/javax, static)
-- Build scripts for JavaParser submodule integration
 - GitHub Actions CI workflow with release automation
 - Installation script (`install.sh`) for quick setup
 - Maven Central publishing configuration
 
 ### Technical
-- JavaParser included as git submodule with shading/relocation
+- CST-based parser using java-peglib PEG grammar
 - Uses pragmatica-lite http-client for HTTP operations
 - Supports Java 25

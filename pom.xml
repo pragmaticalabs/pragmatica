@@ -52,7 +52,6 @@
 
         <!-- Dependencies -->
         <pragmatica-lite.version>0.8.4</pragmatica-lite.version>
-        <javaparser.version>3.27.2-SNAPSHOT</javaparser.version>
         <picocli.version>4.7.6</picocli.version>
         <maven-plugin-api.version>3.9.9</maven-plugin-api.version>
         <maven-plugin-annotations.version>3.15.1</maven-plugin-annotations.version>
@@ -89,13 +88,6 @@
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>http-client</artifactId>
                 <version>${pragmatica-lite.version}</version>
-            </dependency>
-
-            <!-- JavaParser -->
-            <dependency>
-                <groupId>com.github.javaparser</groupId>
-                <artifactId>javaparser-symbol-solver-core</artifactId>
-                <version>${javaparser.version}</version>
             </dependency>
 
             <!-- Picocli -->

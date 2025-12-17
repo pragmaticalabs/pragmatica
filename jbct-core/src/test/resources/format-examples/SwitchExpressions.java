@@ -143,9 +143,7 @@ public class SwitchExpressions {
         return switch (obj) {
             case Point(int x, int y) -> "Point at (" + x + ", " + y + ")";
             case Line(Point(int x1, int y1), Point(int x2, int y2)) -> "Line from (" + x1 + "," + y1 + ") to (" + x2
-                                                                       + ","
-                                                                       + y2
-                                                                       + ")";
+                                                                       + "," + y2 + ")";
             default -> "unknown shape";
         };
     }

@@ -18,7 +18,7 @@ class Java25ParserTest {
         assertTrue(result.isSuccess(), () -> "Failed: " + result);
 
         var cst = result.unwrap();
-        assertEquals("CompilationUnit", cst.rule());
+        assertEquals("CompilationUnit", cst.rule().name());
     }
 
     @Test

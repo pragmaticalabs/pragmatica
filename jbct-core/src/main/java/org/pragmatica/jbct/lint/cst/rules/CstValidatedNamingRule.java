@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.stream.Stream;
 
@@ -28,8 +29,8 @@ public class CstValidatedNamingRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -38,11 +39,11 @@ public class CstValidatedNamingRule implements CstLintRule {
         }
 
         // Check classes and records for Validated prefix
-        var classDiagnostics = findAll(root, "ClassDecl").stream()
+        var classDiagnostics = findAll(root, RuleId.ClassDecl.class).stream()
             .filter(cls -> hasValidatedName(cls, source))
             .map(cls -> createDiagnostic(cls, source, ctx));
 
-        var recordDiagnostics = findAll(root, "RecordDecl").stream()
+        var recordDiagnostics = findAll(root, RuleId.RecordDecl.class).stream()
             .filter(rec -> hasValidatedName(rec, source))
             .map(rec -> createDiagnostic(rec, source, ctx));
 
@@ -50,14 +51,14 @@ public class CstValidatedNamingRule implements CstLintRule {
     }
 
     private boolean hasValidatedName(CstNode node, String source) {
-        return childByRule(node, "Identifier")
+        return childByRule(node, RuleId.Identifier.class)
             .map(id -> text(id, source))
             .filter(name -> name.startsWith("Validated"))
             .isPresent();
     }
 
     private Diagnostic createDiagnostic(CstNode node, String source, LintContext ctx) {
-        var name = childByRule(node, "Identifier")
+        var name = childByRule(node, RuleId.Identifier.class)
             .map(id -> text(id, source))
             .or("Validated...");
         var suggestedName = name.replaceFirst("Validated", "Valid");

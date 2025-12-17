@@ -15,6 +15,577 @@ import java.util.Map;
  */
 public final class Java25Parser {
 
+    // === Rule ID Types ===
+
+    public sealed interface RuleId {
+        int ordinal();
+        String name();
+
+        record CompilationUnit() implements RuleId {
+            public int ordinal() { return 0; }
+            public String name() { return "CompilationUnit"; }
+        }
+        record OrdinaryUnit() implements RuleId {
+            public int ordinal() { return 1; }
+            public String name() { return "OrdinaryUnit"; }
+        }
+        record PackageDecl() implements RuleId {
+            public int ordinal() { return 2; }
+            public String name() { return "PackageDecl"; }
+        }
+        record ImportDecl() implements RuleId {
+            public int ordinal() { return 3; }
+            public String name() { return "ImportDecl"; }
+        }
+        record ModuleDecl() implements RuleId {
+            public int ordinal() { return 4; }
+            public String name() { return "ModuleDecl"; }
+        }
+        record ModuleDirective() implements RuleId {
+            public int ordinal() { return 5; }
+            public String name() { return "ModuleDirective"; }
+        }
+        record RequiresDirective() implements RuleId {
+            public int ordinal() { return 6; }
+            public String name() { return "RequiresDirective"; }
+        }
+        record ExportsDirective() implements RuleId {
+            public int ordinal() { return 7; }
+            public String name() { return "ExportsDirective"; }
+        }
+        record OpensDirective() implements RuleId {
+            public int ordinal() { return 8; }
+            public String name() { return "OpensDirective"; }
+        }
+        record UsesDirective() implements RuleId {
+            public int ordinal() { return 9; }
+            public String name() { return "UsesDirective"; }
+        }
+        record ProvidesDirective() implements RuleId {
+            public int ordinal() { return 10; }
+            public String name() { return "ProvidesDirective"; }
+        }
+        record TypeDecl() implements RuleId {
+            public int ordinal() { return 11; }
+            public String name() { return "TypeDecl"; }
+        }
+        record TypeKind() implements RuleId {
+            public int ordinal() { return 12; }
+            public String name() { return "TypeKind"; }
+        }
+        record ClassDecl() implements RuleId {
+            public int ordinal() { return 13; }
+            public String name() { return "ClassDecl"; }
+        }
+        record InterfaceDecl() implements RuleId {
+            public int ordinal() { return 14; }
+            public String name() { return "InterfaceDecl"; }
+        }
+        record AnnotationDecl() implements RuleId {
+            public int ordinal() { return 15; }
+            public String name() { return "AnnotationDecl"; }
+        }
+        record AnnotationBody() implements RuleId {
+            public int ordinal() { return 16; }
+            public String name() { return "AnnotationBody"; }
+        }
+        record AnnotationMember() implements RuleId {
+            public int ordinal() { return 17; }
+            public String name() { return "AnnotationMember"; }
+        }
+        record AnnotationElemDecl() implements RuleId {
+            public int ordinal() { return 18; }
+            public String name() { return "AnnotationElemDecl"; }
+        }
+        record EnumDecl() implements RuleId {
+            public int ordinal() { return 19; }
+            public String name() { return "EnumDecl"; }
+        }
+        record RecordDecl() implements RuleId {
+            public int ordinal() { return 20; }
+            public String name() { return "RecordDecl"; }
+        }
+        record ImplementsClause() implements RuleId {
+            public int ordinal() { return 21; }
+            public String name() { return "ImplementsClause"; }
+        }
+        record PermitsClause() implements RuleId {
+            public int ordinal() { return 22; }
+            public String name() { return "PermitsClause"; }
+        }
+        record TypeList() implements RuleId {
+            public int ordinal() { return 23; }
+            public String name() { return "TypeList"; }
+        }
+        record TypeParams() implements RuleId {
+            public int ordinal() { return 24; }
+            public String name() { return "TypeParams"; }
+        }
+        record TypeParam() implements RuleId {
+            public int ordinal() { return 25; }
+            public String name() { return "TypeParam"; }
+        }
+        record ClassBody() implements RuleId {
+            public int ordinal() { return 26; }
+            public String name() { return "ClassBody"; }
+        }
+        record ClassMember() implements RuleId {
+            public int ordinal() { return 27; }
+            public String name() { return "ClassMember"; }
+        }
+        record Member() implements RuleId {
+            public int ordinal() { return 28; }
+            public String name() { return "Member"; }
+        }
+        record InitializerBlock() implements RuleId {
+            public int ordinal() { return 29; }
+            public String name() { return "InitializerBlock"; }
+        }
+        record EnumBody() implements RuleId {
+            public int ordinal() { return 30; }
+            public String name() { return "EnumBody"; }
+        }
+        record EnumConsts() implements RuleId {
+            public int ordinal() { return 31; }
+            public String name() { return "EnumConsts"; }
+        }
+        record EnumConst() implements RuleId {
+            public int ordinal() { return 32; }
+            public String name() { return "EnumConst"; }
+        }
+        record RecordComponents() implements RuleId {
+            public int ordinal() { return 33; }
+            public String name() { return "RecordComponents"; }
+        }
+        record RecordComp() implements RuleId {
+            public int ordinal() { return 34; }
+            public String name() { return "RecordComp"; }
+        }
+        record RecordBody() implements RuleId {
+            public int ordinal() { return 35; }
+            public String name() { return "RecordBody"; }
+        }
+        record RecordMember() implements RuleId {
+            public int ordinal() { return 36; }
+            public String name() { return "RecordMember"; }
+        }
+        record CompactConstructor() implements RuleId {
+            public int ordinal() { return 37; }
+            public String name() { return "CompactConstructor"; }
+        }
+        record FieldDecl() implements RuleId {
+            public int ordinal() { return 38; }
+            public String name() { return "FieldDecl"; }
+        }
+        record VarDecls() implements RuleId {
+            public int ordinal() { return 39; }
+            public String name() { return "VarDecls"; }
+        }
+        record VarDecl() implements RuleId {
+            public int ordinal() { return 40; }
+            public String name() { return "VarDecl"; }
+        }
+        record VarInit() implements RuleId {
+            public int ordinal() { return 41; }
+            public String name() { return "VarInit"; }
+        }
+        record MethodDecl() implements RuleId {
+            public int ordinal() { return 42; }
+            public String name() { return "MethodDecl"; }
+        }
+        record Params() implements RuleId {
+            public int ordinal() { return 43; }
+            public String name() { return "Params"; }
+        }
+        record Param() implements RuleId {
+            public int ordinal() { return 44; }
+            public String name() { return "Param"; }
+        }
+        record Throws() implements RuleId {
+            public int ordinal() { return 45; }
+            public String name() { return "Throws"; }
+        }
+        record ConstructorDecl() implements RuleId {
+            public int ordinal() { return 46; }
+            public String name() { return "ConstructorDecl"; }
+        }
+        record Block() implements RuleId {
+            public int ordinal() { return 47; }
+            public String name() { return "Block"; }
+        }
+        record BlockStmt() implements RuleId {
+            public int ordinal() { return 48; }
+            public String name() { return "BlockStmt"; }
+        }
+        record LocalVar() implements RuleId {
+            public int ordinal() { return 49; }
+            public String name() { return "LocalVar"; }
+        }
+        record LocalVarType() implements RuleId {
+            public int ordinal() { return 50; }
+            public String name() { return "LocalVarType"; }
+        }
+        record Stmt() implements RuleId {
+            public int ordinal() { return 51; }
+            public String name() { return "Stmt"; }
+        }
+        record ForCtrl() implements RuleId {
+            public int ordinal() { return 52; }
+            public String name() { return "ForCtrl"; }
+        }
+        record ForInit() implements RuleId {
+            public int ordinal() { return 53; }
+            public String name() { return "ForInit"; }
+        }
+        record LocalVarNoSemi() implements RuleId {
+            public int ordinal() { return 54; }
+            public String name() { return "LocalVarNoSemi"; }
+        }
+        record ResourceSpec() implements RuleId {
+            public int ordinal() { return 55; }
+            public String name() { return "ResourceSpec"; }
+        }
+        record Resource() implements RuleId {
+            public int ordinal() { return 56; }
+            public String name() { return "Resource"; }
+        }
+        record Catch() implements RuleId {
+            public int ordinal() { return 57; }
+            public String name() { return "Catch"; }
+        }
+        record Finally() implements RuleId {
+            public int ordinal() { return 58; }
+            public String name() { return "Finally"; }
+        }
+        record SwitchBlock() implements RuleId {
+            public int ordinal() { return 59; }
+            public String name() { return "SwitchBlock"; }
+        }
+        record SwitchRule() implements RuleId {
+            public int ordinal() { return 60; }
+            public String name() { return "SwitchRule"; }
+        }
+        record SwitchLabel() implements RuleId {
+            public int ordinal() { return 61; }
+            public String name() { return "SwitchLabel"; }
+        }
+        record CaseItem() implements RuleId {
+            public int ordinal() { return 62; }
+            public String name() { return "CaseItem"; }
+        }
+        record Pattern() implements RuleId {
+            public int ordinal() { return 63; }
+            public String name() { return "Pattern"; }
+        }
+        record TypePattern() implements RuleId {
+            public int ordinal() { return 64; }
+            public String name() { return "TypePattern"; }
+        }
+        record RecordPattern() implements RuleId {
+            public int ordinal() { return 65; }
+            public String name() { return "RecordPattern"; }
+        }
+        record PatternList() implements RuleId {
+            public int ordinal() { return 66; }
+            public String name() { return "PatternList"; }
+        }
+        record Guard() implements RuleId {
+            public int ordinal() { return 67; }
+            public String name() { return "Guard"; }
+        }
+        record Expr() implements RuleId {
+            public int ordinal() { return 68; }
+            public String name() { return "Expr"; }
+        }
+        record Assignment() implements RuleId {
+            public int ordinal() { return 69; }
+            public String name() { return "Assignment"; }
+        }
+        record Ternary() implements RuleId {
+            public int ordinal() { return 70; }
+            public String name() { return "Ternary"; }
+        }
+        record LogOr() implements RuleId {
+            public int ordinal() { return 71; }
+            public String name() { return "LogOr"; }
+        }
+        record LogAnd() implements RuleId {
+            public int ordinal() { return 72; }
+            public String name() { return "LogAnd"; }
+        }
+        record BitOr() implements RuleId {
+            public int ordinal() { return 73; }
+            public String name() { return "BitOr"; }
+        }
+        record BitXor() implements RuleId {
+            public int ordinal() { return 74; }
+            public String name() { return "BitXor"; }
+        }
+        record BitAnd() implements RuleId {
+            public int ordinal() { return 75; }
+            public String name() { return "BitAnd"; }
+        }
+        record Equality() implements RuleId {
+            public int ordinal() { return 76; }
+            public String name() { return "Equality"; }
+        }
+        record Relational() implements RuleId {
+            public int ordinal() { return 77; }
+            public String name() { return "Relational"; }
+        }
+        record Shift() implements RuleId {
+            public int ordinal() { return 78; }
+            public String name() { return "Shift"; }
+        }
+        record Additive() implements RuleId {
+            public int ordinal() { return 79; }
+            public String name() { return "Additive"; }
+        }
+        record Multiplicative() implements RuleId {
+            public int ordinal() { return 80; }
+            public String name() { return "Multiplicative"; }
+        }
+        record Unary() implements RuleId {
+            public int ordinal() { return 81; }
+            public String name() { return "Unary"; }
+        }
+        record Postfix() implements RuleId {
+            public int ordinal() { return 82; }
+            public String name() { return "Postfix"; }
+        }
+        record PostOp() implements RuleId {
+            public int ordinal() { return 83; }
+            public String name() { return "PostOp"; }
+        }
+        record Primary() implements RuleId {
+            public int ordinal() { return 84; }
+            public String name() { return "Primary"; }
+        }
+        record Lambda() implements RuleId {
+            public int ordinal() { return 85; }
+            public String name() { return "Lambda"; }
+        }
+        record LambdaParams() implements RuleId {
+            public int ordinal() { return 86; }
+            public String name() { return "LambdaParams"; }
+        }
+        record LambdaParam() implements RuleId {
+            public int ordinal() { return 87; }
+            public String name() { return "LambdaParam"; }
+        }
+        record Args() implements RuleId {
+            public int ordinal() { return 88; }
+            public String name() { return "Args"; }
+        }
+        record ExprList() implements RuleId {
+            public int ordinal() { return 89; }
+            public String name() { return "ExprList"; }
+        }
+        record Type() implements RuleId {
+            public int ordinal() { return 90; }
+            public String name() { return "Type"; }
+        }
+        record PrimType() implements RuleId {
+            public int ordinal() { return 91; }
+            public String name() { return "PrimType"; }
+        }
+        record RefType() implements RuleId {
+            public int ordinal() { return 92; }
+            public String name() { return "RefType"; }
+        }
+        record AnnotatedTypeName() implements RuleId {
+            public int ordinal() { return 93; }
+            public String name() { return "AnnotatedTypeName"; }
+        }
+        record Dims() implements RuleId {
+            public int ordinal() { return 94; }
+            public String name() { return "Dims"; }
+        }
+        record TypeArgs() implements RuleId {
+            public int ordinal() { return 95; }
+            public String name() { return "TypeArgs"; }
+        }
+        record TypeArg() implements RuleId {
+            public int ordinal() { return 96; }
+            public String name() { return "TypeArg"; }
+        }
+        record QualifiedName() implements RuleId {
+            public int ordinal() { return 97; }
+            public String name() { return "QualifiedName"; }
+        }
+        record Identifier() implements RuleId {
+            public int ordinal() { return 98; }
+            public String name() { return "Identifier"; }
+        }
+        record Modifier() implements RuleId {
+            public int ordinal() { return 99; }
+            public String name() { return "Modifier"; }
+        }
+        record Annotation() implements RuleId {
+            public int ordinal() { return 100; }
+            public String name() { return "Annotation"; }
+        }
+        record AnnotationValue() implements RuleId {
+            public int ordinal() { return 101; }
+            public String name() { return "AnnotationValue"; }
+        }
+        record AnnotationElem() implements RuleId {
+            public int ordinal() { return 102; }
+            public String name() { return "AnnotationElem"; }
+        }
+        record Literal() implements RuleId {
+            public int ordinal() { return 103; }
+            public String name() { return "Literal"; }
+        }
+        record CharLit() implements RuleId {
+            public int ordinal() { return 104; }
+            public String name() { return "CharLit"; }
+        }
+        record StringLit() implements RuleId {
+            public int ordinal() { return 105; }
+            public String name() { return "StringLit"; }
+        }
+        record NumLit() implements RuleId {
+            public int ordinal() { return 106; }
+            public String name() { return "NumLit"; }
+        }
+        record Keyword() implements RuleId {
+            public int ordinal() { return 107; }
+            public String name() { return "Keyword"; }
+        }
+        // Built-in types for anonymous terminals
+        record PegLiteral() implements RuleId {
+            public int ordinal() { return -1; }
+            public String name() { return "literal"; }
+        }
+        record PegCharClass() implements RuleId {
+            public int ordinal() { return -2; }
+            public String name() { return "char"; }
+        }
+        record PegAny() implements RuleId {
+            public int ordinal() { return -3; }
+            public String name() { return "any"; }
+        }
+        record PegToken() implements RuleId {
+            public int ordinal() { return -4; }
+            public String name() { return "token"; }
+        }
+    }
+
+    // Rule ID singleton instances
+    private static final RuleId.CompilationUnit RULE_COMPILATION_UNIT = new RuleId.CompilationUnit();
+    private static final RuleId.OrdinaryUnit RULE_ORDINARY_UNIT = new RuleId.OrdinaryUnit();
+    private static final RuleId.PackageDecl RULE_PACKAGE_DECL = new RuleId.PackageDecl();
+    private static final RuleId.ImportDecl RULE_IMPORT_DECL = new RuleId.ImportDecl();
+    private static final RuleId.ModuleDecl RULE_MODULE_DECL = new RuleId.ModuleDecl();
+    private static final RuleId.ModuleDirective RULE_MODULE_DIRECTIVE = new RuleId.ModuleDirective();
+    private static final RuleId.RequiresDirective RULE_REQUIRES_DIRECTIVE = new RuleId.RequiresDirective();
+    private static final RuleId.ExportsDirective RULE_EXPORTS_DIRECTIVE = new RuleId.ExportsDirective();
+    private static final RuleId.OpensDirective RULE_OPENS_DIRECTIVE = new RuleId.OpensDirective();
+    private static final RuleId.UsesDirective RULE_USES_DIRECTIVE = new RuleId.UsesDirective();
+    private static final RuleId.ProvidesDirective RULE_PROVIDES_DIRECTIVE = new RuleId.ProvidesDirective();
+    private static final RuleId.TypeDecl RULE_TYPE_DECL = new RuleId.TypeDecl();
+    private static final RuleId.TypeKind RULE_TYPE_KIND = new RuleId.TypeKind();
+    private static final RuleId.ClassDecl RULE_CLASS_DECL = new RuleId.ClassDecl();
+    private static final RuleId.InterfaceDecl RULE_INTERFACE_DECL = new RuleId.InterfaceDecl();
+    private static final RuleId.AnnotationDecl RULE_ANNOTATION_DECL = new RuleId.AnnotationDecl();
+    private static final RuleId.AnnotationBody RULE_ANNOTATION_BODY = new RuleId.AnnotationBody();
+    private static final RuleId.AnnotationMember RULE_ANNOTATION_MEMBER = new RuleId.AnnotationMember();
+    private static final RuleId.AnnotationElemDecl RULE_ANNOTATION_ELEM_DECL = new RuleId.AnnotationElemDecl();
+    private static final RuleId.EnumDecl RULE_ENUM_DECL = new RuleId.EnumDecl();
+    private static final RuleId.RecordDecl RULE_RECORD_DECL = new RuleId.RecordDecl();
+    private static final RuleId.ImplementsClause RULE_IMPLEMENTS_CLAUSE = new RuleId.ImplementsClause();
+    private static final RuleId.PermitsClause RULE_PERMITS_CLAUSE = new RuleId.PermitsClause();
+    private static final RuleId.TypeList RULE_TYPE_LIST = new RuleId.TypeList();
+    private static final RuleId.TypeParams RULE_TYPE_PARAMS = new RuleId.TypeParams();
+    private static final RuleId.TypeParam RULE_TYPE_PARAM = new RuleId.TypeParam();
+    private static final RuleId.ClassBody RULE_CLASS_BODY = new RuleId.ClassBody();
+    private static final RuleId.ClassMember RULE_CLASS_MEMBER = new RuleId.ClassMember();
+    private static final RuleId.Member RULE_MEMBER = new RuleId.Member();
+    private static final RuleId.InitializerBlock RULE_INITIALIZER_BLOCK = new RuleId.InitializerBlock();
+    private static final RuleId.EnumBody RULE_ENUM_BODY = new RuleId.EnumBody();
+    private static final RuleId.EnumConsts RULE_ENUM_CONSTS = new RuleId.EnumConsts();
+    private static final RuleId.EnumConst RULE_ENUM_CONST = new RuleId.EnumConst();
+    private static final RuleId.RecordComponents RULE_RECORD_COMPONENTS = new RuleId.RecordComponents();
+    private static final RuleId.RecordComp RULE_RECORD_COMP = new RuleId.RecordComp();
+    private static final RuleId.RecordBody RULE_RECORD_BODY = new RuleId.RecordBody();
+    private static final RuleId.RecordMember RULE_RECORD_MEMBER = new RuleId.RecordMember();
+    private static final RuleId.CompactConstructor RULE_COMPACT_CONSTRUCTOR = new RuleId.CompactConstructor();
+    private static final RuleId.FieldDecl RULE_FIELD_DECL = new RuleId.FieldDecl();
+    private static final RuleId.VarDecls RULE_VAR_DECLS = new RuleId.VarDecls();
+    private static final RuleId.VarDecl RULE_VAR_DECL = new RuleId.VarDecl();
+    private static final RuleId.VarInit RULE_VAR_INIT = new RuleId.VarInit();
+    private static final RuleId.MethodDecl RULE_METHOD_DECL = new RuleId.MethodDecl();
+    private static final RuleId.Params RULE_PARAMS = new RuleId.Params();
+    private static final RuleId.Param RULE_PARAM = new RuleId.Param();
+    private static final RuleId.Throws RULE_THROWS = new RuleId.Throws();
+    private static final RuleId.ConstructorDecl RULE_CONSTRUCTOR_DECL = new RuleId.ConstructorDecl();
+    private static final RuleId.Block RULE_BLOCK = new RuleId.Block();
+    private static final RuleId.BlockStmt RULE_BLOCK_STMT = new RuleId.BlockStmt();
+    private static final RuleId.LocalVar RULE_LOCAL_VAR = new RuleId.LocalVar();
+    private static final RuleId.LocalVarType RULE_LOCAL_VAR_TYPE = new RuleId.LocalVarType();
+    private static final RuleId.Stmt RULE_STMT = new RuleId.Stmt();
+    private static final RuleId.ForCtrl RULE_FOR_CTRL = new RuleId.ForCtrl();
+    private static final RuleId.ForInit RULE_FOR_INIT = new RuleId.ForInit();
+    private static final RuleId.LocalVarNoSemi RULE_LOCAL_VAR_NO_SEMI = new RuleId.LocalVarNoSemi();
+    private static final RuleId.ResourceSpec RULE_RESOURCE_SPEC = new RuleId.ResourceSpec();
+    private static final RuleId.Resource RULE_RESOURCE = new RuleId.Resource();
+    private static final RuleId.Catch RULE_CATCH = new RuleId.Catch();
+    private static final RuleId.Finally RULE_FINALLY = new RuleId.Finally();
+    private static final RuleId.SwitchBlock RULE_SWITCH_BLOCK = new RuleId.SwitchBlock();
+    private static final RuleId.SwitchRule RULE_SWITCH_RULE = new RuleId.SwitchRule();
+    private static final RuleId.SwitchLabel RULE_SWITCH_LABEL = new RuleId.SwitchLabel();
+    private static final RuleId.CaseItem RULE_CASE_ITEM = new RuleId.CaseItem();
+    private static final RuleId.Pattern RULE_PATTERN = new RuleId.Pattern();
+    private static final RuleId.TypePattern RULE_TYPE_PATTERN = new RuleId.TypePattern();
+    private static final RuleId.RecordPattern RULE_RECORD_PATTERN = new RuleId.RecordPattern();
+    private static final RuleId.PatternList RULE_PATTERN_LIST = new RuleId.PatternList();
+    private static final RuleId.Guard RULE_GUARD = new RuleId.Guard();
+    private static final RuleId.Expr RULE_EXPR = new RuleId.Expr();
+    private static final RuleId.Assignment RULE_ASSIGNMENT = new RuleId.Assignment();
+    private static final RuleId.Ternary RULE_TERNARY = new RuleId.Ternary();
+    private static final RuleId.LogOr RULE_LOG_OR = new RuleId.LogOr();
+    private static final RuleId.LogAnd RULE_LOG_AND = new RuleId.LogAnd();
+    private static final RuleId.BitOr RULE_BIT_OR = new RuleId.BitOr();
+    private static final RuleId.BitXor RULE_BIT_XOR = new RuleId.BitXor();
+    private static final RuleId.BitAnd RULE_BIT_AND = new RuleId.BitAnd();
+    private static final RuleId.Equality RULE_EQUALITY = new RuleId.Equality();
+    private static final RuleId.Relational RULE_RELATIONAL = new RuleId.Relational();
+    private static final RuleId.Shift RULE_SHIFT = new RuleId.Shift();
+    private static final RuleId.Additive RULE_ADDITIVE = new RuleId.Additive();
+    private static final RuleId.Multiplicative RULE_MULTIPLICATIVE = new RuleId.Multiplicative();
+    private static final RuleId.Unary RULE_UNARY = new RuleId.Unary();
+    private static final RuleId.Postfix RULE_POSTFIX = new RuleId.Postfix();
+    private static final RuleId.PostOp RULE_POST_OP = new RuleId.PostOp();
+    private static final RuleId.Primary RULE_PRIMARY = new RuleId.Primary();
+    private static final RuleId.Lambda RULE_LAMBDA = new RuleId.Lambda();
+    private static final RuleId.LambdaParams RULE_LAMBDA_PARAMS = new RuleId.LambdaParams();
+    private static final RuleId.LambdaParam RULE_LAMBDA_PARAM = new RuleId.LambdaParam();
+    private static final RuleId.Args RULE_ARGS = new RuleId.Args();
+    private static final RuleId.ExprList RULE_EXPR_LIST = new RuleId.ExprList();
+    private static final RuleId.Type RULE_TYPE = new RuleId.Type();
+    private static final RuleId.PrimType RULE_PRIM_TYPE = new RuleId.PrimType();
+    private static final RuleId.RefType RULE_REF_TYPE = new RuleId.RefType();
+    private static final RuleId.AnnotatedTypeName RULE_ANNOTATED_TYPE_NAME = new RuleId.AnnotatedTypeName();
+    private static final RuleId.Dims RULE_DIMS = new RuleId.Dims();
+    private static final RuleId.TypeArgs RULE_TYPE_ARGS = new RuleId.TypeArgs();
+    private static final RuleId.TypeArg RULE_TYPE_ARG = new RuleId.TypeArg();
+    private static final RuleId.QualifiedName RULE_QUALIFIED_NAME = new RuleId.QualifiedName();
+    private static final RuleId.Identifier RULE_IDENTIFIER = new RuleId.Identifier();
+    private static final RuleId.Modifier RULE_MODIFIER = new RuleId.Modifier();
+    private static final RuleId.Annotation RULE_ANNOTATION = new RuleId.Annotation();
+    private static final RuleId.AnnotationValue RULE_ANNOTATION_VALUE = new RuleId.AnnotationValue();
+    private static final RuleId.AnnotationElem RULE_ANNOTATION_ELEM = new RuleId.AnnotationElem();
+    private static final RuleId.Literal RULE_LITERAL = new RuleId.Literal();
+    private static final RuleId.CharLit RULE_CHAR_LIT = new RuleId.CharLit();
+    private static final RuleId.StringLit RULE_STRING_LIT = new RuleId.StringLit();
+    private static final RuleId.NumLit RULE_NUM_LIT = new RuleId.NumLit();
+    private static final RuleId.Keyword RULE_KEYWORD = new RuleId.Keyword();
+    private static final RuleId.PegLiteral RULE_PEG_LITERAL = new RuleId.PegLiteral();
+    private static final RuleId.PegCharClass RULE_PEG_CHAR_CLASS = new RuleId.PegCharClass();
+    private static final RuleId.PegAny RULE_PEG_ANY = new RuleId.PegAny();
+    private static final RuleId.PegToken RULE_PEG_TOKEN = new RuleId.PegToken();
+
     // === CST Types ===
 
     public record SourceLocation(int line, int column, int offset) {
@@ -44,17 +615,17 @@ public final class Java25Parser {
 
     public sealed interface CstNode {
         SourceSpan span();
-        String rule();
+        RuleId rule();
         List<Trivia> leadingTrivia();
         List<Trivia> trailingTrivia();
 
-        record Terminal(SourceSpan span, String rule, String text,
+        record Terminal(SourceSpan span, RuleId rule, String text,
                         List<Trivia> leadingTrivia, List<Trivia> trailingTrivia) implements CstNode {}
 
-        record NonTerminal(SourceSpan span, String rule, List<CstNode> children,
+        record NonTerminal(SourceSpan span, RuleId rule, List<CstNode> children,
                            List<Trivia> leadingTrivia, List<Trivia> trailingTrivia) implements CstNode {}
 
-        record Token(SourceSpan span, String rule, String text,
+        record Token(SourceSpan span, RuleId rule, String text,
                      List<Trivia> leadingTrivia, List<Trivia> trailingTrivia) implements CstNode {}
     }
 
@@ -200,7 +771,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "CompilationUnit", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_COMPILATION_UNIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -292,7 +863,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "OrdinaryUnit", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ORDINARY_UNIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -380,7 +951,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "PackageDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_PACKAGE_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -570,7 +1141,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ImportDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_IMPORT_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -706,7 +1277,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ModuleDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_MODULE_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -803,7 +1374,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ModuleDirective", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_MODULE_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -916,7 +1487,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "RequiresDirective", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_REQUIRES_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -1063,7 +1634,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ExportsDirective", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_EXPORTS_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -1210,7 +1781,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "OpensDirective", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_OPENS_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -1276,7 +1847,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "UsesDirective", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_USES_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -1407,7 +1978,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ProvidesDirective", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_PROVIDES_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -1494,7 +2065,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "TypeDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_TYPE_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -1591,7 +2162,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "TypeKind", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_TYPE_KIND, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -1743,7 +2314,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ClassDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_CLASS_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -1879,7 +2450,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "InterfaceDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_INTERFACE_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -1956,7 +2527,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "AnnotationDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -2032,7 +2603,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "AnnotationBody", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_BODY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -2184,7 +2755,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "AnnotationMember", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_MEMBER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -2311,7 +2882,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "AnnotationElemDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_ELEM_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -2393,7 +2964,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "EnumDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ENUM_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -2529,7 +3100,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "RecordDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_RECORD_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -2584,7 +3155,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ImplementsClause", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_IMPLEMENTS_CLAUSE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -2639,7 +3210,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "PermitsClause", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_PERMITS_CLAUSE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -2727,7 +3298,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "TypeList", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_TYPE_LIST, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -2836,7 +3407,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "TypeParams", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_TYPE_PARAMS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -2962,7 +3533,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "TypeParam", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_TYPE_PARAM, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3038,7 +3609,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ClassBody", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_CLASS_BODY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3163,7 +3734,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ClassMember", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_CLASS_MEMBER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3248,7 +3819,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Member", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_MEMBER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3309,7 +3880,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "InitializerBlock", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_INITIALIZER_BLOCK, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3428,7 +3999,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "EnumBody", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ENUM_BODY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3532,7 +4103,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "EnumConsts", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ENUM_CONSTS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3668,7 +4239,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "EnumConst", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ENUM_CONST, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3756,7 +4327,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "RecordComponents", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_RECORD_COMPONENTS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3833,7 +4404,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "RecordComp", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_RECORD_COMP, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3909,7 +4480,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "RecordBody", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_RECORD_BODY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -3970,7 +4541,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "RecordMember", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_RECORD_MEMBER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -4068,7 +4639,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "CompactConstructor", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_COMPACT_CONSTRUCTOR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -4135,7 +4706,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "FieldDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_FIELD_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -4223,7 +4794,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "VarDecls", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_VAR_DECLS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -4322,7 +4893,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "VarDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_VAR_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -4491,7 +5062,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "VarInit", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_VAR_INIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -4670,7 +5241,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "MethodDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_METHOD_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -4758,7 +5329,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Params", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_PARAMS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -4888,7 +5459,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Param", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_PARAM, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -4943,7 +5514,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Throws", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_THROWS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -5069,7 +5640,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ConstructorDecl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_CONSTRUCTOR_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -5145,7 +5716,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Block", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_BLOCK, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -5218,7 +5789,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "BlockStmt", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_BLOCK_STMT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -5306,7 +5877,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "LocalVar", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_LOCAL_VAR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -5366,7 +5937,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "LocalVarType", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_LOCAL_VAR_TYPE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -6364,7 +6935,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Stmt", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_STMT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -6539,7 +7110,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ForCtrl", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_FOR_CTRL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -6600,7 +7171,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ForInit", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_FOR_INIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -6677,7 +7248,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "LocalVarNoSemi", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_LOCAL_VAR_NO_SEMI, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -6802,7 +7373,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ResourceSpec", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_RESOURCE_SPEC, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -6928,7 +7499,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Resource", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_RESOURCE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -7091,7 +7662,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Catch", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_CATCH, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -7146,7 +7717,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Finally", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_FINALLY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -7222,7 +7793,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "SwitchBlock", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_SWITCH_BLOCK, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -7452,7 +8023,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "SwitchRule", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_SWITCH_RULE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -7663,7 +8234,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "SwitchLabel", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_SWITCH_LABEL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -7789,7 +8360,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "CaseItem", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_CASE_ITEM, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -7850,7 +8421,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Pattern", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_PATTERN, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -7965,7 +8536,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "TypePattern", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_TYPE_PATTERN, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -8048,7 +8619,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "RecordPattern", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_RECORD_PATTERN, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -8136,7 +8707,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "PatternList", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_PATTERN_LIST, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -8191,7 +8762,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Guard", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_GUARD, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -8225,7 +8796,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Expr", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_EXPR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -8444,7 +9015,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Assignment", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ASSIGNMENT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -8549,7 +9120,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Ternary", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_TERNARY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -8637,7 +9208,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "LogOr", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_LOG_OR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -8725,7 +9296,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "LogAnd", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_LOG_AND, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -8827,7 +9398,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "BitOr", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_BIT_OR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -8915,7 +9486,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "BitXor", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_BIT_XOR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -9017,7 +9588,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "BitAnd", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_BIT_AND, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -9131,7 +9702,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Equality", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_EQUALITY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -9337,7 +9908,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Relational", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_RELATIONAL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -9462,7 +10033,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Shift", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_SHIFT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -9601,7 +10172,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Additive", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ADDITIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -9726,7 +10297,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Multiplicative", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_MULTIPLICATIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -9976,7 +10547,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Unary", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_UNARY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -10042,7 +10613,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Postfix", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_POSTFIX, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -10422,7 +10993,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "PostOp", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_POST_OP, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -10799,7 +11370,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Primary", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_PRIMARY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -10893,7 +11464,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Lambda", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_LAMBDA, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -11045,7 +11616,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "LambdaParams", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_LAMBDA_PARAMS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -11265,7 +11836,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "LambdaParam", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_LAMBDA_PARAM, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -11353,7 +11924,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Args", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ARGS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -11441,7 +12012,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "ExprList", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_EXPR_LIST, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -11550,7 +12121,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Type", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_TYPE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -11686,7 +12257,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "PrimType", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_PRIM_TYPE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -11774,7 +12345,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "RefType", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_REF_TYPE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -11856,7 +12427,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "AnnotatedTypeName", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ANNOTATED_TYPE_NAME, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -11993,7 +12564,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Dims", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_DIMS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -12150,7 +12721,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "TypeArgs", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_TYPE_ARGS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -12306,7 +12877,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "TypeArg", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_TYPE_ARG, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -12394,7 +12965,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "QualifiedName", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_QUALIFIED_NAME, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -12476,7 +13047,7 @@ public final class Java25Parser {
             if (tbElem3.isSuccess()) {
                 var tbText3 = substring(tbStart3.offset(), pos);
                 var tbSpan3 = SourceSpan.of(tbStart3, location());
-                var tbNode3 = new CstNode.Token(tbSpan3, "token", tbText3, List.of(), List.of());
+                var tbNode3 = new CstNode.Token(tbSpan3, RULE_PEG_TOKEN, tbText3, List.of(), List.of());
                 children.add(tbNode3);
                 elem0_1 = CstParseResult.success(tbNode3, tbText3, location());
             } else {
@@ -12495,7 +13066,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Identifier", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_IDENTIFIER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -12686,7 +13257,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Modifier", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_MODIFIER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -12809,7 +13380,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Annotation", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ANNOTATION, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -12968,7 +13539,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "AnnotationValue", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_VALUE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -13149,7 +13720,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "AnnotationElem", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_ELEM, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -13255,7 +13826,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Literal", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_LITERAL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -13362,7 +13933,7 @@ public final class Java25Parser {
         if (tbElem0.isSuccess()) {
             var tbText0 = substring(tbStart0.offset(), pos);
             var tbSpan0 = SourceSpan.of(tbStart0, location());
-            var tbNode0 = new CstNode.Token(tbSpan0, "token", tbText0, List.of(), List.of());
+            var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
         } else {
@@ -13373,7 +13944,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.Token(span, "CharLit", result.text, leadingTrivia, List.of());
+            var node = new CstNode.Token(span, RULE_CHAR_LIT, result.text, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -13472,7 +14043,7 @@ public final class Java25Parser {
         if (tbElem1.isSuccess()) {
             var tbText1 = substring(tbStart1.offset(), pos);
             var tbSpan1 = SourceSpan.of(tbStart1, location());
-            var tbNode1 = new CstNode.Token(tbSpan1, "token", tbText1, List.of(), List.of());
+            var tbNode1 = new CstNode.Token(tbSpan1, RULE_PEG_TOKEN, tbText1, List.of(), List.of());
             children.add(tbNode1);
             alt0_0 = CstParseResult.success(tbNode1, tbText1, location());
         } else {
@@ -13567,7 +14138,7 @@ public final class Java25Parser {
         if (tbElem11.isSuccess()) {
             var tbText11 = substring(tbStart11.offset(), pos);
             var tbSpan11 = SourceSpan.of(tbStart11, location());
-            var tbNode11 = new CstNode.Token(tbSpan11, "token", tbText11, List.of(), List.of());
+            var tbNode11 = new CstNode.Token(tbSpan11, RULE_PEG_TOKEN, tbText11, List.of(), List.of());
             children.add(tbNode11);
             alt0_1 = CstParseResult.success(tbNode11, tbText11, location());
         } else {
@@ -13589,7 +14160,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "StringLit", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_STRING_LIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -13682,7 +14253,7 @@ public final class Java25Parser {
         if (tbElem1.isSuccess()) {
             var tbText1 = substring(tbStart1.offset(), pos);
             var tbSpan1 = SourceSpan.of(tbStart1, location());
-            var tbNode1 = new CstNode.Token(tbSpan1, "token", tbText1, List.of(), List.of());
+            var tbNode1 = new CstNode.Token(tbSpan1, RULE_PEG_TOKEN, tbText1, List.of(), List.of());
             children.add(tbNode1);
             alt0_0 = CstParseResult.success(tbNode1, tbText1, location());
         } else {
@@ -13758,7 +14329,7 @@ public final class Java25Parser {
         if (tbElem10.isSuccess()) {
             var tbText10 = substring(tbStart10.offset(), pos);
             var tbSpan10 = SourceSpan.of(tbStart10, location());
-            var tbNode10 = new CstNode.Token(tbSpan10, "token", tbText10, List.of(), List.of());
+            var tbNode10 = new CstNode.Token(tbSpan10, RULE_PEG_TOKEN, tbText10, List.of(), List.of());
             children.add(tbNode10);
             alt0_1 = CstParseResult.success(tbNode10, tbText10, location());
         } else {
@@ -13923,7 +14494,7 @@ public final class Java25Parser {
         if (tbElem19.isSuccess()) {
             var tbText19 = substring(tbStart19.offset(), pos);
             var tbSpan19 = SourceSpan.of(tbStart19, location());
-            var tbNode19 = new CstNode.Token(tbSpan19, "token", tbText19, List.of(), List.of());
+            var tbNode19 = new CstNode.Token(tbSpan19, RULE_PEG_TOKEN, tbText19, List.of(), List.of());
             children.add(tbNode19);
             alt0_2 = CstParseResult.success(tbNode19, tbText19, location());
         } else {
@@ -14049,7 +14620,7 @@ public final class Java25Parser {
         if (tbElem41.isSuccess()) {
             var tbText41 = substring(tbStart41.offset(), pos);
             var tbSpan41 = SourceSpan.of(tbStart41, location());
-            var tbNode41 = new CstNode.Token(tbSpan41, "token", tbText41, List.of(), List.of());
+            var tbNode41 = new CstNode.Token(tbSpan41, RULE_PEG_TOKEN, tbText41, List.of(), List.of());
             children.add(tbNode41);
             alt0_3 = CstParseResult.success(tbNode41, tbText41, location());
         } else {
@@ -14073,7 +14644,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "NumLit", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_NUM_LIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -14817,7 +15388,7 @@ public final class Java25Parser {
         if (result.isSuccess()) {
             var endLoc = location();
             var span = SourceSpan.of(startLoc, endLoc);
-            var node = new CstNode.NonTerminal(span, "Keyword", children, leadingTrivia, List.of());
+            var node = new CstNode.NonTerminal(span, RULE_KEYWORD, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text, endLoc);
         } else {
             restoreLocation(startLoc);
@@ -15000,7 +15571,7 @@ public final class Java25Parser {
             advance();
         }
         var span = SourceSpan.of(startLoc, location());
-        var node = new CstNode.Terminal(span, "literal", text, List.of(), List.of());
+        var node = new CstNode.Terminal(span, RULE_PEG_LITERAL, text, List.of(), List.of());
         return CstParseResult.success(node, text, location());
     }
 
@@ -15021,7 +15592,7 @@ public final class Java25Parser {
             advance();
         }
         var span = SourceSpan.of(startLoc, location());
-        var node = new CstNode.Terminal(span, "literal", longestMatch, List.of(), List.of());
+        var node = new CstNode.Terminal(span, RULE_PEG_LITERAL, longestMatch, List.of(), List.of());
         return CstParseResult.success(node, longestMatch, location());
     }
 
@@ -15053,7 +15624,7 @@ public final class Java25Parser {
         advance();
         var text = String.valueOf(c);
         var span = SourceSpan.of(startLoc, location());
-        var node = new CstNode.Terminal(span, "char", text, List.of(), List.of());
+        var node = new CstNode.Terminal(span, RULE_PEG_CHAR_CLASS, text, List.of(), List.of());
         return CstParseResult.success(node, text, location());
     }
 
@@ -15124,7 +15695,7 @@ public final class Java25Parser {
         char c = advance();
         var text = String.valueOf(c);
         var span = SourceSpan.of(startLoc, location());
-        var node = new CstNode.Terminal(span, "any", text, List.of(), List.of());
+        var node = new CstNode.Terminal(span, RULE_PEG_ANY, text, List.of(), List.of());
         return CstParseResult.success(node, text, location());
     }
 

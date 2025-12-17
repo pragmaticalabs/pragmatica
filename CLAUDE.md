@@ -111,6 +111,13 @@ The CST preserves all source information including whitespace and comments, enab
 
 5. **Import grouping**: Blank lines between groups (org.pragmatica, java/javax, static)
 
+6. **String concatenation**: Long strings wrap with `+` aligned to start of expression
+   ```java
+   private static final String LONG = "First part"
+                                      + " second part"
+                                      + " third part";
+   ```
+
 ## Implementation Architecture
 
 ### Core Components
@@ -118,32 +125,29 @@ The CST preserves all source information including whitespace and comments, enab
 - `CstFormatter` - CST-based formatter implementation
 - `CstPrinter` - Prints CST back to source with formatting rules
 - `Java25Parser` - Generated PEG parser producing CST with trivia
-- `JbctLinter` - Entry point for linting with 23 CST-based lint rules
+- `JbctLinter` - Entry point for linting (delegates to CstLinter)
+- `CstLinter` - CST-based linter with 23 lint rules
 - `ConfigLoader` - TOML config loading with priority chain
 - `GitHubReleaseChecker` - Check GitHub Releases for updates
 - `JarInstaller` - Download and install JAR updates
 - `AiToolsInstaller` - Install AI tools to ~/.claude/
 - `AiToolsUpdater` - Update AI tools from GitHub
 
+### Parser Types
+- `RuleId` - Sealed interface with record types for each grammar rule (e.g., `RuleId.ClassMember`, `RuleId.MethodDecl`)
+- `CstNode` - Sealed interface: `Terminal`, `Token`, `NonTerminal` - each has `rule()` returning `RuleId`
+- `CstNodes` - Utility methods using `Class<? extends RuleId>` for type-safe rule matching
+
 ### Formatter Components (jbct-core/src/main/java/org/pragmatica/jbct/format/cst/)
 - `CstFormatter` - Parses source to CST, applies formatting via CstPrinter
-- `CstPrinter` - Traverses CST and outputs formatted source with:
-  - ✅ Measurement infrastructure (`measureWidth`, `fitsOnLine`)
-  - ✅ Chain alignment (method chains with 2+ calls break, `.` aligns to first `.`)
-  - ✅ Import organization (pragmatica → java/javax → other → static)
-  - ✅ Member spacing (blank lines between methods, not between consecutive fields)
-  - ✅ Field declarations (correct type-name spacing)
-  - ✅ Control flow keyword spacing (`if (`, `while (`, etc.)
-  - ✅ Binary operator spacing (including < > distinction for generics vs comparison)
-  - ✅ Ternary operators (multiline formatting with `?` and `:` alignment)
-  - ✅ Record bodies (empty and non-empty)
-  - ✅ Enum bodies with constant formatting
-  - ✅ Blank line preservation from source trivia
-  - ✅ Argument alignment (multi-line args with method chains)
-  - ✅ Parameter alignment (multi-line method parameters)
-  - ✅ Lambda body alignment (in chains and broken args)
-  - ✅ Annotation body formatting
-  - ⏳ Binary operator line wrapping (string concatenation)
+- `CstPrinter` - Traverses CST and outputs formatted source (pattern matching on `RuleId` types)
+- `SpacingRules` - Encapsulates Java syntax-aware spacing logic
+- `AlignmentContext` - Manages chain/lambda alignment with try-with-resources scopes
+
+### Linter Components (jbct-core/src/main/java/org/pragmatica/jbct/lint/cst/)
+- `CstLinter` - CST-based linter entry point
+- `CstLintRule` - Interface for CST-based lint rules
+- `rules/` - 23 CST-based lint rule implementations
 
 ### HTTP Client Pattern
 Uses pragmatica-lite http-client:
@@ -196,18 +200,5 @@ Grammar synced from `../java-peglib/Java25GrammarExample.java`. Supports full Ja
 - Text blocks, type-use annotations (JSR 308)
 - Assignment expressions, lambdas, method references
 
-### Formatter (CstPrinter) - In Development
-- ✅ Phase 1: Measurement infrastructure
-- ✅ Phase 2: Chain alignment
-- ✅ Phase 3: Member spacing & imports
-- ✅ Phase 4: Ternary operators & binary operator spacing
-- ✅ Phase 5: Record/enum body formatting
-- ✅ Phase 6: Control flow keyword spacing
-- ✅ Phase 7: Argument/parameter alignment, lambda formatting (10/12 golden tests pass)
-- ⏳ Phase 8: Binary operator line wrapping (string concatenation)
-
-### Migration Status (JavaParser → CST)
-- ⏳ JbctFormatter still uses JavaParser (CstFormatter exists but not integrated)
-- ⏳ JbctLinter still uses JavaParser (23 CST lint rules exist but not integrated)
-- ⏳ JavaParser dependency removal pending after formatter cutover
-- Grammar updated: Member order changed to prioritize TypeKind before MethodDecl for nested records
+### Spacing Heuristics
+- `List<String>CONSTANT` - No space after `>` before uppercase identifier (could be generic type or constant name)

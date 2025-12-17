@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -32,8 +33,8 @@ public class CstConstructorBypassRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -48,7 +49,7 @@ public class CstConstructorBypassRule implements CstLintRule {
         }
 
         // Find direct constructor calls outside factory methods
-        return findAll(root, "Primary").stream()
+        return findAll(root, RuleId.Primary.class).stream()
             .filter(node -> isDirectConstruction(node, source, valueObjectTypes))
             .filter(node -> !isInAllowedContext(root, node, source))
             .map(node -> createDiagnostic(node, source, ctx));
@@ -57,8 +58,8 @@ public class CstConstructorBypassRule implements CstLintRule {
     private Set<String> collectValueObjectTypes(CstNode root, String source) {
         var types = new HashSet<String>();
 
-        findAll(root, "RecordDecl").forEach(record -> {
-            var name = childByRule(record, "Identifier")
+        findAll(root, RuleId.RecordDecl.class).forEach(record -> {
+            var name = childByRule(record, RuleId.Identifier.class)
                 .map(id -> text(id, source))
                 .or("");
             var recordText = text(record, source);
@@ -82,7 +83,7 @@ public class CstConstructorBypassRule implements CstLintRule {
 
     private boolean isInAllowedContext(CstNode root, CstNode node, String source) {
         // Check if inside .map() call or factory method
-        return findAncestor(root, node, "MethodDecl")
+        return findAncestor(root, node, RuleId.MethodDecl.class)
             .map(method -> {
                 var methodText = text(method, source);
                 // Allow in factory methods (static methods returning Result)

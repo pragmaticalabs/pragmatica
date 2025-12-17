@@ -30,9 +30,9 @@ java -jar jbct.jar --help
 ### Build from Source
 
 ```bash
-git clone --recurse-submodules https://github.com/siy/jbct-cli.git
+git clone https://github.com/siy/jbct-cli.git
 cd jbct-cli
-./scripts/build.sh
+mvn package -DskipTests
 # JAR: jbct-cli/target/jbct.jar
 ```
 

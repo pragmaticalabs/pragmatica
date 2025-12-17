@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.stream.Stream;
 
@@ -30,8 +31,8 @@ public class CstOrElseThrowRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -40,7 +41,7 @@ public class CstOrElseThrowRule implements CstLintRule {
         }
 
         // Find all method calls
-        return findAll(root, "PostOp").stream()
+        return findAll(root, RuleId.PostOp.class).stream()
             .filter(op -> isOrElseThrow(op, source))
             .map(op -> createDiagnostic(op, ctx));
     }

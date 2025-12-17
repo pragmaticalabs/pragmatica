@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.Set;
 import java.util.stream.Stream;
@@ -32,8 +33,8 @@ public class CstFactoryNamingRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -42,12 +43,12 @@ public class CstFactoryNamingRule implements CstLintRule {
         }
 
         // Check records for factory methods
-        return findAll(root, "RecordDecl").stream()
+        return findAll(root, RuleId.RecordDecl.class).stream()
             .flatMap(record -> checkFactoryMethods(record, source, ctx));
     }
 
     private Stream<Diagnostic> checkFactoryMethods(CstNode record, String source, LintContext ctx) {
-        var typeName = childByRule(record, "Identifier")
+        var typeName = childByRule(record, RuleId.Identifier.class)
             .map(id -> text(id, source))
             .or("");
 
@@ -56,7 +57,7 @@ public class CstFactoryNamingRule implements CstLintRule {
         var expectedName = camelCase(typeName);
 
         // Find static methods returning Result<TypeName> or TypeName
-        return findAll(record, "MethodDecl").stream()
+        return findAll(record, RuleId.MethodDecl.class).stream()
             .filter(method -> isFactoryMethod(method, typeName, source))
             .filter(method -> !isCorrectlyNamed(method, expectedName, source))
             .map(method -> createDiagnostic(method, typeName, expectedName, source, ctx));
@@ -70,7 +71,7 @@ public class CstFactoryNamingRule implements CstLintRule {
     }
 
     private boolean isCorrectlyNamed(CstNode method, String expectedName, String source) {
-        var methodName = childByRule(method, "Identifier")
+        var methodName = childByRule(method, RuleId.Identifier.class)
             .map(id -> text(id, source))
             .or("");
 
@@ -87,7 +88,7 @@ public class CstFactoryNamingRule implements CstLintRule {
 
     private Diagnostic createDiagnostic(CstNode method, String typeName, String expectedName,
                                         String source, LintContext ctx) {
-        var actualName = childByRule(method, "Identifier")
+        var actualName = childByRule(method, RuleId.Identifier.class)
             .map(id -> text(id, source))
             .or("(unknown)");
 

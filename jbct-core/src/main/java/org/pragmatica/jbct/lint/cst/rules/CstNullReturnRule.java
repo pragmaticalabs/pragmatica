@@ -5,6 +5,7 @@ import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.CstNodes;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.stream.Stream;
 
@@ -33,8 +34,8 @@ public class CstNullReturnRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         // Get package name
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -43,7 +44,7 @@ public class CstNullReturnRule implements CstLintRule {
         }
 
         // Find all return statements that return null
-        return findAll(root, "Stmt").stream()
+        return findAll(root, RuleId.Stmt.class).stream()
             .filter(stmt -> isReturnNull(stmt, source))
             .map(stmt -> createDiagnostic(root, stmt, source, ctx));
     }
@@ -55,7 +56,7 @@ public class CstNullReturnRule implements CstLintRule {
             return false;
         }
         // Check if it contains "null" literal
-        return findFirst(stmt, "Literal")
+        return findFirst(stmt, RuleId.Literal.class)
             .map(lit -> text(lit, source).trim())
             .filter("null"::equals)
             .isPresent();
@@ -66,8 +67,8 @@ public class CstNullReturnRule implements CstLintRule {
         var column = startColumn(stmt);
 
         // Find enclosing method name
-        var methodName = findAncestor(root, stmt, "MethodDecl")
-            .flatMap(md -> childByRule(md, "Identifier"))
+        var methodName = findAncestor(root, stmt, RuleId.MethodDecl.class)
+            .flatMap(md -> childByRule(md, RuleId.Identifier.class))
             .map(id -> text(id, source))
             .or("(unknown)");
 

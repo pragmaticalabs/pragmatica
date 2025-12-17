@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -33,8 +34,8 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -43,7 +44,7 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
         }
 
         // Find FQCN in method bodies (not imports or package declaration)
-        return findAll(root, "MethodDecl").stream()
+        return findAll(root, RuleId.MethodDecl.class).stream()
             .flatMap(method -> findFqcnInMethod(method, source, ctx));
     }
 
@@ -65,7 +66,7 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(CstNode method, String fqcn, LintContext ctx) {
-        var methodName = childByRule(method, "Identifier")
+        var methodName = childByRule(method, RuleId.Identifier.class)
             .map(id -> text(id, method.span().extract(fqcn)))
             .or("(unknown)");
 

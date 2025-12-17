@@ -1,9 +1,6 @@
 package org.pragmatica.jbct.format;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
-import com.github.javaparser.ast.CompilationUnit;
-import org.pragmatica.jbct.format.printer.JbctPrinter;
+import org.pragmatica.jbct.format.cst.CstFormatter;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
 
@@ -15,15 +12,17 @@ import org.pragmatica.lang.Result;
  * - Multi-line arguments align to opening paren
  * - 120 character max line length
  * - 4 space indentation
+ *
+ * Uses CST-based formatter for trivia (whitespace/comments) preservation.
  */
 public class JbctFormatter implements Formatter {
 
     private final FormatterConfig config;
-    private final JavaParser parser;
+    private final CstFormatter delegate;
 
     private JbctFormatter(FormatterConfig config) {
         this.config = config;
-        this.parser = createParser();
+        this.delegate = CstFormatter.cstFormatter(config);
     }
 
     /**
@@ -42,60 +41,16 @@ public class JbctFormatter implements Formatter {
 
     @Override
     public Result<SourceFile> format(SourceFile source) {
-        return parse(source)
-                .map(this::formatAst)
-                .map(source::withContent);
+        return delegate.format(source);
     }
 
     @Override
     public Result<Boolean> isFormatted(SourceFile source) {
-        return format(source)
-                .map(formatted -> formatted.content().equals(source.content()));
+        return delegate.isFormatted(source);
     }
 
     @Override
     public FormatterConfig config() {
         return config;
-    }
-
-    private Result<CompilationUnit> parse(SourceFile source) {
-        var result = parser.parse(source.content());
-
-        if (result.isSuccessful() && result.getResult().isPresent()) {
-            return Result.success(result.getResult().get());
-        }
-
-        var problem = result.getProblems().stream()
-                .findFirst()
-                .orElse(null);
-
-        if (problem != null) {
-            var location = problem.getLocation()
-                    .map(l -> l.getBegin())
-                    .orElse(null);
-
-            int line = location != null ? location.getRange().map(r -> r.begin.line).orElse(1) : 1;
-            int column = location != null ? location.getRange().map(r -> r.begin.column).orElse(1) : 1;
-
-            return FormattingError.parseError(
-                    source.fileName(),
-                    line,
-                    column,
-                    problem.getMessage()
-            ).result();
-        }
-
-        return FormattingError.parseError(source.fileName(), 1, 1, "Unknown parse error").result();
-    }
-
-    private String formatAst(CompilationUnit cu) {
-        var printer = JbctPrinter.jbctPrinter(config);
-        return printer.print(cu);
-    }
-
-    private JavaParser createParser() {
-        var configuration = new ParserConfiguration()
-                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21);
-        return new JavaParser(configuration);
     }
 }

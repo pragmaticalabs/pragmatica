@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.stream.Stream;
 
@@ -28,8 +29,8 @@ public class CstLambdaBracesRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -37,7 +38,7 @@ public class CstLambdaBracesRule implements CstLintRule {
             return Stream.empty();
         }
 
-        return findAll(root, "Lambda").stream()
+        return findAll(root, RuleId.Lambda.class).stream()
             .filter(lambda -> hasBlockBody(lambda, source))
             .map(lambda -> createDiagnostic(lambda, ctx));
     }

@@ -12,7 +12,7 @@ public class LineWrapping {
 
     // Long string concatenation
     private static final String CONCATENATED = "First part of the message" + " second part of the message"
-                                               + " third part of the message";
+                                              + " third part of the message";
 
     // Long generic type
     private Map<String, List<Result<Option<String>>>> complexMap;
@@ -64,10 +64,10 @@ public class LineWrapping {
     private static final String[] LONG_ARRAY = {"first element", "second element", "third element", "fourth element", "fifth element"};
 
     // Long list literal
-    private static final List<String> LONG_LIST = List.of("first", "second", "third", "fourth", "fifth");
+    private static final List<String>LONG_LIST = List.of("first", "second", "third", "fourth", "fifth");
 
     // Long map literal
-    private static final Map<String, String> LONG_MAP = Map.of("key1", "value1", "key2", "value2", "key3", "value3");
+    private static final Map<String, String>LONG_MAP = Map.of("key1", "value1", "key2", "value2", "key3", "value3");
 
     // Long implements clause
     interface LongImplements extends FirstInterface, SecondInterface, ThirdInterface {}

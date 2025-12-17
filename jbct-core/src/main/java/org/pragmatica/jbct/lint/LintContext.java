@@ -1,17 +1,13 @@
 package org.pragmatica.jbct.lint;
 
-import com.github.javaparser.symbolsolver.JavaSymbolSolver;
-import org.pragmatica.lang.Option;
-
 import java.util.List;
 import java.util.regex.Pattern;
 
 /**
- * Context for lint analysis providing configuration and type resolution.
+ * Context for lint analysis providing configuration.
  */
 public record LintContext(
         List<Pattern> businessPackagePatterns,
-        Option<JavaSymbolSolver> symbolSolver,
         LintConfig config,
         String fileName
 ) {
@@ -47,7 +43,6 @@ public record LintContext(
                         Pattern.compile(".*\\.usecase\\..*"),
                         Pattern.compile(".*\\.domain\\..*")
                 ),
-                Option.none(),
                 LintConfig.defaultConfig(),
                 "Unknown.java"
         );
@@ -61,28 +56,21 @@ public record LintContext(
                 .map(p -> p.replace("**", ".*").replace("*", "[^.]*"))
                 .map(Pattern::compile)
                 .toList();
-        return new LintContext(patterns, Option.none(), LintConfig.defaultConfig(), "Unknown.java");
-    }
-
-    /**
-     * Builder-style method to set symbol solver.
-     */
-    public LintContext withSymbolSolver(JavaSymbolSolver solver) {
-        return new LintContext(businessPackagePatterns, Option.option(solver), config, fileName);
+        return new LintContext(patterns, LintConfig.defaultConfig(), "Unknown.java");
     }
 
     /**
      * Builder-style method to set config.
      */
     public LintContext withConfig(LintConfig config) {
-        return new LintContext(businessPackagePatterns, symbolSolver, config, fileName);
+        return new LintContext(businessPackagePatterns, config, fileName);
     }
 
     /**
      * Builder-style method to set file name.
      */
     public LintContext withFileName(String fileName) {
-        return new LintContext(businessPackagePatterns, symbolSolver, config, fileName);
+        return new LintContext(businessPackagePatterns, config, fileName);
     }
 
     /**
@@ -93,6 +81,6 @@ public record LintContext(
                 .map(p -> p.replace("**", ".*").replace("*", "[^.]*"))
                 .map(Pattern::compile)
                 .toList();
-        return new LintContext(compiledPatterns, symbolSolver, config, fileName);
+        return new LintContext(compiledPatterns, config, fileName);
     }
 }

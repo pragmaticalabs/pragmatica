@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.stream.Stream;
 
@@ -28,8 +29,8 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -38,17 +39,17 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
         }
 
         // Find classes extending Exception
-        var exceptionClasses = findAll(root, "ClassDecl").stream()
+        var exceptionClasses = findAll(root, RuleId.ClassDecl.class).stream()
             .filter(cls -> extendsException(cls, source))
             .map(cls -> createExceptionClassDiagnostic(cls, source, ctx));
 
         // Find throw statements
-        var throwStatements = findAll(root, "Stmt").stream()
+        var throwStatements = findAll(root, RuleId.Stmt.class).stream()
             .filter(stmt -> text(stmt, source).trim().startsWith("throw "))
             .map(stmt -> createThrowDiagnostic(stmt, ctx));
 
         // Find methods with throws clause
-        var throwsClauses = findAll(root, "MethodDecl").stream()
+        var throwsClauses = findAll(root, RuleId.MethodDecl.class).stream()
             .filter(method -> hasThrowsClause(method, source))
             .map(method -> createThrowsClauseDiagnostic(method, source, ctx));
 
@@ -63,11 +64,11 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
     }
 
     private boolean hasThrowsClause(CstNode method, String source) {
-        return contains(method, "Throws");
+        return contains(method, RuleId.Throws.class);
     }
 
     private Diagnostic createExceptionClassDiagnostic(CstNode cls, String source, LintContext ctx) {
-        var className = childByRule(cls, "Identifier")
+        var className = childByRule(cls, RuleId.Identifier.class)
             .map(id -> text(id, source))
             .or("(unknown)");
 
@@ -95,7 +96,7 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
     }
 
     private Diagnostic createThrowsClauseDiagnostic(CstNode method, String source, LintContext ctx) {
-        var methodName = childByRule(method, "Identifier")
+        var methodName = childByRule(method, RuleId.Identifier.class)
             .map(id -> text(id, source))
             .or("(unknown)");
 

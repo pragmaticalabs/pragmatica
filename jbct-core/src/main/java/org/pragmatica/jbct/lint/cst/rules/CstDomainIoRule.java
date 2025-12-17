@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.Set;
 import java.util.stream.Stream;
@@ -39,8 +40,8 @@ public class CstDomainIoRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -50,7 +51,7 @@ public class CstDomainIoRule implements CstLintRule {
         }
 
         // Check imports for I/O packages
-        return findAll(root, "ImportDecl").stream()
+        return findAll(root, RuleId.ImportDecl.class).stream()
             .filter(imp -> isIoImport(imp, source))
             .map(imp -> createDiagnostic(imp, source, ctx));
     }

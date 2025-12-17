@@ -4,6 +4,7 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
 import java.util.stream.Stream;
 
@@ -28,8 +29,8 @@ public class CstVoidTypeRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, "PackageDecl")
-            .flatMap(pd -> findFirst(pd, "QualifiedName"))
+        var packageName = findFirst(root, RuleId.PackageDecl.class)
+            .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
             .map(qn -> text(qn, source))
             .or("");
 
@@ -38,20 +39,20 @@ public class CstVoidTypeRule implements CstLintRule {
         }
 
         // Find methods returning Void (boxed)
-        return findAll(root, "MethodDecl").stream()
+        return findAll(root, RuleId.MethodDecl.class).stream()
             .filter(method -> returnsBoxedVoid(method, source))
             .map(method -> createDiagnostic(method, source, ctx));
     }
 
     private boolean returnsBoxedVoid(CstNode method, String source) {
-        var returnType = childByRule(method, "Type");
+        var returnType = childByRule(method, RuleId.Type.class);
         if (returnType.isEmpty()) return false;
         var typeText = text(returnType.unwrap(), source).trim();
         return typeText.equals("Void") || typeText.contains("<Void>");
     }
 
     private Diagnostic createDiagnostic(CstNode method, String source, LintContext ctx) {
-        var methodName = childByRule(method, "Identifier")
+        var methodName = childByRule(method, RuleId.Identifier.class)
             .map(id -> text(id, source))
             .or("(unknown)");
 

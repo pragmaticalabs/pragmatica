@@ -81,7 +81,17 @@ final class SpacingRules {
         }
 
         // Space before '[' when following ')' (type-use annotation arrays)
-        return firstChar == '[' && ctx.lastChar() == ')';
+        if (firstChar == '[' && ctx.lastChar() == ')') {
+            return true;
+        }
+
+        // Space after ']' when followed by identifier (array type before variable name)
+        // e.g., String[] LONG_ARRAY
+        if (ctx.lastChar() == ']' && Character.isLetter(firstChar)) {
+            return true;
+        }
+
+        return false;
     }
 
     private static boolean checkDotRules(SpacingContext ctx, String text, char firstChar) {
@@ -178,7 +188,7 @@ final class SpacingRules {
         }
 
         // After > in generics, space before lowercase identifier (variable name)
-        // No space before uppercase (type name) - e.g., <T>Result
+        // No space before uppercase (could be type name like <T>Result or constant - limitation)
         if (Character.isLetter(firstChar)) {
             return Character.isLowerCase(firstChar);
         }

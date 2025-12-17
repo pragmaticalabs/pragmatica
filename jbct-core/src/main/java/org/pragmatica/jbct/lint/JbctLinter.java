@@ -1,171 +1,54 @@
 package org.pragmatica.jbct.lint;
 
-import com.github.javaparser.JavaParser;
-import com.github.javaparser.ParserConfiguration;
-import com.github.javaparser.ast.CompilationUnit;
-import org.pragmatica.jbct.lint.rules.AlwaysSuccessResultRule;
-import org.pragmatica.jbct.lint.rules.ChainLengthRule;
-import org.pragmatica.jbct.lint.rules.ConditionalLoggingRule;
-import org.pragmatica.jbct.lint.rules.ConstructorBypassRule;
-import org.pragmatica.jbct.lint.rules.ConstructorReferenceRule;
-import org.pragmatica.jbct.lint.rules.DomainIoRule;
-import org.pragmatica.jbct.lint.rules.FactoryNamingRule;
-import org.pragmatica.jbct.lint.rules.FluentFailureRule;
-import org.pragmatica.jbct.lint.rules.FullyQualifiedNameRule;
-import org.pragmatica.jbct.lint.rules.LambdaBracesRule;
-import org.pragmatica.jbct.lint.rules.LambdaComplexityRule;
-import org.pragmatica.jbct.lint.rules.LambdaTernaryRule;
-import org.pragmatica.jbct.lint.rules.LintRule;
-import org.pragmatica.jbct.lint.rules.LoggerParameterRule;
-import org.pragmatica.jbct.lint.rules.NestedRecordFactoryRule;
-import org.pragmatica.jbct.lint.rules.NestedWrapperRule;
-import org.pragmatica.jbct.lint.rules.NoBusinessExceptionsRule;
-import org.pragmatica.jbct.lint.rules.NullReturnRule;
-import org.pragmatica.jbct.lint.rules.OrElseThrowRule;
-import org.pragmatica.jbct.lint.rules.RawLoopRule;
-import org.pragmatica.jbct.lint.rules.ReturnKindRule;
-import org.pragmatica.jbct.lint.rules.ValidatedNamingRule;
-import org.pragmatica.jbct.lint.rules.ValueObjectFactoryRule;
-import org.pragmatica.jbct.lint.rules.VoidTypeRule;
+import org.pragmatica.jbct.lint.cst.CstLinter;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
-import java.util.stream.Collectors;
 
 /**
  * JBCT linter implementation.
  *
  * Analyzes Java source code for JBCT compliance using a set of configurable rules.
+ *
+ * Uses CST-based linter for accurate trivia-preserving analysis.
  */
 public class JbctLinter implements Linter {
 
     private final LintContext context;
-    private final List<LintRule> rules;
-    private final JavaParser parser;
+    private final CstLinter delegate;
 
-    private JbctLinter(LintContext context, List<LintRule> rules) {
+    private JbctLinter(LintContext context) {
         this.context = context;
-        this.rules = rules;
-        this.parser = createParser();
+        this.delegate = CstLinter.cstLinter(context);
     }
 
     /**
      * Factory method with default context and all rules.
      */
     public static JbctLinter jbctLinter() {
-        return new JbctLinter(LintContext.defaultContext(), defaultRules());
+        return new JbctLinter(LintContext.defaultContext());
     }
 
     /**
      * Factory method with custom context.
      */
     public static JbctLinter jbctLinter(LintContext context) {
-        return new JbctLinter(context, defaultRules());
-    }
-
-    /**
-     * Factory method with custom context and rules.
-     */
-    public static JbctLinter jbctLinter(LintContext context, List<LintRule> rules) {
-        return new JbctLinter(context, rules);
+        return new JbctLinter(context);
     }
 
     @Override
     public Result<List<Diagnostic>> lint(SourceFile source) {
-        return parse(source)
-                .map(cu -> analyzeWithRules(cu, source.fileName()));
+        return delegate.lint(source);
     }
 
     @Override
     public Result<Boolean> check(SourceFile source) {
-        return lint(source)
-                .map(diagnostics -> {
-                    var hasErrors = diagnostics.stream()
-                            .anyMatch(d -> d.severity() == DiagnosticSeverity.ERROR);
-                    var hasWarnings = diagnostics.stream()
-                            .anyMatch(d -> d.severity() == DiagnosticSeverity.WARNING);
-
-                    if (hasErrors) {
-                        return false;
-                    }
-                    if (context.config().failOnWarning() && hasWarnings) {
-                        return false;
-                    }
-                    return true;
-                });
+        return delegate.check(source);
     }
 
     @Override
     public LintContext context() {
         return context;
-    }
-
-    private Result<CompilationUnit> parse(SourceFile source) {
-        var result = parser.parse(source.content());
-
-        if (result.isSuccessful() && result.getResult().isPresent()) {
-            return Result.success(result.getResult().get());
-        }
-
-        var message = result.getProblems().stream()
-                .findFirst()
-                .map(p -> p.getMessage())
-                .orElse("Unknown parse error");
-
-        return Causes.cause("Parse error in " + source.fileName() + ": " + message).result();
-    }
-
-    private List<Diagnostic> analyzeWithRules(CompilationUnit cu, String fileName) {
-        var contextWithFile = context.withFileName(fileName);
-        return rules.stream()
-                .filter(rule -> contextWithFile.isRuleEnabled(rule.ruleId()))
-                .flatMap(rule -> rule.analyze(cu, contextWithFile))
-                .collect(Collectors.toList());
-    }
-
-    private JavaParser createParser() {
-        var configuration = new ParserConfiguration()
-                .setLanguageLevel(ParserConfiguration.LanguageLevel.JAVA_21);
-        return new JavaParser(configuration);
-    }
-
-    private static List<LintRule> defaultRules() {
-        return List.of(
-                // Return kinds
-                new ReturnKindRule(),
-                new NestedWrapperRule(),
-                new NullReturnRule(),
-                new VoidTypeRule(),
-                new AlwaysSuccessResultRule(),
-                // Value objects
-                new ValueObjectFactoryRule(),
-                new ConstructorBypassRule(),
-                // Naming
-                new FactoryNamingRule(),
-                new ValidatedNamingRule(),
-                // Exceptions
-                new NoBusinessExceptionsRule(),
-                new OrElseThrowRule(),
-                // Lambda/composition
-                new LambdaComplexityRule(),
-                new LambdaBracesRule(),
-                new LambdaTernaryRule(),
-                // Use case structure
-                new NestedRecordFactoryRule(),
-                // Patterns
-                new RawLoopRule(),
-                new ChainLengthRule(),
-                // Style
-                new FluentFailureRule(),
-                new ConstructorReferenceRule(),
-                new FullyQualifiedNameRule(),
-                // Logging
-                new ConditionalLoggingRule(),
-                new LoggerParameterRule(),
-                // Architecture
-                new DomainIoRule()
-        );
     }
 }

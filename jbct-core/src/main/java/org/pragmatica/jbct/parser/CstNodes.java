@@ -1,7 +1,7 @@
 package org.pragmatica.jbct.parser;
 
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.SourceSpan;
+import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
@@ -36,19 +36,19 @@ public final class CstNodes {
     }
 
     /**
-     * Check if node matches a rule name.
+     * Check if node matches a rule type.
      */
-    public static boolean isRule(CstNode node, String ruleName) {
-        return ruleName.equals(node.rule());
+    public static boolean isRule(CstNode node, Class<? extends RuleId> ruleClass) {
+        return ruleClass.isInstance(node.rule());
     }
 
     /**
-     * Find all descendants matching a rule name.
+     * Find all descendants matching a rule type.
      */
-    public static List<CstNode> findAll(CstNode root, String ruleName) {
+    public static List<CstNode> findAll(CstNode root, Class<? extends RuleId> ruleClass) {
         var results = new ArrayList<CstNode>();
         walk(root, node -> {
-            if (isRule(node, ruleName)) {
+            if (isRule(node, ruleClass)) {
                 results.add(node);
             }
         });
@@ -69,10 +69,10 @@ public final class CstNodes {
     }
 
     /**
-     * Find first descendant matching a rule name.
+     * Find first descendant matching a rule type.
      */
-    public static Option<CstNode> findFirst(CstNode root, String ruleName) {
-        return findFirst(root, node -> isRule(node, ruleName));
+    public static Option<CstNode> findFirst(CstNode root, Class<? extends RuleId> ruleClass) {
+        return findFirst(root, node -> isRule(node, ruleClass));
     }
 
     /**
@@ -92,13 +92,13 @@ public final class CstNodes {
     }
 
     /**
-     * Find ancestor matching a rule name.
+     * Find ancestor matching a rule type.
      */
-    public static Option<CstNode> findAncestor(CstNode root, CstNode target, String ruleName) {
+    public static Option<CstNode> findAncestor(CstNode root, CstNode target, Class<? extends RuleId> ruleClass) {
         return findAncestorPath(root, target)
             .flatMap(path -> {
                 for (int i = path.size() - 2; i >= 0; i--) {
-                    if (isRule(path.get(i), ruleName)) {
+                    if (isRule(path.get(i), ruleClass)) {
                         return Option.some(path.get(i));
                     }
                 }
@@ -163,11 +163,11 @@ public final class CstNodes {
     }
 
     /**
-     * Get first child matching a rule name.
+     * Get first child matching a rule type.
      */
-    public static Option<CstNode> childByRule(CstNode node, String ruleName) {
+    public static Option<CstNode> childByRule(CstNode node, Class<? extends RuleId> ruleClass) {
         for (var child : children(node)) {
-            if (isRule(child, ruleName)) {
+            if (isRule(child, ruleClass)) {
                 return Option.some(child);
             }
         }
@@ -175,12 +175,12 @@ public final class CstNodes {
     }
 
     /**
-     * Get all direct children matching a rule name.
+     * Get all direct children matching a rule type.
      */
-    public static List<CstNode> childrenByRule(CstNode node, String ruleName) {
+    public static List<CstNode> childrenByRule(CstNode node, Class<? extends RuleId> ruleClass) {
         var results = new ArrayList<CstNode>();
         for (var child : children(node)) {
-            if (isRule(child, ruleName)) {
+            if (isRule(child, ruleClass)) {
                 results.add(child);
             }
         }
@@ -188,10 +188,10 @@ public final class CstNodes {
     }
 
     /**
-     * Check if node contains a descendant matching rule name.
+     * Check if node contains a descendant matching rule type.
      */
-    public static boolean contains(CstNode root, String ruleName) {
-        return findFirst(root, ruleName).isPresent();
+    public static boolean contains(CstNode root, Class<? extends RuleId> ruleClass) {
+        return findFirst(root, ruleClass).isPresent();
     }
 
     /**
@@ -217,10 +217,10 @@ public final class CstNodes {
     }
 
     /**
-     * Count descendants matching a rule name.
+     * Count descendants matching a rule type.
      */
-    public static int count(CstNode root, String ruleName) {
-        return findAll(root, ruleName).size();
+    public static int count(CstNode root, Class<? extends RuleId> ruleClass) {
+        return findAll(root, ruleClass).size();
     }
 
     /**
