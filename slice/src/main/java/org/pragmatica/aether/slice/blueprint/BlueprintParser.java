@@ -162,9 +162,13 @@ public interface BlueprintParser {
                                                        List<RoutingSection> routingSections) {
         var parts = sectionHeader.split(":", 3);
         var protocol = parts[1];
-        var connectorOpt = parts.length == 3 ? Artifact.artifact(parts[2])
-                                                       .map(Option::some)
-                                                       .unwrap() : Option.<Artifact>none();
+        var connectorResult = parseConnectorArtifact(parts);
+
+        if (connectorResult.isFailure()) {
+            return connectorResult.flatMap(__ -> Result.failure(null));
+        }
+
+        var connectorOpt = connectorResult.unwrap();
 
         var routes = new ArrayList<Route>();
         var lineNum = startLine;
@@ -262,8 +266,10 @@ public interface BlueprintParser {
         while (pathVarMatcher.find()) {
             if (pathVarMatcher.group(1).equals(param)) {
                 return isQueryParam(pattern,
-                                    param) ? Result.success(new BindingSource.QueryVar(param)) : Result.success(new BindingSource.PathVar(
-                        param));
+                                    param)
+                       ? Result.success(new BindingSource.QueryVar(param))
+                       : Result.success(new BindingSource.PathVar(
+                               param));
             }
         }
 
@@ -281,6 +287,13 @@ public interface BlueprintParser {
 
     private static Blueprint createBlueprint(BlueprintId id, ParsedSections sections) {
         return Blueprint.blueprint(id, sections.slices(), sections.routingSections());
+    }
+
+    private static Result<Option<Artifact>> parseConnectorArtifact(String[] parts) {
+        if (parts.length != 3) {
+            return Result.success(Option.none());
+        }
+        return Artifact.artifact(parts[2]).map(Option::some);
     }
 
     record ParsedSections(List<SliceSpec> slices, List<RoutingSection> routingSections) {}

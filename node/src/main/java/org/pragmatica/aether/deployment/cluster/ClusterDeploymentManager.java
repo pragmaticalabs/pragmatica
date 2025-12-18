@@ -21,7 +21,6 @@ import org.pragmatica.message.MessageReceiver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -66,11 +65,14 @@ public interface ClusterDeploymentManager {
      */
     sealed interface ClusterDeploymentState {
 
-        default void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
+        default void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
+        }
 
-        default void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {}
+        default void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
+        }
 
-        default void onTopologyChange(TopologyChangeNotification topologyChange) {}
+        default void onTopologyChange(TopologyChangeNotification topologyChange) {
+        }
 
         /**
          * Dormant state when node is NOT the leader.
@@ -81,11 +83,11 @@ public interface ClusterDeploymentManager {
          * Active state when node IS the leader.
          */
         record Active(
-            NodeId self,
-            ClusterNode<KVCommand<AetherKey>> cluster,
-            Map<Artifact, Blueprint> blueprints,
-            Map<SliceNodeKey, SliceState> sliceStates,
-            List<NodeId> activeNodes
+                NodeId self,
+                ClusterNode<KVCommand<AetherKey>> cluster,
+                Map<Artifact, Blueprint> blueprints,
+                Map<SliceNodeKey, SliceState> sliceStates,
+                List<NodeId> activeNodes
         ) implements ClusterDeploymentState {
 
             private static final Logger log = LoggerFactory.getLogger(Active.class);
@@ -97,10 +99,11 @@ public interface ClusterDeploymentManager {
 
                 switch (key) {
                     case BlueprintKey blueprintKey when value instanceof BlueprintValue blueprintValue ->
-                        handleBlueprintChange(blueprintKey, blueprintValue);
+                            handleBlueprintChange(blueprintKey, blueprintValue);
                     case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue sliceNodeValue ->
-                        trackSliceState(sliceNodeKey, sliceNodeValue.state());
-                    default -> {}
+                            trackSliceState(sliceNodeKey, sliceNodeValue.state());
+                    default -> {
+                    }
                 }
             }
 
@@ -111,7 +114,8 @@ public interface ClusterDeploymentManager {
                 switch (key) {
                     case BlueprintKey blueprintKey -> handleBlueprintRemoval(blueprintKey);
                     case SliceNodeKey sliceNodeKey -> sliceStates.remove(sliceNodeKey);
-                    default -> {}
+                    default -> {
+                    }
                 }
             }
 
@@ -127,7 +131,8 @@ public interface ClusterDeploymentManager {
                         handleNodeRemoval(removedNode);
                         reconcile();
                     }
-                    default -> {}
+                    default -> {
+                    }
                 }
             }
 
@@ -162,8 +167,8 @@ public interface ClusterDeploymentManager {
             private void handleNodeRemoval(NodeId removedNode) {
                 // Remove state entries for the removed node
                 var keysToRemove = sliceStates.keySet().stream()
-                    .filter(key -> key.nodeId().equals(removedNode))
-                    .toList();
+                                              .filter(key -> key.nodeId().equals(removedNode))
+                                              .toList();
 
                 keysToRemove.forEach(sliceStates::remove);
 
@@ -183,7 +188,7 @@ public interface ClusterDeploymentManager {
                 var currentCount = currentInstances.size();
 
                 log.debug("Allocating {} instances of {} (current: {}) across {} nodes",
-                    desiredInstances, artifact, currentCount, activeNodes.size());
+                          desiredInstances, artifact, currentCount, activeNodes.size());
 
                 // Scale up if needed
                 if (desiredInstances > currentCount) {
@@ -199,14 +204,16 @@ public interface ClusterDeploymentManager {
             private void scaleUp(Artifact artifact, int toAdd, List<SliceNodeKey> existingInstances) {
                 // Find nodes without instances first, then allow duplicates if needed
                 var nodesWithInstances = existingInstances.stream()
-                    .map(SliceNodeKey::nodeId)
-                    .toList();
+                                                          .map(SliceNodeKey::nodeId)
+                                                          .toList();
 
                 var added = 0;
 
                 // First pass: allocate to nodes without instances
                 for (var node : activeNodes) {
-                    if (added >= toAdd) break;
+                    if (added >= toAdd) {
+                        break;
+                    }
 
                     if (!nodesWithInstances.contains(node)) {
                         var sliceKey = new SliceNodeKey(artifact, node);
@@ -236,16 +243,16 @@ public interface ClusterDeploymentManager {
             private void scaleDown(Artifact artifact, int toRemove, List<SliceNodeKey> existingInstances) {
                 // Remove from the end (LIFO to maintain round-robin balance)
                 var toRemoveKeys = existingInstances.stream()
-                    .skip(Math.max(0, existingInstances.size() - toRemove))
-                    .toList();
+                                                    .skip(Math.max(0, existingInstances.size() - toRemove))
+                                                    .toList();
 
                 toRemoveKeys.forEach(this::issueUnloadCommand);
             }
 
             private List<SliceNodeKey> getCurrentInstances(Artifact artifact) {
                 return sliceStates.keySet().stream()
-                    .filter(key -> key.artifact().equals(artifact))
-                    .toList();
+                                  .filter(key -> key.artifact().equals(artifact))
+                                  .toList();
             }
 
             private void issueLoadCommand(SliceNodeKey sliceKey) {
@@ -255,8 +262,8 @@ public interface ClusterDeploymentManager {
                 var command = new KVCommand.Put<AetherKey, AetherValue>(sliceKey, value);
 
                 cluster.apply(List.of(command))
-                    .onFailure(cause -> log.error("Failed to issue LOAD command for {}: {}",
-                        sliceKey, cause.message()));
+                       .onFailure(cause -> log.error("Failed to issue LOAD command for {}: {}",
+                                                     sliceKey, cause.message()));
             }
 
             private void issueUnloadCommand(SliceNodeKey sliceKey) {
@@ -266,8 +273,8 @@ public interface ClusterDeploymentManager {
                 var command = new KVCommand.Put<AetherKey, AetherValue>(sliceKey, value);
 
                 cluster.apply(List.of(command))
-                    .onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
-                        sliceKey, cause.message()));
+                       .onFailure(cause -> log.error("Failed to issue UNLOAD command for {}: {}",
+                                                     sliceKey, cause.message()));
             }
 
             private void deallocateAllInstances(Artifact artifact) {
@@ -288,7 +295,7 @@ public interface ClusterDeploymentManager {
 
                     if (currentInstances.size() != desiredInstances) {
                         log.info("Reconciliation: {} has {} instances, desired {}",
-                            artifact, currentInstances.size(), desiredInstances);
+                                 artifact, currentInstances.size(), desiredInstances);
                         allocateInstances(artifact, desiredInstances);
                     }
                 }
@@ -305,13 +312,13 @@ public interface ClusterDeploymentManager {
      * Create a new cluster deployment manager.
      */
     static ClusterDeploymentManager clusterDeploymentManager(
-        NodeId self,
-        ClusterNode<KVCommand<AetherKey>> cluster
-    ) {
-        record clusterDeploymentManager(
             NodeId self,
-            ClusterNode<KVCommand<AetherKey>> cluster,
-            AtomicReference<ClusterDeploymentState> state
+            ClusterNode<KVCommand<AetherKey>> cluster
+                                                            ) {
+        record clusterDeploymentManager(
+                NodeId self,
+                ClusterNode<KVCommand<AetherKey>> cluster,
+                AtomicReference<ClusterDeploymentState> state
         ) implements ClusterDeploymentManager {
 
             private static final Logger log = LoggerFactory.getLogger(clusterDeploymentManager.class);
@@ -322,11 +329,11 @@ public interface ClusterDeploymentManager {
                     log.info("Node {} became leader, activating cluster deployment manager", self);
 
                     var activeState = new ClusterDeploymentState.Active(
-                        self,
-                        cluster,
-                        new ConcurrentHashMap<>(),
-                        new ConcurrentHashMap<>(),
-                        new CopyOnWriteArrayList<>()
+                            self,
+                            cluster,
+                            new ConcurrentHashMap<>(),
+                            new ConcurrentHashMap<>(),
+                            new CopyOnWriteArrayList<>()
                     );
 
                     state.set(activeState);
@@ -356,9 +363,9 @@ public interface ClusterDeploymentManager {
         }
 
         return new clusterDeploymentManager(
-            self,
-            cluster,
-            new AtomicReference<>(new ClusterDeploymentState.Dormant())
+                self,
+                cluster,
+                new AtomicReference<>(new ClusterDeploymentState.Dormant())
         );
     }
 }

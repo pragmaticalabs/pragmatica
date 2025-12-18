@@ -2,15 +2,18 @@
 
 ## Executive Summary
 
-**Aether** is an AI-driven distributed runtime environment for Java applications that enables predictive scaling, intelligent orchestration, and seamless multi-cloud deployment without requiring changes to business logic.
+**Aether** is an AI-driven distributed runtime environment for Java applications that enables predictive scaling,
+intelligent orchestration, and seamless multi-cloud deployment without requiring changes to business logic.
 
 ## The Problem
 
 Traditional distributed systems face three fundamental challenges:
 
 1. **Reactive Scaling**: Systems scale only after load increases, leading to degraded performance during traffic spikes
-2. **Manual Operations**: Complex tasks like rolling updates, canary deployments, and cloud migrations require extensive manual orchestration
-3. **Infrastructure Lock-in**: Applications become tightly coupled to specific cloud providers or orchestration platforms
+2. **Manual Operations**: Complex tasks like rolling updates, canary deployments, and cloud migrations require extensive
+   manual orchestration
+3. **Infrastructure Lock-in**: Applications become tightly coupled to specific cloud providers or orchestration
+   platforms
 
 ## The Solution
 
@@ -22,9 +25,11 @@ Aether provides an intelligent runtime that:
 
 ### Core Principle: Convergence to Desired State
 
-The runtime performs one primary function: **continuously reconcile actual deployment state with desired state stored in consensus KV-Store**.
+The runtime performs one primary function: **continuously reconcile actual deployment state with desired state stored in
+consensus KV-Store**.
 
-The AI observes metrics, makes decisions, and updates desired state. The runtime executes changes transparently across the cluster.
+The AI observes metrics, makes decisions, and updates desired state. The runtime executes changes transparently across
+the cluster.
 
 ## Slice-Based Deployment Model
 
@@ -33,28 +38,34 @@ Applications are deployed as **slices** - independently scalable units with well
 ### Slice Types
 
 #### Service Slices
+
 Traditional microservice-style components with multiple entry points.
 
 **Characteristics**:
+
 - Multiple entry points (methods/APIs)
 - Stateless or externally-persisted state
 - Suitable for CRUD operations, API gateways, data services
 
 **Example Use Cases**:
+
 - User authentication service
 - Product catalog API
 - Payment gateway adapter
 
 #### Lean Slices
+
 Single-purpose components handling one use case or event type end-to-end.
 
 **Characteristics**:
+
 - Single entry point
 - Encapsulates complete business use case (DDD-style)
 - Minimal inter-slice communication
 - Event handlers in traditional EDA
 
 **Example Use Cases**:
+
 - "Register New User" use case
 - "Process Order Payment" workflow
 - "Inventory Level Changed" event handler
@@ -62,6 +73,7 @@ Single-purpose components handling one use case or event type end-to-end.
 ### Unified Management
 
 **From runtime's perspective, slice types are identical**:
+
 - Both use atomic inter-slice communication
 - Both expose entry points (one or many)
 - Both follow same lifecycle (LOAD → ACTIVATE → ACTIVE)
@@ -72,6 +84,7 @@ The distinction exists only at the design/architecture level, not in runtime beh
 ## Inter-Slice Communication
 
 All slice-to-slice calls are **atomic and reliable**:
+
 - Calls either complete successfully or fail cleanly
 - No partial states or lost messages
 - Runtime guarantees delivery through consensus-backed transport
@@ -86,6 +99,7 @@ This allows developers to write business logic without worrying about distribute
 ### Controller Concept
 
 The **Cluster Controller** makes all topology decisions. It's a pluggable component that can be:
+
 - **Decision Tree**: Deterministic rules, evaluated every second
 - **Small Local LLM**: Pattern learning, evaluated every 2-5 seconds
 - **Large Cloud LLM**: Strategic planning, evaluated every 30-60 seconds
@@ -95,22 +109,23 @@ Controllers can be **layered** for hybrid intelligence (decision tree + LLM).
 ### Controller Responsibilities
 
 1. **Predictive Scaling**
-   - Learn traffic patterns over time
-   - Scale slice instances BEFORE load increases
-   - Prevent performance degradation through anticipation
+    - Learn traffic patterns over time
+    - Scale slice instances BEFORE load increases
+    - Prevent performance degradation through anticipation
 
 2. **Second-Level Scaling**
-   - Start/stop compute nodes dynamically
-   - Choose deployment environments (cloud provider, region)
-   - Optimize cost vs. performance trade-offs
+    - Start/stop compute nodes dynamically
+    - Choose deployment environments (cloud provider, region)
+    - Optimize cost vs. performance trade-offs
 
 3. **Complex Deployment Operations**
-   - Rolling updates without downtime
-   - Canary deployments with automatic rollback
-   - Blue/green deployments across environments
-   - Multi-cloud migration without stopping processing
+    - Rolling updates without downtime
+    - Canary deployments with automatic rollback
+    - Blue/green deployments across environments
+    - Multi-cloud migration without stopping processing
 
 ### What Controllers Do NOT Do:
+
 - Request routing (handled by runtime)
 - Real-time load balancing
 - Individual transaction decisions
@@ -118,6 +133,7 @@ Controllers can be **layered** for hybrid intelligence (decision tree + LLM).
 ### Controller Input
 
 Controllers receive:
+
 - **Current metrics**: Latest ClusterMetricsSnapshot
 - **Historical metrics**: 2-hour sliding window
 - **Cluster events**: Node joins/leaves, leadership changes, slice lifecycle, blueprint changes, KV-Store commits
@@ -126,6 +142,7 @@ Controllers receive:
 ### Controller Output
 
 Controllers produce:
+
 - **Blueprint changes**: Scale/deploy/remove/update slices
 - **Node actions**: Start/stop nodes, migrate slices
 - **Reasoning**: Explanation of decisions (for transparency)
@@ -179,6 +196,7 @@ Each layer can veto or modify decisions from lower layers.
 ```
 
 **Key Design Points**:
+
 - Only leader node communicates with AI
 - AI is external (even for small models)
 - Leader shapes metrics to minimize token costs
@@ -211,6 +229,7 @@ Every 1 Second:
 ```
 
 **Key Benefits**:
+
 - ✅ **Zero consensus I/O** - Metrics never touch KV-Store
 - ✅ **Fast failover** - New leader has recent snapshot (< 2 sec old)
 - ✅ **Cluster-wide visibility** - Every node knows cluster state
@@ -218,6 +237,7 @@ Every 1 Second:
 - ✅ **Sliding window** - Leader maintains 2-hour history in memory
 
 **On Leader Failover**:
+
 - New leader uses last received ClusterMetricsSnapshot
 - If stale (> 2 sec), requests fresh snapshot from all nodes
 - Recovery time: 1-2 RTTs (~10-100 ms)
@@ -281,18 +301,24 @@ The system operates through continuous reconciliation:
 ## Key Design Principles
 
 ### 1. Convergence, Not Commands
-The runtime continuously drives actual state toward desired state. No imperative commands - only declarative configuration.
+
+The runtime continuously drives actual state toward desired state. No imperative commands - only declarative
+configuration.
 
 ### 2. Controller as Strategic, Not Tactical
+
 Controllers make high-level topology decisions (seconds to minutes), not millisecond routing decisions.
 
 ### 3. Consensus as Single Source of Truth
+
 All persistent state (desired configuration, actual state, metrics) flows through KV-Store.
 
 ### 4. Transparency to Business Logic
+
 Slices written using JBCT patterns have no awareness of distribution, scaling, or failure handling.
 
 ### 5. Predictive Over Reactive
+
 Learn patterns, anticipate needs, prevent problems rather than respond to them.
 
 ## Non-Goals (Out of Scope)
@@ -305,16 +331,19 @@ Learn patterns, anticipate needs, prevent problems rather than respond to them.
 ## Success Criteria
 
 ### For Developers
+
 - Write business logic in pure JBCT patterns
 - No distributed systems concerns in code
 - Deploy slices without infrastructure knowledge
 
 ### For Operators
+
 - AI handles scaling decisions
 - No manual intervention for routine operations
 - Transparent multi-cloud deployment
 
 ### For System
+
 - Predictive scaling prevents performance degradation
 - Zero-downtime deployments (rolling, canary, blue/green)
 - Seamless cloud migration while processing continues

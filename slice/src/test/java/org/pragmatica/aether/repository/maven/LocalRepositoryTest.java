@@ -33,13 +33,13 @@ class LocalRepositoryTest {
 
         // When: locating the artifact
         repository.locate(artifact)
-            .await()
-            .onFailure(cause -> fail("Expected success but got: " + cause.message()))
-            .onSuccess(location -> {
-                // Then: location points to the JAR
-                assertThat(location.artifact()).isEqualTo(artifact);
-                assertThat(location.url().getPath()).endsWith("test-slice-1.0.0.jar");
-            });
+                  .await()
+                  .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                  .onSuccess(location -> {
+                      // Then: location points to the JAR
+                      assertThat(location.artifact()).isEqualTo(artifact);
+                      assertThat(location.url().getPath()).endsWith("test-slice-1.0.0.jar");
+                  });
     }
 
     @Test
@@ -49,13 +49,13 @@ class LocalRepositoryTest {
 
         // When: locating the artifact
         repository.locate(artifact)
-            .await()
-            .onSuccessRun(() -> fail("Expected failure for non-existent artifact"))
-            .onFailure(cause -> {
-                // Then: error message indicates artifact not found
-                assertThat(cause.message()).contains("Artifact not found");
-                assertThat(cause.message()).contains("org.example:missing:1.0.0");
-            });
+                  .await()
+                  .onSuccessRun(() -> fail("Expected failure for non-existent artifact"))
+                  .onFailure(cause -> {
+                      // Then: error message indicates artifact not found
+                      assertThat(cause.message()).contains("Artifact not found");
+                      assertThat(cause.message()).contains("org.example:missing:1.0.0");
+                  });
     }
 
     @Test
@@ -66,12 +66,12 @@ class LocalRepositoryTest {
 
         // When: locating the artifact
         repository.locate(artifact)
-            .await()
-            .onFailure(cause -> fail("Expected success but got: " + cause.message()))
-            .onSuccess(location -> {
-                // Then: location includes qualifier in filename
-                assertThat(location.url().getPath()).endsWith("test-slice-1.0.0-SNAPSHOT.jar");
-            });
+                  .await()
+                  .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                  .onSuccess(location -> {
+                      // Then: location includes qualifier in filename
+                      assertThat(location.url().getPath()).endsWith("test-slice-1.0.0-SNAPSHOT.jar");
+                  });
     }
 
     @Test
@@ -82,14 +82,14 @@ class LocalRepositoryTest {
 
         // When: locating the artifact
         repository.locate(artifact)
-            .await()
-            .onFailure(cause -> fail("Expected success but got: " + cause.message()))
-            .onSuccess(location -> {
-                // Then: group ID is converted to path correctly
-                var urlPath = location.url().getPath();
-                assertThat(urlPath).contains("org/pragmatica/aether/slice");
-                assertThat(urlPath).endsWith("example-slice-0.2.0.jar");
-            });
+                  .await()
+                  .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                  .onSuccess(location -> {
+                      // Then: group ID is converted to path correctly
+                      var urlPath = location.url().getPath();
+                      assertThat(urlPath).contains("org/pragmatica/aether/slice");
+                      assertThat(urlPath).endsWith("example-slice-0.2.0.jar");
+                  });
     }
 
     @Test
@@ -107,9 +107,9 @@ class LocalRepositoryTest {
         var groupPath = artifact.groupId().id().replace('.', '/');
 
         var jarDir = tempRepo
-            .resolve(groupPath)
-            .resolve(artifactId)
-            .resolve(version.bareVersion());
+                .resolve(groupPath)
+                .resolve(artifactId)
+                .resolve(version.bareVersion());
 
         Files.createDirectories(jarDir);
 

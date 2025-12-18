@@ -4,7 +4,6 @@ import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.net.NodeInfo;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.message.MessageRouter;
 
 import java.net.SocketAddress;
 
@@ -22,7 +21,7 @@ public interface TopologyManager {
 
     /// The quorum size (majority) for the cluster.
     default int quorumSize() {
-        return clusterSize()/2 + 1;
+        return clusterSize() / 2 + 1;
     }
 
     /// Gets the f+1 size for the cluster (where f is the maximum number of failures).

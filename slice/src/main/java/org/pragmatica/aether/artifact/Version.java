@@ -27,8 +27,8 @@ public record Version(int major, int minor, int patch, String qualifier) {
         }
 
         var qualifier = (dashIndex > 0)
-                ? Option.option(parts[2].substring(dashIndex + 1))
-                : Option.<String>none();
+                        ? Option.option(parts[2].substring(dashIndex + 1))
+                        : Option.<String>none();
 
         if (dashIndex > 0) {
             parts[2] = parts[2].substring(0, dashIndex);
@@ -57,8 +57,8 @@ public record Version(int major, int minor, int patch, String qualifier) {
 
     public String withQualifier() {
         return qualifier.isEmpty()
-                ? bareVersion() + qualifier
-                : bareVersion() + "-" + qualifier;
+               ? bareVersion() + qualifier
+               : bareVersion() + "-" + qualifier;
     }
 
     private static final Pattern QUALIFIER_PATTERN = Pattern.compile("^[\\-a-zA-Z0-9-_.]*$");

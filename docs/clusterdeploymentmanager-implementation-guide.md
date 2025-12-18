@@ -3,6 +3,7 @@
 ## Overview
 
 ClusterDeploymentManager is the cluster-wide orchestration component that:
+
 - Runs on ALL nodes but only ACTIVE on the leader
 - Watches blueprint changes in consensus KV-Store
 - Allocates slice instances across cluster nodes (round-robin)
@@ -433,9 +434,9 @@ void onValuePut_allocatesInstances_whenBlueprintChanges() {
 2. **Leader election**: Node-1 becomes leader
 3. **Publish blueprint**: `blueprints/test` → 3 instances
 4. **Verify allocation**: 3 LOAD commands written to:
-   - `slices/node-1/org.example:slice:1.0.0`
-   - `slices/node-2/org.example:slice:1.0.0`
-   - `slices/node-3/org.example:slice:1.0.0`
+    - `slices/node-1/org.example:slice:1.0.0`
+    - `slices/node-2/org.example:slice:1.0.0`
+    - `slices/node-3/org.example:slice:1.0.0`
 5. **Update blueprint**: Change to 5 instances
 6. **Verify scale-up**: 2 more LOAD commands issued
 7. **Update blueprint**: Change to 2 instances
@@ -468,6 +469,7 @@ private void performReconciliation() {
 ### Smart Allocation Strategies
 
 Instead of simple round-robin, could use:
+
 - CPU-aware allocation (prefer less loaded nodes)
 - Affinity-based allocation (keep instances on same node)
 - Anti-affinity (spread instances across different nodes)

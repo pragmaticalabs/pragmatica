@@ -2,8 +2,9 @@ package org.pragmatica.cluster.net;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.topology.ip.TopologyConfig;
+import org.pragmatica.cluster.topology.TopologyManagementMessage;
 import org.pragmatica.cluster.topology.TopologyManager;
+import org.pragmatica.cluster.topology.ip.TopologyConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.message.MessageRouter;
@@ -17,8 +18,6 @@ import static org.pragmatica.cluster.net.NodeId.randomNodeId;
 import static org.pragmatica.cluster.net.NodeInfo.nodeInfo;
 import static org.pragmatica.cluster.topology.ip.TcpTopologyManager.tcpTopologyManager;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
-
-import org.pragmatica.cluster.topology.TopologyManagementMessage;
 
 class TcpTopologyManagerIT {
     private final MessageRouter.MutableRouter router = MessageRouter.mutable();
@@ -46,7 +45,10 @@ class TcpTopologyManagerIT {
         nodeInfo1 = nodeInfo(nodeId1, NodeAddress.nodeAddress(socketAddress1));
         nodeInfo2 = nodeInfo(nodeId2, NodeAddress.nodeAddress(socketAddress2));
 
-        var config = new TopologyConfig(nodeId1, timeSpan(100).hours(), TimeSpan.timeSpan(10).seconds(), List.of(nodeInfo1, nodeInfo2));
+        var config = new TopologyConfig(nodeId1,
+                                        timeSpan(100).hours(),
+                                        TimeSpan.timeSpan(10).seconds(),
+                                        List.of(nodeInfo1, nodeInfo2));
 
         var tcpManager = tcpTopologyManager(config, router);
         topologyManager = tcpManager;

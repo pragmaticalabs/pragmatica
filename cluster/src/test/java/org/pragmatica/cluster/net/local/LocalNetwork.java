@@ -40,7 +40,9 @@ public class LocalNetwork implements ClusterNetwork {
     private final Map<NodeId, MessageRouter.MutableRouter> routers;
     private FaultInjector faultInjector;
 
-    public LocalNetwork(TopologyManager topologyManager, Map<NodeId, MessageRouter.MutableRouter> routers, FaultInjector faultInjector) {
+    public LocalNetwork(TopologyManager topologyManager,
+                        Map<NodeId, MessageRouter.MutableRouter> routers,
+                        FaultInjector faultInjector) {
         this.topologyManager = topologyManager;
         this.routers = routers;
         this.faultInjector = faultInjector;
@@ -133,7 +135,7 @@ public class LocalNetwork implements ClusterNetwork {
 
         // Check for node partition
         if (sender != null && partitions.containsKey(sender) &&
-                partitions.get(sender).contains(destination)) {
+            partitions.get(sender).contains(destination)) {
             return; // Dropped due to partition
         }
 
@@ -238,7 +240,7 @@ public class LocalNetwork implements ClusterNetwork {
 
         public boolean isFaultyNode(NodeId nodeId, FaultType type) {
             return nodeSpecificFaults.containsKey(nodeId) &&
-                    nodeSpecificFaults.get(nodeId).contains(type);
+                   nodeSpecificFaults.get(nodeId).contains(type);
         }
 
         public void clearAllFaults() {

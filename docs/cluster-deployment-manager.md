@@ -1,11 +1,13 @@
 # ClusterDeploymentManager Design
 
-> **⚠️ OUTDATED DOCUMENT**: This document contains an older design with a separate AllocationEngine component and allocations keys in KV-Store.
+> **⚠️ OUTDATED DOCUMENT**: This document contains an older design with a separate AllocationEngine component and
+> allocations keys in KV-Store.
 >
 > **Current simplified design**:
 > - No separate AllocationEngine (allocation logic embedded in ClusterDeploymentManager)
 > - No allocations keys (ClusterDeploymentManager writes directly to `slices/{node-id}/{artifact}`)
-> - See [architecture-overview.md](architecture-overview.md) and [kv-schema-simplified.md](kv-schema-simplified.md) for current design
+> - See [architecture-overview.md](architecture-overview.md) and [kv-schema-simplified.md](kv-schema-simplified.md) for
+    current design
 >
 > This document is kept for historical reference but should not be used for implementation.
 
@@ -13,7 +15,9 @@
 
 ## Overview
 
-ClusterDeploymentManager is the cluster-wide orchestration component responsible for managing slice deployments across the entire Aether cluster. It operates using a leader-follower model where only the leader node actively manages cluster-wide deployments.
+ClusterDeploymentManager is the cluster-wide orchestration component responsible for managing slice deployments across
+the entire Aether cluster. It operates using a leader-follower model where only the leader node actively manages
+cluster-wide deployments.
 
 ## Architecture
 
@@ -42,7 +46,8 @@ void onLeaderChange(LeaderNotification.LeaderChange leaderChange) {
 }
 ```
 
-**Leadership Selection**: 
+**Leadership Selection**:
+
 - Deterministic: First node in cluster topology becomes leader
 - Automatic failover when leader node fails
 - No custom election logic needed
@@ -72,12 +77,14 @@ sealed interface ClusterDeploymentState {
 **Purpose**: Monitor blueprint changes in KV-Store and trigger allocation updates
 
 **Key Behavior**:
+
 - Watches `blueprints/*` keys for ValuePut/ValueRemove events
 - Parses blueprint content and validates format
 - Triggers allocation engine when blueprints change
 - Handles blueprint deletion by cleaning up allocations
 
 **Implementation Pattern**:
+
 ```java
 @MessageReceiver
 void onValuePut(ValuePut<?, ?> valuePut) {
@@ -94,11 +101,13 @@ void onValuePut(ValuePut<?, ?> valuePut) {
 **Purpose**: Decide how to distribute slice instances across cluster nodes
 
 **Simple Strategy (Phase 1)**:
+
 - Round-robin distribution of instances across available nodes
 - Exact instance count matching (no ranges)
 - Even distribution when possible
 
 **Allocation Algorithm**:
+
 ```java
 List<AllocationDecision> allocateInstances(Artifact artifact, int desiredInstances) {
     var availableNodes = topology.getActiveNodes();
@@ -115,6 +124,7 @@ List<AllocationDecision> allocateInstances(Artifact artifact, int desiredInstanc
 ```
 
 **Future Enhancements**:
+
 - AI-based allocation using decision trees
 - Resource-aware placement (CPU, memory constraints)
 - Affinity/anti-affinity rules
@@ -125,12 +135,14 @@ List<AllocationDecision> allocateInstances(Artifact artifact, int desiredInstanc
 **Purpose**: Ensure cluster state consistency, especially during leader transitions
 
 **Reconciliation Scenarios**:
+
 1. **Leader Activation**: New leader reconciles entire cluster state
 2. **Node Failures**: Redistribute instances from failed nodes
 3. **Topology Changes**: Rebalance when nodes added/removed
 4. **State Drift**: Detect and fix allocation mismatches
 
 **Reconciliation Process**:
+
 ```java
 Promise<Unit> reconcileClusterState() {
     return getCurrentBlueprints()
@@ -144,6 +156,7 @@ Promise<Unit> reconcileClusterState() {
 ```
 
 **Reconciliation Strategies**:
+
 - **Conservative**: Only fix clear mismatches, minimal disruption
 - **Aggressive**: Full rebalancing, optimal distribution
 - **Configurable**: Strategy selection via configuration
@@ -151,16 +164,19 @@ Promise<Unit> reconcileClusterState() {
 ## KV-Store Integration
 
 ### Blueprint Keys
+
 ```
 blueprints/{blueprint-name} → Blueprint JSON
 ```
 
-### Allocation Keys  
+### Allocation Keys
+
 ```
 allocations/{artifact}/{node-id} → AllocationValue JSON
 ```
 
 **Allocation Workflow**:
+
 1. ClusterDeploymentManager reads blueprint
 2. AllocationEngine calculates desired distribution
 3. Allocation decisions written to `allocations/*` keys
@@ -172,11 +188,13 @@ allocations/{artifact}/{node-id} → AllocationValue JSON
 ### Node Failure Scenarios
 
 **Leader Node Fails**:
+
 - LeaderManager automatically selects new leader
 - New leader performs full reconciliation
 - Minimal disruption to running slices
 
 **Worker Node Fails**:
+
 - Leader detects node failure via topology notifications
 - Instances from failed node redistributed to healthy nodes
 - Automatic rebalancing maintains desired instance counts
@@ -195,7 +213,7 @@ Result<Blueprint> validateBlueprint(Blueprint blueprint) {
 ### Timeout Handling
 
 - Blueprint processing timeouts
-- Allocation operation timeouts  
+- Allocation operation timeouts
 - Reconciliation timeouts with configurable backoff
 
 ## Integration Points
@@ -253,18 +271,21 @@ record ClusterDeploymentConfiguration(
 ## Testing Strategy
 
 ### Unit Tests
+
 - AllocationEngine algorithm testing
 - Blueprint parsing and validation
 - Reconciliation logic verification
 - Error handling scenarios
 
-### Integration Tests  
+### Integration Tests
+
 - Leader activation/deactivation
 - Blueprint change handling
 - Node failure scenarios
 - Full reconciliation cycles
 
 ### Test Infrastructure
+
 ```java
 // Mock LeaderManager for controlled leadership testing
 // In-memory KV-Store for state verification
@@ -274,18 +295,21 @@ record ClusterDeploymentConfiguration(
 ## Implementation Phases
 
 ### Phase 1: Basic Infrastructure
-- ClusterDeploymentManager skeleton  
+
+- ClusterDeploymentManager skeleton
 - LeaderNotification integration
 - Basic blueprint watching
 - Simple round-robin allocation
 
 ### Phase 2: Core Functionality
+
 - Complete reconciliation engine
 - Node failure handling
 - Blueprint validation
 - Error recovery
 
-### Phase 3: Advanced Features  
+### Phase 3: Advanced Features
+
 - AI-based allocation strategies
 - Resource-aware placement
 - Advanced reconciliation policies

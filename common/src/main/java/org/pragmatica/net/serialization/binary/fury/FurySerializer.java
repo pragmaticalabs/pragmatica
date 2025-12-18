@@ -3,8 +3,8 @@ package org.pragmatica.net.serialization.binary.fury;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufOutputStream;
 import org.apache.fury.ThreadSafeFury;
-import org.pragmatica.net.serialization.binary.ClassRegistrator;
 import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.net.serialization.binary.ClassRegistrator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

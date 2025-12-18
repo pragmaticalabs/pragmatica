@@ -49,7 +49,9 @@ public interface SliceManifest {
      */
     static Result<SliceManifestInfo> readFromClassLoader(ClassLoader classLoader) {
         return Result.lift(Causes::fromThrowable, () -> classLoader.getResource(JarFile.MANIFEST_NAME))
-                     .flatMap(url -> url == null ? MANIFEST_NOT_FOUND.result() : readManifestFromUrl(url))
+                     .flatMap(url -> url == null
+                                     ? MANIFEST_NOT_FOUND.result()
+                                     : readManifestFromUrl(url))
                      .flatMap(SliceManifest::parseManifest);
     }
 
@@ -104,6 +106,10 @@ public interface SliceManifest {
     // Error causes
     Fn1<Cause, String> MANIFEST_NOT_FOUND_FN = Causes.forValue("Manifest not found in JAR: %s");
     Cause MANIFEST_NOT_FOUND = Causes.cause("Manifest not found in ClassLoader resources");
-    Cause MISSING_ARTIFACT_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_ARTIFACT_ATTR + ". Slice JARs must declare artifact coordinates in manifest.");
-    Cause MISSING_CLASS_ATTR = Causes.cause("Missing required manifest attribute: " + SLICE_CLASS_ATTR + ". Slice JARs must declare the main slice class in manifest.");
+    Cause MISSING_ARTIFACT_ATTR = Causes.cause("Missing required manifest attribute: "
+                                               + SLICE_ARTIFACT_ATTR
+                                               + ". Slice JARs must declare artifact coordinates in manifest.");
+    Cause MISSING_CLASS_ATTR = Causes.cause("Missing required manifest attribute: "
+                                            + SLICE_CLASS_ATTR
+                                            + ". Slice JARs must declare the main slice class in manifest.");
 }

@@ -2,7 +2,10 @@
 
 ## Objective
 
-Validate safety (linearizability) and liveness of a Rabia implementation under nominal load, fault scenarios, and boundary conditions. Focus on edge‑case behaviors including quorum loss/restore and Byzantine actions. Logging and log truncation are absent in Rabia; tests target state convergence through direct state digests and application‑level snapshots.
+Validate safety (linearizability) and liveness of a Rabia implementation under nominal load, fault scenarios, and
+boundary conditions. Focus on edge‑case behaviors including quorum loss/restore and Byzantine actions. Logging and log
+truncation are absent in Rabia; tests target state convergence through direct state digests and application‑level
+snapshots.
 
 ---
 
@@ -47,7 +50,7 @@ Validate safety (linearizability) and liveness of a Rabia implementation under n
 | 5.3  | Replace primary (two nodes removed, two nodes added) | Cluster state preserved; consensus maintained          |
 | 5.4  | Majority replacement (f+1 nodes replaced)            | Full state transfer; operation continues               |
 
-## Test Suite 6 – Quorum Loss & Recovery 
+## Test Suite 6 – Quorum Loss & Recovery
 
 | Case | Partition Pattern               | Duration | Expected                                                                 |
 |------|---------------------------------|----------|--------------------------------------------------------------------------|

@@ -7,11 +7,8 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceStoreImpl.EntryState;
 import org.pragmatica.aether.slice.SliceStoreImpl.LoadedSliceEntry;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
-import org.pragmatica.aether.slice.repository.Location;
-import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
 
 import java.net.URL;
 import java.util.List;
@@ -43,14 +40,12 @@ class SliceStoreImplTest {
     }
 
     @Test
-    void loaded_slice_entry_returns_slice_as_result() {
+    void loaded_slice_entry_returns_slice() {
         var slice = createTestSlice();
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var entry = new LoadedSliceEntry(artifact, slice, classLoader, EntryState.LOADED);
 
-        entry.slice()
-            .onSuccess(s -> assertThat(s).isSameAs(slice))
-            .onFailureRun(Assertions::fail);
+        assertThat(entry.slice()).isSameAs(slice);
     }
 
     @Test
@@ -90,8 +85,8 @@ class SliceStoreImplTest {
         var store = createStoreWithPreloadedSlice(slice, EntryState.LOADED);
 
         store.activateSlice(artifact)
-            .await()
-            .onFailureRun(Assertions::fail);
+             .await()
+             .onFailureRun(Assertions::fail);
 
         assertThat(startCalled.get()).isTrue();
     }
@@ -102,12 +97,12 @@ class SliceStoreImplTest {
         var store = createStoreWithPreloadedSlice(slice, EntryState.LOADED);
 
         store.activateSlice(artifact)
-            .await()
-            .onSuccess(loaded -> {
-                var entry = (LoadedSliceEntry) loaded;
-                assertThat(entry.state()).isEqualTo(EntryState.ACTIVE);
-            })
-            .onFailureRun(Assertions::fail);
+             .await()
+             .onSuccess(loaded -> {
+                 var entry = (LoadedSliceEntry) loaded;
+                 assertThat(entry.state()).isEqualTo(EntryState.ACTIVE);
+             })
+             .onFailureRun(Assertions::fail);
     }
 
     @Test
@@ -121,8 +116,8 @@ class SliceStoreImplTest {
         var store = createStoreWithPreloadedSlice(slice, EntryState.ACTIVE);
 
         store.activateSlice(artifact)
-            .await()
-            .onFailureRun(Assertions::fail);
+             .await()
+             .onFailureRun(Assertions::fail);
 
         // Should not call start again
         assertThat(startCount.get()).isEqualTo(0);
@@ -133,9 +128,9 @@ class SliceStoreImplTest {
         var store = SliceStore.sliceStore(registry, List.of());
 
         store.activateSlice(artifact)
-            .await()
-            .onSuccessRun(Assertions::fail)
-            .onFailure(cause -> assertThat(cause.message()).contains("not loaded"));
+             .await()
+             .onSuccessRun(Assertions::fail)
+             .onFailure(cause -> assertThat(cause.message()).contains("not loaded"));
     }
 
     // === Deactivation Tests ===
@@ -144,17 +139,17 @@ class SliceStoreImplTest {
     void deactivate_calls_stop_on_slice() {
         var stopCalled = new AtomicBoolean(false);
         var slice = createTestSlice(
-            () -> Promise.success(Unit.unit()),
-            () -> {
-                stopCalled.set(true);
-                return Promise.success(Unit.unit());
-            });
+                () -> Promise.success(Unit.unit()),
+                () -> {
+                    stopCalled.set(true);
+                    return Promise.success(Unit.unit());
+                });
 
         var store = createStoreWithPreloadedSlice(slice, EntryState.ACTIVE);
 
         store.deactivateSlice(artifact)
-            .await()
-            .onFailureRun(Assertions::fail);
+             .await()
+             .onFailureRun(Assertions::fail);
 
         assertThat(stopCalled.get()).isTrue();
     }
@@ -165,29 +160,29 @@ class SliceStoreImplTest {
         var store = createStoreWithPreloadedSlice(slice, EntryState.ACTIVE);
 
         store.deactivateSlice(artifact)
-            .await()
-            .onSuccess(loaded -> {
-                var entry = (LoadedSliceEntry) loaded;
-                assertThat(entry.state()).isEqualTo(EntryState.LOADED);
-            })
-            .onFailureRun(Assertions::fail);
+             .await()
+             .onSuccess(loaded -> {
+                 var entry = (LoadedSliceEntry) loaded;
+                 assertThat(entry.state()).isEqualTo(EntryState.LOADED);
+             })
+             .onFailureRun(Assertions::fail);
     }
 
     @Test
     void deactivate_already_loaded_returns_success() {
         var stopCount = new AtomicInteger(0);
         var slice = createTestSlice(
-            () -> Promise.success(Unit.unit()),
-            () -> {
-                stopCount.incrementAndGet();
-                return Promise.success(Unit.unit());
-            });
+                () -> Promise.success(Unit.unit()),
+                () -> {
+                    stopCount.incrementAndGet();
+                    return Promise.success(Unit.unit());
+                });
 
         var store = createStoreWithPreloadedSlice(slice, EntryState.LOADED);
 
         store.deactivateSlice(artifact)
-            .await()
-            .onFailureRun(Assertions::fail);
+             .await()
+             .onFailureRun(Assertions::fail);
 
         // Should not call stop
         assertThat(stopCount.get()).isEqualTo(0);
@@ -198,9 +193,9 @@ class SliceStoreImplTest {
         var store = SliceStore.sliceStore(registry, List.of());
 
         store.deactivateSlice(artifact)
-            .await()
-            .onSuccessRun(Assertions::fail)
-            .onFailure(cause -> assertThat(cause.message()).contains("not loaded"));
+             .await()
+             .onSuccessRun(Assertions::fail)
+             .onFailure(cause -> assertThat(cause.message()).contains("not loaded"));
     }
 
     // === Unload Tests ===
@@ -213,8 +208,8 @@ class SliceStoreImplTest {
         assertThat(store.loaded()).hasSize(1);
 
         store.unloadSlice(artifact)
-            .await()
-            .onFailureRun(Assertions::fail);
+             .await()
+             .onFailureRun(Assertions::fail);
 
         assertThat(store.loaded()).isEmpty();
     }
@@ -223,17 +218,17 @@ class SliceStoreImplTest {
     void unload_active_calls_stop_first() {
         var stopCalled = new AtomicBoolean(false);
         var slice = createTestSlice(
-            () -> Promise.success(Unit.unit()),
-            () -> {
-                stopCalled.set(true);
-                return Promise.success(Unit.unit());
-            });
+                () -> Promise.success(Unit.unit()),
+                () -> {
+                    stopCalled.set(true);
+                    return Promise.success(Unit.unit());
+                });
 
         var store = createStoreWithPreloadedSlice(slice, EntryState.ACTIVE);
 
         store.unloadSlice(artifact)
-            .await()
-            .onFailureRun(Assertions::fail);
+             .await()
+             .onFailureRun(Assertions::fail);
 
         assertThat(stopCalled.get()).isTrue();
     }
@@ -242,17 +237,17 @@ class SliceStoreImplTest {
     void unload_loaded_does_not_call_stop() {
         var stopCount = new AtomicInteger(0);
         var slice = createTestSlice(
-            () -> Promise.success(Unit.unit()),
-            () -> {
-                stopCount.incrementAndGet();
-                return Promise.success(Unit.unit());
-            });
+                () -> Promise.success(Unit.unit()),
+                () -> {
+                    stopCount.incrementAndGet();
+                    return Promise.success(Unit.unit());
+                });
 
         var store = createStoreWithPreloadedSlice(slice, EntryState.LOADED);
 
         store.unloadSlice(artifact)
-            .await()
-            .onFailureRun(Assertions::fail);
+             .await()
+             .onFailureRun(Assertions::fail);
 
         assertThat(stopCount.get()).isEqualTo(0);
     }
@@ -262,8 +257,8 @@ class SliceStoreImplTest {
         var store = SliceStore.sliceStore(registry, List.of());
 
         store.unloadSlice(artifact)
-            .await()
-            .onFailureRun(Assertions::fail);
+             .await()
+             .onFailureRun(Assertions::fail);
     }
 
     // === Loaded List Tests ===
@@ -283,22 +278,22 @@ class SliceStoreImplTest {
 
         assertThat(loaded).hasSize(2);
         assertThat(loaded.stream().map(SliceStore.LoadedSlice::artifact))
-            .containsExactlyInAnyOrder(artifact1, artifact2);
+                .containsExactlyInAnyOrder(artifact1, artifact2);
     }
 
     // === Helper Methods ===
 
     private Slice createTestSlice() {
         return createTestSlice(
-            () -> Promise.success(Unit.unit()),
-            () -> Promise.success(Unit.unit())
-        );
+                () -> Promise.success(Unit.unit()),
+                () -> Promise.success(Unit.unit())
+                              );
     }
 
     private Slice createTestSlice(
-        java.util.function.Supplier<Promise<Unit>> startSupplier,
-        java.util.function.Supplier<Promise<Unit>> stopSupplier
-    ) {
+            java.util.function.Supplier<Promise<Unit>> startSupplier,
+            java.util.function.Supplier<Promise<Unit>> stopSupplier
+                                 ) {
         return new Slice() {
             @Override
             public Promise<Unit> start() {

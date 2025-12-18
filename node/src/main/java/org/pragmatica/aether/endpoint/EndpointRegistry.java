@@ -17,7 +17,6 @@ import org.slf4j.LoggerFactory;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -62,10 +61,10 @@ public interface EndpointRegistry {
      * Endpoint representation with location information.
      */
     record Endpoint(
-        Artifact artifact,
-        MethodName methodName,
-        int instanceNumber,
-        NodeId nodeId
+            Artifact artifact,
+            MethodName methodName,
+            int instanceNumber,
+            NodeId nodeId
     ) {
         public EndpointKey toKey() {
             return new EndpointKey(artifact, methodName, instanceNumber);
@@ -77,8 +76,8 @@ public interface EndpointRegistry {
      */
     static EndpointRegistry endpointRegistry() {
         record endpointRegistry(
-            Map<EndpointKey, Endpoint> endpoints,
-            Map<String, AtomicInteger> roundRobinCounters
+                Map<EndpointKey, Endpoint> endpoints,
+                Map<String, AtomicInteger> roundRobinCounters
         ) implements EndpointRegistry {
 
             private static final Logger log = LoggerFactory.getLogger(endpointRegistry.class);
@@ -90,10 +89,10 @@ public interface EndpointRegistry {
 
                 if (key instanceof EndpointKey endpointKey && value instanceof EndpointValue endpointValue) {
                     var endpoint = new Endpoint(
-                        endpointKey.artifact(),
-                        endpointKey.methodName(),
-                        endpointKey.instanceNumber(),
-                        endpointValue.nodeId()
+                            endpointKey.artifact(),
+                            endpointKey.methodName(),
+                            endpointKey.instanceNumber(),
+                            endpointValue.nodeId()
                     );
 
                     endpoints.put(endpointKey, endpoint);
@@ -116,8 +115,8 @@ public interface EndpointRegistry {
             @Override
             public List<Endpoint> findEndpoints(Artifact artifact, MethodName methodName) {
                 return endpoints.values().stream()
-                    .filter(e -> e.artifact().equals(artifact) && e.methodName().equals(methodName))
-                    .toList();
+                                .filter(e -> e.artifact().equals(artifact) && e.methodName().equals(methodName))
+                                .toList();
             }
 
             @Override
@@ -142,8 +141,8 @@ public interface EndpointRegistry {
         }
 
         return new endpointRegistry(
-            new ConcurrentHashMap<>(),
-            new ConcurrentHashMap<>()
+                new ConcurrentHashMap<>(),
+                new ConcurrentHashMap<>()
         );
     }
 }

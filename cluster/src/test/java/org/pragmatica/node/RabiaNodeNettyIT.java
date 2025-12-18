@@ -93,7 +93,7 @@ class RabiaNodeNettyIT {
         nodes.forEach(node -> node.stop().await(AWAIT_TIMEOUT));
     }
 
-//    @Disabled("Serializer crash")
+    //    @Disabled("Serializer crash")
     @Test
     void happyPath_allNodesAgreeOnPutGetRemove() {
         // Put values via each node

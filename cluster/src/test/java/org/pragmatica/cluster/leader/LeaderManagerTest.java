@@ -5,6 +5,9 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.cluster.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.topology.QuorumStateNotification;
+import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
+import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeDown;
+import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.lang.Option;
 import org.pragmatica.message.MessageReceiver;
 import org.pragmatica.message.MessageRouter;
@@ -13,15 +16,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.pragmatica.cluster.leader.LeaderNotification.leaderChange;
 import static org.pragmatica.cluster.topology.TopologyChangeNotification.nodeAdded;
 import static org.pragmatica.cluster.topology.TopologyChangeNotification.nodeRemoved;
-import static org.pragmatica.message.MessageRouter.mutable;
-
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeDown;
 
 class LeaderManagerTest {
     record Watcher<T>(List<T> collected) {
@@ -115,7 +113,7 @@ class LeaderManagerTest {
 
             var topology = list.stream().sorted().toList();
 
-            if(nodeId.equals(nodes.getLast())) {
+            if (nodeId.equals(nodes.getLast())) {
                 // When quorum will be reached, we should see the current state of
                 // the leader selection
                 expected.add(leaderChange(Option.option(topology.getFirst()),

@@ -27,8 +27,8 @@ class RabiaKryoSerializerTest {
                                new KVCommand.Get<>(key("k2")),
                                new KVCommand.Remove<>(key("k3")));
         var message = new RabiaProtocolMessage.Synchronous.Propose<>(NodeId.randomNodeId(),
-                                                                   new Phase(123L),
-                                                                   Batch.batch(commands));
+                                                                     new Phase(123L),
+                                                                     Batch.batch(commands));
 
         var serialized = serializer.encode(message);
         var deserialized = deserializer.decode(serialized);

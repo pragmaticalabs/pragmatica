@@ -13,12 +13,11 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
-import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
-import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -57,20 +56,20 @@ class BlueprintServiceTest {
             var dsl = "invalid blueprint";
 
             service.publish(dsl)
-                .await()
-                .onSuccessRun(Assertions::fail);
+                   .await()
+                   .onSuccessRun(Assertions::fail);
         }
 
         @Test
         void publish_fails_withMissingHeader() {
             var dsl = """
-                [slices]
-                org.example:slice-a:1.0.0 = 2
-                """;
+                    [slices]
+                    org.example:slice-a:1.0.0 = 2
+                    """;
 
             service.publish(dsl)
-                .await()
-                .onSuccessRun(Assertions::fail);
+                   .await()
+                   .onSuccessRun(Assertions::fail);
         }
     }
 
@@ -90,10 +89,10 @@ class BlueprintServiceTest {
             var blueprintId = BlueprintId.blueprintId("existing", Version.version("1.0.0").unwrap());
             var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
             var expanded = ExpandedBlueprint.expandedBlueprint(
-                blueprintId,
-                List.of(ResolvedSlice.resolvedSlice(artifact, 1, false)),
-                List.of()
-            );
+                    blueprintId,
+                    List.of(ResolvedSlice.resolvedSlice(artifact, 1, false)),
+                    List.of()
+                                                              );
 
             var key = AppBlueprintKey.appBlueprintKey(blueprintId);
             var value = new AppBlueprintValue(expanded);
@@ -103,8 +102,8 @@ class BlueprintServiceTest {
 
             assertThat(result.isPresent()).isTrue();
             result.onPresent(retrieved ->
-                assertThat(retrieved.id().name()).isEqualTo("existing")
-            );
+                                     assertThat(retrieved.id().name()).isEqualTo("existing")
+                            );
         }
     }
 
@@ -124,15 +123,15 @@ class BlueprintServiceTest {
             var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
 
             var expanded1 = ExpandedBlueprint.expandedBlueprint(
-                id1,
-                List.of(ResolvedSlice.resolvedSlice(artifact, 1, false)),
-                List.of()
-            );
+                    id1,
+                    List.of(ResolvedSlice.resolvedSlice(artifact, 1, false)),
+                    List.of()
+                                                               );
             var expanded2 = ExpandedBlueprint.expandedBlueprint(
-                id2,
-                List.of(ResolvedSlice.resolvedSlice(artifact, 2, false)),
-                List.of()
-            );
+                    id2,
+                    List.of(ResolvedSlice.resolvedSlice(artifact, 2, false)),
+                    List.of()
+                                                               );
 
             store.process(new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(id1), new AppBlueprintValue(expanded1)));
             store.process(new KVCommand.Put<>(AppBlueprintKey.appBlueprintKey(id2), new AppBlueprintValue(expanded2)));
@@ -151,17 +150,17 @@ class BlueprintServiceTest {
             var blueprintId = BlueprintId.blueprintId("to-delete", Version.version("1.0.0").unwrap());
             var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
             var expanded = ExpandedBlueprint.expandedBlueprint(
-                blueprintId,
-                List.of(ResolvedSlice.resolvedSlice(artifact, 1, false)),
-                List.of()
-            );
+                    blueprintId,
+                    List.of(ResolvedSlice.resolvedSlice(artifact, 1, false)),
+                    List.of()
+                                                              );
 
             var key = AppBlueprintKey.appBlueprintKey(blueprintId);
             store.process(new KVCommand.Put<>(key, new AppBlueprintValue(expanded)));
 
             service.delete(blueprintId)
-                .await()
-                .onFailureRun(Assertions::fail);
+                   .await()
+                   .onFailureRun(Assertions::fail);
 
             var result = service.get(blueprintId);
             assertThat(result.isPresent()).isFalse();
@@ -172,8 +171,8 @@ class BlueprintServiceTest {
             var id = BlueprintId.blueprintId("non-existent", Version.version("1.0.0").unwrap());
 
             service.delete(id)
-                .await()
-                .onFailureRun(Assertions::fail);
+                   .await()
+                   .onFailureRun(Assertions::fail);
         }
     }
 
@@ -205,8 +204,8 @@ class BlueprintServiceTest {
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             // Process commands through the store
             return Promise.success(commands.stream()
-                .map(cmd -> (R) store.process(cmd))
-                .toList());
+                                           .map(cmd -> (R) store.process(cmd))
+                                           .toList());
         }
     }
 
@@ -240,8 +239,7 @@ class BlueprintServiceTest {
                     storage.remove((AetherKey) remove.key());
                     yield Option.none();
                 }
-                case KVCommand.Get<?> get ->
-                    Option.option(storage.get((AetherKey) get.key()));
+                case KVCommand.Get<?> get -> Option.option(storage.get((AetherKey) get.key()));
                 default -> Option.none();
             };
         }

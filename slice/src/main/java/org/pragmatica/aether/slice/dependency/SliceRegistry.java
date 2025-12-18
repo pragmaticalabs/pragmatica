@@ -6,6 +6,7 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
@@ -38,7 +39,7 @@ public interface SliceRegistry {
      *
      * @return Success with Unit, or failure if artifact already registered
      */
-    Result<Void> register(Artifact artifact, Slice slice);
+    Result<Unit> register(Artifact artifact, Slice slice);
 
     /**
      * Unregister a slice.
@@ -47,7 +48,7 @@ public interface SliceRegistry {
      *
      * @return Success with Unit, or failure if artifact not found
      */
-    Result<Void> unregister(Artifact artifact);
+    Result<Unit> unregister(Artifact artifact);
 
     /**
      * Lookup slice by exact artifact.
@@ -79,21 +80,21 @@ public interface SliceRegistry {
     record SliceRegistryImpl(ConcurrentMap<Artifact, Slice> registry) implements SliceRegistry {
 
         @Override
-        public Result<Void> register(Artifact artifact, Slice slice) {
+        public Result<Unit> register(Artifact artifact, Slice slice) {
             var existing = registry.putIfAbsent(artifact, slice);
             if (existing != null) {
                 return ALREADY_REGISTERED.apply(artifact.asString()).result();
             }
-            return Result.success(null);
+            return Result.unitResult();
         }
 
         @Override
-        public Result<Void> unregister(Artifact artifact) {
+        public Result<Unit> unregister(Artifact artifact) {
             var removed = registry.remove(artifact);
             if (removed == null) {
                 return NOT_FOUND.apply(artifact.asString()).result();
             }
-            return Result.success(null);
+            return Result.unitResult();
         }
 
         @Override
@@ -128,7 +129,9 @@ public interface SliceRegistry {
 
         private String extractSimpleName(String className) {
             var lastDot = className.lastIndexOf('.');
-            return lastDot >= 0 ? className.substring(lastDot + 1) : className;
+            return lastDot >= 0
+                   ? className.substring(lastDot + 1)
+                   : className;
         }
 
         private static final Fn1<Cause, String> ALREADY_REGISTERED = Causes.forValue("Artifact already registered: %s");

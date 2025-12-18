@@ -6,7 +6,9 @@ This document defines the metrics collection strategy and cluster controller arc
 
 ## Overview
 
-Aether uses a **push-based metrics collection** with **leader aggregation and broadcast** model. All cluster control decisions (scaling, deployment) are made by a pluggable **Cluster Controller** that can be:
+Aether uses a **push-based metrics collection** with **leader aggregation and broadcast** model. All cluster control
+decisions (scaling, deployment) are made by a pluggable **Cluster Controller** that can be:
+
 - Decision tree (deterministic, fast)
 - Small local LLM (semi-autonomous)
 - Large cloud LLM (strategic)
@@ -14,6 +16,7 @@ Aether uses a **push-based metrics collection** with **leader aggregation and br
 ## Metrics Collection Architecture
 
 ### Core Principle
+
 **Zero consensus I/O during normal operation**. All metrics flow through MessageRouter, never touch KV-Store.
 
 ### Collection Flow
@@ -58,6 +61,7 @@ Benefits:
 ### Message Definitions
 
 #### MetricsUpdate (Node → Leader)
+
 ```java
 record MetricsUpdate(
     NodeId nodeId,
@@ -78,6 +82,7 @@ record MetricsUpdate(
 **Size**: ~50-200 bytes depending on method count
 
 #### ClusterMetricsSnapshot (Leader → All Nodes)
+
 ```java
 record ClusterMetricsSnapshot(
     long timestamp,
@@ -132,11 +137,13 @@ When new leader is elected:
 ### Sliding Window Management
 
 Leader maintains in-memory sliding window:
+
 - **Window Size**: 2 hours (7,200 data points at 1 Hz)
 - **Memory Footprint**: ~1-2 MB for typical cluster (10 nodes, 50 entry points)
 - **Eviction**: FIFO when window full
 
 Window used for:
+
 - Trend detection (increasing/decreasing load)
 - Pattern recognition (daily cycles, bursts)
 - Anomaly detection (sudden spikes)
@@ -148,15 +155,18 @@ Window used for:
 The Cluster Controller makes all topology decisions. Three implementations:
 
 #### 1. Decision Tree Controller
+
 **Use Case**: Deterministic, fast, no external dependencies
 
 **Characteristics**:
+
 - Runs on leader node
 - Evaluates every metrics cycle (1 second)
 - Configurable rules and thresholds
 - Zero latency decisions
 
 **Example Rules**:
+
 ```
 IF avg_cpu > 0.8 AND trend = increasing
    THEN scale_up(artifact, instances + 1)
@@ -169,9 +179,11 @@ IF avg_cpu < 0.3 AND stable_for(10 minutes)
 ```
 
 #### 2. Small Local LLM Controller
+
 **Use Case**: Semi-autonomous, local, pattern learning
 
 **Characteristics**:
+
 - Runs on leader node or dedicated local machine
 - Evaluates every 2-5 cycles (2-5 seconds)
 - Learns patterns over time
@@ -180,9 +192,11 @@ IF avg_cpu < 0.3 AND stable_for(10 minutes)
 **Model Suggestions**: Llama 3 8B, Mistral 7B, Phi-3 Mini
 
 #### 3. Large Cloud LLM Controller
+
 **Use Case**: Strategic, sophisticated, long-term optimization
 
 **Characteristics**:
+
 - External API call (OpenAI, Anthropic, Gemini)
 - Evaluates every 30-60 cycles (30-60 seconds)
 - Deep pattern analysis
@@ -334,6 +348,7 @@ Events flow through dedicated `ClusterEventBus`:
 ```
 
 **Key Properties**:
+
 - Events never stored in KV-Store (ephemeral)
 - In-memory only (recent events buffered)
 - Delivered via MessageRouter
@@ -408,22 +423,26 @@ class LeaderControlLoop {
 ### Network Overhead
 
 **Per Node** (10 entry points):
+
 - Outbound: 100 bytes/sec (MetricsUpdate at 1 Hz)
 - Inbound: 300 bytes/sec (ClusterMetricsSnapshot broadcast)
 - Total: 400 bytes/sec per node
 
 **Cluster-wide** (10 nodes):
+
 - Total traffic: 4 KB/sec
 - Negligible for modern networks (< 0.001% of 1 Gbps)
 
 ### CPU Overhead
 
 **Per Node**:
+
 - Metrics collection: < 0.1% CPU
 - Message serialization: < 0.1% CPU
 - Total: < 0.5% CPU
 
 **Leader Node**:
+
 - Aggregation: < 1% CPU
 - Decision tree: < 1% CPU
 - LLM inference (local): 5-20% CPU (depending on model)
@@ -432,11 +451,13 @@ class LeaderControlLoop {
 ### Memory Overhead
 
 **Per Node**:
+
 - Recent snapshot: ~1 KB
 - Event buffer (100 events): ~10 KB
 - Total: ~20 KB
 
 **Leader Node**:
+
 - Sliding window (2 hours): ~1-2 MB
 - Event history: ~50 KB
 - Controller state: 1-10 MB (depending on type)
@@ -453,23 +474,27 @@ class LeaderControlLoop {
 ## Failure Scenarios
 
 ### Node Fails During Metrics Push
+
 - Leader doesn't receive update
 - Leader marks node as unhealthy after 3 missed updates (3 seconds)
 - Metrics aggregation excludes failed node
 - Controller informed via NodeFailed event
 
 ### Leader Fails Mid-Cycle
+
 - New leader elected by consensus
 - New leader has last ClusterMetricsSnapshot (< 2 seconds old)
 - New leader requests fresh snapshot from all nodes
 - Control loop resumes within 1-2 cycles
 
 ### Network Partition
+
 - Nodes can't reach leader
 - Nodes retain last snapshot (useful for local decisions)
 - When partition heals, nodes resync with new leader
 
 ### Controller Crashes/Hangs
+
 - Watchdog timer detects hang (configurable timeout)
 - Controller restarted or replaced with simpler fallback
 - Decision tree can always serve as safe fallback
@@ -477,6 +502,7 @@ class LeaderControlLoop {
 ## Configuration
 
 ### Metrics Collection
+
 ```yaml
 metrics:
   collection_interval: 1s
@@ -486,6 +512,7 @@ metrics:
 ```
 
 ### Controller
+
 ```yaml
 controller:
   type: layered  # or: decision_tree, small_llm, large_llm
@@ -520,6 +547,7 @@ controller:
 ---
 
 This architecture ensures:
+
 - ✅ Zero consensus I/O for metrics
 - ✅ Fast recovery on leader failover
 - ✅ All nodes have cluster-wide view

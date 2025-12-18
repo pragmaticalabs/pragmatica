@@ -2,11 +2,9 @@ package org.pragmatica.aether.slice;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.pragmatica.aether.artifact.Artifact;
 
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.net.URL;
 import java.nio.file.Path;
 import java.util.jar.Attributes;
 import java.util.jar.JarOutputStream;
@@ -24,18 +22,18 @@ class SliceManifestTest {
     void read_validManifest_returnsSliceInfo() throws IOException {
         // Given: a JAR with valid slice manifest
         var jarFile = createJarWithManifest(
-            "org.example:test-slice:1.0.0",
-            "org.example.TestSlice"
-        );
+                "org.example:test-slice:1.0.0",
+                "org.example.TestSlice"
+                                           );
 
         // When: reading the manifest
         SliceManifest.read(jarFile.toUri().toURL())
-            .onFailure(cause -> fail("Expected success but got: " + cause.message()))
-            .onSuccess(info -> {
-                // Then: manifest info is extracted correctly
-                assertThat(info.artifact().asString()).isEqualTo("org.example:test-slice:1.0.0");
-                assertThat(info.sliceClassName()).isEqualTo("org.example.TestSlice");
-            });
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                     .onSuccess(info -> {
+                         // Then: manifest info is extracted correctly
+                         assertThat(info.artifact().asString()).isEqualTo("org.example:test-slice:1.0.0");
+                         assertThat(info.sliceClassName()).isEqualTo("org.example.TestSlice");
+                     });
     }
 
     @Test
@@ -45,11 +43,11 @@ class SliceManifestTest {
 
         // When: reading the manifest
         SliceManifest.read(jarFile.toUri().toURL())
-            .onSuccessRun(() -> fail("Expected failure for missing Slice-Artifact"))
-            .onFailure(cause -> {
-                // Then: error indicates missing attribute
-                assertThat(cause.message()).contains("Slice-Artifact");
-            });
+                     .onSuccessRun(() -> fail("Expected failure for missing Slice-Artifact"))
+                     .onFailure(cause -> {
+                         // Then: error indicates missing attribute
+                         assertThat(cause.message()).contains("Slice-Artifact");
+                     });
     }
 
     @Test
@@ -59,11 +57,11 @@ class SliceManifestTest {
 
         // When: reading the manifest
         SliceManifest.read(jarFile.toUri().toURL())
-            .onSuccessRun(() -> fail("Expected failure for missing Slice-Class"))
-            .onFailure(cause -> {
-                // Then: error indicates missing attribute
-                assertThat(cause.message()).contains("Slice-Class");
-            });
+                     .onSuccessRun(() -> fail("Expected failure for missing Slice-Class"))
+                     .onFailure(cause -> {
+                         // Then: error indicates missing attribute
+                         assertThat(cause.message()).contains("Slice-Class");
+                     });
     }
 
     @Test
@@ -73,47 +71,47 @@ class SliceManifestTest {
 
         // When: reading the manifest
         SliceManifest.read(jarFile.toUri().toURL())
-            .onSuccessRun(() -> fail("Expected failure for invalid artifact format"))
-            .onFailure(cause -> {
-                // Then: error indicates parsing failure
-                assertThat(cause.message()).isNotEmpty();
-            });
+                     .onSuccessRun(() -> fail("Expected failure for invalid artifact format"))
+                     .onFailure(cause -> {
+                         // Then: error indicates parsing failure
+                         assertThat(cause.message()).isNotEmpty();
+                     });
     }
 
     @Test
     void read_artifactWithQualifier_parsesCorrectly() throws IOException {
         // Given: a JAR with qualified version
         var jarFile = createJarWithManifest(
-            "org.example:test-slice:1.0.0-SNAPSHOT",
-            "org.example.TestSlice"
-        );
+                "org.example:test-slice:1.0.0-SNAPSHOT",
+                "org.example.TestSlice"
+                                           );
 
         // When: reading the manifest
         SliceManifest.read(jarFile.toUri().toURL())
-            .onFailure(cause -> fail("Expected success but got: " + cause.message()))
-            .onSuccess(info -> {
-                // Then: qualifier is preserved
-                assertThat(info.artifact().version().qualifier()).isEqualTo("SNAPSHOT");
-                assertThat(info.artifact().version().withQualifier()).isEqualTo("1.0.0-SNAPSHOT");
-            });
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                     .onSuccess(info -> {
+                         // Then: qualifier is preserved
+                         assertThat(info.artifact().version().qualifier()).isEqualTo("SNAPSHOT");
+                         assertThat(info.artifact().version().withQualifier()).isEqualTo("1.0.0-SNAPSHOT");
+                     });
     }
 
     @Test
     void read_deepGroupId_parsesCorrectly() throws IOException {
         // Given: a JAR with deep group ID
         var jarFile = createJarWithManifest(
-            "org.pragmatica.aether.example:string-processor:0.2.0",
-            "org.pragmatica.aether.example.StringProcessor"
-        );
+                "org.pragmatica.aether.example:string-processor:0.2.0",
+                "org.pragmatica.aether.example.StringProcessor"
+                                           );
 
         // When: reading the manifest
         SliceManifest.read(jarFile.toUri().toURL())
-            .onFailure(cause -> fail("Expected success but got: " + cause.message()))
-            .onSuccess(info -> {
-                // Then: deep group ID is preserved
-                assertThat(info.artifact().groupId().id()).isEqualTo("org.pragmatica.aether.example");
-                assertThat(info.artifact().artifactId().id()).isEqualTo("string-processor");
-            });
+                     .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                     .onSuccess(info -> {
+                         // Then: deep group ID is preserved
+                         assertThat(info.artifact().groupId().id()).isEqualTo("org.pragmatica.aether.example");
+                         assertThat(info.artifact().artifactId().id()).isEqualTo("string-processor");
+                     });
     }
 
     @Test
@@ -124,11 +122,11 @@ class SliceManifestTest {
         // When: reading the manifest
         try {
             SliceManifest.read(nonExistent.toUri().toURL())
-                .onSuccessRun(() -> fail("Expected failure for non-existent JAR"))
-                .onFailure(cause -> {
-                    // Then: error indicates file issue
-                    assertThat(cause.message()).isNotEmpty();
-                });
+                         .onSuccessRun(() -> fail("Expected failure for non-existent JAR"))
+                         .onFailure(cause -> {
+                             // Then: error indicates file issue
+                             assertThat(cause.message()).isNotEmpty();
+                         });
         } catch (Exception e) {
             // Expected - file doesn't exist
         }

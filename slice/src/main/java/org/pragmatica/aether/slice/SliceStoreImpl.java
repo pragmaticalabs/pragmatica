@@ -8,7 +8,6 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.slf4j.Logger;
@@ -44,8 +43,8 @@ public interface SliceStoreImpl {
                             EntryState state) implements SliceStore.LoadedSlice {
 
         @Override
-        public Result<Slice> slice() {
-            return Result.success(sliceInstance);
+        public Slice slice() {
+            return sliceInstance;
         }
 
         LoadedSliceEntry withState(EntryState newState) {
@@ -165,8 +164,10 @@ public interface SliceStoreImpl {
 
             log.info("Unloading slice {}", artifact);
 
-            Promise<Unit> deactivatePromise = entry.state() == EntryState.ACTIVE ? entry.sliceInstance()
-                                                                                        .stop() : Promise.success(Unit.unit());
+            Promise<Unit> deactivatePromise = entry.state() == EntryState.ACTIVE
+                                              ? entry.sliceInstance()
+                                                     .stop()
+                                              : Promise.success(Unit.unit());
 
             return deactivatePromise.map(_ -> cleanup(artifact, entry)).onFailure(cause -> log.error(
                     "Failed to unload slice {}: {}",
@@ -193,13 +194,20 @@ public interface SliceStoreImpl {
         }
 
         private Promise<Location> locateInRepositories(Artifact artifact) {
-            for (var repo : repositories) {
-                var result = repo.locate(artifact).await();
-                if (result.isSuccess()) {
-                    return result.async();
-                }
+            return locateInRepositories(artifact, repositories);
+        }
+
+        private Promise<Location> locateInRepositories(Artifact artifact, List<Repository> remainingRepos) {
+            if (remainingRepos.isEmpty()) {
+                return ARTIFACT_NOT_FOUND.apply(artifact.asString()).promise();
             }
-            return ARTIFACT_NOT_FOUND.apply(artifact.asString()).promise();
+
+            var repo = remainingRepos.getFirst();
+            var rest = remainingRepos.subList(1, remainingRepos.size());
+
+            return repo.locate(artifact)
+                       .await()
+                       .fold(_ -> locateInRepositories(artifact, rest), location -> Promise.success(location));
         }
 
         private Repository compositeRepository() {

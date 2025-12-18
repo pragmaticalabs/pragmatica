@@ -72,7 +72,9 @@ public class NettyClusterNetwork implements ClusterNetwork {
                                MessageRouter router) {
 
         var processors = Runtime.getRuntime().availableProcessors();
-        this.executor = Executors.newFixedThreadPool(processors > 1 ? processors : 2);
+        this.executor = Executors.newFixedThreadPool(processors > 1
+                                                     ? processors
+                                                     : 2);
         this.self = topologyManager.self();
         this.topologyManager = topologyManager;
         this.router = router;
@@ -278,7 +280,7 @@ public class NettyClusterNetwork implements ClusterNetwork {
     @Override
     public <M extends ProtocolMessage> void broadcast(M message) {
         peerLinks.forEach((peerId, channel) ->
-                                 executor.execute(() -> sendToChannel(peerId, message, channel)));
+                                  executor.execute(() -> sendToChannel(peerId, message, channel)));
     }
 
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {

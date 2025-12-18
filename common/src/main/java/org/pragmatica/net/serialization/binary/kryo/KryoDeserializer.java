@@ -5,8 +5,8 @@ import com.esotericsoftware.kryo.io.Input;
 import com.esotericsoftware.kryo.util.Pool;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.ByteBufInputStream;
-import org.pragmatica.net.serialization.binary.ClassRegistrator;
 import org.pragmatica.net.serialization.Deserializer;
+import org.pragmatica.net.serialization.binary.ClassRegistrator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

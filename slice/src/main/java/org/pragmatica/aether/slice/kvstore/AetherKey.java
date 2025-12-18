@@ -21,14 +21,13 @@ public sealed interface AetherKey extends StructuredKey {
     /// Blueprint-key format (deprecated - use AppBlueprintKey):
     /// ```
     /// blueprint/{groupId}:{artifactId}:{version}
-    ///```
+    /// ```
     @Deprecated
     record BlueprintKey(Artifact artifact) implements AetherKey {
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
-                case AetherKeyPattern.BlueprintPattern blueprintPattern ->
-                    blueprintPattern.matches(this);
+                case AetherKeyPattern.BlueprintPattern blueprintPattern -> blueprintPattern.matches(this);
                 default -> false;
             };
         }
@@ -49,21 +48,19 @@ public sealed interface AetherKey extends StructuredKey {
             }
 
             var artifactPart = key.substring(10); // Remove "blueprint/"
-            return Artifact.artifact(artifactPart)
-                           .map(BlueprintKey::new);
+            return Artifact.artifact(artifactPart).map(BlueprintKey::new);
         }
     }
 
     /// Application blueprint key format:
     /// ```
     /// app-blueprint/{name}:{version}
-    ///```
+    /// ```
     record AppBlueprintKey(BlueprintId blueprintId) implements AetherKey {
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
-                case AetherKeyPattern.AppBlueprintPattern appBlueprintPattern ->
-                    appBlueprintPattern.matches(this);
+                case AetherKeyPattern.AppBlueprintPattern appBlueprintPattern -> appBlueprintPattern.matches(this);
                 default -> false;
             };
         }
@@ -84,8 +81,7 @@ public sealed interface AetherKey extends StructuredKey {
             }
 
             var blueprintIdPart = key.substring(14); // Remove "app-blueprint/"
-            return BlueprintId.blueprintId(blueprintIdPart)
-                              .map(AppBlueprintKey::new);
+            return BlueprintId.blueprintId(blueprintIdPart).map(AppBlueprintKey::new);
         }
 
         public static AppBlueprintKey appBlueprintKey(BlueprintId blueprintId) {
@@ -96,13 +92,12 @@ public sealed interface AetherKey extends StructuredKey {
     /// Slice-node-key format:
     /// ```
     /// slices/{nodeId}/{groupId}:{artifactId}:{version}
-    ///```
+    /// ```
     record SliceNodeKey(Artifact artifact, NodeId nodeId) implements AetherKey {
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
-                case AetherKeyPattern.SliceNodePattern sliceNodePattern ->
-                    sliceNodePattern.matches(this);
+                case AetherKeyPattern.SliceNodePattern sliceNodePattern -> sliceNodePattern.matches(this);
                 default -> false;
             };
         }
@@ -136,32 +131,26 @@ public sealed interface AetherKey extends StructuredKey {
                 return SLICE_KEY_FORMAT_ERROR.apply(key).result();
             }
 
-            return Artifact.artifact(parts[2])
-                           .map(artifact -> new SliceNodeKey(artifact, NodeId.nodeId(parts[1])));
+            return Artifact.artifact(parts[2]).map(artifact -> new SliceNodeKey(artifact, NodeId.nodeId(parts[1])));
         }
     }
 
     /// Endpoint-key format (for slice instance endpoints):
     /// ```
     /// endpoints/{groupId}:{artifactId}:{version}/{methodName}:{instanceNumber}
-    ///```
+    /// ```
     record EndpointKey(Artifact artifact, MethodName methodName, int instanceNumber) implements AetherKey {
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
-                case AetherKeyPattern.EndpointPattern endpointPattern ->
-                    endpointPattern.matches(this);
+                case AetherKeyPattern.EndpointPattern endpointPattern -> endpointPattern.matches(this);
                 default -> false;
             };
         }
+
         @Override
         public String asString() {
-            return "endpoints/"
-                    + artifact.asString()
-                    + "/"
-                    + methodName.name()
-                    + ":"
-                    + instanceNumber;
+            return "endpoints/" + artifact.asString() + "/" + methodName.name() + ":" + instanceNumber;
         }
 
         @Override
@@ -191,11 +180,9 @@ public sealed interface AetherKey extends StructuredKey {
             var methodNamePart = endpointPart.substring(0, colonIndex);
             var instancePart = endpointPart.substring(colonIndex + 1);
 
-            return Result.all(
-                    Artifact.artifact(artifactPart),
-                    MethodName.methodName(methodNamePart),
-                    Number.parseInt(instancePart)
-            ).map(EndpointKey::new);
+            return Result.all(Artifact.artifact(artifactPart),
+                              MethodName.methodName(methodNamePart),
+                              Number.parseInt(instancePart)).map(EndpointKey::new);
         }
     }
 

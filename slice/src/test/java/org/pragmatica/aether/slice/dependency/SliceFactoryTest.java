@@ -76,10 +76,10 @@ class SliceFactoryTest {
     @Test
     void creates_slice_with_no_dependencies() {
         SliceFactory.createSlice(SimpleSlice.class, List.of(), List.of())
-            .onFailureRun(Assertions::fail)
-            .onSuccess(slice -> {
-                assertThat(slice).isInstanceOf(SimpleSlice.class);
-            });
+                    .onFailureRun(Assertions::fail)
+                    .onSuccess(slice -> {
+                        assertThat(slice).isInstanceOf(SimpleSlice.class);
+                    });
     }
 
     @Test
@@ -91,17 +91,17 @@ class SliceFactoryTest {
         var emailDescriptor = DependencyDescriptor.parse("org.example.EmailService:1.0.0:emailService").unwrap();
 
         SliceFactory.createSlice(
-            OrderService.class,
-            List.of(userService, emailService),
-            List.of(userDescriptor, emailDescriptor)
-        )
-            .onFailureRun(Assertions::fail)
-            .onSuccess(slice -> {
-                assertThat(slice).isInstanceOf(OrderService.class);
-                var orderService = (OrderService) slice;
-                assertThat(orderService.getUserService()).isSameAs(userService);
-                assertThat(orderService.getEmailService()).isSameAs(emailService);
-            });
+                            OrderService.class,
+                            List.of(userService, emailService),
+                            List.of(userDescriptor, emailDescriptor)
+                                )
+                    .onFailureRun(Assertions::fail)
+                    .onSuccess(slice -> {
+                        assertThat(slice).isInstanceOf(OrderService.class);
+                        var orderService = (OrderService) slice;
+                        assertThat(orderService.getUserService()).isSameAs(userService);
+                        assertThat(orderService.getEmailService()).isSameAs(emailService);
+                    });
     }
 
     @Test
@@ -115,11 +115,11 @@ class SliceFactoryTest {
         }
 
         SliceFactory.createSlice(NoFactory.class, List.of(), List.of())
-            .onSuccessRun(() -> Assertions.fail("Should fail when factory method not found"))
-            .onFailure(cause -> {
-                assertThat(cause.message()).contains("Factory method not found");
-                assertThat(cause.message()).contains("noFactory");
-            });
+                    .onSuccessRun(() -> Assertions.fail("Should fail when factory method not found"))
+                    .onFailure(cause -> {
+                        assertThat(cause.message()).contains("Factory method not found");
+                        assertThat(cause.message()).contains("noFactory");
+                    });
     }
 
     @Test
@@ -130,16 +130,16 @@ class SliceFactoryTest {
 
         // OrderService expects 2 parameters, but we provide only 1
         SliceFactory.createSlice(
-            OrderService.class,
-            List.of(userService),
-            List.of(userDescriptor)
-        )
-            .onSuccessRun(() -> Assertions.fail("Should fail on parameter count mismatch"))
-            .onFailure(cause -> {
-                assertThat(cause.message()).contains("Parameter count mismatch");
-                assertThat(cause.message()).contains("expected 2");
-                assertThat(cause.message()).contains("got 1");
-            });
+                            OrderService.class,
+                            List.of(userService),
+                            List.of(userDescriptor)
+                                )
+                    .onSuccessRun(() -> Assertions.fail("Should fail on parameter count mismatch"))
+                    .onFailure(cause -> {
+                        assertThat(cause.message()).contains("Parameter count mismatch");
+                        assertThat(cause.message()).contains("expected 2");
+                        assertThat(cause.message()).contains("got 1");
+                    });
     }
 
     @Test
@@ -151,14 +151,14 @@ class SliceFactoryTest {
 
         // OrderService expects (UserService, EmailService), but we provide (EmailService, EmailService)
         SliceFactory.createSlice(
-            OrderService.class,
-            List.of(emailService, emailService),
-            List.of(emailDescriptor, userDescriptor)
-        )
-            .onSuccessRun(() -> Assertions.fail("Should fail on parameter type mismatch"))
-            .onFailure(cause -> {
-                assertThat(cause.message()).contains("Parameter type mismatch");
-                assertThat(cause.message()).contains("index 0");
-            });
+                            OrderService.class,
+                            List.of(emailService, emailService),
+                            List.of(emailDescriptor, userDescriptor)
+                                )
+                    .onSuccessRun(() -> Assertions.fail("Should fail on parameter type mismatch"))
+                    .onFailure(cause -> {
+                        assertThat(cause.message()).contains("Parameter type mismatch");
+                        assertThat(cause.message()).contains("index 0");
+                    });
     }
 }

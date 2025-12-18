@@ -15,6 +15,7 @@
 ### Complete Dependency Injection Infrastructure
 
 Implemented a full dependency injection framework for Aether slices supporting:
+
 - Static factory method pattern with lowercase-first naming convention
 - META-INF/dependencies/ descriptor files
 - Full semantic versioning (exact, range, comparison, tilde ~, caret ^)
@@ -25,55 +26,55 @@ Implemented a full dependency injection framework for Aether slices supporting:
 ### Seven Core Components
 
 1. **VersionPattern** (`VersionPattern.java`)
-   - Sealed interface with 5 variants: Exact, Range, Comparison, Tilde, Caret
-   - Full semver support (e.g., "1.2.3", "[1.0.0,2.0.0)", ">1.5.0", "~1.2.0", "^1.0.0")
-   - Pattern matching for dependency version constraints
-   - Comprehensive roundtrip tests
+    - Sealed interface with 5 variants: Exact, Range, Comparison, Tilde, Caret
+    - Full semver support (e.g., "1.2.3", "[1.0.0,2.0.0)", ">1.5.0", "~1.2.0", "^1.0.0")
+    - Pattern matching for dependency version constraints
+    - Comprehensive roundtrip tests
 
 2. **DependencyDescriptor** (`DependencyDescriptor.java`)
-   - Format: `className:versionPattern[:paramName]`
-   - Parses from strings, serializes back correctly
-   - Optional parameter names for constructor injection
-   - Validation and error handling
+    - Format: `className:versionPattern[:paramName]`
+    - Parses from strings, serializes back correctly
+    - Optional parameter names for constructor injection
+    - Validation and error handling
 
 3. **SliceDependencies** (`SliceDependencies.java`)
-   - Loads dependency descriptors from META-INF/dependencies/{className}
-   - Uses ClassLoader.getResourceAsStream() for JAR compatibility
-   - Handles missing files gracefully (returns empty list)
-   - Ignores comment lines (#) and empty lines
-   - Works with custom ClassLoaders for testing
+    - Loads dependency descriptors from META-INF/dependencies/{className}
+    - Uses ClassLoader.getResourceAsStream() for JAR compatibility
+    - Handles missing files gracefully (returns empty list)
+    - Ignores comment lines (#) and empty lines
+    - Works with custom ClassLoaders for testing
 
 4. **DependencyCycleDetector** (`DependencyCycleDetector.java`)
-   - DFS-based cycle detection algorithm
-   - Detects: self-cycles, simple cycles (A→B→A), longer cycles (A→B→C→A)
-   - Reports full cycle path in error message (e.g., "A -> B -> C -> A")
-   - Handles complex graphs: diamonds, forests, disconnected components
+    - DFS-based cycle detection algorithm
+    - Detects: self-cycles, simple cycles (A→B→A), longer cycles (A→B→C→A)
+    - Reports full cycle path in error message (e.g., "A -> B -> C -> A")
+    - Handles complex graphs: diamonds, forests, disconnected components
 
 5. **SliceFactory** (`SliceFactory.java`)
-   - Reflection-based slice instantiation via static factory methods
-   - Finds factory by lowercase-first naming: `UserService.userService(...)`
-   - Verifies parameter count and types match dependencies
-   - Invokes factory with proper error handling
-   - Returns `Result<Slice>` with typed errors
+    - Reflection-based slice instantiation via static factory methods
+    - Finds factory by lowercase-first naming: `UserService.userService(...)`
+    - Verifies parameter count and types match dependencies
+    - Invokes factory with proper error handling
+    - Returns `Result<Slice>` with typed errors
 
 6. **SliceRegistry** (`SliceRegistry.java`)
-   - Thread-safe ConcurrentHashMap-based storage
-   - Lookup by exact artifact (fast path)
-   - Find by className + version pattern (flexible matching)
-   - Prevents duplicate registration (returns error)
-   - Unregister support for cleanup
-   - allArtifacts() for introspection
+    - Thread-safe ConcurrentHashMap-based storage
+    - Lookup by exact artifact (fast path)
+    - Find by className + version pattern (flexible matching)
+    - Prevents duplicate registration (returns error)
+    - Unregister support for cleanup
+    - allArtifacts() for introspection
 
 7. **DependencyResolver** (`DependencyResolver.java`)
-   - Complete orchestration of dependency resolution
-   - Registry-first lookup (avoids duplicate work)
-   - Recursive depth-first resolution with cycle tracking
-   - Integrates all components:
-     - SliceDependencies → load descriptors
-     - DependencyCycleDetector → check graph
-     - DependencyResolver → recursively resolve
-     - SliceFactory → instantiate
-     - SliceRegistry → register result
+    - Complete orchestration of dependency resolution
+    - Registry-first lookup (avoids duplicate work)
+    - Recursive depth-first resolution with cycle tracking
+    - Integrates all components:
+        - SliceDependencies → load descriptors
+        - DependencyCycleDetector → check graph
+        - DependencyResolver → recursively resolve
+        - SliceFactory → instantiate
+        - SliceRegistry → register result
 
 ---
 
@@ -83,12 +84,14 @@ Implemented a full dependency injection framework for Aether slices supporting:
 
 **Challenge**: Unfamiliarity with pragmatica-lite Option/Result APIs
 **Manifestations**:
+
 - Attempted `Option.orElseGet()` (doesn't exist)
 - Used `.isSome()` and `.onSome()` (should be `.onPresent()`)
 - Called `GroupId.value()` (should be `.id()`)
 - Used `Result.unsafe()` (should be `.unwrap()`)
 
 **Resolution**:
+
 - Learned correct API: `.onPresent()`, `.onEmpty()`, `.fold()`, `.toResult()`
 - Verified by examining cluster code (RabiaNode, LeaderManager)
 - Updated all test files to use correct methods
@@ -98,6 +101,7 @@ Implemented a full dependency injection framework for Aether slices supporting:
 **Challenge**: Error messages showed literal `{0}` instead of substituted values
 
 **Investigation Path**:
+
 1. Initially tried `Causes.forValue("Error: {0}")` with `{0}` placeholders
 2. Changed to `{}` placeholders (still didn't work)
 3. User pointed to pragmatica-lite source at `/Users/sergiyyevtushenko/IdeaProjects/pragmatica-lite`
@@ -105,6 +109,7 @@ Implemented a full dependency injection framework for Aether slices supporting:
 5. Root cause: pragmatica-lite 0.8.3 uses printf-style formatting, not MessageFormat
 
 **Resolution**:
+
 - Updated pom.xml: `pragmatica.version` 0.8.1 → 0.8.3
 - Fixed `Verify.java` in pragmatica-lite: `{0}` → `%s`
 - Rebuilt pragmatica-lite locally
@@ -118,6 +123,7 @@ Implemented a full dependency injection framework for Aether slices supporting:
 **Root Cause**: ArtifactId enforces lowercase-kebab-case pattern: `^[a-z0-9]+(-[a-z0-9]+)*$`
 
 **Resolution**:
+
 - Changed all test artifact IDs from PascalCase to kebab-case
 - Examples: "TestSlice" → "test-slice", "OrderService" → "order-service"
 
@@ -126,6 +132,7 @@ Implemented a full dependency injection framework for Aether slices supporting:
 **Challenge**: Used holder pattern to extract Option value
 
 **Original Code**:
+
 ```java
 final Slice[] holder = new Slice[1];
 existing.onPresent(slice -> holder[0] = slice);
@@ -135,9 +142,11 @@ if (holder[0] != null) {
 return resolveNew(...);
 ```
 
-**User Feedback**: "I've noticed that you've used onPresent to extract value from Option. How many such places in the code? Explain me each."
+**User Feedback**: "I've noticed that you've used onPresent to extract value from Option. How many such places in the
+code? Explain me each."
 
 **Resolution**: User directed to use `Option.fold()`:
+
 ```java
 return registry.lookup(artifact)
     .fold(
@@ -153,9 +162,10 @@ return registry.lookup(artifact)
 **Challenge**: Multiple compilation errors in tests after initial implementation
 
 **Errors Fixed**:
+
 - Assertions.fail() method reference mismatch
-  - From: `.onSuccess(Assertions::fail)`
-  - To: `.onSuccessRun(() -> Assertions.fail("Should fail..."))`
+    - From: `.onSuccess(Assertions::fail)`
+    - To: `.onSuccessRun(() -> Assertions.fail("Should fail..."))`
 - Option API method names (as described above)
 - Result extraction methods (as described above)
 
@@ -168,6 +178,7 @@ return registry.lookup(artifact)
 **Location**: `DependencyResolver.java:120-126`
 
 **Current Behavior**:
+
 ```java
 private static Result<Slice> resolveDependency(...) {
     // Only looks in registry
@@ -183,6 +194,7 @@ private static Result<Slice> resolveDependency(...) {
 **Required for SliceStore**: Needs integration with `LocalRepository.locate()` to download JARs
 
 **Workaround**: Manually register all dependencies in registry:
+
 ```java
 registry.register(depArtifact1, depSlice1);
 registry.register(depArtifact2, depSlice2);
@@ -194,6 +206,7 @@ DependencyResolver.resolve(mainArtifact, classLoader, registry);
 **Location**: `DependencyResolver.java:161-165`
 
 **Current Implementation**:
+
 ```java
 private static String artifactToClassName(Artifact artifact) {
     // Simplistic: groupId.artifactId
@@ -204,10 +217,12 @@ private static String artifactToClassName(Artifact artifact) {
 **Limitation**: No bidirectional mapping mechanism
 
 **Problems**:
+
 - DependencyDescriptor only has className, not full artifact coordinates
 - Cannot resolve "org.example.UserService" → "org.example:user-service:1.0.0"
 
 **Possible Solutions**:
+
 1. META-INF/MANIFEST.MF entries with artifact coordinates
 2. Separate ArtifactMapper registry
 3. Convention-based mapping (kebab-case → PascalCase conversion)
@@ -217,6 +232,7 @@ private static String artifactToClassName(Artifact artifact) {
 **Status**: No isolated ClassLoader creation
 
 **Needed For**:
+
 - Proper slice isolation (prevent dependency conflicts)
 - Resource cleanup on unload
 - Sharing Pragmatica framework classes
@@ -232,6 +248,7 @@ private static String artifactToClassName(Artifact artifact) {
 **Convention**: `TypeName.typeName(...)` (lowercase-first)
 
 **Examples**:
+
 ```java
 Artifact.artifact("org.example:slice:1.0.0")
 GroupId.groupId("org.example")
@@ -240,6 +257,7 @@ SliceRegistry.create()
 ```
 
 **Benefits**:
+
 - Consistent naming across codebase
 - Clear factory method identification
 - Works with reflection (SliceFactory looks for lowercase-first methods)
@@ -249,6 +267,7 @@ SliceRegistry.create()
 **Format**: `META-INF/dependencies/{fully.qualified.ClassName}`
 
 **Content** (one dependency per line):
+
 ```
 # Comments allowed
 org.example.EmailService:[1.0.0,2.0.0):emailService
@@ -258,6 +277,7 @@ org.example.OrderRepository:^1.2.0:orderRepo
 ```
 
 **Benefits**:
+
 - Simple text format (no JSON/XML parsing)
 - Works with JAR packaging
 - Supports comments and optional parameter names
@@ -267,6 +287,7 @@ org.example.OrderRepository:^1.2.0:orderRepo
 **Pattern**: Check registry before resolving new
 
 **Code**:
+
 ```java
 return registry.lookup(artifact)
     .fold(
@@ -276,6 +297,7 @@ return registry.lookup(artifact)
 ```
 
 **Benefits**:
+
 - Avoids duplicate resolution
 - Prevents redundant ClassLoader creation
 - Shares instances across dependents
@@ -285,6 +307,7 @@ return registry.lookup(artifact)
 **Implementation**: `ConcurrentHashMap.putIfAbsent()`
 
 **Code**:
+
 ```java
 public Result<Unit> register(Artifact artifact, Slice slice) {
     var existing = slices.putIfAbsent(artifact.asString(), slice);
@@ -296,6 +319,7 @@ public Result<Unit> register(Artifact artifact, Slice slice) {
 ```
 
 **Benefits**:
+
 - Atomic registration
 - No explicit locking
 - Safe concurrent access
@@ -305,6 +329,7 @@ public Result<Unit> register(Artifact artifact, Slice slice) {
 **Pattern**: All failures flow through `Result<T>` or `Promise<T>`
 
 **Error Hierarchy**:
+
 ```java
 sealed interface DependencyError extends Cause {
     record CircularDependency(String cyclePath) implements DependencyError {}
@@ -314,6 +339,7 @@ sealed interface DependencyError extends Cause {
 ```
 
 **Benefits**:
+
 - Explicit error handling
 - Type-safe error discrimination
 - No hidden control flow
@@ -323,11 +349,13 @@ sealed interface DependencyError extends Cause {
 **Decision**: Use direct concatenation for cycle paths, not `Causes.forValue()`
 
 **Reason**: Cycle paths are complex formatted strings with arrows:
+
 ```
 "Cycle detected: A -> B -> C -> A"
 ```
 
 **Code**:
+
 ```java
 return Causes.cause("Circular dependency detected: " + cyclePath);
 ```
@@ -339,6 +367,7 @@ return Causes.cause("Circular dependency detected: " + cyclePath);
 ## Test Coverage
 
 ### Test Statistics
+
 - **Total Tests**: 119 passing
 - **Test Files**: 7
 - **Coverage**: Success paths, failure paths, edge cases
@@ -346,68 +375,69 @@ return Causes.cause("Circular dependency detected: " + cyclePath);
 ### Test Files
 
 1. **VersionPatternTest** (26 tests)
-   - Exact version parsing and matching
-   - Range parsing ([1.0.0,2.0.0), [1.0.0,2.0.0])
-   - Comparison operators (>, >=, <, <=, =)
-   - Tilde operator (~1.2.3 → [1.2.3,1.3.0))
-   - Caret operator (^1.2.3 → [1.2.3,2.0.0))
-   - Invalid format handling
-   - Roundtrip serialization
+    - Exact version parsing and matching
+    - Range parsing ([1.0.0,2.0.0), [1.0.0,2.0.0])
+    - Comparison operators (>, >=, <, <=, =)
+    - Tilde operator (~1.2.3 → [1.2.3,1.3.0))
+    - Caret operator (^1.2.3 → [1.2.3,2.0.0))
+    - Invalid format handling
+    - Roundtrip serialization
 
 2. **DependencyDescriptorTest** (12 tests)
-   - Basic parsing (className:version)
-   - With parameter name (className:version:paramName)
-   - Invalid formats (missing parts, too many parts)
-   - Roundtrip serialization
-   - Option handling for parameter names
+    - Basic parsing (className:version)
+    - With parameter name (className:version:paramName)
+    - Invalid formats (missing parts, too many parts)
+    - Roundtrip serialization
+    - Option handling for parameter names
 
 3. **SliceDependenciesTest** (8 tests)
-   - Loading from resources
-   - Empty file handling
-   - Missing file handling (returns empty list)
-   - Comment and empty line filtering
-   - Custom ClassLoader support
+    - Loading from resources
+    - Empty file handling
+    - Missing file handling (returns empty list)
+    - Comment and empty line filtering
+    - Custom ClassLoader support
 
 4. **DependencyCycleDetectorTest** (15 tests)
-   - No cycles (simple chain, diamond, forest)
-   - Self-cycle detection (A → A)
-   - Simple cycle (A → B → A)
-   - Longer cycle (A → B → C → A)
-   - Disconnected components
-   - Complex graphs
+    - No cycles (simple chain, diamond, forest)
+    - Self-cycle detection (A → A)
+    - Simple cycle (A → B → A)
+    - Longer cycle (A → B → C → A)
+    - Disconnected components
+    - Complex graphs
 
 5. **SliceFactoryTest** (18 tests)
-   - Find factory method by naming convention
-   - Verify parameter count matches
-   - Verify parameter types match dependencies
-   - Invoke factory successfully
-   - Handle no factory method
-   - Handle wrong parameter count
-   - Handle wrong parameter types
-   - Handle factory invocation errors
-   - Integration with real slice classes (SimpleSlice, OrderService, UserService)
+    - Find factory method by naming convention
+    - Verify parameter count matches
+    - Verify parameter types match dependencies
+    - Invoke factory successfully
+    - Handle no factory method
+    - Handle wrong parameter count
+    - Handle wrong parameter types
+    - Handle factory invocation errors
+    - Integration with real slice classes (SimpleSlice, OrderService, UserService)
 
 6. **SliceRegistryTest** (12 tests)
-   - Register and lookup by artifact
-   - Duplicate registration fails
-   - Lookup missing returns none
-   - Unregister removes slice
-   - Unregister missing fails
-   - Find by className + exact version
-   - Find by className + version range
-   - Version doesn't match returns none
-   - Class name doesn't match returns none
-   - allArtifacts() returns all registered
-   - Empty registry returns empty list
+    - Register and lookup by artifact
+    - Duplicate registration fails
+    - Lookup missing returns none
+    - Unregister removes slice
+    - Unregister missing fails
+    - Find by className + exact version
+    - Find by className + version range
+    - Version doesn't match returns none
+    - Class name doesn't match returns none
+    - allArtifacts() returns all registered
+    - Empty registry returns empty list
 
 7. **Integration Tests** (28 tests across all files)
-   - End-to-end resolution with real dependencies
-   - Complex dependency graphs
-   - Error propagation through full stack
+    - End-to-end resolution with real dependencies
+    - Complex dependency graphs
+    - Error propagation through full stack
 
 ### Test Helper Classes
 
 Created realistic test slices:
+
 ```java
 static class SimpleSlice implements Slice {
     public static SimpleSlice simpleSlice() { ... }
@@ -431,6 +461,7 @@ static class OrderService implements Slice {
 ### Created Files (7 main + 7 test)
 
 **Main Code**:
+
 1. `slice/src/main/java/org/pragmatica/aether/slice/dependency/VersionPattern.java` (320 lines)
 2. `slice/src/main/java/org/pragmatica/aether/slice/dependency/DependencyDescriptor.java` (85 lines)
 3. `slice/src/main/java/org/pragmatica/aether/slice/dependency/SliceDependencies.java` (60 lines)
@@ -440,6 +471,7 @@ static class OrderService implements Slice {
 7. `slice/src/main/java/org/pragmatica/aether/slice/dependency/DependencyResolver.java` (175 lines)
 
 **Test Code**:
+
 1. `slice/src/test/java/org/pragmatica/aether/slice/dependency/VersionPatternTest.java`
 2. `slice/src/test/java/org/pragmatica/aether/slice/dependency/DependencyDescriptorTest.java`
 3. `slice/src/test/java/org/pragmatica/aether/slice/dependency/SliceDependenciesTest.java`
@@ -471,28 +503,28 @@ static class OrderService implements Slice {
 ### Immediate (Task 1.2 - SliceStore)
 
 1. **Implement LocalRepository** (BLOCKER)
-   - Locate artifacts in local Maven repository (~/.m2/repository)
-   - Download from remote repositories if missing
-   - Cache downloaded JARs
-   - Resolve transitive dependencies
+    - Locate artifacts in local Maven repository (~/.m2/repository)
+    - Download from remote repositories if missing
+    - Cache downloaded JARs
+    - Resolve transitive dependencies
 
 2. **Design ArtifactMapper**
-   - Bidirectional className ↔ artifact mapping
-   - Consider META-INF/MANIFEST.MF entries
-   - Or convention-based mapping
+    - Bidirectional className ↔ artifact mapping
+    - Consider META-INF/MANIFEST.MF entries
+    - Or convention-based mapping
 
 3. **Implement SliceClassLoader**
-   - Isolated ClassLoader per slice
-   - Share Pragmatica framework classes
-   - Proper parent delegation
-   - Resource cleanup on unload
+    - Isolated ClassLoader per slice
+    - Share Pragmatica framework classes
+    - Proper parent delegation
+    - Resource cleanup on unload
 
 4. **Integrate DependencyResolver into SliceStore**
-   - Load slice with dependencies: `SliceStore.loadSlice(artifact)`
-   - Pre-resolve dependencies → registry
-   - Create isolated ClassLoader with all dependency JARs
-   - Instantiate slice via DependencyResolver
-   - Handle lifecycle transitions
+    - Load slice with dependencies: `SliceStore.loadSlice(artifact)`
+    - Pre-resolve dependencies → registry
+    - Create isolated ClassLoader with all dependency JARs
+    - Instantiate slice via DependencyResolver
+    - Handle lifecycle transitions
 
 ### Documentation Updates Needed
 
@@ -514,12 +546,14 @@ static class OrderService implements Slice {
 ### API Usage Patterns
 
 **Option API**:
+
 - `.fold(emptyCase, presentCase)` - Extract value with fallback
 - `.onPresent(consumer)` - Side effect when present
 - `.onEmpty(runnable)` - Side effect when empty
 - `.toResult(cause)` - Convert to Result
 
 **Result API**:
+
 - `.onSuccess(consumer)` - Side effect on success
 - `.onFailure(consumer)` - Side effect on failure
 - `.flatMap(fn)` - Chain dependent operations
@@ -527,6 +561,7 @@ static class OrderService implements Slice {
 - `.unwrap()` - Extract (throws on failure, use carefully)
 
 **Error Handling**:
+
 - `Causes.forValue("Template: %s")` - Printf-style formatting
 - Direct concatenation for complex strings
 - Sealed interfaces for error hierarchies
@@ -534,6 +569,7 @@ static class OrderService implements Slice {
 ### Testing Patterns
 
 **Result<T> Testing**:
+
 ```java
 SomeType.parse("valid")
     .onSuccess(result -> assertThat(result.field()).isEqualTo("expected"))
@@ -541,6 +577,7 @@ SomeType.parse("valid")
 ```
 
 **Promise<T> Testing**:
+
 ```java
 promise.await()
     .onSuccess(result -> assertThat(result).isEqualTo(expected))
@@ -548,6 +585,7 @@ promise.await()
 ```
 
 **Failure Testing**:
+
 ```java
 SomeType.parse("invalid")
     .onSuccessRun(() -> Assertions.fail("Should fail"))
@@ -566,8 +604,13 @@ SomeType.parse("invalid")
 
 ## Summary
 
-This session successfully implemented a complete dependency injection infrastructure for Aether slices, establishing patterns and foundations that will be used throughout the project. The implementation follows JBCT principles strictly, uses pragmatica-lite Result/Option/Promise types correctly, and includes comprehensive test coverage.
+This session successfully implemented a complete dependency injection infrastructure for Aether slices, establishing
+patterns and foundations that will be used throughout the project. The implementation follows JBCT principles strictly,
+uses pragmatica-lite Result/Option/Promise types correctly, and includes comprehensive test coverage.
 
-The main remaining work is integrating this DI infrastructure into SliceStore by implementing artifact resolution from repositories and ClassLoader isolation. Once complete, Aether will support loading slices with complex dependency graphs from Maven repositories, enabling the full slice lifecycle management envisioned in the architecture.
+The main remaining work is integrating this DI infrastructure into SliceStore by implementing artifact resolution from
+repositories and ClassLoader isolation. Once complete, Aether will support loading slices with complex dependency graphs
+from Maven repositories, enabling the full slice lifecycle management envisioned in the architecture.
 
-**Key Achievement**: From zero to fully functional DI framework in one day, with 119 passing tests and clear documentation of limitations and next steps.
+**Key Achievement**: From zero to fully functional DI framework in one day, with 119 passing tests and clear
+documentation of limitations and next steps.

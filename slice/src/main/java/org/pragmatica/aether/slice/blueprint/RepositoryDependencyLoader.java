@@ -12,8 +12,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import java.net.URL;
-import java.util.Collections;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;

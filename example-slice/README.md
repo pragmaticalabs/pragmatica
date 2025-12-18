@@ -4,7 +4,8 @@ A simple example slice implementation that demonstrates the complete Aether slic
 
 ## Overview
 
-This example slice provides basic string processing functionality (converting strings to lowercase) and serves as a reference implementation for creating deployable slices in the Aether runtime environment.
+This example slice provides basic string processing functionality (converting strings to lowercase) and serves as a
+reference implementation for creating deployable slices in the Aether runtime environment.
 
 ## Features
 
@@ -57,6 +58,7 @@ sliceStore.loadSlice(artifact)
 The slice provides the following entry points:
 
 #### `toLowerCase(String input)`
+
 - **Purpose**: Converts input string to lowercase
 - **Parameters**: `String input` - the string to convert
 - **Returns**: `String` - the input converted to lowercase

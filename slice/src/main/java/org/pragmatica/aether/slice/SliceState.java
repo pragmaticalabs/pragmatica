@@ -2,6 +2,7 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
@@ -14,25 +15,39 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 // TODO: rework timeout handling, perhaps use existing values as defaults
 public enum SliceState {
-    LOAD, LOADING(timeSpan(2).minutes()), LOADED, ACTIVATE, ACTIVATING(timeSpan(1).minutes()), ACTIVE, DEACTIVATE, DEACTIVATING(
-            timeSpan(30).seconds()), FAILED, UNLOAD, UNLOADING(timeSpan(2).minutes());
+    LOAD,
+    LOADING(timeSpan(2).minutes()),
+    LOADED,
+    ACTIVATE,
+    ACTIVATING(timeSpan(1).minutes()),
+    ACTIVE,
+    DEACTIVATE,
+    DEACTIVATING(
+            timeSpan(30).seconds()),
+    FAILED,
+    UNLOAD,
+    UNLOADING(timeSpan(2).minutes());
 
-    private final TimeSpan timeout;
+    private final Option<TimeSpan> timeout;
 
     SliceState() {
-        this(null);
+        this(Option.none());
     }
 
     SliceState(TimeSpan timeout) {
+        this(Option.some(timeout));
+    }
+
+    SliceState(Option<TimeSpan> timeout) {
         this.timeout = timeout;
     }
 
-    public TimeSpan timeout() {
+    public Option<TimeSpan> timeout() {
         return timeout;
     }
 
     public boolean hasTimeout() {
-        return timeout != null;
+        return timeout.isPresent();
     }
 
     public boolean isTransitional() {
@@ -92,10 +107,8 @@ public enum SliceState {
     }
 
     public static Result<SliceState> sliceState(String stateString) {
-        var state = STRING_TO_STATE.get(stateString.toUpperCase());
-
-        return state == null ? UNKNOWN_STATE.apply(stateString).result() : Result.success(state);
-
+        return Option.option(STRING_TO_STATE.get(stateString.toUpperCase()))
+                     .toResult(UNKNOWN_STATE.apply(stateString));
     }
 
     private static final Fn1<Cause, String> UNKNOWN_STATE = Causes.forValue("Unknown slice state [{}]");

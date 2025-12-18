@@ -2,7 +2,8 @@
 
 ## Introduction
 
-This guide explains how to develop Slices for the Aether runtime. A Slice is a deployable unit of business logic that can be loaded, activated, scaled, and managed by the Aether cluster.
+This guide explains how to develop Slices for the Aether runtime. A Slice is a deployable unit of business logic that
+can be loaded, activated, scaled, and managed by the Aether cluster.
 
 ## Slice Interface
 
@@ -27,6 +28,7 @@ public interface Slice {
 **Default implementation**: Returns successfully resolved Promise.
 
 **Custom implementation example**:
+
 ```java
 @Override
 public Promise<Unit> start() {
@@ -48,6 +50,7 @@ public Promise<Unit> start() {
 **Timeout**: Configurable via `SliceActionConfig.startStopTimeout` (default: 5 seconds).
 
 **Failure handling**:
+
 - If `start()` fails (Promise resolves to failure), the slice moves to FAILED state
 - The runtime does NOT call `stop()` - your `start()` method must cleanup partial initialization
 - No retry - slice must be unloaded and loaded again
@@ -61,6 +64,7 @@ public Promise<Unit> start() {
 **Default implementation**: Returns successfully resolved Promise.
 
 **Custom implementation example**:
+
 ```java
 @Override
 public Promise<Unit> stop() {
@@ -86,6 +90,7 @@ public Promise<Unit> stop() {
 **Timeout**: Configurable via `SliceActionConfig.startStopTimeout` (default: 5 seconds).
 
 **Failure handling**:
+
 - `stop()` failures are logged but don't prevent slice unloading
 - Slice is removed from cluster regardless of stop() outcome
 
@@ -100,6 +105,7 @@ public Promise<Unit> stop() {
 **Returns**: List of `SliceMethod<?, ?>` descriptors.
 
 **Example**:
+
 ```java
 @Override
 public List<SliceMethod<?, ?>> methods() {
@@ -149,17 +155,20 @@ From the Slice's perspective:
 ### Failure Scenarios
 
 **start() fails:**
+
 - Slice moves to FAILED state
 - stop() is NOT called
 - Your start() must cleanup partial initialization
 - Slice must be unloaded and reloaded to retry
 
 **stop() fails:**
+
 - Failure is logged
 - Slice is unloaded anyway
 - Resources may leak (design stop() to be best-effort)
 
 **Method invocation fails:**
+
 - Failure returned to caller via Promise
 - Slice remains ACTIVE
 - Other concurrent calls unaffected
@@ -184,6 +193,7 @@ After `start()` succeeds, multiple methods can be invoked concurrently. Your imp
 - Concurrent read-write access
 
 **Thread-safe example**:
+
 ```java
 public record UserService(ConcurrentHashMap<UserId, User> cache) implements Slice {
 
@@ -224,6 +234,7 @@ public record OrderProcessor(OrderRepository repository) implements Slice {
 ### Use start() and stop(), Not Constructors
 
 **Wrong**:
+
 ```java
 public record MySlice() implements Slice {
     private final DataSource dataSource = createDataSource(); // ❌ BAD
@@ -236,6 +247,7 @@ public record MySlice() implements Slice {
 ```
 
 **Correct**:
+
 ```java
 public record MySlice(
     AtomicReference<DataSource> dataSource,
@@ -283,7 +295,8 @@ public record MySlice(
 
 ### Automatic Serialization
 
-The runtime automatically serializes/deserializes method parameters and return values using the configured `SerializerFactoryProvider`.
+The runtime automatically serializes/deserializes method parameters and return values using the configured
+`SerializerFactoryProvider`.
 
 **You don't need to handle serialization** - just declare your types:
 
@@ -300,6 +313,7 @@ public record ProcessStringMethod() implements SliceMethod<ProcessedString, Inpu
 ### Type Requirements
 
 All parameter and return types must be:
+
 - Serializable by Fury or Kryo (default providers)
 - Registered with the serializer (if using custom types)
 - Immutable (strongly recommended)
@@ -395,6 +409,7 @@ public record OrderProcessorSlice(
 ### 5. Follow JBCT Patterns
 
 See [docs/jbct-coder.md](jbct-coder.md) for detailed patterns:
+
 - Four return kinds (T, Option<T>, Result<T>, Promise<T>)
 - Parse, don't validate
 - No business exceptions
@@ -487,6 +502,7 @@ public record UserService(
 **Symptom**: Slice fails to activate with timeout error.
 
 **Solutions**:
+
 - Move slow initialization to lazy loading
 - Increase `SliceActionConfig.startStopTimeout`
 - Check for blocking operations in start()
@@ -496,6 +512,7 @@ public record UserService(
 **Symptom**: Race conditions, inconsistent state.
 
 **Solutions**:
+
 - Use concurrent collections (`ConcurrentHashMap`, `CopyOnWriteArrayList`)
 - Make methods stateless
 - Use immutable data structures
@@ -505,6 +522,7 @@ public record UserService(
 **Symptom**: Resources not released after slice unload.
 
 **Solutions**:
+
 - Implement stop() properly
 - Use try-with-resources in stop()
 - Set references to null in stop()

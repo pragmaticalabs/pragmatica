@@ -64,7 +64,10 @@ public class SliceClassLoader extends URLClassLoader {
      * Check if class is a JDK internal class that must be loaded by parent.
      */
     private boolean isJdkClass(String name) {
-        return name.startsWith(JAVA_PREFIX) || name.startsWith(JAVAX_PREFIX) || name.startsWith(JDK_PREFIX) || name.startsWith(
+        return name.startsWith(JAVA_PREFIX)
+               || name.startsWith(JAVAX_PREFIX)
+               || name.startsWith(JDK_PREFIX)
+               || name.startsWith(
                 SUN_PREFIX);
     }
 

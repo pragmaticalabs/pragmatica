@@ -3,34 +3,37 @@
 ## Completed ✅
 
 ### Phase 1 & 2: Remove configure() Pattern
+
 **Committed**: `19c5912` - "refactor: remove configure() from LeaderManager and TcpTopologyManager"
 
 1. **LeaderManager**
-   - ✅ Removed `configure(MessageRouter.MutableRouter)` from interface and implementation
-   - ✅ Updated RabiaNode to use direct route registration
-   - ✅ Added proper imports for message types
+    - ✅ Removed `configure(MessageRouter.MutableRouter)` from interface and implementation
+    - ✅ Updated RabiaNode to use direct route registration
+    - ✅ Added proper imports for message types
 
 2. **TcpTopologyManager**
-   - ✅ Removed `configure()` from TopologyManager interface
-   - ✅ Removed `configure()` from TcpTopologyManager implementation
-   - ✅ Updated RabiaNode to register topology manager routes directly
+    - ✅ Removed `configure()` from TopologyManager interface
+    - ✅ Removed `configure()` from TcpTopologyManager implementation
+    - ✅ Updated RabiaNode to register topology manager routes directly
 
 ### Documentation Updates
+
 **Committed**: `215874b` - "docs: update architecture documentation with simplified KV schema"
 
 1. **New Documents**
-   - ✅ `vision-and-goals.md` - Complete north star vision for Aether
-   - ✅ `metrics-and-control.md` - Detailed metrics architecture (push-aggregate-broadcast pattern)
-   - ✅ `implementation-plan.md` - 5-phase implementation roadmap
-   - ✅ `kv-schema-simplified.md` - Explanation of simplified 3-key schema (no allocations)
-   - ✅ `jbct-coder.md` - Java Backend Coding Technology patterns
+    - ✅ `vision-and-goals.md` - Complete north star vision for Aether
+    - ✅ `metrics-and-control.md` - Detailed metrics architecture (push-aggregate-broadcast pattern)
+    - ✅ `implementation-plan.md` - 5-phase implementation roadmap
+    - ✅ `kv-schema-simplified.md` - Explanation of simplified 3-key schema (no allocations)
+    - ✅ `jbct-coder.md` - Java Backend Coding Technology patterns
 
 2. **Updated Documents**
-   - ✅ `architecture-overview.md` - Reflects simplified KV schema
-   - ✅ `cluster-deployment-manager.md` - Marked as outdated with warning
-   - ✅ `CLAUDE.md` - Updated with new architecture details
+    - ✅ `architecture-overview.md` - Reflects simplified KV schema
+    - ✅ `cluster-deployment-manager.md` - Marked as outdated with warning
+    - ✅ `CLAUDE.md` - Updated with new architecture details
 
 ### Infrastructure Ready
+
 - ✅ **AetherKey** sealed interface exists with BlueprintKey, SliceNodeKey, EndpointKey
 - ✅ **AetherValue** sealed interface exists with BlueprintValue, SliceNodeValue, EndpointValue
 - ✅ **Artifact** type exists (GroupId, ArtifactId, Version)
@@ -39,43 +42,46 @@
 - ✅ **Dependency Injection Infrastructure** - Complete resolution framework (see below)
 
 ### Dependency Injection Infrastructure ✅
+
 **Completed**: November 26, 2024
 **Commits**: `c54c5cb`, `5fae55a`
 **Effort**: ~1 day
 
 **Implemented Components**:
+
 - ✅ **VersionPattern** - Full semantic versioning support (exact, range, comparison, tilde ~, caret ^)
-  - Sealed interface with 5 variants: Exact, Range, Comparison, Tilde, Caret
-  - Pattern matching for dependency resolution
-  - Comprehensive roundtrip tests
+    - Sealed interface with 5 variants: Exact, Range, Comparison, Tilde, Caret
+    - Pattern matching for dependency resolution
+    - Comprehensive roundtrip tests
 - ✅ **DependencyDescriptor** - META-INF/dependencies/ format parser
-  - Format: `className:versionPattern[:paramName]`
-  - Parses from strings, serializes back
-  - Supports optional parameter names
+    - Format: `className:versionPattern[:paramName]`
+    - Parses from strings, serializes back
+    - Supports optional parameter names
 - ✅ **SliceDependencies** - JAR resource loader
-  - Loads from ClassLoader resources
-  - Handles missing files gracefully (returns empty list)
-  - Ignores comments (#) and empty lines
+    - Loads from ClassLoader resources
+    - Handles missing files gracefully (returns empty list)
+    - Ignores comments (#) and empty lines
 - ✅ **DependencyCycleDetector** - DFS-based cycle detection
-  - Detects self-cycles, simple cycles, longer cycles
-  - Reports full cycle path in error message
-  - Handles complex dependency graphs (diamonds, forests)
+    - Detects self-cycles, simple cycles, longer cycles
+    - Reports full cycle path in error message
+    - Handles complex dependency graphs (diamonds, forests)
 - ✅ **SliceFactory** - Reflection-based slice instantiation
-  - Finds factory methods by lowercase-first naming convention
-  - Verifies parameter count and types match dependencies
-  - Invokes factory with proper error handling
+    - Finds factory methods by lowercase-first naming convention
+    - Verifies parameter count and types match dependencies
+    - Invokes factory with proper error handling
 - ✅ **SliceRegistry** - Thread-safe slice tracking
-  - ConcurrentHashMap-based storage
-  - Lookup by exact artifact
-  - Find by className + version pattern matching
-  - Prevents duplicate registration
+    - ConcurrentHashMap-based storage
+    - Lookup by exact artifact
+    - Find by className + version pattern matching
+    - Prevents duplicate registration
 - ✅ **DependencyResolver** - Complete resolution orchestration
-  - Checks registry first (avoids duplicate loading)
-  - Recursively resolves dependencies depth-first
-  - Detects circular dependencies
-  - Integrates all components into cohesive flow
+    - Checks registry first (avoids duplicate loading)
+    - Recursively resolves dependencies depth-first
+    - Detects circular dependencies
+    - Integrates all components into cohesive flow
 
 **Test Coverage**: 119 tests passing
+
 - VersionPatternTest - All semver variants
 - DependencyDescriptorTest - Parsing and serialization
 - SliceDependenciesTest - Resource loading with custom ClassLoader
@@ -85,6 +91,7 @@
 - Integration tests with complex dependency graphs
 
 **Infrastructure Updates**:
+
 - ✅ Updated to pragmatica-lite 0.8.3
 - ✅ Fixed String.format placeholders (%s) throughout codebase
 - ✅ Fixed Option API usage (fold, onPresent, onEmpty)
@@ -92,21 +99,23 @@
 - ✅ Refactored holder pattern to functional Option.fold()
 
 **Known Limitations**:
+
 - ❌ **Artifact Resolution from Repository** - Not implemented
-  - `DependencyResolver.resolveDependency()` only checks registry (line 120)
-  - Needs integration with LocalRepository.locate() to download JARs
-  - Required for Task 1.2 (SliceStore Implementation)
-  - Workaround: Pre-load all dependencies into registry before resolving
+    - `DependencyResolver.resolveDependency()` only checks registry (line 120)
+    - Needs integration with LocalRepository.locate() to download JARs
+    - Required for Task 1.2 (SliceStore Implementation)
+    - Workaround: Pre-load all dependencies into registry before resolving
 - ❌ **ClassName to Artifact Mapping** - Not designed
-  - Current `artifactToClassName()` uses simplistic `groupId.artifactId` (line 161-165)
-  - Real implementation needs bidirectional mapping mechanism
-  - Could use META-INF manifest entries or separate registry
+    - Current `artifactToClassName()` uses simplistic `groupId.artifactId` (line 161-165)
+    - Real implementation needs bidirectional mapping mechanism
+    - Could use META-INF manifest entries or separate registry
 - ❌ **ClassLoader Isolation** - Not implemented
-  - No isolated ClassLoader creation for slice dependencies
-  - Needed for proper slice isolation
-  - Part of SliceStore implementation
+    - No isolated ClassLoader creation for slice dependencies
+    - Needed for proper slice isolation
+    - Part of SliceStore implementation
 
 **Design Decisions**:
+
 - Static factory method pattern: `TypeName.typeName(...)` (lowercase-first)
 - META-INF/dependencies/{className} resource files for dependency descriptors
 - Registry-first lookup to avoid duplicate resolution
@@ -117,6 +126,7 @@
 
 **Next Steps**:
 Task 1.2 (SliceStore Implementation) should integrate with this DI infrastructure:
+
 1. Implement artifact resolution from LocalRepository
 2. Design className ↔ artifact mapping mechanism
 3. Create isolated ClassLoader per slice
@@ -133,9 +143,9 @@ Task 1.2 (SliceStore Implementation) should integrate with this DI infrastructur
 **What Needs to be Done**:
 
 1. **Uncomment and fix implementation** (lines 47-276)
-   - Current implementation has correct structure but needs updates
-   - Already has proper state machine (Dormant/Active)
-   - Already has @MessageReceiver annotations in comments
+    - Current implementation has correct structure but needs updates
+    - Already has proper state machine (Dormant/Active)
+    - Already has @MessageReceiver annotations in comments
 
 2. **Update ValuePut/ValueRemove handlers**
    ```java
@@ -151,24 +161,25 @@ Task 1.2 (SliceStore Implementation) should integrate with this DI infrastructur
    ```
 
 3. **Remove configure() pattern**
-   - Lines 269-273 use old configure() pattern
-   - Should have @MessageReceiver methods instead
-   - Routes will be registered in centralized assembly
+    - Lines 269-273 use old configure() pattern
+    - Should have @MessageReceiver methods instead
+    - Routes will be registered in centralized assembly
 
 4. **Fix state transitions**
-   - Lines 110-121 have old switch syntax
-   - Update to modern switch expressions
-   - Ensure all SliceState transitions handled
+    - Lines 110-121 have old switch syntax
+    - Update to modern switch expressions
+    - Ensure all SliceState transitions handled
 
 5. **Integrate with consensus KVStore**
-   - Line 209: "TODO: link with consensus"
-   - updateSliceState() should write to KVStore via consensus
+    - Line 209: "TODO: link with consensus"
+    - updateSliceState() should write to KVStore via consensus
 
 6. **Move timeouts to SliceStore**
-   - Lines 131, 151, 171, 190 have timeouts in wrong place
-   - SliceStore operations should have built-in timeouts
+    - Lines 131, 151, 171, 190 have timeouts in wrong place
+    - SliceStore operations should have built-in timeouts
 
 **Acceptance Criteria**:
+
 - [ ] Implementation uncommented and compiling
 - [ ] @MessageReceiver methods properly defined
 - [ ] ValuePut/ValueRemove use AetherKey/AetherValue (not strings)
@@ -184,6 +195,7 @@ Task 1.2 (SliceStore Implementation) should integrate with this DI infrastructur
 **File**: `node/src/main/java/org/pragmatica/aether/deployment/cluster/ClusterDeploymentManager.java` (NEW)
 
 **Design**:
+
 ```java
 public interface ClusterDeploymentManager {
     sealed interface ClusterDeploymentState {
@@ -212,30 +224,31 @@ public interface ClusterDeploymentManager {
 **What Needs to be Done**:
 
 1. **Create ClusterDeploymentManager interface**
-   - @MessageReceiver methods for leader changes and KV events
-   - State machine (Dormant when follower, Active when leader)
+    - @MessageReceiver methods for leader changes and KV events
+    - State machine (Dormant when follower, Active when leader)
 
 2. **Implement Active state with allocation logic**
-   - Watch for BlueprintKey changes in ValuePut
-   - Round-robin allocation across active nodes
-   - Write LOAD commands directly to `slices/{node-id}/{artifact}` keys
-   - NO separate allocations key
+    - Watch for BlueprintKey changes in ValuePut
+    - Round-robin allocation across active nodes
+    - Write LOAD commands directly to `slices/{node-id}/{artifact}` keys
+    - NO separate allocations key
 
 3. **Implement BlueprintWatcher**
-   - React to ValuePut for blueprint keys
-   - Parse BlueprintValue to get instance counts
-   - Trigger allocation when blueprints change
+    - React to ValuePut for blueprint keys
+    - Parse BlueprintValue to get instance counts
+    - Trigger allocation when blueprints change
 
 4. **Implement ReconciliationEngine**
-   - Compare desired state (blueprints) to actual state (slice states)
-   - Issue corrections when mismatch detected
-   - Handle node join/leave events
+    - Compare desired state (blueprints) to actual state (slice states)
+    - Issue corrections when mismatch detected
+    - Handle node join/leave events
 
 5. **No configure() method**
-   - Use @MessageReceiver annotations
-   - Routes registered in centralized assembly
+    - Use @MessageReceiver annotations
+    - Routes registered in centralized assembly
 
 **Acceptance Criteria**:
+
 - [ ] Interface and implementation created
 - [ ] Activates only when leader (LeaderNotification.LeaderChange)
 - [ ] Watches blueprint changes (ValuePut for BlueprintKey)
@@ -250,6 +263,7 @@ public interface ClusterDeploymentManager {
 **Status**: Pattern understood, implementation needed
 
 **Pattern** (from MessageRouterTest.java):
+
 ```java
 import static org.pragmatica.message.MessageRouter.Entry.SealedBuilder.from;
 import static org.pragmatica.message.MessageRouter.Entry.route;
@@ -276,20 +290,21 @@ var routes = from(Message.class)
 **What Needs to be Done**:
 
 1. **Create centralized assembly function**
-   - Location: `node/src/main/java/org/pragmatica/aether/node/AetherNode.java`
-   - Assemble all Aether component routes in one place
-   - Use Entry.route() and SealedBuilder.from()
+    - Location: `node/src/main/java/org/pragmatica/aether/node/AetherNode.java`
+    - Assemble all Aether component routes in one place
+    - Use Entry.route() and SealedBuilder.from()
 
 2. **Update RabiaNode or create AetherNode**
-   - Remove remaining configure() calls
-   - Use ImmutableRouter from centralized assembly
-   - Type-safe validation at compile time
+    - Remove remaining configure() calls
+    - Use ImmutableRouter from centralized assembly
+    - Type-safe validation at compile time
 
 3. **Validate sealed interface coverage**
-   - SealedBuilder validates all permitted subclasses covered
-   - Compile-time check ensures no missing routes
+    - SealedBuilder validates all permitted subclasses covered
+    - Compile-time check ensures no missing routes
 
 **Acceptance Criteria**:
+
 - [ ] Centralized assembly function created
 - [ ] All component routes registered via Entry.route()
 - [ ] Sealed interface validation passes
@@ -336,6 +351,7 @@ public interface Component {
 ```
 
 **Key Points**:
+
 - NO configure() method
 - @MessageReceiver annotations on interface methods
 - State machine with Dormant/Active pattern
@@ -376,26 +392,26 @@ var routes = from(Message.class)
 ## Next Steps
 
 1. **Implement NodeDeploymentManager** (~2-3 hours)
-   - Uncomment and fix implementation
-   - Update to use AetherKey/AetherValue properly
-   - Remove configure(), add @MessageReceiver
-   - Write integration test
+    - Uncomment and fix implementation
+    - Update to use AetherKey/AetherValue properly
+    - Remove configure(), add @MessageReceiver
+    - Write integration test
 
 2. **Implement ClusterDeploymentManager** (~3-4 hours)
-   - Create new file with complete implementation
-   - Blueprint watching and allocation logic
-   - Reconciliation engine
-   - Write multi-node integration test
+    - Create new file with complete implementation
+    - Blueprint watching and allocation logic
+    - Reconciliation engine
+    - Write multi-node integration test
 
 3. **Centralized Router Assembly** (~1-2 hours)
-   - Create assembly function
-   - Update RabiaNode or create AetherNode
-   - Remove all remaining configure() calls
+    - Create assembly function
+    - Update RabiaNode or create AetherNode
+    - Remove all remaining configure() calls
 
 4. **Testing and Documentation** (~2 hours)
-   - Run all integration tests
-   - Update CLAUDE.md with new patterns
-   - Create example of centralized assembly
+    - Run all integration tests
+    - Update CLAUDE.md with new patterns
+    - Create example of centralized assembly
 
 **Total Estimated Time**: 8-11 hours
 

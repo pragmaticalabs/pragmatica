@@ -2,7 +2,8 @@
 
 ## Overview
 
-The Model Context Protocol (MCP) integration provides external management and monitoring capabilities for the Aether cluster. It follows a three-layer architecture ensuring perfect parity between CLI and MCP interfaces.
+The Model Context Protocol (MCP) integration provides external management and monitoring capabilities for the Aether
+cluster. It follows a three-layer architecture ensuring perfect parity between CLI and MCP interfaces.
 
 ## Architecture Principles
 
@@ -41,7 +42,7 @@ The Model Context Protocol (MCP) integration provides external management and mo
 ### Design Principles
 
 1. **Perfect Parity**: CLI and MCP provide identical functionality
-2. **Unified Logic**: Single command handler implementation 
+2. **Unified Logic**: Single command handler implementation
 3. **Protocol Agnostic**: Core handlers independent of transport
 4. **Consistency**: No feature discrepancies between interfaces
 5. **Single Agent**: Only one MCP agent connected cluster-wide
@@ -65,6 +66,7 @@ interface MCPServer {
 ### Agent Connection Management
 
 **Agent Lock Schema**:
+
 ```
 mcp/agent-lock/{agent-id} → {
   "node-id": "node-1",
@@ -74,8 +76,9 @@ mcp/agent-lock/{agent-id} → {
 ```
 
 **Connection Process**:
+
 1. Agent attempts connection to any node
-2. Node tries to acquire cluster-wide agent lock in KV-Store  
+2. Node tries to acquire cluster-wide agent lock in KV-Store
 3. If successful, establishes connection and starts TTL refresh
 4. If lock held by another node, connection rejected
 5. Lock automatically expires if TTL not refreshed
@@ -83,6 +86,7 @@ mcp/agent-lock/{agent-id} → {
 ### Protocol Implementation
 
 **JSON-RPC over WebSocket/HTTP**:
+
 ```java
 interface MCPProtocol {
     // Standard JSON-RPC 2.0 methods
@@ -95,6 +99,7 @@ interface MCPProtocol {
 ```
 
 **Supported Transports**:
+
 - **WebSocket**: Real-time bidirectional communication
 - **HTTP**: Request/response for simple operations
 - **Server-Sent Events**: One-way event streaming
@@ -397,18 +402,21 @@ class PublishBlueprintValidator implements RequestValidator<PublishBlueprintRequ
 ## Implementation Roadmap
 
 ### Phase 1: Foundation
+
 - Command handler interfaces and basic implementations
-- CLI framework with blueprint commands  
+- CLI framework with blueprint commands
 - MCP server skeleton with JSON-RPC support
 - Agent connection management
 
 ### Phase 2: Core Functionality
+
 - Complete blueprint and slice management
 - Event streaming infrastructure
 - WebSocket transport implementation
 - Integration with ClusterDeploymentManager
 
 ### Phase 3: Advanced Features
+
 - Comprehensive monitoring and metrics
 - Advanced filtering and subscriptions
 - Security and authorization framework
@@ -417,18 +425,21 @@ class PublishBlueprintValidator implements RequestValidator<PublishBlueprintRequ
 ## Testing Strategy
 
 ### Unit Tests
+
 - Command handler logic
 - Request/response serialization
 - Validation and authorization
 - Event publishing and filtering
 
 ### Integration Tests
+
 - CLI end-to-end scenarios
 - MCP protocol compliance
 - Agent connection lifecycle
 - Cross-interface parity validation
 
 ### Test Infrastructure
+
 ```java
 // Mock cluster components for isolated testing
 // Test harness for CLI command execution

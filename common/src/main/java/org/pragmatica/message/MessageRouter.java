@@ -36,7 +36,7 @@ public sealed interface MessageRouter {
 
         record SimpleMutableRouter<T extends Message>(
                 ConcurrentMap<Class<T>, List<Consumer<T>>> routingTable) implements
-                MutableRouter {
+                                                                         MutableRouter {
 
             private static final Logger log = LoggerFactory.getLogger(MessageRouter.class);
 
@@ -100,7 +100,9 @@ public sealed interface MessageRouter {
         @SuppressWarnings("unchecked")
         private static <T extends Message> List<Consumer<T>> merge(Tuple2<Class<? extends T>, Consumer<? extends T>> tuple,
                                                                    List<Consumer<T>> oldValue) {
-            var list = oldValue == null ? new ArrayList<Consumer<T>>() : oldValue;
+            var list = oldValue == null
+                       ? new ArrayList<Consumer<T>>()
+                       : oldValue;
             list.add((Consumer<T>) tuple.last());
             return list;
         }

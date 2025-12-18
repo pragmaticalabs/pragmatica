@@ -4,7 +4,6 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.util.List;
@@ -26,7 +25,7 @@ public interface SliceStore {
     interface LoadedSlice {
         Artifact artifact();
 
-        Result<Slice> slice();
+        Slice slice();
     }
 
     Promise<Unit> unload(Artifact artifact);

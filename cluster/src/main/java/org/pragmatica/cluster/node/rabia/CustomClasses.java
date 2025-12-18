@@ -15,11 +15,11 @@ public interface CustomClasses {
 
     static void configure(Consumer<Class<?>> consumer) {
         concreteSubtypes(RabiaProtocolMessage.class)
-                        .forEach(consumer);
+                .forEach(consumer);
         concreteSubtypes(NetworkMessage.class)
-                        .forEach(consumer);
+                .forEach(consumer);
         concreteSubtypes(KVCommand.class)
-                        .forEach(consumer);
+                .forEach(consumer);
 
         consumer.accept(HashMap.class);
         consumer.accept(RabiaPersistence.SavedState.empty().getClass());

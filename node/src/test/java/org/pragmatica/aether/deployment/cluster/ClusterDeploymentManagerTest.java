@@ -139,9 +139,9 @@ class ClusterDeploymentManagerTest {
         sendBlueprintPut(artifact, 3);
 
         var allocatedNodes = clusterNode.appliedCommands.stream()
-            .map(cmd -> ((KVCommand.Put<AetherKey, AetherValue>) cmd).key())
-            .map(key -> ((SliceNodeKey) key).nodeId())
-            .toList();
+                                                        .map(cmd -> ((KVCommand.Put<AetherKey, AetherValue>) cmd).key())
+                                                        .map(key -> ((SliceNodeKey) key).nodeId())
+                                                        .toList();
 
         // Should allocate to all 3 nodes
         assertThat(allocatedNodes).containsExactlyInAnyOrder(self, node2, node3);

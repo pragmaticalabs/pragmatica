@@ -2,12 +2,15 @@
 
 ## Project Overview
 
-**Aether** (v0.2.0) is an AI-driven distributed runtime environment for Java that enables predictive scaling, intelligent orchestration, and seamless multi-cloud deployment without requiring changes to business logic.
+**Aether** (v0.2.0) is an AI-driven distributed runtime environment for Java that enables predictive scaling,
+intelligent orchestration, and seamless multi-cloud deployment without requiring changes to business logic.
 
 **See [docs/vision-and-goals.md](docs/vision-and-goals.md) for complete vision and design principles.**
 
 ### Key Features
-- **AI-Driven Management**: External AI learns patterns and makes topology decisions (predictive scaling, complex deployments)
+
+- **AI-Driven Management**: External AI learns patterns and makes topology decisions (predictive scaling, complex
+  deployments)
 - **Slice-based deployment**: Two types - Service slices (multiple entry points) and Lean slices (single use case)
 - **Distributed consensus**: Rabia protocol for cluster-wide state consistency
 - **Atomic inter-slice calls**: Reliable communication guaranteed by runtime
@@ -17,6 +20,7 @@
 ## Module Structure
 
 ### Core Modules
+
 - **slice-api/** - Slice interface definitions (`Slice`, `SliceMethod`, deprecated `EntryPoint`)
 - **slice/** - Slice management (`SliceStore`, `SliceState`, `Artifact` types, KV schema)
 - **node/** - Runtime node implementation (`NodeDeploymentManager`)
@@ -26,6 +30,7 @@
 - **mcp/** - Model Context Protocol server integration
 
 ### Module Dependencies
+
 ```
 slice-api (minimal dependencies)
     ↑
@@ -39,7 +44,9 @@ example-slice (depends on slice-api)
 ## Core Concepts
 
 ### Slices
+
 Deployable units implementing the `Slice` interface:
+
 ```java
 public interface Slice {
     Promise<Unit> start();
@@ -51,13 +58,17 @@ public interface Slice {
 **Two Types (unified management)**:
 
 #### Service Slices
+
 Traditional microservice-style components with multiple entry points.
+
 - Multiple `SliceMethod<?, ?>` entries
 - Suitable for CRUD operations, API gateways, data services
 - Example: User authentication service with login, logout, register methods
 
 #### Lean Slices
+
 Single-purpose components handling one use case or event type.
+
 - Single `SliceMethod<?, ?>` entry
 - Encapsulates complete business use case (DDD-style) or event handler
 - Written using JBCT patterns (see docs/jbct-coder.md)
@@ -66,6 +77,7 @@ Single-purpose components handling one use case or event type.
 **From runtime perspective**: Both types are identical - same lifecycle, same atomic communication, same management.
 
 **Lifecycle States**:
+
 ```
 LOAD → LOADING → LOADED → ACTIVATE → ACTIVATING → ACTIVE
          ↓                                ↓
@@ -77,19 +89,24 @@ LOAD → LOADING → LOADED → ACTIVATE → ACTIVATING → ACTIVE
 ```
 
 ### Artifacts
+
 Maven-style coordinates for slices:
+
 ```java
 // Format: groupId:artifactId:version[-qualifier]
 Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.2.0")
 ```
 
 **Components**:
+
 - `GroupId` - Organization/group identifier
 - `ArtifactId` - Slice identifier
 - `Version` - Semantic version with optional qualifier
 
 ### Blueprints
+
 Desired cluster configuration stored in consensus KV-Store. Created by:
+
 - Human operators via CLI/API
 - AI based on observed metrics and learned patterns
 
@@ -110,6 +127,7 @@ Desired cluster configuration stored in consensus KV-Store. Created by:
 **See [docs/metrics-and-control.md](docs/metrics-and-control.md) for complete specification.**
 
 Pluggable component making topology decisions. Three types:
+
 - **DecisionTreeController**: Deterministic rules, evaluated every 1 second
 - **SmallLLMController**: Local pattern learning, evaluated every 2-5 seconds
 - **LargeLLMController**: Cloud-based strategic planning, evaluated every 30-60 seconds
@@ -117,22 +135,26 @@ Pluggable component making topology decisions. Three types:
 Controllers can be **layered** for hybrid intelligence.
 
 **Controller Responsibilities**:
+
 - **Predictive Scaling**: Learn traffic patterns, scale BEFORE load increases
 - **Second-Level Scaling**: Start/stop compute nodes, choose environments
 - **Complex Deployments**: Rolling updates, canary, blue/green, multi-cloud migration
 
 **Controller Input**:
+
 - Current ClusterMetricsSnapshot
 - Historical metrics (2-hour sliding window)
 - Cluster events (node joins/leaves, slice lifecycle, etc.)
 - Current topology and blueprints
 
 **Controller Output**:
+
 - Blueprint changes (scale/deploy/remove slices)
 - Node actions (start/stop nodes, migrate slices)
 - Reasoning (for transparency)
 
 **Key Points**:
+
 - Only leader node runs controller
 - Controllers make strategic decisions (seconds to minutes), not tactical (milliseconds)
 - Controller updates desired state in KV-Store, runtime executes convergence
@@ -143,11 +165,13 @@ Controllers can be **layered** for hybrid intelligence.
 **See [docs/metrics-and-control.md](docs/metrics-and-control.md) for complete specification.**
 
 **Core Metrics** (minimal set):
+
 - **Node CPU Usage**: Per-node CPU utilization (0.0-1.0)
 - **Calls Per Entry Point**: Request count per entry point per cycle
 - **Total Call Duration**: Aggregate processing time per cycle
 
 **Collection Architecture**:
+
 ```
 Every 1 Second:
 1. MetricsCollector (all nodes) → push MetricsUpdate to leader
@@ -156,32 +180,39 @@ Every 1 Second:
 ```
 
 **Key Benefits**:
+
 - Zero KV-Store I/O (all via MessageRouter)
 - Fast leader failover (< 2 sec data loss)
 - All nodes have cluster-wide visibility
 - 2-hour sliding window for pattern detection
 
 ### Consensus KV-Store
+
 Single source of truth for **persistent** cluster state using structured keys.
 
 **Note**: Metrics do NOT flow through KV-Store (zero consensus I/O for metrics).
 
 **Key Schema**:
+
 - `blueprint/{artifact}` → Blueprint configuration
 - `slices/{nodeId}/{artifact}` → Slice state on specific node
 - `endpoints/{artifact}/{entryPointId}:{instance}` → Endpoint locations
 
 **Value Schema**:
+
 - `BlueprintValue(instanceCount)` - Desired instance count
 - `SliceNodeValue(state)` - Current slice state
 - `EndpointValue(nodeId)` - Endpoint location
 
-**Note**: No separate allocations key - ClusterDeploymentManager writes allocation decisions directly to `slices/{nodeId}/{artifact}` with LOAD state.
+**Note**: No separate allocations key - ClusterDeploymentManager writes allocation decisions directly to
+`slices/{nodeId}/{artifact}` with LOAD state.
 
 ## Architecture Components
 
 ### SliceStore
+
 Manages slice lifecycle on individual nodes:
+
 ```java
 public interface SliceStore {
     Promise<LoadedSlice> loadSlice(Artifact artifact);
@@ -192,19 +223,25 @@ public interface SliceStore {
 ```
 
 ### NodeDeploymentManager
-Watches KV-Store for slice state changes and coordinates with `SliceStore` to perform lifecycle operations on local node.
+
+Watches KV-Store for slice state changes and coordinates with `SliceStore` to perform lifecycle operations on local
+node.
 
 **Status**: Partially implemented (implementation commented out)
 
 ### ClusterDeploymentManager
+
 Leader-based cluster-wide orchestration (design complete, not implemented):
+
 - Blueprint monitoring
 - Allocation decisions (round-robin initially, writes directly to slice-node-keys)
 - Reconciliation on topology changes
 - Automatic rebalancing
 
 ### Rabia Consensus
+
 CFT (crash-fault-tolerant) leaderless consensus algorithm:
+
 - No persistent event log required
 - Batch-based command processing
 - Automatic state synchronization
@@ -215,7 +252,9 @@ CFT (crash-fault-tolerant) leaderless consensus algorithm:
 This project follows Pragmatica Lite Core patterns strictly:
 
 ### Four Return Kinds
+
 Every function returns exactly one of:
+
 - `T` - Synchronous, infallible
 - `Option<T>` - Synchronous, infallible, optional value
 - `Result<T>` - Synchronous, fallible
@@ -224,7 +263,9 @@ Every function returns exactly one of:
 **Never** `Promise<Result<T>>` - failures flow through Promise directly.
 
 ### Parse, Don't Validate
+
 Valid objects constructed only when validation succeeds:
+
 ```java
 public record Email(String value) {
     private static final Pattern EMAIL_PATTERN = Pattern.compile("^[a-z0-9+_.-]+@[a-z0-9.-]+$");
@@ -243,7 +284,9 @@ public record Email(String value) {
 **Examples in Aether**: `Artifact`, `GroupId`, `ArtifactId`, `Version`, `SliceState`, `MethodName`
 
 ### No Business Exceptions
+
 Business logic never throws exceptions. All failures flow through `Result` or `Promise` as typed `Cause`:
+
 ```java
 public sealed interface SliceError extends Cause {
     record LoadFailed(Artifact artifact, Throwable cause) implements SliceError {
@@ -256,7 +299,9 @@ public sealed interface SliceError extends Cause {
 ```
 
 ### Factory Naming Convention
+
 Always `TypeName.typeName(...)` (lowercase-first):
+
 ```java
 Artifact.artifact("org.example:slice:1.0.0")
 GroupId.groupId("org.example")
@@ -265,7 +310,9 @@ SliceState.sliceState("ACTIVE")
 ```
 
 ### Error Handling with Lift
+
 Use `Promise.lift()` and `Result.lift()` for exception-prone operations:
+
 ```java
 Promise.lift(
     SliceError.LoadFailed::cause,
@@ -274,6 +321,7 @@ Promise.lift(
 ```
 
 ### Single Pattern Per Function
+
 - **Leaf** - Single operation (business logic or adapter)
 - **Sequencer** - Linear chain of dependent steps
 - **Fork-Join** - Parallel independent operations
@@ -281,12 +329,16 @@ Promise.lift(
 - **Iteration** - Collection processing
 
 ### Adapter Leaves for I/O
-Strongly prefer adapter leaves for all I/O operations (database, HTTP, file system). This ensures framework independence.
+
+Strongly prefer adapter leaves for all I/O operations (database, HTTP, file system). This ensures framework
+independence.
 
 ## Coding Conventions
 
 ### Record-Based Implementation
+
 Use records for data carriers and implementations:
+
 ```java
 public interface RegisterUser {
     Promise<Response> execute(Request request);
@@ -306,12 +358,15 @@ public interface RegisterUser {
 ```
 
 ### Package Structure
+
 - Group by feature/use case, not by layer
 - Keep related types together
 - Use sealed interfaces for error hierarchies
 
 ### Method References Over Lambdas
+
 Prefer method references when lambda only calls a single method:
+
 ```java
 // Prefer
 .map(Artifact::asString)
@@ -323,6 +378,7 @@ Prefer method references when lambda only calls a single method:
 ```
 
 ### Immutability
+
 - All domain objects are immutable records
 - Use `List.of()`, `Map.of()`, `Set.of()` for collections
 - No mutable state in business logic
@@ -330,6 +386,7 @@ Prefer method references when lambda only calls a single method:
 ## Common Patterns in Aether
 
 ### Structured Keys Pattern
+
 ```java
 public sealed interface AetherKey extends StructuredKey {
     String asString();
@@ -344,7 +401,9 @@ public sealed interface AetherKey extends StructuredKey {
 ```
 
 ### State Machine Pattern
+
 Using sealed interfaces and enums for states:
+
 ```java
 public enum SliceState {
     LOADING(timeSpan(2).minutes()),
@@ -365,7 +424,9 @@ public enum SliceState {
 ```
 
 ### Message Router Pattern
+
 For decoupled component communication:
+
 ```java
 router.addRoute(ValuePut.class, this::onValuePut);
 router.addRoute(ValueRemove.class, this::onValueRemove);
@@ -375,43 +436,47 @@ router.addRoute(QuorumStateNotification.class, this::onQuorumStateChange);
 ## Development Status
 
 ### Completed ✅
+
 - Core slice lifecycle states and transitions
 - Artifact type system (GroupId, ArtifactId, Version)
 - KV-Store schema (AetherKey, AetherValue)
 - Rabia consensus implementation
 - Leader manager for deterministic leader selection
-- SliceStore interface definition
+- SliceStore interface and implementation
+- NodeDeploymentManager implementation
+- Slice class loading and isolation (SliceClassLoader)
+- DependencyResolver with cycle detection
+- Blueprint DSL parser
+- Endpoint registry
+- ClusterDeploymentManager (allocation, reconciliation, scale up/down)
 - Example slice implementation
 
-### In Progress 🔄
-- NodeDeploymentManager (designed, implementation commented out)
-- SliceStore implementation
-- Slice class loading and isolation
-
 ### Planned 📋
-- ClusterDeploymentManager implementation (with embedded allocation logic)
-- Blueprint management (CRUD operations)
-- Reconciliation engine
-- Endpoint registry
-- MCP server integration
+
 - CLI commands for deployment management
+- MCP server integration (low priority)
 
 ## Important Implementation Notes
 
 ### Slice Isolation
+
 Hybrid ClassLoader model:
+
 - Slices isolated from each other
 - Share Pragmatica framework classes
 - Balances security and performance
 
 ### Consensus Integration
+
 - All cluster state flows through KVStore
 - ValuePut/ValueRemove notifications drive state changes
 - Deterministic leader selection (first node in topology)
 - Automatic reconciliation on leader changes
 
 ### Promise Timeouts
+
 Timeouts should be as close to actual operations as possible:
+
 ```java
 // Good - timeout on actual operation
 sliceStore.loadSlice(artifact)
@@ -425,7 +490,9 @@ sliceStore.loadSlice(artifact)
 ```
 
 ### Error Categories
+
 Use sealed interfaces for domain-specific errors:
+
 - `SliceError` - Slice lifecycle failures
 - `RegistrationError` - User registration failures
 - `RepositoryError` - Data access failures
@@ -435,11 +502,13 @@ Use sealed interfaces for domain-specific errors:
 This project uses JUnit 5 and AssertJ for testing. Follow these established patterns when writing tests:
 
 ### Test Class Structure
+
 - Test classes should be package-private (no visibility modifier)
 - Use descriptive test method names with underscores: `method_scenario_expectation()`
 - Group related test methods logically
 
 ### Import Patterns
+
 ```java
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
@@ -449,7 +518,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 ### Promise<T> Testing Patterns
 
 #### Async Success Cases
+
 Use `.await()` to block, then test like Result:
+
 ```java
 @Test
 void loadSlice_succeeds_withValidArtifact() {
@@ -466,6 +537,7 @@ void loadSlice_succeeds_withValidArtifact() {
 ```
 
 #### Async Failure Cases
+
 ```java
 @Test
 void loadSlice_fails_whenArtifactNotFound() {
@@ -482,7 +554,9 @@ void loadSlice_fails_whenArtifactNotFound() {
 ```
 
 #### Testing with Stubs
+
 Use type declarations for stub dependencies:
+
 ```java
 @Test
 void execute_succeeds_forValidInput() {
@@ -505,7 +579,9 @@ void execute_succeeds_forValidInput() {
 ### Result<T> Testing Patterns
 
 #### Success Cases
+
 For successful Result operations, use `.onSuccess()` with lambda assertions:
+
 ```java
 @Test
 void parsing_with_valid_input() {
@@ -519,7 +595,9 @@ void parsing_with_valid_input() {
 ```
 
 #### Failure Cases
+
 For expected failures, use `.onSuccessRun(Assertions::fail)` followed by failure assertions:
+
 ```java
 @Test
 void parsing_rejects_invalid_format() {
@@ -530,7 +608,9 @@ void parsing_rejects_invalid_format() {
 ```
 
 #### Simple Success Validation
+
 For cases where you only need to verify success without checking details:
+
 ```java
 @Test
 void parsing_handles_simple_cases() {
@@ -542,7 +622,9 @@ void parsing_handles_simple_cases() {
 ### Complex Object Testing
 
 #### Multiple Component Validation
+
 Use `Result.all()` for complex object construction in tests:
+
 ```java
 @Test
 void complex_object_creation() {
@@ -557,7 +639,9 @@ void complex_object_creation() {
 ```
 
 #### Roundtrip Testing
+
 Always include roundtrip tests for parseable types:
+
 ```java
 @Test
 void parsing_roundtrip_consistency() {
@@ -573,18 +657,21 @@ void parsing_roundtrip_consistency() {
 ### Test Coverage Guidelines
 
 #### Success Path Testing
+
 - Valid input with all components
 - Valid input with optional components (qualifiers, etc.)
 - Edge cases (zeros, empty optional fields)
 - Complex but valid scenarios
 
-#### Failure Path Testing  
+#### Failure Path Testing
+
 - Invalid format strings
 - Invalid individual components
 - Edge case failures (negative numbers, etc.)
 - Empty/null inputs
 
 #### Utility Method Testing
+
 - String representation methods (`toString()`, `asString()`, `bareVersion()`)
 - Conversion methods between formats
 - Optional field handling
@@ -592,24 +679,30 @@ void parsing_roundtrip_consistency() {
 ### Error Assertion Patterns
 
 #### Detailed Error Messages
+
 When error messages are important, check them specifically:
+
 ```java
 .onFailure(cause -> assertThat(cause.message()).contains("Invalid version format"))
 ```
 
 #### Generic Error Validation
+
 When the specific error doesn't matter, just validate failure occurred:
+
 ```java
 .onFailure(cause -> assertThat(cause).isNotNull())
 ```
 
 ### Test Organization
+
 - Group related tests (valid cases, invalid cases, edge cases)
 - Use consistent naming patterns within test classes
 - Test both public API methods and core functionality
 - Include integration-style tests for complex interactions
 
 ### Method Reference Usage
+
 - Use `Assertions::fail` for method references in failure cases
 - Use `SomeType::methodName` for method references in mapping operations
 - Prefer method references over lambdas when the lambda only calls a single method
@@ -624,6 +717,7 @@ When the specific error doesn't matter, just validate failure occurred:
 ## Build and Test Commands
 
 ### Maven Commands
+
 - Build all modules: `./mvnw clean install`
 - Run all tests: `./mvnw test`
 - Run specific test class: `./mvnw test -Dtest=ClassName`
@@ -633,6 +727,7 @@ When the specific error doesn't matter, just validate failure occurred:
 - Package without tests: `./mvnw package -DskipTests`
 
 ### Module-Specific Commands
+
 ```bash
 # Test specific module
 cd slice && ../mvnw test
@@ -644,6 +739,7 @@ cd example-slice && ../mvnw test
 ## Quick Reference
 
 ### Key Files and Locations
+
 - **Slice interface**: `slice-api/src/main/java/org/pragmatica/aether/slice/Slice.java`
 - **SliceStore**: `slice/src/main/java/org/pragmatica/aether/slice/SliceStore.java`
 - **Artifact types**: `slice/src/main/java/org/pragmatica/aether/artifact/`
@@ -653,6 +749,7 @@ cd example-slice && ../mvnw test
 - **KVStore**: `cluster/src/main/java/org/pragmatica/cluster/state/kvstore/`
 
 ### Documentation
+
 - **Architecture**: `docs/architecture-overview.md` - Comprehensive architecture documentation
 - **High-level**: `docs/aether-high-level-overview.md` - Project overview and concepts
 - **Slice lifecycle**: `docs/slice-lifecycle.md` - Detailed lifecycle documentation
@@ -661,6 +758,7 @@ cd example-slice && ../mvnw test
 - **Rabia**: `cluster/README.md` - Consensus algorithm documentation
 
 ### Common Type Conversions
+
 ```java
 // Lift to higher types
 result.async()                    // Result<T> → Promise<T>
@@ -678,6 +776,7 @@ Result.unitResult()               // → Result<Unit>
 ```
 
 ### Naming Conventions Summary
+
 - **Factory methods**: `TypeName.typeName(...)` (lowercase-first)
 - **Test methods**: `methodName_outcome_condition`
 - **Error types**: Sealed interfaces extending `Cause`
@@ -687,6 +786,7 @@ Result.unitResult()               // → Result<Unit>
 ## Working with This Project
 
 When implementing new features:
+
 1. **Ask questions first** if requirements are unclear
 2. **Follow JBCT patterns** strictly (see `docs/jbct-coder.md`)
 3. **Write tests** following established patterns
@@ -697,6 +797,7 @@ When implementing new features:
 8. **Update tests** when changing existing code
 
 When reviewing code:
+
 - Check for `Promise<Result<T>>` anti-pattern
 - Verify factory naming convention
 - Ensure no business exceptions thrown

@@ -14,13 +14,13 @@ class DependencyCycleDetectorTest {
     void no_cycle_in_simple_chain() {
         // A -> B -> C
         var dependencies = Map.of(
-            "A", List.of("B"),
-            "B", List.of("C"),
-            "C", List.<String>of()
-        );
+                "A", List.of("B"),
+                "B", List.of("C"),
+                "C", List.<String>of()
+                                 );
 
         DependencyCycleDetector.checkForCycles(dependencies)
-            .onFailureRun(Assertions::fail);
+                               .onFailureRun(Assertions::fail);
     }
 
     @Test
@@ -28,14 +28,14 @@ class DependencyCycleDetectorTest {
         // A -> B -> D
         //   -> C -> D
         var dependencies = Map.of(
-            "A", List.of("B", "C"),
-            "B", List.of("D"),
-            "C", List.of("D"),
-            "D", List.<String>of()
-        );
+                "A", List.of("B", "C"),
+                "B", List.of("D"),
+                "C", List.of("D"),
+                "D", List.<String>of()
+                                 );
 
         DependencyCycleDetector.checkForCycles(dependencies)
-            .onFailureRun(Assertions::fail);
+                               .onFailureRun(Assertions::fail);
     }
 
     @Test
@@ -43,64 +43,64 @@ class DependencyCycleDetectorTest {
         // A -> B
         // C -> D
         var dependencies = Map.of(
-            "A", List.of("B"),
-            "B", List.<String>of(),
-            "C", List.of("D"),
-            "D", List.<String>of()
-        );
+                "A", List.of("B"),
+                "B", List.<String>of(),
+                "C", List.of("D"),
+                "D", List.<String>of()
+                                 );
 
         DependencyCycleDetector.checkForCycles(dependencies)
-            .onFailureRun(Assertions::fail);
+                               .onFailureRun(Assertions::fail);
     }
 
     @Test
     void detects_self_cycle() {
         // A -> A
         var dependencies = Map.of(
-            "A", List.of("A")
-        );
+                "A", List.of("A")
+                                 );
 
         DependencyCycleDetector.checkForCycles(dependencies)
-            .onSuccessRun(() -> Assertions.fail("Should detect self-cycle"))
-            .onFailure(cause -> {
-                assertThat(cause.message()).contains("Circular dependency");
-                assertThat(cause.message()).contains("A -> A");
-            });
+                               .onSuccessRun(() -> Assertions.fail("Should detect self-cycle"))
+                               .onFailure(cause -> {
+                                   assertThat(cause.message()).contains("Circular dependency");
+                                   assertThat(cause.message()).contains("A -> A");
+                               });
     }
 
     @Test
     void detects_simple_cycle() {
         // A -> B -> A
         var dependencies = Map.of(
-            "A", List.of("B"),
-            "B", List.of("A")
-        );
+                "A", List.of("B"),
+                "B", List.of("A")
+                                 );
 
         DependencyCycleDetector.checkForCycles(dependencies)
-            .onSuccessRun(() -> Assertions.fail("Should detect cycle"))
-            .onFailure(cause -> {
-                assertThat(cause.message()).contains("Circular dependency");
-                // Cycle can be reported as A -> B -> A or B -> A -> B
-                assertThat(cause.message()).matches(".*([AB] -> [AB] -> [AB]).*");
-            });
+                               .onSuccessRun(() -> Assertions.fail("Should detect cycle"))
+                               .onFailure(cause -> {
+                                   assertThat(cause.message()).contains("Circular dependency");
+                                   // Cycle can be reported as A -> B -> A or B -> A -> B
+                                   assertThat(cause.message()).matches(".*([AB] -> [AB] -> [AB]).*");
+                               });
     }
 
     @Test
     void detects_longer_cycle() {
         // A -> B -> C -> D -> B
         var dependencies = Map.of(
-            "A", List.of("B"),
-            "B", List.of("C"),
-            "C", List.of("D"),
-            "D", List.of("B")
-        );
+                "A", List.of("B"),
+                "B", List.of("C"),
+                "C", List.of("D"),
+                "D", List.of("B")
+                                 );
 
         DependencyCycleDetector.checkForCycles(dependencies)
-            .onSuccessRun(() -> Assertions.fail("Should detect cycle"))
-            .onFailure(cause -> {
-                assertThat(cause.message()).contains("Circular dependency");
-                assertThat(cause.message()).contains(" -> ");
-            });
+                               .onSuccessRun(() -> Assertions.fail("Should detect cycle"))
+                               .onFailure(cause -> {
+                                   assertThat(cause.message()).contains("Circular dependency");
+                                   assertThat(cause.message()).contains(" -> ");
+                               });
     }
 
     @Test
@@ -109,20 +109,20 @@ class DependencyCycleDetectorTest {
         //   -> D -> E -> C (cycle: E -> C -> D -> E)
         // F -> G
         var dependencies = Map.of(
-            "A", List.of("B", "D"),
-            "B", List.of("C"),
-            "C", List.of("D"),
-            "D", List.of("E"),
-            "E", List.of("C"),
-            "F", List.of("G"),
-            "G", List.<String>of()
-        );
+                "A", List.of("B", "D"),
+                "B", List.of("C"),
+                "C", List.of("D"),
+                "D", List.of("E"),
+                "E", List.of("C"),
+                "F", List.of("G"),
+                "G", List.<String>of()
+                                 );
 
         DependencyCycleDetector.checkForCycles(dependencies)
-            .onSuccessRun(() -> Assertions.fail("Should detect cycle"))
-            .onFailure(cause -> {
-                assertThat(cause.message()).contains("Circular dependency");
-            });
+                               .onSuccessRun(() -> Assertions.fail("Should detect cycle"))
+                               .onFailure(cause -> {
+                                   assertThat(cause.message()).contains("Circular dependency");
+                               });
     }
 
     @Test
@@ -130,17 +130,17 @@ class DependencyCycleDetectorTest {
         var dependencies = Map.<String, List<String>>of();
 
         DependencyCycleDetector.checkForCycles(dependencies)
-            .onFailureRun(Assertions::fail);
+                               .onFailureRun(Assertions::fail);
     }
 
     @Test
     void single_node_no_deps_has_no_cycles() {
         var dependencies = Map.of(
-            "A", List.<String>of()
-        );
+                "A", List.<String>of()
+                                 );
 
         DependencyCycleDetector.checkForCycles(dependencies)
-            .onFailureRun(Assertions::fail);
+                               .onFailureRun(Assertions::fail);
     }
 
     @Test
@@ -148,17 +148,17 @@ class DependencyCycleDetectorTest {
         // A -> B (B not in map, treated as no dependencies)
         // C -> D -> C
         var dependencies = Map.of(
-            "A", List.of("B"),
-            "C", List.of("D"),
-            "D", List.of("C")
-        );
+                "A", List.of("B"),
+                "C", List.of("D"),
+                "D", List.of("C")
+                                 );
 
         DependencyCycleDetector.checkForCycles(dependencies)
-            .onSuccessRun(() -> Assertions.fail("Should detect cycle"))
-            .onFailure(cause -> {
-                assertThat(cause.message()).contains("Circular dependency");
-                assertThat(cause.message()).contains("C");
-                assertThat(cause.message()).contains("D");
-            });
+                               .onSuccessRun(() -> Assertions.fail("Should detect cycle"))
+                               .onFailure(cause -> {
+                                   assertThat(cause.message()).contains("Circular dependency");
+                                   assertThat(cause.message()).contains("C");
+                                   assertThat(cause.message()).contains("D");
+                               });
     }
 }

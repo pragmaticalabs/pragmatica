@@ -61,8 +61,8 @@ public interface RabiaPersistence<C extends Command> {
                     }
 
                     return Objects.deepEquals(snapshot(), snapshot1)
-                            && Objects.equals(lastCommittedPhase(), committedPhase)
-                            && Objects.equals(pendingBatches(), batches);
+                           && Objects.equals(lastCommittedPhase(), committedPhase)
+                           && Objects.equals(pendingBatches(), batches);
                 }
 
                 @Override

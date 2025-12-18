@@ -46,7 +46,7 @@ public interface TcpTopologyManager extends TopologyManager {
     static TcpTopologyManager tcpTopologyManager(TopologyConfig config, MessageRouter router) {
         record Manager(Map<NodeId, NodeInfo> nodesById, Map<NodeAddress, NodeId> nodeIdsByAddress,
                        MessageRouter router, TopologyConfig config, AtomicBoolean active) implements
-                TcpTopologyManager {
+                                                                                          TcpTopologyManager {
 
             private static final Logger log = LoggerFactory.getLogger(TcpTopologyManager.class);
 
@@ -143,8 +143,8 @@ public interface TcpTopologyManager extends TopologyManager {
             @Override
             public Option<NodeId> reverseLookup(SocketAddress socketAddress) {
                 return (socketAddress instanceof InetSocketAddress inet)
-                        ? Option.option(nodeIdsByAddress.get(NodeAddress.nodeAddress(inet)))
-                        : Option.empty();
+                       ? Option.option(nodeIdsByAddress.get(NodeAddress.nodeAddress(inet)))
+                       : Option.empty();
             }
 
             @Override

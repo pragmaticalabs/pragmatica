@@ -1,10 +1,10 @@
 package org.pragmatica.aether.slice;
 
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import org.junit.jupiter.api.Assertions;
-
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class SliceStateTest {
@@ -12,16 +12,16 @@ class SliceStateTest {
     @Test
     void transitional_states_have_timeouts() {
         assertThat(SliceState.LOADING.hasTimeout()).isTrue();
-        assertThat(SliceState.LOADING.timeout()).isEqualTo(timeSpan(2).minutes());
+        assertThat(SliceState.LOADING.timeout()).isEqualTo(some(timeSpan(2).minutes()));
 
         assertThat(SliceState.ACTIVATING.hasTimeout()).isTrue();
-        assertThat(SliceState.ACTIVATING.timeout()).isEqualTo(timeSpan(1).minutes());
+        assertThat(SliceState.ACTIVATING.timeout()).isEqualTo(some(timeSpan(1).minutes()));
 
         assertThat(SliceState.DEACTIVATING.hasTimeout()).isTrue();
-        assertThat(SliceState.DEACTIVATING.timeout()).isEqualTo(timeSpan(30).seconds());
+        assertThat(SliceState.DEACTIVATING.timeout()).isEqualTo(some(timeSpan(30).seconds()));
 
         assertThat(SliceState.UNLOADING.hasTimeout()).isTrue();
-        assertThat(SliceState.UNLOADING.timeout()).isEqualTo(timeSpan(2).minutes());
+        assertThat(SliceState.UNLOADING.timeout()).isEqualTo(some(timeSpan(2).minutes()));
     }
 
     @Test
@@ -92,8 +92,9 @@ class SliceStateTest {
         assertThat(SliceState.UNLOADING.validTransitions()).isEmpty();
 
         SliceState.UNLOADING.nextState()
-            .onSuccessRun(() -> Assertions.fail("Should fail for terminal state"))
-            .onFailure(cause -> assertThat(cause.message()).contains("Cannot transition from UNLOADING terminal state"));
+                            .onSuccessRun(() -> Assertions.fail("Should fail for terminal state"))
+                            .onFailure(cause -> assertThat(cause.message()).contains(
+                                    "Cannot transition from UNLOADING terminal state"));
     }
 
     @Test

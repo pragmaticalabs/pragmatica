@@ -15,7 +15,9 @@ public class Handler extends SimpleChannelInboundHandler<Message.Wired> {
     private final Consumer<Channel> peerDisconnected;
     private final Consumer<Message.Wired> messageHandler;
 
-    public Handler(Consumer<Channel> peerConnected, Consumer<Channel> peerDisconnected, Consumer<Message.Wired> messageHandler) {
+    public Handler(Consumer<Channel> peerConnected,
+                   Consumer<Channel> peerDisconnected,
+                   Consumer<Message.Wired> messageHandler) {
         this.peerConnected = peerConnected;
         this.peerDisconnected = peerDisconnected;
         this.messageHandler = messageHandler;
@@ -24,7 +26,7 @@ public class Handler extends SimpleChannelInboundHandler<Message.Wired> {
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, Message.Wired msg) {
         log.trace("Received message: {}", msg);
-        
+
         try {
             messageHandler.accept(msg);
         } catch (Exception e) {

@@ -27,6 +27,7 @@ public interface SerializerFactoryProvider {
      * - Configure type-specific serialization strategies
      *
      * @param typeTokens All TypeTokens from slice method parameters and return types
+     *
      * @return A SerializerFactory instance for this slice
      */
     SerializerFactory createFactory(List<TypeToken<?>> typeTokens);

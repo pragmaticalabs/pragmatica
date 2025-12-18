@@ -3,14 +3,17 @@
 Although main focus of this document is the Slice lifecycle, it inevitably touches several other complonents.
 
 ## Glossary
+
 - Consensus Key-Value Store (or just KV-store) - underlying state machine for cluster consensus protocol.
 - Artifact - the loadable Slice binary
 - Repository - external artifact repository. Implied some kind of Maven-compatible repository.
 - SliceStore - local Slice storage
 - EndpointRegistry - registry with all active endpoints (also handles endpoint invocation)
-- NodeDeploymentManager - synchronization component, which triggers necessary actions to make actual state of slices match desired state as it is described in the consensus KV store.
+- NodeDeploymentManager - synchronization component, which triggers necessary actions to make actual state of slices
+  match desired state as it is described in the consensus KV store.
 
 ## High Level Life Cycle
+
 <details>
 @startuml sliceStates
 
@@ -35,7 +38,7 @@ UNLOADING --> [*] : unloadingDone
 
 </details>
 
-## Sequence Diagram 
+## Sequence Diagram
 
 <details>
 @startuml interaction

@@ -27,7 +27,7 @@
         <junit.version>5.13.4</junit.version>
         <assertj-core.version>3.26.3</assertj-core.version>
         <mockito.version>5.14.2</mockito.version>
-        <pragmatica.version>0.8.3</pragmatica.version>
+        <pragmatica.version>0.8.4</pragmatica.version>
         <awaitility.version>4.2.1</awaitility.version>
         <tinylog.version>2.7.0</tinylog.version>
         <netty.version>4.2.0.Final</netty.version>

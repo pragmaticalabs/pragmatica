@@ -20,7 +20,7 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
         </dependency>
-        
+
         <!-- Test dependencies -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

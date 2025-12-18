@@ -8,7 +8,6 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.message.MessageRouter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -92,7 +91,8 @@ public class NominalOperationIT {
                 int checkpointIndex = end - 1;
                 await().atMost(Duration.ofSeconds(30))
                        .pollInterval(Duration.ofMillis(100))
-                       .until(() -> cluster.allNodesHaveValue(key("key-" + checkpointIndex), "value-" + checkpointIndex));
+                       .until(() -> cluster.allNodesHaveValue(key("key-" + checkpointIndex),
+                                                              "value-" + checkpointIndex));
 
                 // Verify all previous keys exist
                 for (int k = 0; k < end; k += 1000) {

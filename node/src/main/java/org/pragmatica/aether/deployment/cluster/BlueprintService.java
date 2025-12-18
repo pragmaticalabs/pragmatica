@@ -30,6 +30,7 @@ public interface BlueprintService {
      * 3. Store ExpandedBlueprint in KV-Store
      *
      * @param dsl Blueprint DSL definition
+     *
      * @return ExpandedBlueprint after successful publication
      */
     Promise<ExpandedBlueprint> publish(String dsl);
@@ -38,6 +39,7 @@ public interface BlueprintService {
      * Retrieve an existing blueprint by ID.
      *
      * @param id BlueprintId to look up
+     *
      * @return Option.some(ExpandedBlueprint) if exists, Option.none() otherwise
      */
     Option<ExpandedBlueprint> get(BlueprintId id);
@@ -55,6 +57,7 @@ public interface BlueprintService {
      * Idempotent: deleting non-existing blueprint succeeds with Unit.
      *
      * @param id BlueprintId to delete
+     *
      * @return Promise of Unit on success
      */
     Promise<Unit> delete(BlueprintId id);

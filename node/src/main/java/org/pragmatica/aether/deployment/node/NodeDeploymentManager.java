@@ -58,19 +58,19 @@ public interface NodeDeploymentManager {
 
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
             private static final Fn1<Cause, Class<?>> UNEXPECTED_VALUE_TYPE =
-                Causes.forValue("Unexpected value type for slice-node key: {}");
+                    Causes.forValue("Unexpected value type for slice-node key: {}");
             private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED =
-                Causes.forValue("Failed to cleanup slice {} during abrupt removal");
+                    Causes.forValue("Failed to cleanup slice {} during abrupt removal");
             private static final Fn1<Cause, SliceNodeKey> STATE_UPDATE_FAILED =
-                Causes.forValue("Failed to update slice state for {}");
+                    Causes.forValue("Failed to update slice state for {}");
             private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED =
-                Causes.forValue("Failed to unload slice {}");
+                    Causes.forValue("Failed to unload slice {}");
 
             public void whenOurKeyMatches(AetherKey key, Consumer<SliceNodeKey> action) {
                 switch (key) {
-                    case SliceNodeKey sliceKey when sliceKey.isForNode(self) ->
-                        action.accept(sliceKey);
-                    default -> {}
+                    case SliceNodeKey sliceKey when sliceKey.isForNode(self) -> action.accept(sliceKey);
+                    default -> {
+                    }
                 }
             }
 
@@ -118,8 +118,8 @@ public interface NodeDeploymentManager {
 
             private void forceCleanupSlice(SliceNodeKey sliceKey) {
                 sliceStore.deactivateSlice(sliceKey.artifact())
-                    .flatMap(_ -> sliceStore.unloadSlice(sliceKey.artifact()))
-                    .onFailure(cause -> logCleanupFailure(sliceKey, cause));
+                          .flatMap(_ -> sliceStore.unloadSlice(sliceKey.artifact()))
+                          .onFailure(cause -> logCleanupFailure(sliceKey, cause));
             }
 
             private void logCleanupFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -129,27 +129,31 @@ public interface NodeDeploymentManager {
             private void processStateTransition(SliceNodeKey sliceKey, SliceState state) {
                 switch (state) {
                     case LOAD -> handleLoading(sliceKey);
-                    case LOADING -> {} // Transitional state, no action
+                    case LOADING -> {
+                    } // Transitional state, no action
                     case LOADED -> handleLoaded(sliceKey);
                     case ACTIVATE -> handleActivating(sliceKey);
-                    case ACTIVATING -> {} // Transitional state, no action
+                    case ACTIVATING -> {
+                    } // Transitional state, no action
                     case ACTIVE -> handleActive(sliceKey);
                     case DEACTIVATE -> handleDeactivating(sliceKey);
-                    case DEACTIVATING -> {} // Transitional state, no action
+                    case DEACTIVATING -> {
+                    } // Transitional state, no action
                     case FAILED -> handleFailed(sliceKey);
                     case UNLOAD -> handleUnloading(sliceKey);
-                    case UNLOADING -> {} // Transitional state, no action
+                    case UNLOADING -> {
+                    } // Transitional state, no action
                 }
             }
 
             private void handleLoading(SliceNodeKey sliceKey) {
                 executeWithStateTransition(
-                    sliceKey,
-                    SliceState.LOADING,
-                    sliceStore.loadSlice(sliceKey.artifact()),
-                    SliceState.LOADED,
-                    SliceState.FAILED
-                );
+                        sliceKey,
+                        SliceState.LOADING,
+                        sliceStore.loadSlice(sliceKey.artifact()),
+                        SliceState.LOADED,
+                        SliceState.FAILED
+                                          );
             }
 
             private void handleLoaded(SliceNodeKey sliceKey) {
@@ -160,12 +164,12 @@ public interface NodeDeploymentManager {
 
             private void handleActivating(SliceNodeKey sliceKey) {
                 executeWithStateTransition(
-                    sliceKey,
-                    SliceState.ACTIVATING,
-                    sliceStore.activateSlice(sliceKey.artifact()),
-                    SliceState.ACTIVE,
-                    SliceState.FAILED
-                );
+                        sliceKey,
+                        SliceState.ACTIVATING,
+                        sliceStore.activateSlice(sliceKey.artifact()),
+                        SliceState.ACTIVE,
+                        SliceState.FAILED
+                                          );
             }
 
             private void handleActive(SliceNodeKey sliceKey) {
@@ -176,12 +180,12 @@ public interface NodeDeploymentManager {
 
             private void handleDeactivating(SliceNodeKey sliceKey) {
                 executeWithStateTransition(
-                    sliceKey,
-                    SliceState.DEACTIVATING,
-                    sliceStore.deactivateSlice(sliceKey.artifact()),
-                    SliceState.LOADED,
-                    SliceState.FAILED
-                );
+                        sliceKey,
+                        SliceState.DEACTIVATING,
+                        sliceStore.deactivateSlice(sliceKey.artifact()),
+                        SliceState.LOADED,
+                        SliceState.FAILED
+                                          );
             }
 
             private void handleFailed(SliceNodeKey sliceKey) {
@@ -196,29 +200,29 @@ public interface NodeDeploymentManager {
                 //  This may result in incorrect handling of subsequent operations as they will
                 //  be executed only when original operation is completed.
                 configuration.timeoutFor(SliceState.UNLOADING)
-                    .onSuccess(timeout ->
-                        sliceStore.unloadSlice(sliceKey.artifact())
-                            .timeout(timeout)
-                            .onSuccess(_ -> removeFromDeployments(sliceKey))
-                            .onFailure(cause -> handleUnloadFailure(sliceKey, cause))
-                    )
-                    .onFailure(cause -> handleUnloadFailure(sliceKey, cause));
+                             .onSuccess(timeout ->
+                                                sliceStore.unloadSlice(sliceKey.artifact())
+                                                          .timeout(timeout)
+                                                          .onSuccess(_ -> removeFromDeployments(sliceKey))
+                                                          .onFailure(cause -> handleUnloadFailure(sliceKey, cause))
+                                       )
+                             .onFailure(cause -> handleUnloadFailure(sliceKey, cause));
             }
 
             private void executeWithStateTransition(
-                SliceNodeKey sliceKey,
-                SliceState currentState,
-                Promise<?> operation,
-                SliceState successState,
-                SliceState failureState
-            ) {
+                    SliceNodeKey sliceKey,
+                    SliceState currentState,
+                    Promise<?> operation,
+                    SliceState successState,
+                    SliceState failureState
+                                                   ) {
                 configuration.timeoutFor(currentState)
-                    .onSuccess(timeout ->
-                        operation.timeout(timeout)
-                            .onSuccess(_ -> transitionTo(sliceKey, successState))
-                            .onFailure(_ -> transitionTo(sliceKey, failureState))
-                    )
-                    .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
+                             .onSuccess(timeout ->
+                                                operation.timeout(timeout)
+                                                         .onSuccess(_ -> transitionTo(sliceKey, successState))
+                                                         .onFailure(_ -> transitionTo(sliceKey, failureState))
+                                       )
+                             .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
             }
 
             private void transitionTo(SliceNodeKey sliceKey, SliceState newState) {
@@ -240,7 +244,7 @@ public interface NodeDeploymentManager {
 
                 // Submit command to cluster for consensus
                 cluster.apply(List.of(command))
-                    .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
+                       .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
             }
 
             private void logStateUpdateFailure(SliceNodeKey sliceKey, Cause cause) {
@@ -287,14 +291,13 @@ public interface NodeDeploymentManager {
             @Override
             public void onQuorumStateChange(QuorumStateNotification quorumStateNotification) {
                 switch (quorumStateNotification) {
-                    case ESTABLISHED ->
-                            state().set(new NodeDeploymentState.ActiveNodeDeploymentState(
-                                    self(),
-                                    sliceStore(),
-                                    configuration(),
-                                    cluster(),
-                                    new ConcurrentHashMap<>()
-                            ));
+                    case ESTABLISHED -> state().set(new NodeDeploymentState.ActiveNodeDeploymentState(
+                            self(),
+                            sliceStore(),
+                            configuration(),
+                            cluster(),
+                            new ConcurrentHashMap<>()
+                    ));
                     case DISAPPEARED -> {
                         // Clean up any pending operations before going dormant
                         // Individual Promise timeouts will handle their own cleanup

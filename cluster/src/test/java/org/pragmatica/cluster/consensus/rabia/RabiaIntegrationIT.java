@@ -110,8 +110,8 @@ class RabiaIntegrationIT {
                   .until(() -> {
                       var mem = c.stores().get(node6).snapshot();
                       return "1".equals(mem.get(key("a")))
-                              && "2".equals(mem.get(key("b")))
-                              && "3".equals(mem.get(key("c")));
+                             && "2".equals(mem.get(key("b")))
+                             && "3".equals(mem.get(key("c")));
                   });
 
         // now nodes 4,5,6 form a quorum of 3: put e->5

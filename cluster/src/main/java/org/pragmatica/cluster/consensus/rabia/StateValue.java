@@ -4,10 +4,10 @@ package org.pragmatica.cluster.consensus.rabia;
 public enum StateValue {
     /// Negative vote (no agreement).
     V0,
-    
+
     /// Positive vote (agreement).
     V1,
-    
+
     /// Uncertain/question (needs coin flip).
     VQUESTION;
 }

@@ -124,7 +124,8 @@ public class TestCluster {
                 case Synchronous.VoteRound1 voteRnd1 -> engine.processVoteRound1(voteRnd1);
                 case Synchronous.VoteRound2 voteRnd2 -> engine.processVoteRound2(voteRnd2);
                 case Synchronous.Decision<?> decision -> engine.processDecision((Synchronous.Decision<C>) decision);
-                case Synchronous.SyncResponse<?> syncResponse -> engine.processSyncResponse((Synchronous.SyncResponse<C>) syncResponse);
+                case Synchronous.SyncResponse<?> syncResponse ->
+                        engine.processSyncResponse((Synchronous.SyncResponse<C>) syncResponse);
                 case Asynchronous.SyncRequest syncRequest -> engine.handleSyncRequest(syncRequest);
                 case Asynchronous.NewBatch<?> newBatch -> engine.handleNewBatch(newBatch);
             }

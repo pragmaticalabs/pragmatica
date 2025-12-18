@@ -35,9 +35,11 @@ public record RouteTarget(String sliceId, String methodName, List<String> params
         var methodName = methodPart.substring(0, parenIndex);
         var paramsStr = methodPart.substring(parenIndex + 1, methodPart.length() - 1);
 
-        List<String> params = paramsStr.isEmpty() ? List.of() : Arrays.stream(paramsStr.split(","))
-                                                                      .map(String::trim)
-                                                                      .toList();
+        List<String> params = paramsStr.isEmpty()
+                              ? List.of()
+                              : Arrays.stream(paramsStr.split(","))
+                                      .map(String::trim)
+                                      .toList();
 
         if (!sliceId.matches(SLICE_ID_PATTERN.pattern())) {
             return INVALID_SLICE_ID.apply(sliceId).result();

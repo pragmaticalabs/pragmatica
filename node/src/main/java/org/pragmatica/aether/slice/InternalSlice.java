@@ -29,19 +29,19 @@ import java.util.Map;
  * 5. Response serialization
  */
 public record InternalSlice(
-    Artifact artifact,
-    Slice slice,
-    Map<MethodName, InternalMethod> methodMap,
-    SerializerFactory serializerFactory
+        Artifact artifact,
+        Slice slice,
+        Map<MethodName, InternalMethod> methodMap,
+        SerializerFactory serializerFactory
 ) {
 
     /**
      * Internal method descriptor containing type information for serialization.
      */
     public record InternalMethod(
-        SliceMethod<?, ?> method,
-        TypeToken<?> parameterType,
-        TypeToken<?> returnType
+            SliceMethod<?, ?> method,
+            TypeToken<?> parameterType,
+            TypeToken<?> returnType
     ) {}
 
     /**
@@ -59,37 +59,43 @@ public record InternalSlice(
      *
      * @param methodName The name of the method to invoke
      * @param input      The serialized input parameter
+     *
      * @return Promise resolving to serialized response
      */
     public Promise<ByteBuf> call(MethodName methodName, ByteBuf input) {
         return lookupMethod(methodName)
-            .async()
-            .flatMap(internalMethod ->
-                acquireSerializationPair()
-                    .flatMap(pair ->
-                        deserializeInput(pair.deserializer(), input, internalMethod.parameterType())
-                            .flatMap(parameter ->
-                                invokeMethod(internalMethod.method(), parameter)
-                                    .flatMap(response ->
-                                        serializeResponse(pair.serializer(), response)
-                                    )
-                            )
-                    )
-            );
+                .async()
+                .flatMap(internalMethod ->
+                                 acquireSerializationPair()
+                                         .flatMap(pair ->
+                                                          deserializeInput(pair.deserializer(),
+                                                                           input,
+                                                                           internalMethod.parameterType())
+                                                                  .flatMap(parameter ->
+                                                                                   invokeMethod(internalMethod.method(),
+                                                                                                parameter)
+                                                                                           .flatMap(response ->
+                                                                                                            serializeResponse(
+                                                                                                                    pair.serializer(),
+                                                                                                                    response)
+                                                                                                   )
+                                                                          )
+                                                 )
+                        );
     }
 
     private Result<InternalMethod> lookupMethod(MethodName methodName) {
         var method = methodMap.get(methodName);
         return method != null
-            ? Result.success(method)
-            : METHOD_NOT_FOUND.apply(methodName).result();
+               ? Result.success(method)
+               : METHOD_NOT_FOUND.apply(methodName).result();
     }
 
     private Promise<SerializationPair> acquireSerializationPair() {
         return Promise.all(
-            serializerFactory.serializer(),
-            serializerFactory.deserializer()
-        ).map(SerializationPair::new);
+                serializerFactory.serializer(),
+                serializerFactory.deserializer()
+                          ).map(SerializationPair::new);
     }
 
     private record SerializationPair(Serializer serializer, Deserializer deserializer) {}
@@ -97,31 +103,31 @@ public record InternalSlice(
     @SuppressWarnings("unchecked")
     private <T> Promise<T> deserializeInput(Deserializer deserializer, ByteBuf input, TypeToken<T> typeToken) {
         return Promise.lift(
-            Causes::fromThrowable,
-            () -> (T) deserializer.read(input)
-        );
+                Causes::fromThrowable,
+                () -> (T) deserializer.read(input)
+                           );
     }
 
     @SuppressWarnings("unchecked")
     private <T, R> Promise<R> invokeMethod(SliceMethod<?, ?> method, T parameter) {
         return Promise.lift(
-            Causes::fromThrowable,
-            () -> ((SliceMethod<R, T>) method).apply(parameter)
-        ).flatMap(promise -> promise);
+                Causes::fromThrowable,
+                () -> ((SliceMethod<R, T>) method).apply(parameter)
+                           ).flatMap(promise -> promise);
     }
 
     private <R> Promise<ByteBuf> serializeResponse(Serializer serializer, R response) {
         return Promise.lift(
-            Causes::fromThrowable,
-            () -> {
-                ByteBuf output = Unpooled.buffer();
-                serializer.write(output, response);
-                return output;
-            }
-        );
+                Causes::fromThrowable,
+                () -> {
+                    ByteBuf output = Unpooled.buffer();
+                    serializer.write(output, response);
+                    return output;
+                }
+                           );
     }
 
     // Error constants
     private static final Fn1<Cause, MethodName> METHOD_NOT_FOUND =
-        Causes.forValue("Method not found: {0}");
+            Causes.forValue("Method not found: {0}");
 }

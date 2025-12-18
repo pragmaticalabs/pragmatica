@@ -69,7 +69,7 @@ public class MessageSemanticsIT {
             var key = key("duplicate-" + i);
             var expectedValue = "value-" + i;
             assertTrue(cluster.allNodesHaveValue(key, expectedValue),
-                      "All nodes should have key " + key + " with value " + expectedValue);
+                       "All nodes should have key " + key + " with value " + expectedValue);
         }
 
         // Disable message duplication
@@ -91,9 +91,9 @@ public class MessageSemanticsIT {
         // We can't directly control message order in the test framework,
         // but we can simulate high network latency which increases the chance
         // of out-of-order delivery
-        cluster.network().getFaultInjector().setNodeFault(targetNode, 
-                                                         LocalNetwork.FaultType.MESSAGE_DELAY, 
-                                                         true);
+        cluster.network().getFaultInjector().setNodeFault(targetNode,
+                                                          LocalNetwork.FaultType.MESSAGE_DELAY,
+                                                          true);
         cluster.network().getFaultInjector().messageDelay(TimeSpan.timeSpan(50).millis());
 
         // Use a different node as the client
@@ -107,12 +107,12 @@ public class MessageSemanticsIT {
         await().atMost(TIMEOUT)
                .pollInterval(1, TimeUnit.SECONDS)
                .until(() -> cluster.allNodesHaveValue(key("order-" + (COMMAND_COUNT - 1)),
-                                                     "value-" + (COMMAND_COUNT - 1)));
+                                                      "value-" + (COMMAND_COUNT - 1)));
 
         // Disable message delay
-        cluster.network().getFaultInjector().setNodeFault(targetNode, 
-                                                         LocalNetwork.FaultType.MESSAGE_DELAY, 
-                                                         false);
+        cluster.network().getFaultInjector().setNodeFault(targetNode,
+                                                          LocalNetwork.FaultType.MESSAGE_DELAY,
+                                                          false);
     }
 
     /**
@@ -142,7 +142,7 @@ public class MessageSemanticsIT {
         await().atMost(TIMEOUT)
                .pollInterval(1, TimeUnit.SECONDS)
                .until(() -> cluster.allNodesHaveValue(key("loss-" + (COMMAND_COUNT - 1)),
-                                                     "value-" + (COMMAND_COUNT - 1)));
+                                                      "value-" + (COMMAND_COUNT - 1)));
 
         // Calculate throughput with message loss
         long endTime = System.currentTimeMillis();
@@ -162,7 +162,7 @@ public class MessageSemanticsIT {
         await().atMost(TIMEOUT)
                .pollInterval(1, TimeUnit.SECONDS)
                .until(() -> cluster.allNodesHaveValue(key("noloss-" + (COMMAND_COUNT - 1)),
-                                                     "value-" + (COMMAND_COUNT - 1)));
+                                                      "value-" + (COMMAND_COUNT - 1)));
 
         endTime = System.currentTimeMillis();
         durationSeconds = (endTime - startTime) / 1000.0;
@@ -222,13 +222,13 @@ public class MessageSemanticsIT {
             var initialKey = key("initial-" + i);
             var advanceKey = key("advance-" + i);
             var finalKey = key("final-" + i);
-            
+
             assertTrue(cluster.allNodesHaveValue(initialKey, "value-" + i),
-                      "All nodes should have initial key " + initialKey);
+                       "All nodes should have initial key " + initialKey);
             assertTrue(cluster.allNodesHaveValue(advanceKey, "value-" + i),
-                      "All nodes should have advance key " + advanceKey);
+                       "All nodes should have advance key " + advanceKey);
             assertTrue(cluster.allNodesHaveValue(finalKey, "value-" + i),
-                      "All nodes should have final key " + finalKey);
+                       "All nodes should have final key " + finalKey);
         }
     }
 
@@ -244,11 +244,11 @@ public class MessageSemanticsIT {
     private void submitCommands(NodeId nodeId, List<KVCommand<StringKey>> commands) {
         var counter = new AtomicLong(0);
         var batchSize = 100;
-        
+
         for (int i = 0; i < commands.size(); i += batchSize) {
             int end = Math.min(i + batchSize, commands.size());
             var batch = commands.subList(i, end);
-            
+
             cluster.engines().get(nodeId)
                    .apply(batch)
                    .onSuccess(_ -> {

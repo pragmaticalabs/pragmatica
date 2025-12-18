@@ -5,7 +5,10 @@ import org.pragmatica.cluster.state.Command;
 import java.util.List;
 
 /// Represents a proposal value in the Rabia protocol.
-public record Batch<C extends Command>(BatchId id, CorrelationId correlationId, long timestamp, List<C> commands) implements Comparable<Batch<C>> {
+public record Batch<C extends Command>(BatchId id,
+                                       CorrelationId correlationId,
+                                       long timestamp,
+                                       List<C> commands) implements Comparable<Batch<C>> {
     @Override
     public int compareTo(Batch<C> o) {
         var timestampCompare = Long.compare(timestamp, o.timestamp);

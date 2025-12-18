@@ -12,5 +12,5 @@ public sealed interface Sleep {
     }
 
     @SuppressWarnings("unused")
-    record unused() implements Sleep { }
+    record unused() implements Sleep {}
 }

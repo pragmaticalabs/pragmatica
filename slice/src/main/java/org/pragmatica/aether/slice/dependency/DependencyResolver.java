@@ -138,39 +138,42 @@ public interface DependencyResolver {
             return SliceFactory.createSlice(sliceClass, List.of(), List.of()).async();
         }
 
-        return buildDependencyGraph(descriptors,
-                                    classLoader).flatMap(depGraph -> DependencyCycleDetector.checkForCycles(depGraph)
-                                                                                            .flatMap(_ -> resolveDependencies(
-                                                                                                    descriptors,
-                                                                                                    repository,
-                                                                                                    registry,
-                                                                                                    resolutionPath))
-                                                                                            .flatMap(resolvedDeps -> SliceFactory.createSlice(
-                                                                                                    sliceClass,
-                                                                                                    resolvedDeps,
-                                                                                                    descriptors)))
-                                                .async();
+        return buildDependencyGraph(descriptors, classLoader)
+                .flatMap(depGraph -> DependencyCycleDetector.checkForCycles(depGraph))
+                .async()
+                .flatMap(_ -> resolveDependencies(descriptors, repository, registry, resolutionPath))
+                .flatMap(resolvedDeps -> SliceFactory.createSlice(sliceClass, resolvedDeps, descriptors).async());
     }
 
     private static Promise<Slice> registerSlice(Artifact artifact, Slice slice, SliceRegistry registry) {
         return registry.register(artifact, slice).map(_ -> slice).async();
     }
 
-    private static Result<List<Slice>> resolveDependencies(List<DependencyDescriptor> descriptors,
-                                                           Repository repository,
-                                                           SliceRegistry registry,
-                                                           Set<String> resolutionPath) {
-        Result<List<Slice>> acc = Result.success(List.of());
+    private static Promise<List<Slice>> resolveDependencies(List<DependencyDescriptor> descriptors,
+                                                            Repository repository,
+                                                            SliceRegistry registry,
+                                                            Set<String> resolutionPath) {
+        return resolveDependenciesSequentially(descriptors, repository, registry, resolutionPath, List.of());
+    }
 
-        for (var descriptor : descriptors) {
-            var depResult = resolveDependency(descriptor, repository, registry, resolutionPath);
-            acc = acc.flatMap(list -> depResult.map(dep -> appendToList(list, dep)));
-            if (acc.isFailure()) {
-                return acc;
-            }
+    private static Promise<List<Slice>> resolveDependenciesSequentially(List<DependencyDescriptor> descriptors,
+                                                                        Repository repository,
+                                                                        SliceRegistry registry,
+                                                                        Set<String> resolutionPath,
+                                                                        List<Slice> accumulated) {
+        if (descriptors.isEmpty()) {
+            return Promise.success(accumulated);
         }
 
-        return acc;
+        var descriptor = descriptors.getFirst();
+        var remaining = descriptors.subList(1, descriptors.size());
+
+        return resolveDependency(descriptor, repository, registry, resolutionPath)
+                .flatMap(slice -> resolveDependenciesSequentially(remaining,
+                                                                  repository,
+                                                                  registry,
+                                                                  resolutionPath,
+                                                                  appendToList(accumulated, slice)));
     }
 
     private static <T> List<T> appendToList(List<T> list, T element) {
@@ -179,23 +182,22 @@ public interface DependencyResolver {
         return List.copyOf(newList);
     }
 
-    private static Result<Slice> resolveDependency(DependencyDescriptor descriptor,
-                                                   Repository repository,
-                                                   SliceRegistry registry,
-                                                   Set<String> resolutionPath) {
-        return registry.find(descriptor.sliceClassName(), descriptor.versionPattern()).fold(() -> resolveFromRepository(
-                descriptor,
-                repository,
-                registry,
-                resolutionPath), Result::success);
+    private static Promise<Slice> resolveDependency(DependencyDescriptor descriptor,
+                                                    Repository repository,
+                                                    SliceRegistry registry,
+                                                    Set<String> resolutionPath) {
+        return registry.find(descriptor.sliceClassName(), descriptor.versionPattern())
+                       .fold(() -> resolveFromRepository(descriptor, repository, registry, resolutionPath),
+                             Promise::success);
     }
 
-    private static Result<Slice> resolveFromRepository(DependencyDescriptor descriptor,
-                                                       Repository repository,
-                                                       SliceRegistry registry,
-                                                       Set<String> resolutionPath) {
+    private static Promise<Slice> resolveFromRepository(DependencyDescriptor descriptor,
+                                                        Repository repository,
+                                                        SliceRegistry registry,
+                                                        Set<String> resolutionPath) {
         return ArtifactMapper.toArtifact(descriptor.sliceClassName(), descriptor.versionPattern())
-                             .flatMap(artifact -> resolve(artifact, repository, registry).await());
+                             .async()
+                             .flatMap(artifact -> resolve(artifact, repository, registry));
     }
 
     // === Synchronous resolution (for testing/pre-loaded scenarios) ===
@@ -275,17 +277,27 @@ public interface DependencyResolver {
                                                                ClassLoader classLoader,
                                                                SliceRegistry registry,
                                                                Set<String> resolutionPath) {
-        Result<List<Slice>> acc = Result.success(List.of());
+        return resolveDependenciesSyncSequentially(descriptors, classLoader, registry, resolutionPath, List.of());
+    }
 
-        for (var descriptor : descriptors) {
-            var depResult = resolveDependencySync(descriptor, classLoader, registry, resolutionPath);
-            acc = acc.flatMap(list -> depResult.map(dep -> appendToList(list, dep)));
-            if (acc.isFailure()) {
-                return acc;
-            }
+    private static Result<List<Slice>> resolveDependenciesSyncSequentially(List<DependencyDescriptor> descriptors,
+                                                                           ClassLoader classLoader,
+                                                                           SliceRegistry registry,
+                                                                           Set<String> resolutionPath,
+                                                                           List<Slice> accumulated) {
+        if (descriptors.isEmpty()) {
+            return Result.success(accumulated);
         }
 
-        return acc;
+        var descriptor = descriptors.getFirst();
+        var remaining = descriptors.subList(1, descriptors.size());
+
+        return resolveDependencySync(descriptor, classLoader, registry, resolutionPath)
+                .flatMap(slice -> resolveDependenciesSyncSequentially(remaining,
+                                                                      classLoader,
+                                                                      registry,
+                                                                      resolutionPath,
+                                                                      appendToList(accumulated, slice)));
     }
 
     private static Result<Slice> resolveDependencySync(DependencyDescriptor descriptor,
@@ -309,17 +321,23 @@ public interface DependencyResolver {
 
     private static Result<Map<String, List<String>>> buildDependencyGraph(List<DependencyDescriptor> descriptors,
                                                                           ClassLoader classLoader) {
-        Result<Map<String, List<String>>> acc = Result.success(Map.of());
+        return buildDependencyGraphSequentially(descriptors, classLoader, Map.of());
+    }
 
-        for (var descriptor : descriptors) {
-            var entryResult = loadDescriptorDependencies(descriptor, classLoader);
-            acc = acc.flatMap(map -> entryResult.map(entry -> addToMap(map, entry)));
-            if (acc.isFailure()) {
-                return acc;
-            }
+    private static Result<Map<String, List<String>>> buildDependencyGraphSequentially(List<DependencyDescriptor> descriptors,
+                                                                                      ClassLoader classLoader,
+                                                                                      Map<String, List<String>> accumulated) {
+        if (descriptors.isEmpty()) {
+            return Result.success(accumulated);
         }
 
-        return acc;
+        var descriptor = descriptors.getFirst();
+        var remaining = descriptors.subList(1, descriptors.size());
+
+        return loadDescriptorDependencies(descriptor, classLoader)
+                .flatMap(entry -> buildDependencyGraphSequentially(remaining,
+                                                                   classLoader,
+                                                                   addToMap(accumulated, entry)));
     }
 
     private static Result<Map.Entry<String, List<String>>> loadDescriptorDependencies(DependencyDescriptor descriptor,
@@ -350,6 +368,9 @@ public interface DependencyResolver {
     }
 
     private static Cause artifactMismatch(Artifact requested, Artifact declared) {
-        return Causes.cause("Artifact mismatch: requested " + requested.asString() + " but JAR manifest declares " + declared.asString());
+        return Causes.cause("Artifact mismatch: requested "
+                            + requested.asString()
+                            + " but JAR manifest declares "
+                            + declared.asString());
     }
 }

@@ -2,7 +2,8 @@
 
 ## Current State
 
-The NodeDeploymentManager has a complete skeleton implementation that's commented out (lines 47-276). The structure is good and follows the correct event-driven pattern, but needs these updates:
+The NodeDeploymentManager has a complete skeleton implementation that's commented out (lines 47-276). The structure is
+good and follows the correct event-driven pattern, but needs these updates:
 
 1. Uncomment the implementation
 2. Update to use AetherKey/AetherValue (not strings)
@@ -40,6 +41,7 @@ public interface NodeDeploymentManager {
 **Location**: Lines 47-66 (currently commented)
 
 **Current (commented) code**:
+
 ```java
 //public void onValuePut(ValuePut<?, ?> valuePut) {
 //    var keyString = valuePut.cause().key().toString();
@@ -55,6 +57,7 @@ public interface NodeDeploymentManager {
 ```
 
 **Change to**:
+
 ```java
 @Override
 public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
@@ -85,6 +88,7 @@ public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
 ```
 
 **Key Changes**:
+
 - No more string parsing - use AetherKey/AetherValue directly
 - Pattern matching removed - just check if key is SliceNodeKey for this node
 - Simplified - directly access state from SliceNodeValue
@@ -94,6 +98,7 @@ public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
 **Location**: Lines 68-92 (currently commented)
 
 **Change to**:
+
 ```java
 @Override
 public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
@@ -124,6 +129,7 @@ public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
 ```
 
 **Key Changes**:
+
 - Direct key type checking (no string parsing)
 - Handle abrupt removal case (deactivate + unload immediately)
 
@@ -138,6 +144,7 @@ public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
 **Location**: Lines 110-121 (currently commented)
 
 **Change from old switch to modern switch expression**:
+
 ```java
 private void processStateTransition(SliceNodeKey sliceKey, SliceState state) {
     switch (state) {
@@ -157,6 +164,7 @@ private void processStateTransition(SliceNodeKey sliceKey, SliceState state) {
 ```
 
 **Key Changes**:
+
 - Use new switch syntax (not arrow syntax in this case, traditional is fine)
 - Handle LOAD trigger (not LOADING)
 - Handle ACTIVATE trigger (not ACTIVATING)
@@ -194,6 +202,7 @@ private void updateSliceState(SliceNodeKey sliceKey, SliceState newState) {
 ```
 
 **Key Changes**:
+
 - No more string concatenation
 - Direct SliceNodeValue creation
 - Write to consensus via kvStore.put()
@@ -209,6 +218,7 @@ private void updateSliceState(SliceNodeKey sliceKey, SliceState newState) {
 **Location**: Lines 215-276 (currently commented)
 
 **Change to**:
+
 ```java
 static NodeDeploymentManager nodeDeploymentManager(
         NodeId self,
@@ -280,6 +290,7 @@ static NodeDeploymentManager nodeDeploymentManager(
 ```
 
 **Key Changes**:
+
 - Remove configure() call (lines 269-273)
 - Remove buildPattern() method (lines 256-259)
 - Add KVStore parameter
@@ -364,6 +375,7 @@ void onValuePut_activatesSlice_whenReceivingLoadCommand() {
 ## Next: ClusterDeploymentManager
 
 Once NodeDeploymentManager is complete, implement ClusterDeploymentManager which:
+
 1. Watches for blueprint changes
 2. Allocates instances round-robin
 3. Writes LOAD commands to slice-node-keys

@@ -47,16 +47,24 @@ public sealed interface VersionPattern {
             int fromCmp = compareVersions(version, from);
             int toCmp = compareVersions(version, to);
 
-            boolean fromMatch = fromInclusive ? fromCmp >= 0 : fromCmp > 0;
-            boolean toMatch = toInclusive ? toCmp <= 0 : toCmp < 0;
+            boolean fromMatch = fromInclusive
+                                ? fromCmp >= 0
+                                : fromCmp > 0;
+            boolean toMatch = toInclusive
+                              ? toCmp <= 0
+                              : toCmp < 0;
 
             return fromMatch && toMatch;
         }
 
         @Override
         public String asString() {
-            var fromBracket = fromInclusive ? "[" : "(";
-            var toBracket = toInclusive ? "]" : ")";
+            var fromBracket = fromInclusive
+                              ? "["
+                              : "(";
+            var toBracket = toInclusive
+                            ? "]"
+                            : ")";
             return fromBracket + from.withQualifier() + "," + to.withQualifier() + toBracket;
         }
     }
@@ -117,7 +125,7 @@ public sealed interface VersionPattern {
 
             // Must have same major and minor
             return other.major() == version.major() &&
-                    other.minor() == version.minor();
+                   other.minor() == version.minor();
         }
 
         @Override
@@ -193,12 +201,12 @@ public sealed interface VersionPattern {
 
     private static boolean isRangePattern(String pattern) {
         return (pattern.startsWith("[") || pattern.startsWith("(")) &&
-                (pattern.endsWith("]") || pattern.endsWith(")"));
+               (pattern.endsWith("]") || pattern.endsWith(")"));
     }
 
     private static boolean isComparisonPattern(String pattern) {
         return pattern.startsWith(">=") || pattern.startsWith(">") ||
-                pattern.startsWith("<=") || pattern.startsWith("<");
+               pattern.startsWith("<=") || pattern.startsWith("<");
     }
 
     private static Result<VersionPattern> parseRange(String pattern) {

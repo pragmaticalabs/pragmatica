@@ -53,7 +53,9 @@ public record DependencyDescriptor(String sliceClassName, VersionPattern version
 
         var className = parts[0].trim();
         var versionStr = parts[1].trim();
-        var paramName = parts.length == 3 ? Option.option(parts[2].trim()) : Option.<String>none();
+        var paramName = parts.length == 3
+                        ? Option.option(parts[2].trim())
+                        : Option.<String>none();
 
         if (className.isEmpty()) {
             return EMPTY_CLASS_NAME.apply(line).result();
@@ -77,7 +79,8 @@ public record DependencyDescriptor(String sliceClassName, VersionPattern version
     // Error constants
     private static final Cause EMPTY_LINE = Causes.cause("Dependency descriptor line is empty");
     private static final Cause COMMENT_LINE = Causes.cause("Dependency descriptor line is a comment");
-    private static final Fn1<Cause, String> INVALID_FORMAT = Causes.forValue("Invalid dependency descriptor format: %s");
+    private static final Fn1<Cause, String> INVALID_FORMAT =
+            Causes.forValue("Invalid dependency descriptor format: %s");
     private static final Fn1<Cause, String> TOO_MANY_PARTS = Causes.forValue(
             "Too many parts in dependency descriptor: %s");
     private static final Fn1<Cause, String> EMPTY_CLASS_NAME = Causes.forValue(

@@ -5,6 +5,7 @@ import org.pragmatica.cluster.net.NodeInfo;
 import org.pragmatica.cluster.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+
 import java.net.SocketAddress;
 
 public record TestTopologyManager(int clusterSize, NodeInfo self) implements TopologyManager {

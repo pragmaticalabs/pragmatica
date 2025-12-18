@@ -142,7 +142,8 @@ public class RabiaEngine<C extends Command> {
 
     @MessageReceiver
     public void handleSubmit(SubmitCommands<C> submitCommands) {
-        submitCommands(submitCommands.commands(), _ -> {});
+        submitCommands(submitCommands.commands(), _ -> {
+        });
     }
 
     private Result<Batch<C>> submitCommands(List<C> commands, Consumer<Batch<C>> onBatchPrepared) {
@@ -346,7 +347,7 @@ public class RabiaEngine<C extends Command> {
 
     private boolean isExpiredPhase(Phase phase, Phase current) {
         return phase.compareTo(current) < 0
-                && current.value() - phase.value() > config.removeOlderThanPhases();
+               && current.value() - phase.value() > config.removeOlderThanPhases();
     }
 
     /// Handles a Propose message from another node.
@@ -382,8 +383,8 @@ public class RabiaEngine<C extends Command> {
         phaseData.proposals.putIfAbsent(propose.sender(), propose.value());
 
         if (isInPhase.get()
-                && currentPhase.get().equals(propose.phase())
-                && !phaseData.round1Votes.containsKey(self)) {
+            && currentPhase.get().equals(propose.phase())
+            && !phaseData.round1Votes.containsKey(self)) {
 
             var vote = phaseData.evaluateInitialVote(self, propose);
 
@@ -420,8 +421,8 @@ public class RabiaEngine<C extends Command> {
 
         // If we're active and in this phase, check if we can proceed to round 2
         if (isInPhase.get()
-                && currentPhase.get().equals(vote.phase())
-                && !phaseData.round2Votes.containsKey(self)) {
+            && currentPhase.get().equals(vote.phase())
+            && !phaseData.round2Votes.containsKey(self)) {
 
             if (!phaseData.hasRound1MajorityVotes(topologyManager.quorumSize())) {
                 return;
@@ -450,8 +451,8 @@ public class RabiaEngine<C extends Command> {
 
         // If we're active and in this phase, check if we can make a decision
         if (isInPhase.get()
-                && currentPhase.get().equals(vote.phase())
-                && !phaseData.hasDecided.get()) {
+            && currentPhase.get().equals(vote.phase())
+            && !phaseData.hasDecided.get()) {
 
             if (phaseData.hasRound2MajorityVotes(topologyManager.quorumSize())) {
                 var decision = phaseData.processRound2Completion(self, topologyManager.fPlusOne());
@@ -619,7 +620,9 @@ public class RabiaEngine<C extends Command> {
             // The definition of findAgreedProposal might need review for this case,
             // but typically it would look for *any* proposal associated with V1 votes
             // or a default empty batch if none is found.
-            var batch = decision == StateValue.V1 ? findAgreedProposal(self) : Batch.<C>emptyBatch();
+            var batch = decision == StateValue.V1
+                        ? findAgreedProposal(self)
+                        : Batch.<C>emptyBatch();
 
             return new Decision<>(self, phase, decision, batch);
         }
@@ -627,7 +630,9 @@ public class RabiaEngine<C extends Command> {
         /// Gets a coin flip value for a phase, creating one if needed.
         private StateValue coinFlip(NodeId self) {
             long seed = phase.value() ^ self.id().hashCode();
-            return (Math.abs(seed) % 2 == 0) ? StateValue.V0 : StateValue.V1;
+            return (Math.abs(seed) % 2 == 0)
+                   ? StateValue.V0
+                   : StateValue.V1;
         }
     }
 }

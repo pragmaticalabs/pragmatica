@@ -1,10 +1,8 @@
 package org.pragmatica.aether.deployment.node;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.SliceStore.LoadedSlice;
@@ -24,7 +22,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.message.MessageRouter;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -45,8 +42,8 @@ class NodeDeploymentManagerTest {
         sliceStore = new TestSliceStore();
         clusterNode = new TestClusterNode(self);
         manager = NodeDeploymentManager.nodeDeploymentManager(
-            self, router, sliceStore, clusterNode
-        );
+                self, router, sliceStore, clusterNode
+                                                             );
     }
 
     // === Quorum State Tests ===
