@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Aether** (v0.2.0) is an AI-driven distributed runtime environment for Java that enables predictive scaling,
+**Aether** (v0.3.0) is an AI-driven distributed runtime environment for Java that enables predictive scaling,
 intelligent orchestration, and seamless multi-cloud deployment without requiring changes to business logic.
 
 **See [docs/vision-and-goals.md](docs/vision-and-goals.md) for complete vision and design principles.**
@@ -94,7 +94,7 @@ Maven-style coordinates for slices:
 
 ```java
 // Format: groupId:artifactId:version[-qualifier]
-Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.2.0")
+Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.3.0")
 ```
 
 **Components**:

@@ -361,19 +361,19 @@ class NodeDeploymentManagerTest {
                 failNextLoad = false;
                 return Promise.failure(org.pragmatica.lang.utils.Causes.cause("Load failed"));
             }
-            return Promise.success(new TestLoadedSlice(artifact));
+            return Promise.success(new TestLoadedSlice(artifact, null));
         }
 
         @Override
         public Promise<LoadedSlice> activateSlice(Artifact artifact) {
             activateCalls.add(artifact);
-            return Promise.success(new TestLoadedSlice(artifact));
+            return Promise.success(new TestLoadedSlice(artifact, null));
         }
 
         @Override
         public Promise<LoadedSlice> deactivateSlice(Artifact artifact) {
             deactivateCalls.add(artifact);
-            return Promise.success(new TestLoadedSlice(artifact));
+            return Promise.success(new TestLoadedSlice(artifact, null));
         }
 
         @Override
@@ -393,10 +393,10 @@ class NodeDeploymentManagerTest {
         }
     }
 
-    record TestLoadedSlice(Artifact artifact) implements LoadedSlice {
+    record TestLoadedSlice(Artifact artifact, org.pragmatica.aether.slice.Slice sliceInstance) implements LoadedSlice {
         @Override
-        public Result<org.pragmatica.aether.slice.Slice> slice() {
-            return Result.failure(org.pragmatica.lang.utils.Causes.cause("Not implemented"));
+        public org.pragmatica.aether.slice.Slice slice() {
+            return sliceInstance;
         }
     }
 
