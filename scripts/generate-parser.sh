@@ -47,7 +47,7 @@ mkdir -p "$OUTPUT_DIR"
 
 # Generate parser using java-peglib
 echo ""
-echo "Generating CST parser..."
+echo "Generating CST parser with ADVANCED error reporting..."
 cd "$PROJECT_DIR"
 
 # Create a temporary Java file to run the generator
@@ -56,6 +56,7 @@ GENERATOR_FILE="$TEMP_DIR/GenerateParser.java"
 
 cat > "$GENERATOR_FILE" << 'GENERATOR_CODE'
 import org.pragmatica.peg.PegParser;
+import org.pragmatica.peg.generator.ErrorReporting;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -73,7 +74,7 @@ public class GenerateParser {
 
         var grammar = Files.readString(Path.of(grammarFile));
 
-        var result = PegParser.generateCstParser(grammar, packageName, className);
+        var result = PegParser.generateCstParser(grammar, packageName, className, ErrorReporting.ADVANCED);
 
         if (result.isFailure()) {
             System.err.println("Generation failed: " + result);

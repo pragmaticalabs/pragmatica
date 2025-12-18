@@ -3,7 +3,7 @@
 ## [0.3.1] - Unreleased
 
 ### Changed
-- TBD
+- Regenerated parser with ADVANCED error reporting mode (Rust-style diagnostics)
 
 ## [0.3.0] - 2025-12-18
 

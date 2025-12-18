@@ -627,12 +627,257 @@ public final class Java25Parser {
 
         record Token(SourceSpan span, RuleId rule, String text,
                      List<Trivia> leadingTrivia, List<Trivia> trailingTrivia) implements CstNode {}
+        record Error(SourceSpan span, String skippedText,
+                     List<Trivia> leadingTrivia, List<Trivia> trailingTrivia) implements CstNode {
+            @Override public RuleId rule() { return null; }
+        }
     }
 
     public record ParseError(SourceLocation location, String reason) implements Cause {
         @Override
         public String message() {
             return reason + " at " + location;
+        }
+    }
+
+    // === Advanced Diagnostic Types ===
+
+    public enum Severity {
+        ERROR("error"),
+        WARNING("warning"),
+        INFO("info"),
+        HINT("hint");
+
+        private final String display;
+
+        Severity(String display) {
+            this.display = display;
+        }
+
+        public String display() {
+            return display;
+        }
+    }
+
+    public record DiagnosticLabel(SourceSpan span, String message, boolean primary) {
+        public static DiagnosticLabel primary(SourceSpan span, String message) {
+            return new DiagnosticLabel(span, message, true);
+        }
+        public static DiagnosticLabel secondary(SourceSpan span, String message) {
+            return new DiagnosticLabel(span, message, false);
+        }
+    }
+
+    public record Diagnostic(
+        Severity severity,
+        String code,
+        String message,
+        SourceSpan span,
+        List<DiagnosticLabel> labels,
+        List<String> notes
+    ) {
+        public static Diagnostic error(String message, SourceSpan span) {
+            return new Diagnostic(Severity.ERROR, null, message, span, List.of(), List.of());
+        }
+
+        public static Diagnostic error(String code, String message, SourceSpan span) {
+            return new Diagnostic(Severity.ERROR, code, message, span, List.of(), List.of());
+        }
+
+        public static Diagnostic warning(String message, SourceSpan span) {
+            return new Diagnostic(Severity.WARNING, null, message, span, List.of(), List.of());
+        }
+
+        public Diagnostic withLabel(String labelMessage) {
+            var newLabels = new ArrayList<>(labels);
+            newLabels.add(DiagnosticLabel.primary(span, labelMessage));
+            return new Diagnostic(severity, code, message, span, List.copyOf(newLabels), notes);
+        }
+
+        public Diagnostic withSecondaryLabel(SourceSpan labelSpan, String labelMessage) {
+            var newLabels = new ArrayList<>(labels);
+            newLabels.add(DiagnosticLabel.secondary(labelSpan, labelMessage));
+            return new Diagnostic(severity, code, message, span, List.copyOf(newLabels), notes);
+        }
+
+        public Diagnostic withNote(String note) {
+            var newNotes = new ArrayList<>(notes);
+            newNotes.add(note);
+            return new Diagnostic(severity, code, message, span, labels, List.copyOf(newNotes));
+        }
+
+        public Diagnostic withHelp(String help) {
+            return withNote("help: " + help);
+        }
+
+        public String format(String source, String filename) {
+            var sb = new StringBuilder();
+            var lines = source.split("\n", -1);
+
+            // Header: error[E0001]: message
+            sb.append(severity.display());
+            if (code != null) {
+                sb.append("[").append(code).append("]");
+            }
+            sb.append(": ").append(message).append("\n");
+
+            // Location: --> filename:line:column
+            var loc = span.start();
+            sb.append("  --> ");
+            if (filename != null) {
+                sb.append(filename).append(":");
+            }
+            sb.append(loc.line()).append(":").append(loc.column()).append("\n");
+
+            // Find all lines we need to display
+            int minLine = span.start().line();
+            int maxLine = span.end().line();
+            for (var label : labels) {
+                minLine = Math.min(minLine, label.span().start().line());
+                maxLine = Math.max(maxLine, label.span().end().line());
+            }
+
+            // Calculate gutter width
+            int gutterWidth = String.valueOf(maxLine).length();
+
+            // Empty line before source
+            sb.append(" ".repeat(gutterWidth + 1)).append("|\n");
+
+            // Display source lines with labels
+            for (int lineNum = minLine; lineNum <= maxLine; lineNum++) {
+                if (lineNum < 1 || lineNum > lines.length) continue;
+
+                String lineContent = lines[lineNum - 1];
+                String lineNumStr = String.format("%" + gutterWidth + "d", lineNum);
+
+                // Source line
+                sb.append(lineNumStr).append(" | ").append(lineContent).append("\n");
+
+                // Underline labels on this line
+                var lineLabels = getLabelsOnLine(lineNum);
+                if (!lineLabels.isEmpty()) {
+                    sb.append(" ".repeat(gutterWidth)).append(" | ");
+                    sb.append(formatUnderlines(lineNum, lineContent, lineLabels));
+                    sb.append("\n");
+                }
+            }
+
+            // Empty line after source
+            sb.append(" ".repeat(gutterWidth + 1)).append("|\n");
+
+            // Notes
+            for (var note : notes) {
+                sb.append(" ".repeat(gutterWidth + 1)).append("= ").append(note).append("\n");
+            }
+
+            return sb.toString();
+        }
+
+        private List<DiagnosticLabel> getLabelsOnLine(int lineNum) {
+            var result = new ArrayList<DiagnosticLabel>();
+            if (span.start().line() <= lineNum && span.end().line() >= lineNum) {
+                if (labels.isEmpty()) {
+                    result.add(DiagnosticLabel.primary(span, ""));
+                }
+            }
+            for (var label : labels) {
+                if (label.span().start().line() <= lineNum && label.span().end().line() >= lineNum) {
+                    result.add(label);
+                }
+            }
+            return result;
+        }
+
+        private String formatUnderlines(int lineNum, String lineContent, List<DiagnosticLabel> lineLabels) {
+            var sb = new StringBuilder();
+            int currentCol = 1;
+
+            var sorted = lineLabels.stream()
+                .sorted((a, b) -> Integer.compare(a.span().start().column(), b.span().start().column()))
+                .toList();
+
+            for (var label : sorted) {
+                int startCol = label.span().start().line() == lineNum ? label.span().start().column() : 1;
+                int endCol = label.span().end().line() == lineNum
+                    ? label.span().end().column()
+                    : lineContent.length() + 1;
+
+                while (currentCol < startCol) {
+                    sb.append(" ");
+                    currentCol++;
+                }
+
+                char underlineChar = label.primary() ? '^' : '-';
+                int underlineLen = Math.max(1, endCol - startCol);
+                sb.append(String.valueOf(underlineChar).repeat(underlineLen));
+                currentCol += underlineLen;
+
+                if (!label.message().isEmpty()) {
+                    sb.append(" ").append(label.message());
+                }
+            }
+
+            return sb.toString();
+        }
+
+        public String formatSimple() {
+            var loc = span.start();
+            return String.format("%s:%d:%d: %s: %s",
+                "input", loc.line(), loc.column(), severity.display(), message);
+        }
+    }
+
+    public record ParseResultWithDiagnostics(
+        CstNode node,
+        List<Diagnostic> diagnostics,
+        String source
+    ) {
+        public static ParseResultWithDiagnostics success(CstNode node, String source) {
+            return new ParseResultWithDiagnostics(node, List.of(), source);
+        }
+
+        public static ParseResultWithDiagnostics withErrors(CstNode node, List<Diagnostic> diagnostics, String source) {
+            return new ParseResultWithDiagnostics(node, List.copyOf(diagnostics), source);
+        }
+
+        public boolean isSuccess() {
+            return node != null && diagnostics.isEmpty();
+        }
+
+        public boolean hasErrors() {
+            return !diagnostics.isEmpty();
+        }
+
+        public boolean hasNode() {
+            return node != null;
+        }
+
+        public String formatDiagnostics(String filename) {
+            if (diagnostics.isEmpty()) {
+                return "";
+            }
+            var sb = new StringBuilder();
+            for (var diag : diagnostics) {
+                sb.append(diag.format(source, filename));
+                sb.append("\n");
+            }
+            return sb.toString();
+        }
+
+        public String formatDiagnostics() {
+            return formatDiagnostics("input");
+        }
+
+        public int errorCount() {
+            return (int) diagnostics.stream()
+                .filter(d -> d.severity() == Severity.ERROR)
+                .count();
+        }
+
+        public int warningCount() {
+            return (int) diagnostics.stream()
+                .filter(d -> d.severity() == Severity.WARNING)
+                .count();
         }
     }
 
@@ -645,6 +890,9 @@ public final class Java25Parser {
     private Map<Long, CstParseResult> cache;
     private Map<String, String> captures;
     private boolean inTokenBoundary;
+    private List<Diagnostic> diagnostics;
+    private SourceLocation furthestFailure;
+    private String furthestExpected;
 
     private void init(String input) {
         this.input = input;
@@ -654,6 +902,9 @@ public final class Java25Parser {
         this.cache = new HashMap<>();
         this.captures = new HashMap<>();
         this.inTokenBoundary = false;
+        this.diagnostics = new ArrayList<>();
+        this.furthestFailure = null;
+        this.furthestExpected = null;
     }
 
     private SourceLocation location() {
@@ -701,6 +952,34 @@ public final class Java25Parser {
         this.column = loc.column();
     }
 
+    private void trackFailure(String expected) {
+        var loc = location();
+        if (furthestFailure == null || loc.offset() > furthestFailure.offset()) {
+            furthestFailure = loc;
+            furthestExpected = expected;
+        }
+    }
+
+    private SourceSpan skipToRecoveryPoint() {
+        var start = location();
+        while (!isAtEnd()) {
+            char c = peek();
+            if (c == '\n' || c == ';' || c == ',' || c == '}' || c == ')' || c == ']') {
+                break;
+            }
+            advance();
+        }
+        return SourceSpan.of(start, location());
+    }
+
+    private void addDiagnostic(String message, SourceSpan span) {
+        diagnostics.add(Diagnostic.error(message, span));
+    }
+
+    private void addDiagnostic(String message, SourceSpan span, String label) {
+        diagnostics.add(Diagnostic.error(message, span).withLabel(label));
+    }
+
     // === Public Parse Methods ===
 
     public Result<CstNode> parse(String input) {
@@ -717,6 +996,52 @@ public final class Java25Parser {
         // Attach trailing trivia to root node
         var rootNode = attachTrailingTrivia(result.node, trailingTrivia);
         return Result.success(rootNode);
+    }
+
+    /**
+     * Parse with advanced error recovery and Rust-style diagnostics.
+     * Returns a result containing the CST (with Error nodes for unparseable regions)
+     * and a list of diagnostics.
+     */
+    public ParseResultWithDiagnostics parseWithDiagnostics(String input) {
+        init(input);
+        var leadingTrivia = skipWhitespace();
+        var result = parse_CompilationUnit(leadingTrivia);
+
+        if (result.isFailure()) {
+            // Record the failure and attempt recovery
+            var errorLoc = furthestFailure != null ? furthestFailure : location();
+            var errorSpan = SourceSpan.of(errorLoc, errorLoc);
+            addDiagnostic("expected " + (furthestExpected != null ? furthestExpected : result.expected), errorSpan);
+
+            // Skip to recovery point and try to continue
+            var skippedSpan = skipToRecoveryPoint();
+            if (skippedSpan.length() > 0) {
+                var skippedText = skippedSpan.extract(input);
+                var errorNode = new CstNode.Error(skippedSpan, skippedText, leadingTrivia, List.of());
+                return ParseResultWithDiagnostics.withErrors(errorNode, diagnostics, input);
+            }
+            return ParseResultWithDiagnostics.withErrors(null, diagnostics, input);
+        }
+
+        var trailingTrivia = skipWhitespace();
+        if (!isAtEnd()) {
+            // Unexpected trailing input
+            var errorStart = location();
+            var skippedSpan = skipToRecoveryPoint();
+            var skippedText = skippedSpan.extract(input);
+            addDiagnostic("unexpected input", skippedSpan, "expected end of input");
+
+            // Attach error node to result
+            var rootNode = attachTrailingTrivia(result.node, trailingTrivia);
+            return ParseResultWithDiagnostics.withErrors(rootNode, diagnostics, input);
+        }
+
+        var rootNode = attachTrailingTrivia(result.node, trailingTrivia);
+        if (diagnostics.isEmpty()) {
+            return ParseResultWithDiagnostics.success(rootNode, input);
+        }
+        return ParseResultWithDiagnostics.withErrors(rootNode, diagnostics, input);
     }
 
     // === Rule Parsing Methods ===
@@ -15545,6 +15870,9 @@ public final class Java25Parser {
             );
             case CstNode.Token tok -> new CstNode.Token(
                 tok.span(), tok.rule(), tok.text(), tok.leadingTrivia(), trailingTrivia
+            );
+            case CstNode.Error err -> new CstNode.Error(
+                err.span(), err.skippedText(), err.leadingTrivia(), trailingTrivia
             );
         };
     }

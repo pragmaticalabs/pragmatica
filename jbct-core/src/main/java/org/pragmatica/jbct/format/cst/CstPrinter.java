@@ -136,6 +136,7 @@ public class CstPrinter {
             case CstNode.Terminal t -> printTerminal(t);
             case CstNode.Token tok -> printToken(tok);
             case CstNode.NonTerminal nt -> printNonTerminal(nt);
+            case CstNode.Error err -> print(err.skippedText());
         }
 
         // Handle trailing trivia
@@ -647,6 +648,7 @@ public class CstPrinter {
         switch (node) {
             case CstNode.Terminal t -> printWithSpacing(t.text());
             case CstNode.Token tok -> printWithSpacing(tok.text());
+            case CstNode.Error err -> printWithSpacing(err.skippedText());
             case CstNode.NonTerminal nt -> {
                 // Dispatch to specialized handlers for proper formatting
                 switch (nt.rule()) {
@@ -1018,6 +1020,7 @@ public class CstPrinter {
         return switch (node) {
             case CstNode.Terminal _ -> false;
             case CstNode.Token _ -> false;
+            case CstNode.Error _ -> false;
             case CstNode.NonTerminal nt -> {
                 if (nt.rule() instanceof RuleId.StringLit) {
                     yield true;
@@ -1036,6 +1039,7 @@ public class CstPrinter {
         return switch (node) {
             case CstNode.Terminal _ -> false;
             case CstNode.Token _ -> false;
+            case CstNode.Error _ -> false;
             case CstNode.NonTerminal nt -> {
                 if (nt.rule() instanceof RuleId.StringLit) {
                     yield true;
@@ -1142,6 +1146,7 @@ public class CstPrinter {
             case CstNode.Terminal t -> text.equals(t.text());
             case CstNode.Token tok -> text.equals(tok.text());
             case CstNode.NonTerminal _ -> false;
+            case CstNode.Error _ -> false;
         };
     }
 

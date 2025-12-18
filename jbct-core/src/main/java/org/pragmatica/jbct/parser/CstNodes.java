@@ -25,6 +25,7 @@ public final class CstNodes {
             case CstNode.NonTerminal nt -> nt.children();
             case CstNode.Terminal t -> List.of();
             case CstNode.Token tok -> List.of();
+            case CstNode.Error err -> List.of();
         };
     }
 
@@ -202,6 +203,7 @@ public final class CstNodes {
             case CstNode.Terminal t -> text.equals(t.text());
             case CstNode.Token tok -> text.equals(tok.text());
             case CstNode.NonTerminal nt -> false;
+            case CstNode.Error err -> false;
         };
     }
 
@@ -213,6 +215,7 @@ public final class CstNodes {
             case CstNode.Terminal t -> Option.some(t.text());
             case CstNode.Token tok -> Option.some(tok.text());
             case CstNode.NonTerminal nt -> Option.none();
+            case CstNode.Error err -> Option.none();
         };
     }
 
