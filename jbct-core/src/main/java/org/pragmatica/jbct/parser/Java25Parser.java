@@ -217,240 +217,244 @@ public final class Java25Parser {
             public int ordinal() { return 48; }
             public String name() { return "BlockStmt"; }
         }
-        record LocalVar() implements RuleId {
+        record LocalTypeDecl() implements RuleId {
             public int ordinal() { return 49; }
+            public String name() { return "LocalTypeDecl"; }
+        }
+        record LocalVar() implements RuleId {
+            public int ordinal() { return 50; }
             public String name() { return "LocalVar"; }
         }
         record LocalVarType() implements RuleId {
-            public int ordinal() { return 50; }
+            public int ordinal() { return 51; }
             public String name() { return "LocalVarType"; }
         }
         record Stmt() implements RuleId {
-            public int ordinal() { return 51; }
+            public int ordinal() { return 52; }
             public String name() { return "Stmt"; }
         }
         record ForCtrl() implements RuleId {
-            public int ordinal() { return 52; }
+            public int ordinal() { return 53; }
             public String name() { return "ForCtrl"; }
         }
         record ForInit() implements RuleId {
-            public int ordinal() { return 53; }
+            public int ordinal() { return 54; }
             public String name() { return "ForInit"; }
         }
         record LocalVarNoSemi() implements RuleId {
-            public int ordinal() { return 54; }
+            public int ordinal() { return 55; }
             public String name() { return "LocalVarNoSemi"; }
         }
         record ResourceSpec() implements RuleId {
-            public int ordinal() { return 55; }
+            public int ordinal() { return 56; }
             public String name() { return "ResourceSpec"; }
         }
         record Resource() implements RuleId {
-            public int ordinal() { return 56; }
+            public int ordinal() { return 57; }
             public String name() { return "Resource"; }
         }
         record Catch() implements RuleId {
-            public int ordinal() { return 57; }
+            public int ordinal() { return 58; }
             public String name() { return "Catch"; }
         }
         record Finally() implements RuleId {
-            public int ordinal() { return 58; }
+            public int ordinal() { return 59; }
             public String name() { return "Finally"; }
         }
         record SwitchBlock() implements RuleId {
-            public int ordinal() { return 59; }
+            public int ordinal() { return 60; }
             public String name() { return "SwitchBlock"; }
         }
         record SwitchRule() implements RuleId {
-            public int ordinal() { return 60; }
+            public int ordinal() { return 61; }
             public String name() { return "SwitchRule"; }
         }
         record SwitchLabel() implements RuleId {
-            public int ordinal() { return 61; }
+            public int ordinal() { return 62; }
             public String name() { return "SwitchLabel"; }
         }
         record CaseItem() implements RuleId {
-            public int ordinal() { return 62; }
+            public int ordinal() { return 63; }
             public String name() { return "CaseItem"; }
         }
         record Pattern() implements RuleId {
-            public int ordinal() { return 63; }
+            public int ordinal() { return 64; }
             public String name() { return "Pattern"; }
         }
         record TypePattern() implements RuleId {
-            public int ordinal() { return 64; }
+            public int ordinal() { return 65; }
             public String name() { return "TypePattern"; }
         }
         record RecordPattern() implements RuleId {
-            public int ordinal() { return 65; }
+            public int ordinal() { return 66; }
             public String name() { return "RecordPattern"; }
         }
         record PatternList() implements RuleId {
-            public int ordinal() { return 66; }
+            public int ordinal() { return 67; }
             public String name() { return "PatternList"; }
         }
         record Guard() implements RuleId {
-            public int ordinal() { return 67; }
+            public int ordinal() { return 68; }
             public String name() { return "Guard"; }
         }
         record Expr() implements RuleId {
-            public int ordinal() { return 68; }
+            public int ordinal() { return 69; }
             public String name() { return "Expr"; }
         }
         record Assignment() implements RuleId {
-            public int ordinal() { return 69; }
+            public int ordinal() { return 70; }
             public String name() { return "Assignment"; }
         }
         record Ternary() implements RuleId {
-            public int ordinal() { return 70; }
+            public int ordinal() { return 71; }
             public String name() { return "Ternary"; }
         }
         record LogOr() implements RuleId {
-            public int ordinal() { return 71; }
+            public int ordinal() { return 72; }
             public String name() { return "LogOr"; }
         }
         record LogAnd() implements RuleId {
-            public int ordinal() { return 72; }
+            public int ordinal() { return 73; }
             public String name() { return "LogAnd"; }
         }
         record BitOr() implements RuleId {
-            public int ordinal() { return 73; }
+            public int ordinal() { return 74; }
             public String name() { return "BitOr"; }
         }
         record BitXor() implements RuleId {
-            public int ordinal() { return 74; }
+            public int ordinal() { return 75; }
             public String name() { return "BitXor"; }
         }
         record BitAnd() implements RuleId {
-            public int ordinal() { return 75; }
+            public int ordinal() { return 76; }
             public String name() { return "BitAnd"; }
         }
         record Equality() implements RuleId {
-            public int ordinal() { return 76; }
+            public int ordinal() { return 77; }
             public String name() { return "Equality"; }
         }
         record Relational() implements RuleId {
-            public int ordinal() { return 77; }
+            public int ordinal() { return 78; }
             public String name() { return "Relational"; }
         }
         record Shift() implements RuleId {
-            public int ordinal() { return 78; }
+            public int ordinal() { return 79; }
             public String name() { return "Shift"; }
         }
         record Additive() implements RuleId {
-            public int ordinal() { return 79; }
+            public int ordinal() { return 80; }
             public String name() { return "Additive"; }
         }
         record Multiplicative() implements RuleId {
-            public int ordinal() { return 80; }
+            public int ordinal() { return 81; }
             public String name() { return "Multiplicative"; }
         }
         record Unary() implements RuleId {
-            public int ordinal() { return 81; }
+            public int ordinal() { return 82; }
             public String name() { return "Unary"; }
         }
         record Postfix() implements RuleId {
-            public int ordinal() { return 82; }
+            public int ordinal() { return 83; }
             public String name() { return "Postfix"; }
         }
         record PostOp() implements RuleId {
-            public int ordinal() { return 83; }
+            public int ordinal() { return 84; }
             public String name() { return "PostOp"; }
         }
         record Primary() implements RuleId {
-            public int ordinal() { return 84; }
+            public int ordinal() { return 85; }
             public String name() { return "Primary"; }
         }
         record Lambda() implements RuleId {
-            public int ordinal() { return 85; }
+            public int ordinal() { return 86; }
             public String name() { return "Lambda"; }
         }
         record LambdaParams() implements RuleId {
-            public int ordinal() { return 86; }
+            public int ordinal() { return 87; }
             public String name() { return "LambdaParams"; }
         }
         record LambdaParam() implements RuleId {
-            public int ordinal() { return 87; }
+            public int ordinal() { return 88; }
             public String name() { return "LambdaParam"; }
         }
         record Args() implements RuleId {
-            public int ordinal() { return 88; }
+            public int ordinal() { return 89; }
             public String name() { return "Args"; }
         }
         record ExprList() implements RuleId {
-            public int ordinal() { return 89; }
+            public int ordinal() { return 90; }
             public String name() { return "ExprList"; }
         }
         record Type() implements RuleId {
-            public int ordinal() { return 90; }
+            public int ordinal() { return 91; }
             public String name() { return "Type"; }
         }
         record PrimType() implements RuleId {
-            public int ordinal() { return 91; }
+            public int ordinal() { return 92; }
             public String name() { return "PrimType"; }
         }
         record RefType() implements RuleId {
-            public int ordinal() { return 92; }
+            public int ordinal() { return 93; }
             public String name() { return "RefType"; }
         }
         record AnnotatedTypeName() implements RuleId {
-            public int ordinal() { return 93; }
+            public int ordinal() { return 94; }
             public String name() { return "AnnotatedTypeName"; }
         }
         record Dims() implements RuleId {
-            public int ordinal() { return 94; }
+            public int ordinal() { return 95; }
             public String name() { return "Dims"; }
         }
         record TypeArgs() implements RuleId {
-            public int ordinal() { return 95; }
+            public int ordinal() { return 96; }
             public String name() { return "TypeArgs"; }
         }
         record TypeArg() implements RuleId {
-            public int ordinal() { return 96; }
+            public int ordinal() { return 97; }
             public String name() { return "TypeArg"; }
         }
         record QualifiedName() implements RuleId {
-            public int ordinal() { return 97; }
+            public int ordinal() { return 98; }
             public String name() { return "QualifiedName"; }
         }
         record Identifier() implements RuleId {
-            public int ordinal() { return 98; }
+            public int ordinal() { return 99; }
             public String name() { return "Identifier"; }
         }
         record Modifier() implements RuleId {
-            public int ordinal() { return 99; }
+            public int ordinal() { return 100; }
             public String name() { return "Modifier"; }
         }
         record Annotation() implements RuleId {
-            public int ordinal() { return 100; }
+            public int ordinal() { return 101; }
             public String name() { return "Annotation"; }
         }
         record AnnotationValue() implements RuleId {
-            public int ordinal() { return 101; }
+            public int ordinal() { return 102; }
             public String name() { return "AnnotationValue"; }
         }
         record AnnotationElem() implements RuleId {
-            public int ordinal() { return 102; }
+            public int ordinal() { return 103; }
             public String name() { return "AnnotationElem"; }
         }
         record Literal() implements RuleId {
-            public int ordinal() { return 103; }
+            public int ordinal() { return 104; }
             public String name() { return "Literal"; }
         }
         record CharLit() implements RuleId {
-            public int ordinal() { return 104; }
+            public int ordinal() { return 105; }
             public String name() { return "CharLit"; }
         }
         record StringLit() implements RuleId {
-            public int ordinal() { return 105; }
+            public int ordinal() { return 106; }
             public String name() { return "StringLit"; }
         }
         record NumLit() implements RuleId {
-            public int ordinal() { return 106; }
+            public int ordinal() { return 107; }
             public String name() { return "NumLit"; }
         }
         record Keyword() implements RuleId {
-            public int ordinal() { return 107; }
+            public int ordinal() { return 108; }
             public String name() { return "Keyword"; }
         }
         // Built-in types for anonymous terminals
@@ -522,6 +526,7 @@ public final class Java25Parser {
     private static final RuleId.ConstructorDecl RULE_CONSTRUCTOR_DECL = new RuleId.ConstructorDecl();
     private static final RuleId.Block RULE_BLOCK = new RuleId.Block();
     private static final RuleId.BlockStmt RULE_BLOCK_STMT = new RuleId.BlockStmt();
+    private static final RuleId.LocalTypeDecl RULE_LOCAL_TYPE_DECL = new RuleId.LocalTypeDecl();
     private static final RuleId.LocalVar RULE_LOCAL_VAR = new RuleId.LocalVar();
     private static final RuleId.LocalVarType RULE_LOCAL_VAR_TYPE = new RuleId.LocalVarType();
     private static final RuleId.Stmt RULE_STMT = new RuleId.Stmt();
@@ -627,7 +632,7 @@ public final class Java25Parser {
 
         record Token(SourceSpan span, RuleId rule, String text,
                      List<Trivia> leadingTrivia, List<Trivia> trailingTrivia) implements CstNode {}
-        record Error(SourceSpan span, String skippedText,
+        record Error(SourceSpan span, String skippedText, String expected,
                      List<Trivia> leadingTrivia, List<Trivia> trailingTrivia) implements CstNode {
             @Override public RuleId rule() { return null; }
         }
@@ -1018,7 +1023,8 @@ public final class Java25Parser {
             var skippedSpan = skipToRecoveryPoint();
             if (skippedSpan.length() > 0) {
                 var skippedText = skippedSpan.extract(input);
-                var errorNode = new CstNode.Error(skippedSpan, skippedText, leadingTrivia, List.of());
+                var expected = furthestExpected != null ? furthestExpected : result.expected;
+                var errorNode = new CstNode.Error(skippedSpan, skippedText, expected, leadingTrivia, List.of());
                 return ParseResultWithDiagnostics.withErrors(errorNode, diagnostics, input);
             }
             return ParseResultWithDiagnostics.withErrors(null, diagnostics, input);
@@ -6082,7 +6088,7 @@ public final class Java25Parser {
         children.clear();
         children.addAll(savedChildren0);
         var trivia2 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
-        var alt0_1 = parse_TypeKind(trivia2);
+        var alt0_1 = parse_LocalTypeDecl(trivia2);
         if (alt0_1.isSuccess() && alt0_1.node != null) {
             children.add(alt0_1.node);
         }
@@ -6125,11 +6131,98 @@ public final class Java25Parser {
         return finalResult;
     }
 
-    private CstParseResult parse_LocalVar(List<Trivia> leadingTrivia) {
+    private CstParseResult parse_LocalTypeDecl(List<Trivia> leadingTrivia) {
         var startLoc = location();
         
         // Check cache
         long key = cacheKey(49, startLoc.offset());
+        var cached = cache.get(key);
+        if (cached != null) {
+            if (cached.isSuccess()) restoreLocation(cached.endLocation);
+            return cached;
+        }
+        
+        var children = new ArrayList<CstNode>();
+        
+        CstParseResult result = CstParseResult.success(null, "", location());
+        var seqStart0 = location();
+        if (result.isSuccess()) {
+            CstParseResult elem0_0 = CstParseResult.success(null, "", location());
+            var zomStart1 = location();
+            while (true) {
+                var beforeLoc1 = location();
+                var trivia2 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
+                var zomElem1 = parse_Annotation(trivia2);
+                if (zomElem1.isSuccess() && zomElem1.node != null) {
+                    children.add(zomElem1.node);
+                }
+                if (zomElem1.isFailure() || location().offset() == beforeLoc1.offset()) {
+                    restoreLocation(beforeLoc1);
+                    break;
+                }
+            }
+            elem0_0 = CstParseResult.success(null, substring(zomStart1.offset(), pos), location());
+            if (elem0_0.isFailure()) {
+                restoreLocation(seqStart0);
+                result = elem0_0;
+            }
+        }
+        if (result.isSuccess()) {
+            CstParseResult elem0_1 = CstParseResult.success(null, "", location());
+            var zomStart3 = location();
+            while (true) {
+                var beforeLoc3 = location();
+                var trivia4 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
+                var zomElem3 = parse_Modifier(trivia4);
+                if (zomElem3.isSuccess() && zomElem3.node != null) {
+                    children.add(zomElem3.node);
+                }
+                if (zomElem3.isFailure() || location().offset() == beforeLoc3.offset()) {
+                    restoreLocation(beforeLoc3);
+                    break;
+                }
+            }
+            elem0_1 = CstParseResult.success(null, substring(zomStart3.offset(), pos), location());
+            if (elem0_1.isFailure()) {
+                restoreLocation(seqStart0);
+                result = elem0_1;
+            }
+        }
+        if (result.isSuccess()) {
+            var trivia5 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
+            var elem0_2 = parse_TypeKind(trivia5);
+            if (elem0_2.isSuccess() && elem0_2.node != null) {
+                children.add(elem0_2.node);
+            }
+            if (elem0_2.isFailure()) {
+                restoreLocation(seqStart0);
+                result = elem0_2;
+            }
+        }
+        if (result.isSuccess()) {
+            result = CstParseResult.success(null, substring(seqStart0.offset(), pos), location());
+        }
+        
+        CstParseResult finalResult;
+        if (result.isSuccess()) {
+            var endLoc = location();
+            var span = SourceSpan.of(startLoc, endLoc);
+            var node = new CstNode.NonTerminal(span, RULE_LOCAL_TYPE_DECL, children, leadingTrivia, List.of());
+            finalResult = CstParseResult.success(node, result.text, endLoc);
+        } else {
+            restoreLocation(startLoc);
+            finalResult = result;
+        }
+        
+        cache.put(key, finalResult);
+        return finalResult;
+    }
+
+    private CstParseResult parse_LocalVar(List<Trivia> leadingTrivia) {
+        var startLoc = location();
+        
+        // Check cache
+        long key = cacheKey(50, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -6217,7 +6310,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(50, startLoc.offset());
+        long key = cacheKey(51, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -6277,7 +6370,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(51, startLoc.offset());
+        long key = cacheKey(52, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -7275,7 +7368,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(52, startLoc.offset());
+        long key = cacheKey(53, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -7450,7 +7543,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(53, startLoc.offset());
+        long key = cacheKey(54, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -7511,7 +7604,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(54, startLoc.offset());
+        long key = cacheKey(55, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -7588,7 +7681,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(55, startLoc.offset());
+        long key = cacheKey(56, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -7713,7 +7806,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(56, startLoc.offset());
+        long key = cacheKey(57, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -7839,7 +7932,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(57, startLoc.offset());
+        long key = cacheKey(58, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -8002,7 +8095,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(58, startLoc.offset());
+        long key = cacheKey(59, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -8057,7 +8150,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(59, startLoc.offset());
+        long key = cacheKey(60, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -8133,7 +8226,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(60, startLoc.offset());
+        long key = cacheKey(61, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -8363,7 +8456,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(61, startLoc.offset());
+        long key = cacheKey(62, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -8574,7 +8667,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(62, startLoc.offset());
+        long key = cacheKey(63, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -8700,7 +8793,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(63, startLoc.offset());
+        long key = cacheKey(64, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -8761,7 +8854,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(64, startLoc.offset());
+        long key = cacheKey(65, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -8876,7 +8969,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(65, startLoc.offset());
+        long key = cacheKey(66, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -8959,7 +9052,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(66, startLoc.offset());
+        long key = cacheKey(67, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -9047,7 +9140,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(67, startLoc.offset());
+        long key = cacheKey(68, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -9102,7 +9195,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(68, startLoc.offset());
+        long key = cacheKey(69, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -9136,7 +9229,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(69, startLoc.offset());
+        long key = cacheKey(70, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -9355,7 +9448,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(70, startLoc.offset());
+        long key = cacheKey(71, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -9460,7 +9553,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(71, startLoc.offset());
+        long key = cacheKey(72, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -9548,7 +9641,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(72, startLoc.offset());
+        long key = cacheKey(73, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -9636,7 +9729,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(73, startLoc.offset());
+        long key = cacheKey(74, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -9738,7 +9831,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(74, startLoc.offset());
+        long key = cacheKey(75, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -9826,7 +9919,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(75, startLoc.offset());
+        long key = cacheKey(76, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -9928,7 +10021,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(76, startLoc.offset());
+        long key = cacheKey(77, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -10042,7 +10135,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(77, startLoc.offset());
+        long key = cacheKey(78, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -10248,7 +10341,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(78, startLoc.offset());
+        long key = cacheKey(79, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -10373,7 +10466,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(79, startLoc.offset());
+        long key = cacheKey(80, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -10512,7 +10605,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(80, startLoc.offset());
+        long key = cacheKey(81, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -10637,7 +10730,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(81, startLoc.offset());
+        long key = cacheKey(82, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -10887,7 +10980,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(82, startLoc.offset());
+        long key = cacheKey(83, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -10953,7 +11046,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(83, startLoc.offset());
+        long key = cacheKey(84, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -10980,10 +11073,15 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            var trivia3 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
-            var elem1_1 = parse_Identifier(trivia3);
-            if (elem1_1.isSuccess() && elem1_1.node != null) {
-                children.add(elem1_1.node);
+            var optStart3 = location();
+            var trivia4 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
+            var optElem3 = parse_TypeArgs(trivia4);
+            if (optElem3.isSuccess() && optElem3.node != null) {
+                children.add(optElem3.node);
+            }
+            var elem1_1 = optElem3.isSuccess() ? optElem3 : CstParseResult.success(null, "", location());
+            if (optElem3.isFailure()) {
+                restoreLocation(optStart3);
             }
             if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
@@ -10991,57 +11089,68 @@ public final class Java25Parser {
             }
         }
         if (alt0_0.isSuccess()) {
-            var optStart4 = location();
-            if (!inTokenBoundary) skipWhitespace();
-            CstParseResult optElem4 = CstParseResult.success(null, "", location());
-            var seqStart6 = location();
-            if (optElem4.isSuccess()) {
-                var elem6_0 = matchLiteralCst("(", false);
-                if (elem6_0.isSuccess() && elem6_0.node != null) {
-                    children.add(elem6_0.node);
-                }
-                if (elem6_0.isFailure()) {
-                    restoreLocation(seqStart6);
-                    optElem4 = elem6_0;
-                }
-            }
-            if (optElem4.isSuccess()) {
-                var optStart8 = location();
-                var trivia9 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
-                var optElem8 = parse_Args(trivia9);
-                if (optElem8.isSuccess() && optElem8.node != null) {
-                    children.add(optElem8.node);
-                }
-                var elem6_1 = optElem8.isSuccess() ? optElem8 : CstParseResult.success(null, "", location());
-                if (optElem8.isFailure()) {
-                    restoreLocation(optStart8);
-                }
-                if (elem6_1.isFailure()) {
-                    restoreLocation(seqStart6);
-                    optElem4 = elem6_1;
-                }
-            }
-            if (optElem4.isSuccess()) {
-                if (!inTokenBoundary) skipWhitespace();
-                var elem6_2 = matchLiteralCst(")", false);
-                if (elem6_2.isSuccess() && elem6_2.node != null) {
-                    children.add(elem6_2.node);
-                }
-                if (elem6_2.isFailure()) {
-                    restoreLocation(seqStart6);
-                    optElem4 = elem6_2;
-                }
-            }
-            if (optElem4.isSuccess()) {
-                optElem4 = CstParseResult.success(null, substring(seqStart6.offset(), pos), location());
-            }
-            var elem1_2 = optElem4.isSuccess() ? optElem4 : CstParseResult.success(null, "", location());
-            if (optElem4.isFailure()) {
-                restoreLocation(optStart4);
+            var trivia5 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
+            var elem1_2 = parse_Identifier(trivia5);
+            if (elem1_2.isSuccess() && elem1_2.node != null) {
+                children.add(elem1_2.node);
             }
             if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
+            }
+        }
+        if (alt0_0.isSuccess()) {
+            var optStart6 = location();
+            if (!inTokenBoundary) skipWhitespace();
+            CstParseResult optElem6 = CstParseResult.success(null, "", location());
+            var seqStart8 = location();
+            if (optElem6.isSuccess()) {
+                var elem8_0 = matchLiteralCst("(", false);
+                if (elem8_0.isSuccess() && elem8_0.node != null) {
+                    children.add(elem8_0.node);
+                }
+                if (elem8_0.isFailure()) {
+                    restoreLocation(seqStart8);
+                    optElem6 = elem8_0;
+                }
+            }
+            if (optElem6.isSuccess()) {
+                var optStart10 = location();
+                var trivia11 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
+                var optElem10 = parse_Args(trivia11);
+                if (optElem10.isSuccess() && optElem10.node != null) {
+                    children.add(optElem10.node);
+                }
+                var elem8_1 = optElem10.isSuccess() ? optElem10 : CstParseResult.success(null, "", location());
+                if (optElem10.isFailure()) {
+                    restoreLocation(optStart10);
+                }
+                if (elem8_1.isFailure()) {
+                    restoreLocation(seqStart8);
+                    optElem6 = elem8_1;
+                }
+            }
+            if (optElem6.isSuccess()) {
+                if (!inTokenBoundary) skipWhitespace();
+                var elem8_2 = matchLiteralCst(")", false);
+                if (elem8_2.isSuccess() && elem8_2.node != null) {
+                    children.add(elem8_2.node);
+                }
+                if (elem8_2.isFailure()) {
+                    restoreLocation(seqStart8);
+                    optElem6 = elem8_2;
+                }
+            }
+            if (optElem6.isSuccess()) {
+                optElem6 = CstParseResult.success(null, substring(seqStart8.offset(), pos), location());
+            }
+            var elem1_3 = optElem6.isSuccess() ? optElem6 : CstParseResult.success(null, "", location());
+            if (optElem6.isFailure()) {
+                restoreLocation(optStart6);
+            }
+            if (elem1_3.isFailure()) {
+                restoreLocation(seqStart1);
+                alt0_0 = elem1_3;
             }
         }
         if (alt0_0.isSuccess()) {
@@ -11054,30 +11163,30 @@ public final class Java25Parser {
         children.clear();
         children.addAll(savedChildren0);
         CstParseResult alt0_1 = CstParseResult.success(null, "", location());
-        var seqStart11 = location();
+        var seqStart13 = location();
         if (alt0_1.isSuccess()) {
-            var elem11_0 = matchLiteralCst(".", false);
-            if (elem11_0.isSuccess() && elem11_0.node != null) {
-                children.add(elem11_0.node);
+            var elem13_0 = matchLiteralCst(".", false);
+            if (elem13_0.isSuccess() && elem13_0.node != null) {
+                children.add(elem13_0.node);
             }
-            if (elem11_0.isFailure()) {
-                restoreLocation(seqStart11);
-                alt0_1 = elem11_0;
+            if (elem13_0.isFailure()) {
+                restoreLocation(seqStart13);
+                alt0_1 = elem13_0;
             }
         }
         if (alt0_1.isSuccess()) {
             if (!inTokenBoundary) skipWhitespace();
-            var elem11_1 = matchLiteralCst("class", false);
-            if (elem11_1.isSuccess() && elem11_1.node != null) {
-                children.add(elem11_1.node);
+            var elem13_1 = matchLiteralCst("class", false);
+            if (elem13_1.isSuccess() && elem13_1.node != null) {
+                children.add(elem13_1.node);
             }
-            if (elem11_1.isFailure()) {
-                restoreLocation(seqStart11);
-                alt0_1 = elem11_1;
+            if (elem13_1.isFailure()) {
+                restoreLocation(seqStart13);
+                alt0_1 = elem13_1;
             }
         }
         if (alt0_1.isSuccess()) {
-            alt0_1 = CstParseResult.success(null, substring(seqStart11.offset(), pos), location());
+            alt0_1 = CstParseResult.success(null, substring(seqStart13.offset(), pos), location());
         }
         if (alt0_1.isSuccess()) {
             result = alt0_1;
@@ -11086,30 +11195,30 @@ public final class Java25Parser {
         children.clear();
         children.addAll(savedChildren0);
         CstParseResult alt0_2 = CstParseResult.success(null, "", location());
-        var seqStart14 = location();
+        var seqStart16 = location();
         if (alt0_2.isSuccess()) {
-            var elem14_0 = matchLiteralCst(".", false);
-            if (elem14_0.isSuccess() && elem14_0.node != null) {
-                children.add(elem14_0.node);
+            var elem16_0 = matchLiteralCst(".", false);
+            if (elem16_0.isSuccess() && elem16_0.node != null) {
+                children.add(elem16_0.node);
             }
-            if (elem14_0.isFailure()) {
-                restoreLocation(seqStart14);
-                alt0_2 = elem14_0;
+            if (elem16_0.isFailure()) {
+                restoreLocation(seqStart16);
+                alt0_2 = elem16_0;
             }
         }
         if (alt0_2.isSuccess()) {
             if (!inTokenBoundary) skipWhitespace();
-            var elem14_1 = matchLiteralCst("this", false);
-            if (elem14_1.isSuccess() && elem14_1.node != null) {
-                children.add(elem14_1.node);
+            var elem16_1 = matchLiteralCst("this", false);
+            if (elem16_1.isSuccess() && elem16_1.node != null) {
+                children.add(elem16_1.node);
             }
-            if (elem14_1.isFailure()) {
-                restoreLocation(seqStart14);
-                alt0_2 = elem14_1;
+            if (elem16_1.isFailure()) {
+                restoreLocation(seqStart16);
+                alt0_2 = elem16_1;
             }
         }
         if (alt0_2.isSuccess()) {
-            alt0_2 = CstParseResult.success(null, substring(seqStart14.offset(), pos), location());
+            alt0_2 = CstParseResult.success(null, substring(seqStart16.offset(), pos), location());
         }
         if (alt0_2.isSuccess()) {
             result = alt0_2;
@@ -11118,41 +11227,41 @@ public final class Java25Parser {
         children.clear();
         children.addAll(savedChildren0);
         CstParseResult alt0_3 = CstParseResult.success(null, "", location());
-        var seqStart17 = location();
+        var seqStart19 = location();
         if (alt0_3.isSuccess()) {
-            var elem17_0 = matchLiteralCst("[", false);
-            if (elem17_0.isSuccess() && elem17_0.node != null) {
-                children.add(elem17_0.node);
+            var elem19_0 = matchLiteralCst("[", false);
+            if (elem19_0.isSuccess() && elem19_0.node != null) {
+                children.add(elem19_0.node);
             }
-            if (elem17_0.isFailure()) {
-                restoreLocation(seqStart17);
-                alt0_3 = elem17_0;
+            if (elem19_0.isFailure()) {
+                restoreLocation(seqStart19);
+                alt0_3 = elem19_0;
             }
         }
         if (alt0_3.isSuccess()) {
-            var trivia19 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
-            var elem17_1 = parse_Expr(trivia19);
-            if (elem17_1.isSuccess() && elem17_1.node != null) {
-                children.add(elem17_1.node);
+            var trivia21 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
+            var elem19_1 = parse_Expr(trivia21);
+            if (elem19_1.isSuccess() && elem19_1.node != null) {
+                children.add(elem19_1.node);
             }
-            if (elem17_1.isFailure()) {
-                restoreLocation(seqStart17);
-                alt0_3 = elem17_1;
+            if (elem19_1.isFailure()) {
+                restoreLocation(seqStart19);
+                alt0_3 = elem19_1;
             }
         }
         if (alt0_3.isSuccess()) {
             if (!inTokenBoundary) skipWhitespace();
-            var elem17_2 = matchLiteralCst("]", false);
-            if (elem17_2.isSuccess() && elem17_2.node != null) {
-                children.add(elem17_2.node);
+            var elem19_2 = matchLiteralCst("]", false);
+            if (elem19_2.isSuccess() && elem19_2.node != null) {
+                children.add(elem19_2.node);
             }
-            if (elem17_2.isFailure()) {
-                restoreLocation(seqStart17);
-                alt0_3 = elem17_2;
+            if (elem19_2.isFailure()) {
+                restoreLocation(seqStart19);
+                alt0_3 = elem19_2;
             }
         }
         if (alt0_3.isSuccess()) {
-            alt0_3 = CstParseResult.success(null, substring(seqStart17.offset(), pos), location());
+            alt0_3 = CstParseResult.success(null, substring(seqStart19.offset(), pos), location());
         }
         if (alt0_3.isSuccess()) {
             result = alt0_3;
@@ -11161,46 +11270,46 @@ public final class Java25Parser {
         children.clear();
         children.addAll(savedChildren0);
         CstParseResult alt0_4 = CstParseResult.success(null, "", location());
-        var seqStart21 = location();
+        var seqStart23 = location();
         if (alt0_4.isSuccess()) {
-            var elem21_0 = matchLiteralCst("(", false);
-            if (elem21_0.isSuccess() && elem21_0.node != null) {
-                children.add(elem21_0.node);
+            var elem23_0 = matchLiteralCst("(", false);
+            if (elem23_0.isSuccess() && elem23_0.node != null) {
+                children.add(elem23_0.node);
             }
-            if (elem21_0.isFailure()) {
-                restoreLocation(seqStart21);
-                alt0_4 = elem21_0;
+            if (elem23_0.isFailure()) {
+                restoreLocation(seqStart23);
+                alt0_4 = elem23_0;
             }
         }
         if (alt0_4.isSuccess()) {
-            var optStart23 = location();
-            var trivia24 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
-            var optElem23 = parse_Args(trivia24);
-            if (optElem23.isSuccess() && optElem23.node != null) {
-                children.add(optElem23.node);
+            var optStart25 = location();
+            var trivia26 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
+            var optElem25 = parse_Args(trivia26);
+            if (optElem25.isSuccess() && optElem25.node != null) {
+                children.add(optElem25.node);
             }
-            var elem21_1 = optElem23.isSuccess() ? optElem23 : CstParseResult.success(null, "", location());
-            if (optElem23.isFailure()) {
-                restoreLocation(optStart23);
+            var elem23_1 = optElem25.isSuccess() ? optElem25 : CstParseResult.success(null, "", location());
+            if (optElem25.isFailure()) {
+                restoreLocation(optStart25);
             }
-            if (elem21_1.isFailure()) {
-                restoreLocation(seqStart21);
-                alt0_4 = elem21_1;
+            if (elem23_1.isFailure()) {
+                restoreLocation(seqStart23);
+                alt0_4 = elem23_1;
             }
         }
         if (alt0_4.isSuccess()) {
             if (!inTokenBoundary) skipWhitespace();
-            var elem21_2 = matchLiteralCst(")", false);
-            if (elem21_2.isSuccess() && elem21_2.node != null) {
-                children.add(elem21_2.node);
+            var elem23_2 = matchLiteralCst(")", false);
+            if (elem23_2.isSuccess() && elem23_2.node != null) {
+                children.add(elem23_2.node);
             }
-            if (elem21_2.isFailure()) {
-                restoreLocation(seqStart21);
-                alt0_4 = elem21_2;
+            if (elem23_2.isFailure()) {
+                restoreLocation(seqStart23);
+                alt0_4 = elem23_2;
             }
         }
         if (alt0_4.isSuccess()) {
-            alt0_4 = CstParseResult.success(null, substring(seqStart21.offset(), pos), location());
+            alt0_4 = CstParseResult.success(null, substring(seqStart23.offset(), pos), location());
         }
         if (alt0_4.isSuccess()) {
             result = alt0_4;
@@ -11229,72 +11338,72 @@ public final class Java25Parser {
         children.clear();
         children.addAll(savedChildren0);
         CstParseResult alt0_7 = CstParseResult.success(null, "", location());
-        var seqStart28 = location();
+        var seqStart30 = location();
         if (alt0_7.isSuccess()) {
-            var elem28_0 = matchLiteralCst("::", false);
-            if (elem28_0.isSuccess() && elem28_0.node != null) {
-                children.add(elem28_0.node);
+            var elem30_0 = matchLiteralCst("::", false);
+            if (elem30_0.isSuccess() && elem30_0.node != null) {
+                children.add(elem30_0.node);
             }
-            if (elem28_0.isFailure()) {
-                restoreLocation(seqStart28);
-                alt0_7 = elem28_0;
+            if (elem30_0.isFailure()) {
+                restoreLocation(seqStart30);
+                alt0_7 = elem30_0;
             }
         }
         if (alt0_7.isSuccess()) {
-            var optStart30 = location();
-            var trivia31 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
-            var optElem30 = parse_TypeArgs(trivia31);
-            if (optElem30.isSuccess() && optElem30.node != null) {
-                children.add(optElem30.node);
+            var optStart32 = location();
+            var trivia33 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
+            var optElem32 = parse_TypeArgs(trivia33);
+            if (optElem32.isSuccess() && optElem32.node != null) {
+                children.add(optElem32.node);
             }
-            var elem28_1 = optElem30.isSuccess() ? optElem30 : CstParseResult.success(null, "", location());
-            if (optElem30.isFailure()) {
-                restoreLocation(optStart30);
+            var elem30_1 = optElem32.isSuccess() ? optElem32 : CstParseResult.success(null, "", location());
+            if (optElem32.isFailure()) {
+                restoreLocation(optStart32);
             }
-            if (elem28_1.isFailure()) {
-                restoreLocation(seqStart28);
-                alt0_7 = elem28_1;
+            if (elem30_1.isFailure()) {
+                restoreLocation(seqStart30);
+                alt0_7 = elem30_1;
             }
         }
         if (alt0_7.isSuccess()) {
-            CstParseResult elem28_2 = null;
-            var choiceStart33 = location();
-            var savedChildren33 = new ArrayList<>(children);
+            CstParseResult elem30_2 = null;
+            var choiceStart35 = location();
+            var savedChildren35 = new ArrayList<>(children);
             children.clear();
-            children.addAll(savedChildren33);
-            var trivia34 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
-            var alt33_0 = parse_Identifier(trivia34);
-            if (alt33_0.isSuccess() && alt33_0.node != null) {
-                children.add(alt33_0.node);
+            children.addAll(savedChildren35);
+            var trivia36 = inTokenBoundary ? List.<Trivia>of() : skipWhitespace();
+            var alt35_0 = parse_Identifier(trivia36);
+            if (alt35_0.isSuccess() && alt35_0.node != null) {
+                children.add(alt35_0.node);
             }
-            if (alt33_0.isSuccess()) {
-                elem28_2 = alt33_0;
+            if (alt35_0.isSuccess()) {
+                elem30_2 = alt35_0;
             } else {
-                restoreLocation(choiceStart33);
+                restoreLocation(choiceStart35);
             children.clear();
-            children.addAll(savedChildren33);
-            var alt33_1 = matchLiteralCst("new", false);
-            if (alt33_1.isSuccess() && alt33_1.node != null) {
-                children.add(alt33_1.node);
+            children.addAll(savedChildren35);
+            var alt35_1 = matchLiteralCst("new", false);
+            if (alt35_1.isSuccess() && alt35_1.node != null) {
+                children.add(alt35_1.node);
             }
-            if (alt33_1.isSuccess()) {
-                elem28_2 = alt33_1;
+            if (alt35_1.isSuccess()) {
+                elem30_2 = alt35_1;
             } else {
-                restoreLocation(choiceStart33);
+                restoreLocation(choiceStart35);
             }
             }
-            if (elem28_2 == null) {
+            if (elem30_2 == null) {
                 children.clear();
-                children.addAll(savedChildren33);
-                elem28_2 = CstParseResult.failure("one of alternatives");
+                children.addAll(savedChildren35);
+                elem30_2 = CstParseResult.failure("one of alternatives");
             }
-            if (elem28_2.isFailure()) {
-                restoreLocation(seqStart28);
-                alt0_7 = elem28_2;
+            if (elem30_2.isFailure()) {
+                restoreLocation(seqStart30);
+                alt0_7 = elem30_2;
             }
         }
         if (alt0_7.isSuccess()) {
-            alt0_7 = CstParseResult.success(null, substring(seqStart28.offset(), pos), location());
+            alt0_7 = CstParseResult.success(null, substring(seqStart30.offset(), pos), location());
         }
         if (alt0_7.isSuccess()) {
             result = alt0_7;
@@ -11333,7 +11442,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(84, startLoc.offset());
+        long key = cacheKey(85, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -11710,7 +11819,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(85, startLoc.offset());
+        long key = cacheKey(86, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -11804,7 +11913,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(86, startLoc.offset());
+        long key = cacheKey(87, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -11956,7 +12065,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(87, startLoc.offset());
+        long key = cacheKey(88, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -12176,7 +12285,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(88, startLoc.offset());
+        long key = cacheKey(89, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -12264,7 +12373,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(89, startLoc.offset());
+        long key = cacheKey(90, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -12352,7 +12461,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(90, startLoc.offset());
+        long key = cacheKey(91, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -12461,7 +12570,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(91, startLoc.offset());
+        long key = cacheKey(92, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -12597,7 +12706,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(92, startLoc.offset());
+        long key = cacheKey(93, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -12685,7 +12794,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(93, startLoc.offset());
+        long key = cacheKey(94, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -12767,7 +12876,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(94, startLoc.offset());
+        long key = cacheKey(95, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -12904,7 +13013,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(95, startLoc.offset());
+        long key = cacheKey(96, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -13061,7 +13170,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(96, startLoc.offset());
+        long key = cacheKey(97, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -13217,7 +13326,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(97, startLoc.offset());
+        long key = cacheKey(98, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -13305,7 +13414,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(98, startLoc.offset());
+        long key = cacheKey(99, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -13406,7 +13515,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(99, startLoc.offset());
+        long key = cacheKey(100, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -13597,7 +13706,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(100, startLoc.offset());
+        long key = cacheKey(101, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -13720,7 +13829,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(101, startLoc.offset());
+        long key = cacheKey(102, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -13879,7 +13988,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(102, startLoc.offset());
+        long key = cacheKey(103, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -14060,7 +14169,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(103, startLoc.offset());
+        long key = cacheKey(104, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -14166,7 +14275,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(104, startLoc.offset());
+        long key = cacheKey(105, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -14284,7 +14393,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(105, startLoc.offset());
+        long key = cacheKey(106, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -14500,7 +14609,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(106, startLoc.offset());
+        long key = cacheKey(107, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -14984,7 +15093,7 @@ public final class Java25Parser {
         var startLoc = location();
         
         // Check cache
-        long key = cacheKey(107, startLoc.offset());
+        long key = cacheKey(108, startLoc.offset());
         var cached = cache.get(key);
         if (cached != null) {
             if (cached.isSuccess()) restoreLocation(cached.endLocation);
@@ -15301,7 +15410,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_30 = matchLiteralCst("module", false);
+            var alt2_30 = matchLiteralCst("native", false);
             if (alt2_30.isSuccess() && alt2_30.node != null) {
                 children.add(alt2_30.node);
             }
@@ -15311,7 +15420,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_31 = matchLiteralCst("native", false);
+            var alt2_31 = matchLiteralCst("new", false);
             if (alt2_31.isSuccess() && alt2_31.node != null) {
                 children.add(alt2_31.node);
             }
@@ -15321,7 +15430,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_32 = matchLiteralCst("new", false);
+            var alt2_32 = matchLiteralCst("null", false);
             if (alt2_32.isSuccess() && alt2_32.node != null) {
                 children.add(alt2_32.node);
             }
@@ -15331,7 +15440,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_33 = matchLiteralCst("non-sealed", false);
+            var alt2_33 = matchLiteralCst("package", false);
             if (alt2_33.isSuccess() && alt2_33.node != null) {
                 children.add(alt2_33.node);
             }
@@ -15341,7 +15450,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_34 = matchLiteralCst("null", false);
+            var alt2_34 = matchLiteralCst("private", false);
             if (alt2_34.isSuccess() && alt2_34.node != null) {
                 children.add(alt2_34.node);
             }
@@ -15351,7 +15460,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_35 = matchLiteralCst("package", false);
+            var alt2_35 = matchLiteralCst("protected", false);
             if (alt2_35.isSuccess() && alt2_35.node != null) {
                 children.add(alt2_35.node);
             }
@@ -15361,7 +15470,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_36 = matchLiteralCst("permits", false);
+            var alt2_36 = matchLiteralCst("public", false);
             if (alt2_36.isSuccess() && alt2_36.node != null) {
                 children.add(alt2_36.node);
             }
@@ -15371,7 +15480,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_37 = matchLiteralCst("private", false);
+            var alt2_37 = matchLiteralCst("return", false);
             if (alt2_37.isSuccess() && alt2_37.node != null) {
                 children.add(alt2_37.node);
             }
@@ -15381,7 +15490,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_38 = matchLiteralCst("protected", false);
+            var alt2_38 = matchLiteralCst("short", false);
             if (alt2_38.isSuccess() && alt2_38.node != null) {
                 children.add(alt2_38.node);
             }
@@ -15391,7 +15500,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_39 = matchLiteralCst("public", false);
+            var alt2_39 = matchLiteralCst("static", false);
             if (alt2_39.isSuccess() && alt2_39.node != null) {
                 children.add(alt2_39.node);
             }
@@ -15401,7 +15510,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_40 = matchLiteralCst("record", false);
+            var alt2_40 = matchLiteralCst("strictfp", false);
             if (alt2_40.isSuccess() && alt2_40.node != null) {
                 children.add(alt2_40.node);
             }
@@ -15411,7 +15520,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_41 = matchLiteralCst("return", false);
+            var alt2_41 = matchLiteralCst("super", false);
             if (alt2_41.isSuccess() && alt2_41.node != null) {
                 children.add(alt2_41.node);
             }
@@ -15421,7 +15530,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_42 = matchLiteralCst("sealed", false);
+            var alt2_42 = matchLiteralCst("switch", false);
             if (alt2_42.isSuccess() && alt2_42.node != null) {
                 children.add(alt2_42.node);
             }
@@ -15431,7 +15540,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_43 = matchLiteralCst("short", false);
+            var alt2_43 = matchLiteralCst("synchronized", false);
             if (alt2_43.isSuccess() && alt2_43.node != null) {
                 children.add(alt2_43.node);
             }
@@ -15441,7 +15550,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_44 = matchLiteralCst("static", false);
+            var alt2_44 = matchLiteralCst("this", false);
             if (alt2_44.isSuccess() && alt2_44.node != null) {
                 children.add(alt2_44.node);
             }
@@ -15451,7 +15560,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_45 = matchLiteralCst("strictfp", false);
+            var alt2_45 = matchLiteralCst("throws", false);
             if (alt2_45.isSuccess() && alt2_45.node != null) {
                 children.add(alt2_45.node);
             }
@@ -15461,7 +15570,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_46 = matchLiteralCst("super", false);
+            var alt2_46 = matchLiteralCst("throw", false);
             if (alt2_46.isSuccess() && alt2_46.node != null) {
                 children.add(alt2_46.node);
             }
@@ -15471,7 +15580,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_47 = matchLiteralCst("switch", false);
+            var alt2_47 = matchLiteralCst("transient", false);
             if (alt2_47.isSuccess() && alt2_47.node != null) {
                 children.add(alt2_47.node);
             }
@@ -15481,7 +15590,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_48 = matchLiteralCst("synchronized", false);
+            var alt2_48 = matchLiteralCst("true", false);
             if (alt2_48.isSuccess() && alt2_48.node != null) {
                 children.add(alt2_48.node);
             }
@@ -15491,7 +15600,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_49 = matchLiteralCst("this", false);
+            var alt2_49 = matchLiteralCst("try", false);
             if (alt2_49.isSuccess() && alt2_49.node != null) {
                 children.add(alt2_49.node);
             }
@@ -15501,7 +15610,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_50 = matchLiteralCst("throws", false);
+            var alt2_50 = matchLiteralCst("void", false);
             if (alt2_50.isSuccess() && alt2_50.node != null) {
                 children.add(alt2_50.node);
             }
@@ -15511,7 +15620,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_51 = matchLiteralCst("throw", false);
+            var alt2_51 = matchLiteralCst("volatile", false);
             if (alt2_51.isSuccess() && alt2_51.node != null) {
                 children.add(alt2_51.node);
             }
@@ -15521,7 +15630,7 @@ public final class Java25Parser {
                 restoreLocation(choiceStart2);
             children.clear();
             children.addAll(savedChildren2);
-            var alt2_52 = matchLiteralCst("transient", false);
+            var alt2_52 = matchLiteralCst("while", false);
             if (alt2_52.isSuccess() && alt2_52.node != null) {
                 children.add(alt2_52.node);
             }
@@ -15529,105 +15638,6 @@ public final class Java25Parser {
                 elem0_0 = alt2_52;
             } else {
                 restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_53 = matchLiteralCst("true", false);
-            if (alt2_53.isSuccess() && alt2_53.node != null) {
-                children.add(alt2_53.node);
-            }
-            if (alt2_53.isSuccess()) {
-                elem0_0 = alt2_53;
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_54 = matchLiteralCst("try", false);
-            if (alt2_54.isSuccess() && alt2_54.node != null) {
-                children.add(alt2_54.node);
-            }
-            if (alt2_54.isSuccess()) {
-                elem0_0 = alt2_54;
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_55 = matchLiteralCst("var", false);
-            if (alt2_55.isSuccess() && alt2_55.node != null) {
-                children.add(alt2_55.node);
-            }
-            if (alt2_55.isSuccess()) {
-                elem0_0 = alt2_55;
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_56 = matchLiteralCst("void", false);
-            if (alt2_56.isSuccess() && alt2_56.node != null) {
-                children.add(alt2_56.node);
-            }
-            if (alt2_56.isSuccess()) {
-                elem0_0 = alt2_56;
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_57 = matchLiteralCst("volatile", false);
-            if (alt2_57.isSuccess() && alt2_57.node != null) {
-                children.add(alt2_57.node);
-            }
-            if (alt2_57.isSuccess()) {
-                elem0_0 = alt2_57;
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_58 = matchLiteralCst("when", false);
-            if (alt2_58.isSuccess() && alt2_58.node != null) {
-                children.add(alt2_58.node);
-            }
-            if (alt2_58.isSuccess()) {
-                elem0_0 = alt2_58;
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_59 = matchLiteralCst("while", false);
-            if (alt2_59.isSuccess() && alt2_59.node != null) {
-                children.add(alt2_59.node);
-            }
-            if (alt2_59.isSuccess()) {
-                elem0_0 = alt2_59;
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_60 = matchLiteralCst("yield", false);
-            if (alt2_60.isSuccess() && alt2_60.node != null) {
-                children.add(alt2_60.node);
-            }
-            if (alt2_60.isSuccess()) {
-                elem0_0 = alt2_60;
-            } else {
-                restoreLocation(choiceStart2);
-            children.clear();
-            children.addAll(savedChildren2);
-            var alt2_61 = matchLiteralCst("_", false);
-            if (alt2_61.isSuccess() && alt2_61.node != null) {
-                children.add(alt2_61.node);
-            }
-            if (alt2_61.isSuccess()) {
-                elem0_0 = alt2_61;
-            } else {
-                restoreLocation(choiceStart2);
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
-            }
             }
             }
             }
@@ -15693,13 +15703,13 @@ public final class Java25Parser {
         }
         if (result.isSuccess()) {
             if (!inTokenBoundary) skipWhitespace();
-            var notStart65 = location();
-            var savedChildrenNot65 = new ArrayList<>(children);
-            var notElem65 = matchCharClassCst("a-zA-Z0-9_$", false, false);
-            restoreLocation(notStart65);
+            var notStart56 = location();
+            var savedChildrenNot56 = new ArrayList<>(children);
+            var notElem56 = matchCharClassCst("a-zA-Z0-9_$", false, false);
+            restoreLocation(notStart56);
             children.clear();
-            children.addAll(savedChildrenNot65);
-            var elem0_1 = notElem65.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
+            children.addAll(savedChildrenNot56);
+            var elem0_1 = notElem56.isSuccess() ? CstParseResult.failure("not match") : CstParseResult.success(null, "", location());
             if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
@@ -15872,7 +15882,7 @@ public final class Java25Parser {
                 tok.span(), tok.rule(), tok.text(), tok.leadingTrivia(), trailingTrivia
             );
             case CstNode.Error err -> new CstNode.Error(
-                err.span(), err.skippedText(), err.leadingTrivia(), trailingTrivia
+                err.span(), err.skippedText(), err.expected(), err.leadingTrivia(), trailingTrivia
             );
         };
     }

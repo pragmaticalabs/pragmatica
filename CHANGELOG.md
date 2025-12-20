@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.2] - 2025-12-20
+
+### Changed
+- Parser grammar improvements
+
 ## [0.3.1] - 2025-12-18
 
 ### Added

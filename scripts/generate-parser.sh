@@ -91,7 +91,7 @@ public class GenerateParser {
 GENERATOR_CODE
 
 # Compile and run generator
-PEGLIB_JAR="$HOME/.m2/repository/org/pragmatica/peglib/0.1.0-SNAPSHOT/peglib-0.1.0-SNAPSHOT.jar"
+PEGLIB_JAR="$HOME/.m2/repository/org/pragmatica-lite/peglib/0.1.3-SNAPSHOT/peglib-0.1.3-SNAPSHOT.jar"
 CORE_JAR="$HOME/.m2/repository/org/pragmatica-lite/core/0.8.4/core-0.8.4.jar"
 CLASSPATH="$PEGLIB_JAR:$CORE_JAR"
 
