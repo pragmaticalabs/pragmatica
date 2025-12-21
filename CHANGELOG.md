@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.4] - 2025-12-21
+
+### Fixed
+- Formatter: preserve required semicolon after enum constants when fields follow
+
 ## [0.3.3] - 2025-12-21
 
 ### Fixed

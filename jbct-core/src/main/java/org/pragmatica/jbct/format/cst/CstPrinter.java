@@ -321,6 +321,7 @@ public class CstPrinter {
     private void printEnumBody(CstNode.NonTerminal enumBody) {
         // EnumBody <- '{' EnumConsts? (';' ClassMember*)? '}'
         var children = children(enumBody);
+        var classMembers = childrenByRule(enumBody, RuleId.ClassMember.class);
 
         printTerminalFrom(children, "{");
         indentLevel++;
@@ -342,8 +343,13 @@ public class CstPrinter {
             }
         );
 
+        // Print semicolon if there are class members (fields, constructors, methods)
+        if (!classMembers.isEmpty()) {
+            print(";");
+        }
+
         // Print class members if any (after semicolon)
-        for (var member : childrenByRule(enumBody, RuleId.ClassMember.class)) {
+        for (var member : classMembers) {
             println();
             printIndent();
             printNodeSkipTrivia(member);
