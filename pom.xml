@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-parent</artifactId>
-    <version>0.3.5</version>
+    <version>0.3.6</version>
     <packaging>pom</packaging>
 
     <name>JBCT Tools Parent</name>
