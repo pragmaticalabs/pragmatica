@@ -5,11 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2025-12-18
+## [0.3.0] - 2025-12-21
 
 ### Added
 - **AetherNode** - Complete node assembly wiring all components together
-- **AetherNodeConfig** - Node configuration with topology and protocol settings
+- **AetherNodeConfig** - Node configuration with topology, protocol, and management port settings
 - **AetherNode integration tests** - Cluster formation, consensus, and replication tests
 - **ClusterDeploymentManager** - Leader-based allocation, reconciliation, scale up/down
 - **EndpointRegistry** - Round-robin load balancing for slice endpoints
@@ -19,6 +19,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **DependencyResolver** - Resolve slice dependencies with cycle detection
 - **SliceRegistry** - Track loaded slice instances
 - **Manifest-based slice discovery** - Discover slices via MANIFEST.MF
+- **MetricsCollector** - Per-node JVM and call metrics collection
+- **MetricsScheduler** - Leader-driven ping-pong metrics distribution
+- **DecisionTreeController** - Programmatic scaling rules (CPU-based)
+- **ControlLoop** - Leader-only control evaluation loop
+- **SliceInvoker** - Client-side inter-slice invocation with retry support
+- **InvocationHandler** - Server-side slice method dispatch
+- **ManagementServer** - HTTP API for cluster management (status, nodes, slices, metrics, deploy, scale, undeploy)
+- **AetherCli** - Command-line interface with REPL and batch modes
 
 ### Changed
 - Replaced `EntryPoint` with `SliceMethod` for type-safe method definitions

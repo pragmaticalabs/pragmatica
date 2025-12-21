@@ -23,10 +23,11 @@ intelligent orchestration, and seamless multi-cloud deployment without requiring
 
 - **slice-api/** - Slice interface definitions (`Slice`, `SliceMethod`, deprecated `EntryPoint`)
 - **slice/** - Slice management (`SliceStore`, `SliceState`, `Artifact` types, KV schema)
-- **node/** - Runtime node implementation (`NodeDeploymentManager`)
+- **node/** - Runtime node implementation (`NodeDeploymentManager`, `ManagementServer`, metrics, controller)
 - **cluster/** - Consensus layer (Rabia protocol, `KVStore`, `LeaderManager`)
 - **common/** - Shared utilities and types
 - **example-slice/** - Reference implementation (`StringProcessorSlice`)
+- **cli/** - Command-line interface for cluster management
 - **mcp/** - Model Context Protocol server integration
 
 ### Module Dependencies
@@ -227,14 +228,12 @@ public interface SliceStore {
 Watches KV-Store for slice state changes and coordinates with `SliceStore` to perform lifecycle operations on local
 node.
 
-**Status**: Partially implemented (implementation commented out)
-
 ### ClusterDeploymentManager
 
-Leader-based cluster-wide orchestration (design complete, not implemented):
+Leader-based cluster-wide orchestration:
 
 - Blueprint monitoring
-- Allocation decisions (round-robin initially, writes directly to slice-node-keys)
+- Allocation decisions (round-robin, writes directly to slice-node-keys)
 - Reconciliation on topology changes
 - Automatic rebalancing
 
@@ -452,10 +451,17 @@ router.addRoute(QuorumStateNotification.class, this::onQuorumStateChange);
 - AetherNode assembly (wires all components together)
 - AetherNode integration tests (cluster formation, consensus, replication)
 - Example slice implementation
+- MetricsCollector (per-node JVM and call metrics)
+- MetricsScheduler (leader-driven ping-pong distribution)
+- DecisionTreeController (programmatic scaling rules)
+- ControlLoop (leader-only control evaluation)
+- SliceInvoker (inter-slice invocation with retry)
+- InvocationHandler (server-side method dispatch)
+- ManagementServer (HTTP API for cluster management)
+- AetherCli (CLI with REPL and batch modes)
 
 ### Planned 📋
 
-- CLI commands for deployment management
 - MCP server integration (low priority)
 
 ## Important Implementation Notes
@@ -750,6 +756,11 @@ cd example-slice && ../mvnw test
 - **KV Schema**: `slice/src/main/java/org/pragmatica/aether/slice/kvstore/`
 - **NodeDeploymentManager**: `node/src/main/java/org/pragmatica/aether/deployment/node/`
 - **ClusterDeploymentManager**: `node/src/main/java/org/pragmatica/aether/deployment/cluster/`
+- **MetricsCollector**: `node/src/main/java/org/pragmatica/aether/metrics/MetricsCollector.java`
+- **ControlLoop**: `node/src/main/java/org/pragmatica/aether/controller/ControlLoop.java`
+- **SliceInvoker**: `node/src/main/java/org/pragmatica/aether/invoke/SliceInvoker.java`
+- **ManagementServer**: `node/src/main/java/org/pragmatica/aether/api/ManagementServer.java`
+- **AetherCli**: `cli/src/main/java/org/pragmatica/aether/cli/AetherCli.java`
 - **Rabia Consensus**: `cluster/src/main/java/org/pragmatica/cluster/consensus/rabia/`
 - **KVStore**: `cluster/src/main/java/org/pragmatica/cluster/state/kvstore/`
 
