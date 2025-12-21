@@ -203,6 +203,7 @@ public class CstPrinter {
             case RuleId.Block _ -> printBlock(nt);
             case RuleId.SwitchBlock _ -> printSwitchBlock(nt);
             case RuleId.Postfix _ -> printPostfix(nt);
+            case RuleId.PostOp _ -> printPostOp(nt);
             case RuleId.Args _ -> printArgs(nt);
             case RuleId.Lambda _ -> printLambda(nt);
             case RuleId.LambdaParam _ -> printLambdaParam(nt);
@@ -589,6 +590,33 @@ public class CstPrinter {
             }
             for (var postOp : postOps) {
                 printNode(postOp);
+            }
+        }
+    }
+
+    /**
+     * Print a PostOp (method call suffix, field access, array access, etc.)
+     * Handles witness type syntax: .<TypeArgs>identifier() without space after >
+     *
+     * PostOp <- '.' TypeArgs? Identifier ('(' Args? ')')? / '.' 'class' / '.' 'this' / ...
+     */
+    private void printPostOp(CstNode.NonTerminal postOp) {
+        var children = children(postOp);
+        boolean afterTypeArgs = false;
+
+        for (var child : children) {
+            if (child.rule() instanceof RuleId.TypeArgs) {
+                printNode(child);
+                afterTypeArgs = true;
+            } else if (afterTypeArgs && child.rule() instanceof RuleId.Identifier) {
+                // After TypeArgs, print Identifier WITHOUT automatic spacing
+                // This handles: Result.<Integer>failure() (no space after >)
+                var identText = text(child, source).trim();
+                print(identText);
+                afterTypeArgs = false;
+            } else {
+                printNode(child);
+                afterTypeArgs = false;
             }
         }
     }

@@ -434,6 +434,78 @@ class CstFormatterTest {
         }
     }
 
+    @Test
+    void format_preservesAssertEqualsIdentifier() {
+        var source = new SourceFile(
+            Path.of("Test.java"),
+            """
+            class Test {
+                void test() {
+                    assertEquals(1, 2);
+                    assertInstanceOf(String.class, obj);
+                }
+            }
+            """
+        );
+
+        formatter.format(source)
+            .onFailure(cause -> fail("Format failed: " + cause.message()))
+            .onSuccess(formatted -> {
+                assertThat(formatted.content()).contains("assertEquals(1, 2)");
+                assertThat(formatted.content()).contains("assertInstanceOf(String.class");
+                assertThat(formatted.content()).doesNotContain("assert Equals");
+                assertThat(formatted.content()).doesNotContain("assert InstanceOf");
+            });
+    }
+
+    @Test
+    void format_preservesGenericWitnessTypes() {
+        var source = new SourceFile(
+            Path.of("Test.java"),
+            """
+            class Test {
+                void test() {
+                    Result.<Integer>failure(cause);
+                    Option.<String>none();
+                }
+            }
+            """
+        );
+
+        formatter.format(source)
+            .onFailure(cause -> fail("Format failed: " + cause.message()))
+            .onSuccess(formatted -> {
+                assertThat(formatted.content()).contains("Result.<Integer>failure");
+                assertThat(formatted.content()).contains("Option.<String>none");
+                assertThat(formatted.content()).doesNotContain("Result..<Integer>");
+                assertThat(formatted.content()).doesNotContain("Option..<String>");
+            });
+    }
+
+    @Test
+    void format_preservesArrayAccess() {
+        var source = new SourceFile(
+            Path.of("Test.java"),
+            """
+            class Test {
+                void test() {
+                    arr[0] = 1;
+                    matrix[i][j] = value;
+                }
+            }
+            """
+        );
+
+        formatter.format(source)
+            .onFailure(cause -> fail("Format failed: " + cause.message()))
+            .onSuccess(formatted -> {
+                assertThat(formatted.content()).contains("arr[0]");
+                assertThat(formatted.content()).contains("matrix[i][j]");
+                assertThat(formatted.content()).doesNotContain("arr [0]");
+                assertThat(formatted.content()).doesNotContain("matrix [i]");
+            });
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
         "ChainAlignment.java",

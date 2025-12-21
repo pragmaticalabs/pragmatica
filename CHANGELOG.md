@@ -2,6 +2,11 @@
 
 ## [0.3.2] - 2025-12-20
 
+### Fixed
+- Parser: `assertEquals` no longer parsed as assert statement (keyword word-boundary check)
+- Parser: `String.class` no longer produces extra dot (QualifiedName lookahead fix)
+- Formatter: `Result.<Integer>failure` no longer has space after `>` (PostOp special handling)
+
 ### Changed
 - Parser grammar improvements
 
