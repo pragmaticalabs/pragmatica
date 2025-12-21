@@ -506,6 +506,28 @@ class CstFormatterTest {
             });
     }
 
+    @Test
+    void format_preservesEnumSemicolonBeforeFields() {
+        var source = new SourceFile(
+            Path.of("CoreError.java"),
+            """
+            enum CoreErrors implements CoreError {
+                EMPTY_OPTION("Option is empty");
+                private final String message;
+                CoreErrors(String message) { this.message = message; }
+            }
+            """
+        );
+
+        formatter.format(source)
+            .onFailure(cause -> fail("Format failed: " + cause.message()))
+            .onSuccess(formatted -> {
+                // Semicolon after enum constant is REQUIRED when fields follow
+                assertThat(formatted.content()).contains("EMPTY_OPTION(\"Option is empty\");");
+                assertThat(formatted.content()).contains("private final String message;");
+            });
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {
         "ChainAlignment.java",
