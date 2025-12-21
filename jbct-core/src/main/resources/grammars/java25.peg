@@ -111,14 +111,14 @@ Assignment <- Ternary (('=' / '>>>=' / '>>=' / '<<=' / '+=' / '-=' / '*=' / '/='
 Ternary <- LogOr ('?' Expr ':' Ternary)?
 LogOr <- LogAnd ('||' LogAnd)*
 LogAnd <- BitOr ('&&' BitOr)*
-BitOr <- BitXor (!'||' '|' BitXor)*
-BitXor <- BitAnd ('^' BitAnd)*
-BitAnd <- Equality (!'&&' '&' Equality)*
+BitOr <- BitXor (!'||' !'|=' '|' BitXor)*
+BitXor <- BitAnd (!'^=' '^' BitAnd)*
+BitAnd <- Equality (!'&&' !'&=' '&' Equality)*
 Equality <- Relational (('==' / '!=') Relational)*
 Relational <- Shift (('<=' / '>=' / '<' / '>') Shift / 'instanceof' (Pattern / Type))?
-Shift <- Additive (('<<' / '>>>' / '>>') Additive)*
-Additive <- Multiplicative (('+' / '-' !'>') Multiplicative)*
-Multiplicative <- Unary (('*' / '/' / '%') Unary)*
+Shift <- Additive ((!'<<=' '<<' / !'>>>=' '>>>' / !'>>=' !'>>>=' '>>') Additive)*
+Additive <- Multiplicative ((!'+=' '+' / !'-=' !'->' '-') Multiplicative)*
+Multiplicative <- Unary ((!'*=' '*' / !'/=' '/' / !'%=' '%') Unary)*
 Unary <- ('++' / '--' / '+' / '-' / '!' / '~') Unary / '(' Type ('&' Type)* ')' Unary / Postfix
 Postfix <- Primary PostOp*
 PostOp <- '.' TypeArgs? Identifier ('(' Args? ')')? / '.' 'class' / '.' 'this' / '[' Expr ']' / '(' Args? ')' / '++' / '--' / '::' TypeArgs? (Identifier / 'new')
