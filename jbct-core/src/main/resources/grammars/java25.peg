@@ -1,33 +1,36 @@
 # Java 25 PEG Grammar for JBCT
 # Synced from java-peglib Java25GrammarExample.java
+#
+# Cut operator (^) commits to current alternative, preventing backtracking.
+# Used after discriminating keywords to improve error messages and performance.
 
 # === Compilation Units (JLS 7.3-7.8) ===
 CompilationUnit <- ModuleDecl / OrdinaryUnit
 OrdinaryUnit <- PackageDecl? ImportDecl* TypeDecl*
-PackageDecl <- Annotation* 'package' QualifiedName ';'
-ImportDecl  <- 'import' 'module' QualifiedName ';' / 'import' 'static'? QualifiedName ('.' '*')? ';'
+PackageDecl <- Annotation* 'package' ^ QualifiedName ';'
+ImportDecl  <- 'import' ^ ('module' QualifiedName ';' / 'static'? QualifiedName ('.' '*')? ';')
 
 # === Module Declarations (JLS 7.7) ===
-ModuleDecl <- Annotation* 'open'? 'module' QualifiedName '{' ModuleDirective* '}'
+ModuleDecl <- Annotation* 'open'? 'module' ^ QualifiedName '{' ModuleDirective* '}'
 ModuleDirective <- RequiresDirective / ExportsDirective / OpensDirective / UsesDirective / ProvidesDirective
-RequiresDirective <- 'requires' ('transitive' / 'static')* QualifiedName ';'
-ExportsDirective <- 'exports' QualifiedName ('to' QualifiedName (',' QualifiedName)*)? ';'
-OpensDirective <- 'opens' QualifiedName ('to' QualifiedName (',' QualifiedName)*)? ';'
-UsesDirective <- 'uses' QualifiedName ';'
-ProvidesDirective <- 'provides' QualifiedName 'with' QualifiedName (',' QualifiedName)* ';'
+RequiresDirective <- 'requires' ^ ('transitive' / 'static')* QualifiedName ';'
+ExportsDirective <- 'exports' ^ QualifiedName ('to' QualifiedName (',' QualifiedName)*)? ';'
+OpensDirective <- 'opens' ^ QualifiedName ('to' QualifiedName (',' QualifiedName)*)? ';'
+UsesDirective <- 'uses' ^ QualifiedName ';'
+ProvidesDirective <- 'provides' ^ QualifiedName 'with' QualifiedName (',' QualifiedName)* ';'
 
 TypeDecl <- Annotation* Modifier* TypeKind
 TypeKind <- ClassDecl / InterfaceDecl / EnumDecl / RecordDecl / AnnotationDecl
-ClassDecl <- 'class' Identifier TypeParams? ('extends' Type)? ImplementsClause? PermitsClause? ClassBody
-InterfaceDecl <- 'interface' Identifier TypeParams? ('extends' TypeList)? PermitsClause? ClassBody
-AnnotationDecl <- '@' 'interface' Identifier AnnotationBody
+ClassDecl <- 'class' ^ Identifier TypeParams? ('extends' Type)? ImplementsClause? PermitsClause? ClassBody
+InterfaceDecl <- 'interface' ^ Identifier TypeParams? ('extends' TypeList)? PermitsClause? ClassBody
+AnnotationDecl <- '@' 'interface' ^ Identifier AnnotationBody
 AnnotationBody <- '{' AnnotationMember* '}'
 AnnotationMember <- Annotation* Modifier* (AnnotationElemDecl / FieldDecl / TypeKind) / ';'
 AnnotationElemDecl <- Type Identifier '(' ')' ('default' AnnotationElem)? ';'
-EnumDecl <- 'enum' Identifier ImplementsClause? EnumBody
-RecordDecl <- 'record' Identifier TypeParams? '(' RecordComponents? ')' ImplementsClause? RecordBody
-ImplementsClause <- 'implements' TypeList
-PermitsClause <- 'permits' TypeList
+EnumDecl <- 'enum' ^ Identifier ImplementsClause? EnumBody
+RecordDecl <- 'record' ^ Identifier TypeParams? '(' RecordComponents? ')' ImplementsClause? RecordBody
+ImplementsClause <- 'implements' ^ TypeList
+PermitsClause <- 'permits' ^ TypeList
 TypeList <- Type (',' Type)*
 TypeParams <- '<' TypeParam (',' TypeParam)* '>'
 TypeParam <- Identifier ('extends' Type ('&' Type)*)?
@@ -52,7 +55,7 @@ VarInit <- '{' (VarInit (',' VarInit)* ','?)? '}' / Expr
 MethodDecl <- TypeParams? Type Identifier '(' Params? ')' Dims? Throws? (Block / ';')
 Params <- Param (',' Param)*
 Param <- Annotation* Modifier* Type '...'? Identifier Dims?
-Throws <- 'throws' TypeList
+Throws <- 'throws' ^ TypeList
 ConstructorDecl <- TypeParams? Identifier '(' Params? ')' Throws? Block
 
 # === Blocks and Statements (JLS 14) ===
@@ -63,19 +66,22 @@ LocalVar <- Modifier* LocalVarType VarDecls ';'
 LocalVarType <- 'var' / Type
 # Statement keywords use helper rules to combine keyword + word boundary as single token
 # This prevents the parser from skipping whitespace before the boundary check
+# Cut operator after literal keywords commits to that statement type
+# NOTE: Cuts must NOT be placed after token boundary rules (< ... >) like *KW rules
+#       as this breaks trivia handling and causes missing spaces after keywords
 Stmt <- Block
-     / 'if' '(' Expr ')' Stmt ('else' Stmt)?
-     / 'while' '(' Expr ')' Stmt
-     / 'for' '(' ForCtrl ')' Stmt
-     / 'do' Stmt 'while' '(' Expr ')' ';'
-     / 'try' ResourceSpec? Block Catch* Finally?
-     / 'switch' '(' Expr ')' SwitchBlock
+     / 'if' ^ '(' Expr ')' Stmt ('else' Stmt)?
+     / 'while' ^ '(' Expr ')' Stmt
+     / 'for' ^ '(' ForCtrl ')' Stmt
+     / 'do' ^ Stmt 'while' '(' Expr ')' ';'
+     / 'try' ^ ResourceSpec? Block Catch* Finally?
+     / 'switch' ^ '(' Expr ')' SwitchBlock
      / ReturnKW Expr? ';'
      / ThrowKW Expr ';'
      / BreakKW Identifier? ';'
      / ContinueKW Identifier? ';'
      / AssertKW Expr (':' Expr)? ';'
-     / 'synchronized' '(' Expr ')' Block
+     / 'synchronized' ^ '(' Expr ')' Block
      / YieldKW Expr ';'
      / Identifier ':' Stmt
      / Expr ';'
@@ -93,12 +99,12 @@ ForInit <- LocalVarNoSemi / ExprList
 LocalVarNoSemi <- Modifier* LocalVarType VarDecls
 ResourceSpec <- '(' Resource (';' Resource)* ';'? ')'
 Resource <- Modifier* LocalVarType Identifier '=' Expr / QualifiedName
-Catch <- 'catch' '(' Modifier* Type ('|' Type)* Identifier ')' Block
-Finally <- 'finally' Block
+Catch <- 'catch' ^ '(' Modifier* Type ('|' Type)* Identifier ')' Block
+Finally <- 'finally' ^ Block
 SwitchBlock <- '{' SwitchRule* '}'
 SwitchRule <- SwitchLabel '->' (Expr ';' / Block / 'throw' Expr ';') / SwitchLabel ':' BlockStmt*
 # === Switch Labels and Patterns (JLS 14.11, 14.30) ===
-SwitchLabel <- 'case' 'null' (',' 'default')? / 'case' CaseItem (',' CaseItem)* Guard? / 'default'
+SwitchLabel <- 'case' ^ ('null' (',' 'default')? / CaseItem (',' CaseItem)* Guard?) / 'default'
 CaseItem <- Pattern / QualifiedName &('->' / ',' / ':' / 'when') / Expr
 Pattern <- RecordPattern / TypePattern
 TypePattern <- &(LocalVarType Identifier) LocalVarType Identifier / '_'
