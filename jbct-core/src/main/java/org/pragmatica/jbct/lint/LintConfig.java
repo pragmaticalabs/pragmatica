@@ -52,7 +52,18 @@ public record LintConfig(
                     Map.entry("JBCT-LOG-01", DiagnosticSeverity.WARNING), // Conditional logging
                     Map.entry("JBCT-LOG-02", DiagnosticSeverity.WARNING), // Logger as parameter
                     // Architecture
-                    Map.entry("JBCT-MIX-01", DiagnosticSeverity.ERROR)    // I/O in domain
+                    Map.entry("JBCT-MIX-01", DiagnosticSeverity.ERROR),   // I/O in domain
+                    // Static imports
+                    Map.entry("JBCT-STATIC-01", DiagnosticSeverity.WARNING), // Static imports for Pragmatica
+                    // Utilities
+                    Map.entry("JBCT-UTIL-01", DiagnosticSeverity.WARNING), // Pragmatica parsing utilities
+                    Map.entry("JBCT-UTIL-02", DiagnosticSeverity.WARNING), // Verify.Is predicates
+                    // Nesting
+                    Map.entry("JBCT-NEST-01", DiagnosticSeverity.WARNING), // Nested monadic operations
+                    // Zones
+                    Map.entry("JBCT-ZONE-01", DiagnosticSeverity.WARNING), // Zone 2 verbs for steps
+                    Map.entry("JBCT-ZONE-02", DiagnosticSeverity.WARNING), // Zone 3 verbs for leaves
+                    Map.entry("JBCT-ZONE-03", DiagnosticSeverity.WARNING)  // No zone mixing
             ),
             Set.of(),
             false

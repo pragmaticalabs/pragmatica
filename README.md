@@ -46,7 +46,7 @@ Add to your `pom.xml`:
         <plugin>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>jbct-maven-plugin</artifactId>
-            <version>0.3.4</version>
+            <version>0.3.6</version>
         </plugin>
     </plugins>
 </build>
@@ -209,7 +209,7 @@ Add executions to run automatically:
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.3.4</version>
+    <version>0.3.6</version>
     <executions>
         <execution>
             <id>check</id>
@@ -227,7 +227,7 @@ Add executions to run automatically:
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.3.4</version>
+    <version>0.3.6</version>
     <configuration>
         <!-- Source directories to process (default: src/main/java) -->
         <sourceDirectories>
@@ -302,6 +302,9 @@ Add executions to run automatically:
 | `JBCT-STY-01` | WARNING | Prefer fluent failure: `cause.result()` not `Result.failure(cause)` |
 | `JBCT-STY-02` | WARNING | Prefer constructor references: `X::new` not `v -> new X(v)` |
 | `JBCT-STY-03` | WARNING | No fully qualified class names in code |
+| `JBCT-STY-04` | WARNING | Utility class pattern: use sealed interface with `unused` record |
+| `JBCT-STY-05` | WARNING | Prefer method references over equivalent lambdas |
+| `JBCT-STY-06` | WARNING | Import ordering: java → javax → pragmatica → third-party → project |
 
 ### Logging
 
