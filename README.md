@@ -246,7 +246,7 @@ Add executions to run automatically:
 </plugin>
 ```
 
-## Lint Rules (23 total)
+## Lint Rules (30 total)
 
 ### Return Kinds
 
@@ -315,6 +315,33 @@ Add executions to run automatically:
 | Rule | Severity | Description |
 |------|----------|-------------|
 | `JBCT-MIX-01` | ERROR | No I/O operations in domain packages |
+
+### Static Imports
+
+| Rule | Severity | Description |
+|------|----------|-------------|
+| `JBCT-STATIC-01` | WARNING | Prefer static imports for Pragmatica factories |
+
+### Utilities
+
+| Rule | Severity | Description |
+|------|----------|-------------|
+| `JBCT-UTIL-01` | WARNING | Use Pragmatica parsing utilities (Number.parseInt, etc.) |
+| `JBCT-UTIL-02` | WARNING | Use Verify.Is predicates for validation |
+
+### Nesting
+
+| Rule | Severity | Description |
+|------|----------|-------------|
+| `JBCT-NEST-01` | WARNING | No nested monadic operations in lambdas |
+
+### Zones
+
+| Rule | Severity | Description |
+|------|----------|-------------|
+| `JBCT-ZONE-01` | WARNING | Step interfaces should use Zone 2 verbs (validate, process, handle) |
+| `JBCT-ZONE-02` | WARNING | Leaf functions should use Zone 3 verbs (get, fetch, parse) |
+| `JBCT-ZONE-03` | WARNING | No zone mixing in sequencer chains |
 
 ## Formatter Style
 
