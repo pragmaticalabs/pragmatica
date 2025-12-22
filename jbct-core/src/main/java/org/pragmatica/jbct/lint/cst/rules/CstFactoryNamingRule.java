@@ -6,18 +6,17 @@ import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
-import java.util.Set;
 import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
 /**
  * JBCT-NAM-01: Factory method naming convention.
+ *
+ * Factory methods should be named after the type: TypeName.typeName()
  */
 public class CstFactoryNamingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-NAM-01";
-    private static final Set<String>ALLOWED_PREFIXES = Set.of(
-    "create", "of", "from", "parse");
 
     @Override
     public String ruleId() {
@@ -50,32 +49,27 @@ public class CstFactoryNamingRule implements CstLintRule {
                        .or("");
         if (typeName.isEmpty()) return Stream.empty();
         var expectedName = camelCase(typeName);
-        // Find static methods returning Result<TypeName> or TypeName
-        return findAll(record, RuleId.MethodDecl.class)
+        // Find ClassMember nodes containing static factory methods
+        return findAll(record, RuleId.ClassMember.class)
                .stream()
-               .filter(method -> isFactoryMethod(method, typeName, source))
+               .filter(member -> isStaticFactoryMember(member, typeName, source))
+               .flatMap(member -> findFirst(member, RuleId.MethodDecl.class).stream())
                .filter(method -> !isCorrectlyNamed(method, expectedName, source))
                .map(method -> createDiagnostic(method, typeName, expectedName, source, ctx));
     }
 
-    private boolean isFactoryMethod(CstNode method, String typeName, String source) {
-        var methodText = text(method, source);
-        return methodText.contains("static") &&
-        (methodText.contains("Result<" + typeName + ">") ||
-        methodText.contains(" " + typeName + " "));
+    private boolean isStaticFactoryMember(CstNode member, String typeName, String source) {
+        var memberText = text(member, source);
+        return memberText.contains("static ") &&
+        (memberText.contains("Result<" + typeName + ">") ||
+        memberText.contains(" " + typeName + " "));
     }
 
     private boolean isCorrectlyNamed(CstNode method, String expectedName, String source) {
         var methodName = childByRule(method, RuleId.Identifier.class)
                          .map(id -> text(id, source))
                          .or("");
-        if (methodName.equals(expectedName)) return true;
-        for (var prefix : ALLOWED_PREFIXES) {
-            if (methodName.equals(prefix) || methodName.startsWith(prefix)) {
-                return true;
-            }
-        }
-        return false;
+        return methodName.equals(expectedName);
     }
 
     private Diagnostic createDiagnostic(CstNode method,

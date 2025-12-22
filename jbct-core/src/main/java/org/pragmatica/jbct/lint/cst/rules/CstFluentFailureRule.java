@@ -35,11 +35,10 @@ public class CstFluentFailureRule implements CstLintRule {
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
-        // Find Result.failure( patterns
+        // Find Result.failure patterns (Primary doesn't include the parenthesis)
         return findAll(root, RuleId.Primary.class)
                .stream()
-               .filter(node -> text(node, source)
-                               .contains("Result.failure("))
+               .filter(node -> text(node, source).equals("Result.failure"))
                .map(node -> createDiagnostic(node, ctx));
     }
 

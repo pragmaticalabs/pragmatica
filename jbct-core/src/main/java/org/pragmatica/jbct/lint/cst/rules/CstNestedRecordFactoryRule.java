@@ -35,17 +35,18 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
-        // Find static methods containing local record declarations
-        return findAll(root, RuleId.MethodDecl.class)
+        // Find ClassMember nodes with static methods containing local record declarations
+        return findAll(root, RuleId.ClassMember.class)
                .stream()
-               .filter(method -> isStaticFactory(method, source))
+               .filter(member -> isStaticMember(member, source))
+               .flatMap(member -> findFirst(member, RuleId.MethodDecl.class).stream())
                .filter(method -> containsLocalRecord(method, source))
                .map(method -> createDiagnostic(method, source, ctx));
     }
 
-    private boolean isStaticFactory(CstNode method, String source) {
-        var methodText = text(method, source);
-        return methodText.contains("static ");
+    private boolean isStaticMember(CstNode member, String source) {
+        var memberText = text(member, source);
+        return memberText.contains("static ");
     }
 
     private boolean containsLocalRecord(CstNode method, String source) {

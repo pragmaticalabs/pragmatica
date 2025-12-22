@@ -44,14 +44,15 @@ public class CstReturnKindRule implements CstLintRule {
         }
         return findAll(root, RuleId.MethodDecl.class)
                .stream()
-               .filter(method -> !isPrivateMethod(method, source))
+               .filter(method -> !isPrivateMethod(method, root, source))
                .flatMap(method -> checkMethod(method, source, ctx));
     }
 
-    private boolean isPrivateMethod(CstNode method, String source) {
-        // Check if method has 'private' modifier in its ancestors
-        var methodText = text(method, source);
-        return methodText.contains("private ");
+    private boolean isPrivateMethod(CstNode method, CstNode root, String source) {
+        // Find the ClassMember ancestor which contains the Modifier
+        return findAncestor(root, method, RuleId.ClassMember.class)
+               .map(cm -> text(cm, source).contains("private "))
+               .or(false);
     }
 
     private Stream<Diagnostic> checkMethod(CstNode method, String source, LintContext ctx) {

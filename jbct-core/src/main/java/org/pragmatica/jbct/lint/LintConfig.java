@@ -45,6 +45,9 @@ public record LintConfig(
                     Map.entry("JBCT-STY-01", DiagnosticSeverity.WARNING), // Fluent failure style
                     Map.entry("JBCT-STY-02", DiagnosticSeverity.WARNING), // Constructor references
                     Map.entry("JBCT-STY-03", DiagnosticSeverity.WARNING), // No FQCN
+                    Map.entry("JBCT-STY-04", DiagnosticSeverity.WARNING), // Utility class → sealed interface
+                    Map.entry("JBCT-STY-05", DiagnosticSeverity.WARNING), // Method reference preference
+                    Map.entry("JBCT-STY-06", DiagnosticSeverity.WARNING), // Import ordering
                     // Logging
                     Map.entry("JBCT-LOG-01", DiagnosticSeverity.WARNING), // Conditional logging
                     Map.entry("JBCT-LOG-02", DiagnosticSeverity.WARNING), // Logger as parameter

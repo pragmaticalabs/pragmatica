@@ -53,10 +53,17 @@ public record LintContext(
      */
     public static LintContext lintContext(List<String> businessPackagePatterns) {
         var patterns = businessPackagePatterns.stream()
-                .map(p -> p.replace("**", ".*").replace("*", "[^.]*"))
+                .map(LintContext::globToRegex)
                 .map(Pattern::compile)
                 .toList();
         return new LintContext(patterns, LintConfig.defaultConfig(), "Unknown.java");
+    }
+
+    private static String globToRegex(String glob) {
+        // Use placeholder to avoid ** being affected by * replacement
+        return glob.replace("**", "\0DOTSTAR\0")
+                   .replace("*", "[^.]*")
+                   .replace("\0DOTSTAR\0", ".*");
     }
 
     /**
@@ -78,7 +85,7 @@ public record LintContext(
      */
     public LintContext withBusinessPackages(List<String> patterns) {
         var compiledPatterns = patterns.stream()
-                .map(p -> p.replace("**", ".*").replace("*", "[^.]*"))
+                .map(LintContext::globToRegex)
                 .map(Pattern::compile)
                 .toList();
         return new LintContext(compiledPatterns, config, fileName);

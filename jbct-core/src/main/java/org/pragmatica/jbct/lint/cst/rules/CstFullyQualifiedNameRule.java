@@ -54,7 +54,7 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
                               found -> matcher.find())
                      .map(_ -> matcher.group())
                      .filter(this::isNotAnnotation)
-                     .map(fqcn -> createDiagnostic(method, fqcn, ctx))
+                     .map(fqcn -> createDiagnostic(method, fqcn, source, ctx))
                      .limit(1);
     }
 
@@ -64,11 +64,9 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
         !fqcn.startsWith("javax.annotation.");
     }
 
-    private Diagnostic createDiagnostic(CstNode method, String fqcn, LintContext ctx) {
+    private Diagnostic createDiagnostic(CstNode method, String fqcn, String source, LintContext ctx) {
         var methodName = childByRule(method, RuleId.Identifier.class)
-                         .map(id -> text(id,
-                                         method.span()
-                                               .extract(fqcn)))
+                         .map(id -> text(id, source))
                          .or("(unknown)");
         return Diagnostic.diagnostic(
         RULE_ID,

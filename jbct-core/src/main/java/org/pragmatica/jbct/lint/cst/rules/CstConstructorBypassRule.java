@@ -82,12 +82,13 @@ public class CstConstructorBypassRule implements CstLintRule {
     }
 
     private boolean isInAllowedContext(CstNode root, CstNode node, String source) {
-        // Check if inside .map() call or factory method
-        return findAncestor(root, node, RuleId.MethodDecl.class)
-            .map(method -> {
-                var methodText = text(method, source);
+        // Check if inside factory method (static method returning Result)
+        // Note: "static" keyword is in ClassMember, not MethodDecl
+        return findAncestor(root, node, RuleId.ClassMember.class)
+            .map(member -> {
+                var memberText = text(member, source);
                 // Allow in factory methods (static methods returning Result)
-                return methodText.contains("static") && methodText.contains("Result<");
+                return memberText.contains("static ") && memberText.contains("Result<");
             })
             .or(false);
     }

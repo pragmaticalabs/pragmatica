@@ -47,8 +47,19 @@ public class CstRawLoopRule implements CstLintRule {
     private boolean isLoopStatement(CstNode stmt, String source) {
         var stmtText = text(stmt, source)
                        .trim();
-        return stmtText.startsWith("for ") || stmtText.startsWith("for(") ||
-        stmtText.startsWith("while ") || stmtText.startsWith("while(") ||
+        // Check for traditional for loop (exclude enhanced for-each which contains ":")
+        if (stmtText.startsWith("for ") || stmtText.startsWith("for(")) {
+            // Enhanced for-each has colon before the closing paren
+            var parenClose = stmtText.indexOf(')');
+            if (parenClose > 0) {
+                var header = stmtText.substring(0, parenClose);
+                if (header.contains(":")) {
+                    return false; // This is enhanced for-each, allow it
+                }
+            }
+            return true; // Traditional for loop
+        }
+        return stmtText.startsWith("while ") || stmtText.startsWith("while(") ||
         stmtText.startsWith("do ");
     }
 

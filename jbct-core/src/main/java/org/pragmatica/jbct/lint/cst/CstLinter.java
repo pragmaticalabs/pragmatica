@@ -119,6 +119,9 @@ public class CstLinter {
             new CstFluentFailureRule(),        // JBCT-STY-01
             new CstConstructorReferenceRule(), // JBCT-STY-02
             new CstFullyQualifiedNameRule(),   // JBCT-STY-03
+            new CstUtilityClassRule(),         // JBCT-STY-04
+            new CstMethodReferencePreferenceRule(), // JBCT-STY-05
+            new CstImportOrderingRule(),       // JBCT-STY-06
             // Logging (JBCT-LOG-*)
             new CstConditionalLoggingRule(),   // JBCT-LOG-01
             new CstLoggerParameterRule(),      // JBCT-LOG-02
