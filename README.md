@@ -399,6 +399,10 @@ With plugin bound to verify phase, `mvn verify` runs all checks.
 - Java 25+
 - Maven 3.9+ (for plugin)
 
+## Support
+
+If you find this useful, consider [sponsoring](https://github.com/sponsors/siy).
+
 ## License
 
 Apache 2.0
