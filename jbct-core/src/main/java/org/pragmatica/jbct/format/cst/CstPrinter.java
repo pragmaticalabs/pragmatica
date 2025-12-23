@@ -209,6 +209,7 @@ public class CstPrinter {
             case RuleId.LambdaParam _ -> printLambdaParam(nt);
             case RuleId.Param _ -> printParam(nt);
             case RuleId.Params _ -> printParams(nt);
+            case RuleId.RecordComponents _ -> printRecordComponents(nt);
             case RuleId.Ternary _ -> printTernary(nt);
             case RuleId.Additive _ -> printAdditive(nt);
             default -> printChildren(nt);
@@ -465,6 +466,31 @@ public class CstPrinter {
             }
         }
         return false;
+    }
+
+    /**
+     * Check if any child of this node has newlines in its trivia.
+     * Used to detect pre-broken parameter lists that should remain broken.
+     */
+    private boolean hasNewlinesInTrivia(CstNode node) {
+        return switch (node) {
+            case CstNode.Terminal _, CstNode.Token _, CstNode.Error _ -> false;
+            case CstNode.NonTerminal nt -> {
+                for (var child : children(nt)) {
+                    // Check leading trivia
+                    for (var trivia : child.leadingTrivia()) {
+                        if (trivia instanceof Trivia.Whitespace ws && ws.text().contains("\n")) {
+                            yield true;
+                        }
+                    }
+                    // Recursively check children
+                    if (hasNewlinesInTrivia(child)) {
+                        yield true;
+                    }
+                }
+                yield false;
+            }
+        };
     }
 
     private void printBlock(CstNode.NonTerminal block) {
@@ -847,9 +873,12 @@ public class CstPrinter {
         int paramsWidth = measureWidth(params);
         int totalWidth = currentColumn + paramsWidth;
 
+        // Check if source already has newlines (user intentionally broke the params)
+        boolean hasExistingBreaks = hasNewlinesInTrivia(params);
+
         // Account for closing paren and typical suffix (") {" = 3 chars)
         // Use <= to include lines that are exactly at the limit
-        if (totalWidth + 3 <= config.maxLineLength()) {
+        if (!hasExistingBreaks && totalWidth + 3 <= config.maxLineLength()) {
             // Fits on one line - print children normally
             printChildren(params);
         } else {
@@ -868,6 +897,47 @@ public class CstPrinter {
                 println();
                 printAlignedTo(alignCol);
             } else if (child.rule() instanceof RuleId.Param) {
+                printNodeSkipTrivia(child);
+            }
+        }
+    }
+
+    private void printRecordComponents(CstNode.NonTerminal components) {
+        // RecordComponents <- RecordComp (',' RecordComp)*
+        // Same alignment logic as Params - align to opening paren
+        if (measuringMode) {
+            for (var child : children(components)) {
+                printNodeContent(child);
+            }
+            return;
+        }
+
+        int width = measureWidth(components);
+        int totalWidth = currentColumn + width;
+
+        // Check if source already has newlines (user intentionally broke the components)
+        boolean hasExistingBreaks = hasNewlinesInTrivia(components);
+
+        // Account for closing paren and typical suffix (") {" = 3 chars)
+        if (!hasExistingBreaks && totalWidth + 3 <= config.maxLineLength()) {
+            // Fits on one line
+            printChildren(components);
+        } else {
+            // Break components onto multiple lines aligned to current position
+            printBrokenRecordComponents(components);
+        }
+    }
+
+    private void printBrokenRecordComponents(CstNode.NonTerminal components) {
+        var children = children(components);
+        int alignCol = currentColumn;
+
+        for (var child : children) {
+            if (isTerminalWithText(child, ",")) {
+                print(",");
+                println();
+                printAlignedTo(alignCol);
+            } else if (child.rule() instanceof RuleId.RecordComp) {
                 printNodeSkipTrivia(child);
             }
         }
