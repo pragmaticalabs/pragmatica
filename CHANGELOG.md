@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.7] - Unreleased
+
+### Fixed
+- Formatter: preserve space before underscore/dollar-prefixed identifiers (e.g., `Type _field`)
+
 ## [0.3.6] - 2025-12-22
 
 ### Added
