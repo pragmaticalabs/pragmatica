@@ -86,8 +86,8 @@ final class SpacingRules {
         }
 
         // Space after ']' when followed by identifier (array type before variable name)
-        // e.g., String[] LONG_ARRAY
-        if (ctx.lastChar() == ']' && Character.isLetter(firstChar)) {
+        // e.g., String[] LONG_ARRAY, String[] _field
+        if (ctx.lastChar() == ']' && isIdentifierStart(firstChar)) {
             return true;
         }
 
@@ -168,12 +168,17 @@ final class SpacingRules {
 
     private static boolean checkAlphanumericRule(SpacingContext ctx, char firstChar) {
         // Space between alphanumeric tokens (keywords, identifiers, types)
-        return Character.isLetterOrDigit(ctx.lastChar()) && Character.isLetterOrDigit(firstChar);
+        // Also handle underscore and dollar which are valid identifier start chars in Java
+        return Character.isLetterOrDigit(ctx.lastChar()) && isIdentifierStart(firstChar);
+    }
+
+    private static boolean isIdentifierStart(char c) {
+        return Character.isLetterOrDigit(c) || c == '_' || c == '$';
     }
 
     private static boolean checkClosingParenRule(SpacingContext ctx, char firstChar) {
         // Space after ) when followed by identifier
-        return ctx.lastChar() == ')' && Character.isLetter(firstChar);
+        return ctx.lastChar() == ')' && isIdentifierStart(firstChar);
     }
 
     private static boolean checkGenericClosingRule(SpacingContext ctx, char firstChar) {
