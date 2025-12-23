@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.8] - 2025-12-23
+
+### Fixed
+- Formatter: align multiline record components to opening paren (like method parameters)
+- Formatter: preserve pre-broken parameter/component alignment when source has newlines
+
 ## [0.3.7] - 2025-12-23
 
 ### Fixed

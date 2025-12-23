@@ -106,4 +106,32 @@ public class Records {
 
     // Record with long generic signature
     record TypedResult<T, E extends Exception>(T value, Option<E> error, long timestamp) {}
+
+    // Multiline record - parameters aligned to opening paren (like methods)
+    record MultilineRecord(String firstParameter,
+                           String secondParameter,
+                           String thirdParameter,
+                           String fourthParameter) {}
+
+    // Multiline record with annotations
+    record MultilineAnnotated(@NotNull String required,
+                              @Nullable String optional,
+                              @Valid String validated) {}
+
+    // Multiline record with generics
+    record MultilineGeneric<T, E extends Exception>(Result<T> value,
+                                                    Option<E> error,
+                                                    String message,
+                                                    long timestamp) {}
+
+    // Multiline record implementing interface
+    record MultilineWithInterface(String id,
+                                  String name,
+                                  String description) implements Identifiable {}
+
+    @interface NotNull {}
+
+    @interface Nullable {}
+
+    @interface Valid {}
 }
