@@ -10,7 +10,15 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.net.NodeInfo;
+import org.pragmatica.aether.http.HttpMethod;
+import org.pragmatica.aether.http.RouteMatcher;
+import org.pragmatica.aether.slice.routing.Binding;
+import org.pragmatica.aether.slice.routing.BindingSource;
+import org.pragmatica.aether.slice.routing.Route;
+import org.pragmatica.aether.slice.routing.RouteTarget;
+import org.pragmatica.aether.slice.routing.RoutingSection;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
 import org.slf4j.Logger;
@@ -282,5 +290,110 @@ class AetherNodeIT {
 
             log.info("Node {} has SliceInvoker and InvocationHandler", node.self());
         }
+    }
+
+    @Test
+    void http_router_routes_match_correctly() {
+        // Create routes for testing
+        var getOrderRoute = new Route(
+                "GET:/api/orders/{orderId}",
+                new RouteTarget("order-service", "getOrder", List.of("orderId")),
+                List.of(new Binding("orderId", new BindingSource.PathVar("orderId")))
+        );
+        var createOrderRoute = new Route(
+                "POST:/api/orders",
+                new RouteTarget("order-service", "createOrder", List.of()),
+                List.of()
+        );
+        var listOrdersRoute = new Route(
+                "GET:/api/orders",
+                new RouteTarget("order-service", "listOrders", List.of()),
+                List.of()
+        );
+
+        var section = new RoutingSection("http", Option.empty(), List.of(getOrderRoute, createOrderRoute, listOrdersRoute));
+        var matcher = RouteMatcher.routeMatcher(List.of(section));
+
+        // Test GET /api/orders/{orderId}
+        var getResult = matcher.match(HttpMethod.GET, "/api/orders/ORD-12345678");
+        assertThat(getResult.isPresent()).isTrue();
+        getResult.onPresent(match -> {
+            assertThat(match.route().target().methodName()).isEqualTo("getOrder");
+            assertThat(match.pathVariables()).containsEntry("orderId", "ORD-12345678");
+        });
+
+        // Test POST /api/orders
+        var postResult = matcher.match(HttpMethod.POST, "/api/orders");
+        assertThat(postResult.isPresent()).isTrue();
+        postResult.onPresent(match -> {
+            assertThat(match.route().target().methodName()).isEqualTo("createOrder");
+        });
+
+        // Test GET /api/orders
+        var listResult = matcher.match(HttpMethod.GET, "/api/orders");
+        assertThat(listResult.isPresent()).isTrue();
+        listResult.onPresent(match -> {
+            assertThat(match.route().target().methodName()).isEqualTo("listOrders");
+        });
+
+        // Test non-matching route
+        var noMatch = matcher.match(HttpMethod.DELETE, "/api/orders/123");
+        assertThat(noMatch.isPresent()).isFalse();
+
+        log.info("HTTP router route matching validated successfully");
+    }
+
+    @Test
+    void http_router_with_multiple_path_variables() {
+        var route = new Route(
+                "GET:/api/customers/{customerId}/orders/{orderId}",
+                new RouteTarget("order-service", "getCustomerOrder", List.of("customerId", "orderId")),
+                List.of(
+                        new Binding("customerId", new BindingSource.PathVar("customerId")),
+                        new Binding("orderId", new BindingSource.PathVar("orderId"))
+                )
+        );
+
+        var section = new RoutingSection("http", Option.empty(), List.of(route));
+        var matcher = RouteMatcher.routeMatcher(List.of(section));
+
+        var result = matcher.match(HttpMethod.GET, "/api/customers/CUST-001/orders/ORD-002");
+
+        assertThat(result.isPresent()).isTrue();
+        result.onPresent(match -> {
+            assertThat(match.route().target().methodName()).isEqualTo("getCustomerOrder");
+            assertThat(match.pathVariables()).containsEntry("customerId", "CUST-001");
+            assertThat(match.pathVariables()).containsEntry("orderId", "ORD-002");
+        });
+
+        log.info("Multiple path variable extraction validated");
+    }
+
+    @Test
+    void http_router_filters_by_protocol() {
+        var httpRoute = new Route(
+                "GET:/api/orders",
+                new RouteTarget("order-service", "listOrders", List.of()),
+                List.of()
+        );
+        var grpcRoute = new Route(
+                "POST:/api/orders",
+                new RouteTarget("order-service", "createOrder", List.of()),
+                List.of()
+        );
+
+        var httpSection = new RoutingSection("http", Option.empty(), List.of(httpRoute));
+        var grpcSection = new RoutingSection("grpc", Option.empty(), List.of(grpcRoute));
+        var matcher = RouteMatcher.routeMatcher(List.of(httpSection, grpcSection));
+
+        // HTTP route should match
+        var httpResult = matcher.match(HttpMethod.GET, "/api/orders");
+        assertThat(httpResult.isPresent()).isTrue();
+
+        // GRPC route should NOT match (RouteMatcher only includes http/https)
+        var grpcResult = matcher.match(HttpMethod.POST, "/api/orders");
+        assertThat(grpcResult.isPresent()).isFalse();
+
+        log.info("Protocol filtering validated");
     }
 }

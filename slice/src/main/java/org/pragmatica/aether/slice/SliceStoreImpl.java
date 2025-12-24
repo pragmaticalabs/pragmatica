@@ -7,6 +7,7 @@ import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -52,11 +53,22 @@ public interface SliceStoreImpl {
         }
     }
 
+    static SliceStore sliceStore(SliceRegistry registry,
+                                 List<Repository> repositories,
+                                 SharedLibraryClassLoader sharedLibraryLoader) {
+        return new SliceStoreRecord(registry, repositories, Option.option(sharedLibraryLoader), new ConcurrentHashMap<>());
+    }
+
+    /**
+     * @deprecated Use {@link #sliceStore(SliceRegistry, List, SharedLibraryClassLoader)} instead
+     */
+    @Deprecated
     static SliceStore sliceStore(SliceRegistry registry, List<Repository> repositories) {
-        return new SliceStoreRecord(registry, repositories, new ConcurrentHashMap<>());
+        return new SliceStoreRecord(registry, repositories, Option.none(), new ConcurrentHashMap<>());
     }
 
     record SliceStoreRecord(SliceRegistry registry, List<Repository> repositories,
+                            Option<SharedLibraryClassLoader> sharedLibraryLoader,
                             Map<Artifact, LoadedSliceEntry> entries) implements SliceStore {
 
         private static final Logger log = LoggerFactory.getLogger(SliceStoreRecord.class);
@@ -74,12 +86,35 @@ public interface SliceStoreImpl {
         }
 
         private Promise<LoadedSlice> loadFromLocation(Artifact artifact, Location location) {
+            return sharedLibraryLoader.fold(
+                    () -> loadWithLegacyResolver(artifact, location),
+                    shared -> loadWithSharedLoader(artifact, shared)
+            );
+        }
+
+        @SuppressWarnings("deprecation")
+        private Promise<LoadedSlice> loadWithLegacyResolver(Artifact artifact, Location location) {
             var classLoader = new SliceClassLoader(new URL[]{location.url()}, SliceStoreRecord.class.getClassLoader());
 
-            return DependencyResolver.resolve(artifact, compositeRepository(), registry).map(slice -> createEntry(
-                    artifact,
-                    slice,
-                    classLoader)).onFailure(cause -> handleLoadFailure(artifact, classLoader, cause));
+            return DependencyResolver.resolve(artifact, compositeRepository(), registry)
+                    .map(slice -> createEntry(artifact, slice, classLoader))
+                    .onFailure(cause -> handleLoadFailure(artifact, classLoader, cause));
+        }
+
+        private Promise<LoadedSlice> loadWithSharedLoader(Artifact artifact, SharedLibraryClassLoader shared) {
+            return DependencyResolver.resolve(artifact, compositeRepository(), registry, shared)
+                    .map(slice -> {
+                        // Extract the classloader from the slice's class
+                        var sliceClassLoader = slice.getClass().getClassLoader();
+                        if (sliceClassLoader instanceof SliceClassLoader scl) {
+                            return createEntry(artifact, slice, scl);
+                        }
+                        // Fallback - create a minimal classloader entry
+                        log.warn("Slice {} loaded with unexpected classloader type: {}. Resource access may be limited.",
+                                 artifact, sliceClassLoader.getClass().getName());
+                        return createEntry(artifact, slice, new SliceClassLoader(new URL[0], shared));
+                    })
+                    .onFailure(cause -> log.error("Failed to load slice {}: {}", artifact, cause.message()));
         }
 
         private LoadedSlice createEntry(Artifact artifact, Slice slice, SliceClassLoader classLoader) {

@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2025-12-22
+
+### Added
+- **HTTP Router** - Route external HTTP requests to slice methods
+  - PathPattern for URL pattern matching with path variables
+  - RouteMatcher for route selection across routing sections
+  - BindingResolver for parameter binding (PathVar, QueryVar, Header, Body)
+  - Protocol filtering (http/https only)
+- **Routing types** - Route, RouteTarget, RoutingSection, Binding, BindingSource
+- **HttpRouterSetup** in AetherNodeConfig for HTTP router configuration
+- **invokeLocal** method in SliceInvoker for same-node invocation without network round-trip
+- **demo-order module** - Complete order domain demo application
+  - order-domain: Value objects (OrderId, ProductId, CustomerId, Quantity, Money, Currency, OrderStatus)
+  - inventory-service: Stock checking and reservation (InventoryServiceSlice)
+  - pricing-service: Price lookup and order total calculation (PricingServiceSlice)
+  - place-order: PlaceOrderSlice use case with inter-slice calls
+  - get-order-status: GetOrderStatusSlice use case
+  - cancel-order: CancelOrderSlice use case with stock release
+- **HTTP router unit tests** - PathPatternTest (11 tests), RouteMatcherTest (6 tests)
+- **HTTP router integration tests** - 3 tests in AetherNodeIT
+
+### Changed
+- Moved routing classes to org.pragmatica.aether.slice.routing package
+
 ## [0.3.0] - 2025-12-21
 
 ### Added

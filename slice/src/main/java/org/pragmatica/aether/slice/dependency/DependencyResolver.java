@@ -1,6 +1,8 @@
 package org.pragmatica.aether.slice.dependency;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceManifest;
@@ -8,6 +10,7 @@ import org.pragmatica.aether.slice.SliceManifest.SliceManifestInfo;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -37,6 +40,30 @@ public interface DependencyResolver {
 
     Logger log = LoggerFactory.getLogger(DependencyResolver.class);
 
+    /**
+     * Resolve a slice using SharedLibraryClassLoader for shared dependencies.
+     * This is the primary method that should be used for slice resolution.
+     *
+     * @param artifact            The slice artifact to resolve
+     * @param repository          Repository to locate artifacts
+     * @param registry            Registry to track loaded slices
+     * @param sharedLibraryLoader ClassLoader for shared dependencies
+     * @return Promise of resolved slice
+     */
+    static Promise<Slice> resolve(Artifact artifact,
+                                  Repository repository,
+                                  SliceRegistry registry,
+                                  SharedLibraryClassLoader sharedLibraryLoader) {
+        return registry.lookup(artifact).fold(
+                () -> resolveWithSharedLoader(artifact, repository, registry, sharedLibraryLoader, new HashSet<>()),
+                Promise::success
+        );
+    }
+
+    /**
+     * @deprecated Use {@link #resolve(Artifact, Repository, SliceRegistry, SharedLibraryClassLoader)} instead
+     */
+    @Deprecated
     static Promise<Slice> resolve(Artifact artifact, Repository repository, SliceRegistry registry) {
         return registry.lookup(artifact).fold(() -> resolveNew(artifact, repository, registry, new HashSet<>()),
                                               Promise::success);
@@ -46,6 +73,209 @@ public interface DependencyResolver {
         return registry.lookup(artifact).fold(() -> resolveNewSync(artifact, classLoader, registry, new HashSet<>()),
                                               Result::success);
     }
+
+    // === New resolution path using SharedLibraryClassLoader ===
+
+    private static Promise<Slice> resolveWithSharedLoader(Artifact artifact,
+                                                          Repository repository,
+                                                          SliceRegistry registry,
+                                                          SharedLibraryClassLoader sharedLibraryLoader,
+                                                          Set<String> resolutionPath) {
+        var artifactKey = artifact.asString();
+
+        if (resolutionPath.contains(artifactKey)) {
+            return circularDependencyDetected(artifactKey).promise();
+        }
+
+        resolutionPath.add(artifactKey);
+
+        return repository.locate(artifact)
+                         .flatMap(location -> loadFromLocationWithShared(artifact,
+                                                                          location,
+                                                                          repository,
+                                                                          registry,
+                                                                          sharedLibraryLoader,
+                                                                          resolutionPath))
+                         .onSuccess(_ -> resolutionPath.remove(artifactKey))
+                         .onFailure(_ -> resolutionPath.remove(artifactKey));
+    }
+
+    private static Promise<Slice> loadFromLocationWithShared(Artifact artifact,
+                                                              Location location,
+                                                              Repository repository,
+                                                              SliceRegistry registry,
+                                                              SharedLibraryClassLoader sharedLibraryLoader,
+                                                              Set<String> resolutionPath) {
+        return SliceManifest.read(location.url())
+                            .onFailure(cause -> log.error("Invalid slice JAR {}: {}", artifact, cause.message()))
+                            .async()
+                            .flatMap(manifest -> validateAndLoadWithShared(artifact,
+                                                                            location,
+                                                                            manifest,
+                                                                            repository,
+                                                                            registry,
+                                                                            sharedLibraryLoader,
+                                                                            resolutionPath));
+    }
+
+    private static Promise<Slice> validateAndLoadWithShared(Artifact artifact,
+                                                             Location location,
+                                                             SliceManifestInfo manifest,
+                                                             Repository repository,
+                                                             SliceRegistry registry,
+                                                             SharedLibraryClassLoader sharedLibraryLoader,
+                                                             Set<String> resolutionPath) {
+        if (!manifest.artifact().equals(artifact)) {
+            log.error("Artifact mismatch: requested {} but JAR declares {}", artifact, manifest.artifact());
+            return artifactMismatch(artifact, manifest.artifact()).promise();
+        }
+
+        // Load dependency file to get shared and slice dependencies
+        return DependencyFile.load(manifest.sliceClassName(), createTempLoader(location.url(), sharedLibraryLoader))
+                             .async()
+                             .flatMap(depFile -> processSharedAndLoadSlice(
+                                     manifest,
+                                     location,
+                                     depFile,
+                                     repository,
+                                     registry,
+                                     sharedLibraryLoader,
+                                     resolutionPath
+                             ));
+    }
+
+    private static SliceClassLoader createTempLoader(URL jarUrl, SharedLibraryClassLoader parent) {
+        return new SliceClassLoader(new URL[]{jarUrl}, parent);
+    }
+
+    private static Promise<Slice> processSharedAndLoadSlice(SliceManifestInfo manifest,
+                                                             Location location,
+                                                             DependencyFile depFile,
+                                                             Repository repository,
+                                                             SliceRegistry registry,
+                                                             SharedLibraryClassLoader sharedLibraryLoader,
+                                                             Set<String> resolutionPath) {
+        // Process shared dependencies first
+        return SharedDependencyLoader.processSharedDependencies(
+                depFile.shared(),
+                sharedLibraryLoader,
+                repository,
+                location.url()
+        ).flatMap(sharedResult -> {
+            // Now load the slice class and resolve slice dependencies
+            return loadClass(manifest.sliceClassName(), sharedResult.sliceClassLoader())
+                    .flatMap(sliceClass -> resolveSliceDependencies(
+                            manifest.artifact(),
+                            sliceClass,
+                            depFile.slices(),
+                            sharedResult.sliceClassLoader(),
+                            repository,
+                            registry,
+                            sharedLibraryLoader,
+                            resolutionPath
+                    ));
+        });
+    }
+
+    private static Promise<Slice> resolveSliceDependencies(Artifact artifact,
+                                                            Class<?> sliceClass,
+                                                            List<ArtifactDependency> sliceDeps,
+                                                            ClassLoader classLoader,
+                                                            Repository repository,
+                                                            SliceRegistry registry,
+                                                            SharedLibraryClassLoader sharedLibraryLoader,
+                                                            Set<String> resolutionPath) {
+        if (sliceDeps.isEmpty()) {
+            return createSliceFromClass(sliceClass, List.of(), List.of())
+                    .async()
+                    .flatMap(slice -> registerSlice(artifact, slice, registry));
+        }
+
+        return resolveArtifactDependenciesSequentially(sliceDeps, repository, registry, sharedLibraryLoader, resolutionPath, List.of())
+                .flatMap(resolvedSlices -> createSliceFromClass(sliceClass, resolvedSlices, sliceDeps).async())
+                .flatMap(slice -> registerSlice(artifact, slice, registry));
+    }
+
+    private static Promise<List<Slice>> resolveArtifactDependenciesSequentially(
+            List<ArtifactDependency> dependencies,
+            Repository repository,
+            SliceRegistry registry,
+            SharedLibraryClassLoader sharedLibraryLoader,
+            Set<String> resolutionPath,
+            List<Slice> accumulated
+    ) {
+        if (dependencies.isEmpty()) {
+            return Promise.success(accumulated);
+        }
+
+        var dep = dependencies.getFirst();
+        var remaining = dependencies.subList(1, dependencies.size());
+
+        return resolveArtifactDependency(dep, repository, registry, sharedLibraryLoader, resolutionPath)
+                .flatMap(slice -> resolveArtifactDependenciesSequentially(
+                        remaining,
+                        repository,
+                        registry,
+                        sharedLibraryLoader,
+                        resolutionPath,
+                        appendToList(accumulated, slice)
+                ));
+    }
+
+    private static Promise<Slice> resolveArtifactDependency(ArtifactDependency dependency,
+                                                             Repository repository,
+                                                             SliceRegistry registry,
+                                                             SharedLibraryClassLoader sharedLibraryLoader,
+                                                             Set<String> resolutionPath) {
+        // First check registry for compatible version
+        return registry.findByArtifactKey(dependency.groupId(), dependency.artifactId(), dependency.versionPattern())
+                       .fold(
+                               () -> resolveArtifactFromRepository(dependency, repository, registry, sharedLibraryLoader, resolutionPath),
+                               Promise::success
+                       );
+    }
+
+    private static Promise<Slice> resolveArtifactFromRepository(ArtifactDependency dependency,
+                                                                 Repository repository,
+                                                                 SliceRegistry registry,
+                                                                 SharedLibraryClassLoader sharedLibraryLoader,
+                                                                 Set<String> resolutionPath) {
+        return toArtifact(dependency)
+                .async()
+                .flatMap(artifact -> resolveWithSharedLoader(artifact, repository, registry, sharedLibraryLoader, resolutionPath));
+    }
+
+    private static Result<Artifact> toArtifact(ArtifactDependency dependency) {
+        var versionStr = extractVersion(dependency.versionPattern()).withQualifier();
+        return Artifact.artifact(dependency.groupId() + ":" + dependency.artifactId() + ":" + versionStr);
+    }
+
+    private static Version extractVersion(VersionPattern pattern) {
+        return switch (pattern) {
+            case VersionPattern.Exact(Version version) -> version;
+            case VersionPattern.Range(Version from, _, _, _) -> from;
+            case VersionPattern.Comparison(_, Version version) -> version;
+            case VersionPattern.Tilde(Version version) -> version;
+            case VersionPattern.Caret(Version version) -> version;
+        };
+    }
+
+    private static Result<Slice> createSliceFromClass(Class<?> sliceClass,
+                                                       List<Slice> dependencies,
+                                                       List<ArtifactDependency> descriptors) {
+        // Convert ArtifactDependency to DependencyDescriptor for SliceFactory compatibility
+        var legacyDescriptors = descriptors.stream()
+                .map(dep -> new DependencyDescriptor(
+                        ArtifactMapper.toClassName(dep.groupId(), dep.artifactId()),
+                        dep.versionPattern(),
+                        Option.none()
+                ))
+                .toList();
+
+        return SliceFactory.createSlice(sliceClass, dependencies, legacyDescriptors);
+    }
+
+    // === End of new resolution path ===
 
     private static Promise<Slice> resolveNew(Artifact artifact,
                                              Repository repository,

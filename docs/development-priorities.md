@@ -1,57 +1,93 @@
-# Updated Development Priorities
+# Development Priorities
 
-Based on architectural requirements, the development priorities have been updated:
+## Current Status (v0.4.0)
 
-## Priority Rankings
+Most foundational work is complete. Priorities have shifted to polish and AI integration.
 
-### **HIGHEST PRIORITY**
+## Completed ✅
 
-- **#15** - Refactor SliceKVSchema to Use Structured Keys
-    - **Why**: Defines key types for node KV store operations
-    - **Blocks**: All other KV-store integrations
-    - **Note**: Values can remain as strings for now
+- **Structured Keys** - KV schema foundation
+- **Consensus Integration** - Distributed operations working
+- **ClusterDeploymentManager** - Cluster orchestration
+- **EndpointRegistry** - Service discovery
+- **NodeDeploymentManager** - Node-level slice management
+- **HTTP Router** - External request routing
+- **Management API** - Cluster control endpoints
+- **CLI** - REPL and batch modes
+- **Demo App** - 5-slice order domain
 
-### **CRITICAL PRIORITY**
+## Current Priorities
 
-- **#9** - [CRITICAL] Link NodeDeploymentManager with Consensus KV-Store
-    - **Why**: Core cluster functionality blocker
-    - **Depends**: Structured keys (#15)
+### HIGH PRIORITY
 
-### **HIGH PRIORITY**
+1. **CLI Polish**
+   - Improve command feedback
+   - Add more diagnostic commands
+   - Better error messages
 
-- **#13** - [HIGH] Fix Timeout Handling in NodeDeploymentManager
-    - **Why**: System reliability issue
-- **#10** - Implement ClusterDeploymentManager
-    - **Why**: Required for cluster-wide slice management
-    - **Depends**: Structured keys (#15)
+2. **Agent API Documentation**
+   - Document Management API endpoints
+   - Create agent integration guide
+   - Provide examples for direct API access
 
-### **MEDIUM PRIORITY**
+3. **Decision Tree Tuning**
+   - Improve scaling rules
+   - Add more health checks
+   - Better failure recovery
 
-- **#12** - Implement MCP Server with Three-Layer Architecture
-    - **Why**: Required for external cluster management
-- **#14** - Implement Node Main Entry Point with Cluster Initialization
-    - **Why**: Required for functional node deployment
-- **#11** - Implement EndpointRegistry as Passive KV-Store Watcher
-    - **Why**: Required for remote slice communication
+### MEDIUM PRIORITY
 
-## Implementation Sequence
+4. **SharedLibraryClassLoader Optimization**
+   - Test with more complex dependencies
+   - Improve compatibility detection
+   - Performance tuning
 
-### Phase 1: Foundation
+5. **Metrics Enhancement**
+   - Add more slice-level metrics
+   - Improve historical data storage
+   - Better visualization support
 
-1. **Structured Keys (#15)** - Establish KV schema foundation
-2. **Consensus Integration (#9)** - Enable distributed operations
-3. **Timeout Fixes (#13)** - Ensure system reliability
+### FUTURE (Infrastructure Services)
 
-### Phase 2: Core Management
+See [infrastructure-services.md](infrastructure-services.md) for full vision.
 
-4. **ClusterDeploymentManager (#10)** - Cluster orchestration
-5. **EndpointRegistry (#11)** - Service discovery
-6. **MCP Server (#12)** - External management interface
+6. **Distributed Hash Map Foundation**
+   - Consistent hashing implementation
+   - Pluggable storage engines
+   - Partition management via SMR
 
-### Phase 3: Complete System
+7. **Artifact Repository**
+   - Maven protocol subset
+   - Deploy/resolve operations
+   - Bootstrap: bundled → self-hosted
 
-7. **Node Bootstrap (#14)** - Full node deployment capability
+8. **HTTP Routing Service**
+   - Self-registration API
+   - Remove routing from blueprint
 
-## Next Step
+### FUTURE (AI Integration)
 
-Issue #15 (Structured Keys) is now marked as **HIGHEST PRIORITY** and ready for implementation guidance.
+9. **SLM Integration (Layer 2)**
+   - Local model integration (Ollama)
+   - Pattern learning
+   - Anomaly detection
+
+10. **LLM Integration (Layer 3)**
+    - Claude/GPT API integration
+    - Complex reasoning workflows
+    - Multi-cloud decision support
+
+## Deprecated
+
+- **MCP Server** - Replaced by direct agent API (see [ai-integration.md](ai-integration.md))
+
+## Implementation Approach
+
+Focus on stability and documentation before adding AI layers:
+
+1. CLI must be reliable for human operators
+2. Agent API must be well-documented
+3. Decision tree must handle all common cases
+4. Only then add SLM/LLM layers
+
+See [ai-integration.md](ai-integration.md) for AI integration architecture.

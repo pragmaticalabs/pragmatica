@@ -1,0 +1,109 @@
+# Aether Resilience Demo - Docker Compose
+# This runs the demo in a single container (all nodes in same JVM)
+
+version: '3.8'
+
+services:
+  demo:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: aether-demo
+    ports:
+      - "8888:8888"      # Dashboard
+      - "5050-5054:5050-5054"  # Cluster nodes (for monitoring)
+    environment:
+      - DEMO_PORT=8888
+      - CLUSTER_SIZE=5
+      - LOAD_RATE=1000
+      - JAVA_OPTS=-XX:+UseG1GC -XX:MaxRAMPercentage=75.0 -Xms512m -Xmx2g
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8888/api/status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+# Alternative: Multi-container setup for realistic cloud simulation
+# Uncomment below for distributed mode
+
+# services:
+#   node-1:
+#     image: aether-node
+#     environment:
+#       NODE_ID: node-1
+#       NODE_PORT: 5050
+#       PEERS: node-2:5050,node-3:5050,node-4:5050,node-5:5050
+#     ports:
+#       - "5051:5050"
+#       - "8081:8080"
+#     networks:
+#       - aether-net
+#
+#   node-2:
+#     image: aether-node
+#     environment:
+#       NODE_ID: node-2
+#       NODE_PORT: 5050
+#       PEERS: node-1:5050,node-3:5050,node-4:5050,node-5:5050
+#     ports:
+#       - "5052:5050"
+#       - "8082:8080"
+#     networks:
+#       - aether-net
+#
+#   node-3:
+#     image: aether-node
+#     environment:
+#       NODE_ID: node-3
+#       NODE_PORT: 5050
+#       PEERS: node-1:5050,node-2:5050,node-4:5050,node-5:5050
+#     ports:
+#       - "5053:5050"
+#       - "8083:8080"
+#     networks:
+#       - aether-net
+#
+#   node-4:
+#     image: aether-node
+#     environment:
+#       NODE_ID: node-4
+#       NODE_PORT: 5050
+#       PEERS: node-1:5050,node-2:5050,node-3:5050,node-5:5050
+#     ports:
+#       - "5054:5050"
+#       - "8084:8080"
+#     networks:
+#       - aether-net
+#
+#   node-5:
+#     image: aether-node
+#     environment:
+#       NODE_ID: node-5
+#       NODE_PORT: 5050
+#       PEERS: node-1:5050,node-2:5050,node-3:5050,node-4:5050
+#     ports:
+#       - "5055:5050"
+#       - "8085:8080"
+#     networks:
+#       - aether-net
+#
+#   dashboard:
+#     image: aether-demo-dashboard
+#     ports:
+#       - "8888:8888"
+#     environment:
+#       NODES: node-1:8080,node-2:8080,node-3:8080,node-4:8080,node-5:8080
+#     networks:
+#       - aether-net
+#     depends_on:
+#       - node-1
+#       - node-2
+#       - node-3
+#       - node-4
+#       - node-5
+#
+# networks:
+#   aether-net:
+#     driver: bridge

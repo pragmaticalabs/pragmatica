@@ -201,7 +201,8 @@ Each layer can veto or modify decisions from lower layers.
 - AI is external (even for small models)
 - Leader shapes metrics to minimize token costs
 - AI decisions translate to KV-Store updates
-- MCP server optional (for human operator oversight)
+- Layered autonomy: decision tree (required) → SLM → LLM → user (all optional)
+- See [ai-integration.md](ai-integration.md) for architecture details
 
 ## Metrics Collection Strategy
 

@@ -83,6 +83,19 @@ public interface ArtifactMapper {
     }
 
     /**
+     * Convert groupId and artifactId to a fully qualified class name.
+     *
+     * @param groupId    group ID (e.g., "org.example")
+     * @param artifactId artifact ID (e.g., "user-service")
+     *
+     * @return class name (e.g., "org.example.UserService")
+     */
+    static String toClassName(String groupId, String artifactId) {
+        var simpleName = toPascalCase(artifactId);
+        return groupId + "." + simpleName;
+    }
+
+    /**
      * Convert PascalCase to kebab-case.
      * <p>Examples:
      * <ul>

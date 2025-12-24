@@ -4,6 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.dependency.ArtifactMapper;
 import org.pragmatica.aether.slice.dependency.DependencyCycleDetector;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.aether.slice.routing.SliceSpec;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;

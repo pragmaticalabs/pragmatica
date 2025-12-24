@@ -11,13 +11,30 @@ import java.util.List;
 public interface SliceStore {
 
     /**
-     * Create a new SliceStore instance.
+     * Create a new SliceStore instance with shared library classloader.
+     *
+     * @param registry            Registry for tracking loaded slices
+     * @param repositories        Repositories to search for slice JARs
+     * @param sharedLibraryLoader ClassLoader for shared dependencies across slices
+     *
+     * @return SliceStore implementation
+     */
+    static SliceStore sliceStore(SliceRegistry registry,
+                                 List<Repository> repositories,
+                                 SharedLibraryClassLoader sharedLibraryLoader) {
+        return SliceStoreImpl.sliceStore(registry, repositories, sharedLibraryLoader);
+    }
+
+    /**
+     * Create a new SliceStore instance without shared library classloader.
      *
      * @param registry     Registry for tracking loaded slices
      * @param repositories Repositories to search for slice JARs
      *
      * @return SliceStore implementation
+     * @deprecated Use {@link #sliceStore(SliceRegistry, List, SharedLibraryClassLoader)} instead
      */
+    @Deprecated
     static SliceStore sliceStore(SliceRegistry registry, List<Repository> repositories) {
         return SliceStoreImpl.sliceStore(registry, repositories);
     }

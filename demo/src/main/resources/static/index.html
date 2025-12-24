@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aether Resilience Demo</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1>AETHER RESILIENCE DEMO</h1>
+            <div class="header-stats">
+                <span class="stat">
+                    <span class="stat-label">Uptime:</span>
+                    <span id="uptime" class="stat-value">0:00</span>
+                </span>
+                <span class="stat">
+                    <span class="stat-label">Nodes:</span>
+                    <span id="node-count" class="stat-value">0</span>
+                </span>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <div class="main-content">
+            <!-- Left Panel: Cluster Topology -->
+            <div class="panel cluster-panel">
+                <h2>Cluster Topology</h2>
+                <div id="cluster-viz">
+                    <svg id="topology-svg"></svg>
+                </div>
+                <div id="cluster-legend">
+                    <span class="legend-item"><span class="node-dot leader"></span> Leader</span>
+                    <span class="legend-item"><span class="node-dot healthy"></span> Healthy</span>
+                    <span class="legend-item"><span class="node-dot dead"></span> Dead</span>
+                </div>
+            </div>
+
+            <!-- Right Panel: Metrics -->
+            <div class="panel metrics-panel">
+                <h2>Real-Time Metrics</h2>
+
+                <!-- Key Metrics Display -->
+                <div class="metrics-grid">
+                    <div class="metric-card">
+                        <div class="metric-value" id="requests-per-sec">0</div>
+                        <div class="metric-label">Requests/sec</div>
+                    </div>
+                    <div class="metric-card success">
+                        <div class="metric-value" id="success-rate">100%</div>
+                        <div class="metric-label">Success Rate</div>
+                    </div>
+                    <div class="metric-card">
+                        <div class="metric-value" id="avg-latency">0ms</div>
+                        <div class="metric-label">Avg Latency</div>
+                    </div>
+                </div>
+
+                <!-- Success Rate Chart -->
+                <div class="chart-container">
+                    <canvas id="success-chart"></canvas>
+                </div>
+
+                <!-- Throughput Chart -->
+                <div class="chart-container small">
+                    <canvas id="throughput-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- Event Timeline -->
+        <div class="panel timeline-panel">
+            <h2>Event Timeline</h2>
+            <div id="timeline" class="timeline">
+                <div class="timeline-event">
+                    <span class="event-time">--:--:--</span>
+                    <span class="event-type">READY</span>
+                    <span class="event-message">Waiting for cluster...</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Control Panel -->
+        <div class="panel control-panel">
+            <div class="control-group">
+                <h3>Chaos Operations</h3>
+                <div class="button-row">
+                    <button id="btn-kill-node" class="btn btn-danger">KILL NODE</button>
+                    <button id="btn-kill-leader" class="btn btn-danger btn-large">KILL LEADER</button>
+                    <button id="btn-rolling-restart" class="btn btn-warning">ROLLING RESTART</button>
+                    <button id="btn-add-node" class="btn btn-success">+ ADD NODE</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>Load Control</h3>
+                <div class="load-control">
+                    <input type="range" id="load-slider" min="100" max="10000" value="1000" step="100">
+                    <span id="load-value">1000 req/sec</span>
+                </div>
+                <div class="button-row">
+                    <button id="btn-load-1k" class="btn btn-primary">1K</button>
+                    <button id="btn-load-5k" class="btn btn-primary">5K</button>
+                    <button id="btn-load-10k" class="btn btn-primary">10K</button>
+                    <button id="btn-ramp" class="btn btn-info">RAMP UP</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>Quick Actions</h3>
+                <div class="button-row">
+                    <button id="btn-reset" class="btn btn-secondary">RESET METRICS</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Node Selection Modal -->
+    <div id="node-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Select Node to Kill</h3>
+            <div id="node-list" class="node-list"></div>
+            <button id="modal-cancel" class="btn btn-secondary">Cancel</button>
+        </div>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>

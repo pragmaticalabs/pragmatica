@@ -1,0 +1,5 @@
+# Dependencies for GetOrderStatusSlice
+
+[shared]
+# Domain types shared across all order slices
+org.pragmatica-lite.aether.demo:order-domain:^0.1.0

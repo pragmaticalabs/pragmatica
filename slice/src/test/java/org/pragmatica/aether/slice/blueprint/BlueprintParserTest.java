@@ -3,6 +3,7 @@ package org.pragmatica.aether.slice.blueprint;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.slice.routing.BindingSource;
 import org.pragmatica.lang.Option;
 
 import java.io.IOException;

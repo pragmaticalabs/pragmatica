@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Aether (v0.3.0) is a clusterized runtime environment built on Pragmatica Lite that transforms monolithic applications
+Aether (v0.4.0) is a clusterized runtime environment built on Pragmatica Lite that transforms monolithic applications
 into distributed systems transparently. The runtime absorbs complexity instead of adding weight to applications.
 
 ## Core Concept
@@ -37,7 +37,8 @@ the runtime manages distributed concerns.
 - **cluster/** - Consensus protocol implementation (Rabia)
 - **common/** - Shared utilities (MessageRouter, etc.)
 - **example-slice/** - Reference slice implementation
-- **mcp/** - Model Context Protocol server integration
+- **demo-order/** - Complete order domain demo (5 slices)
+- **cli/** - Command-line interface for cluster management
 
 ### Slice API Components
 
@@ -67,9 +68,8 @@ the runtime manages distributed concerns.
 
 ### Planned Features 📋
 
-- Inter-slice communication framework
 - Multi-cloud deployment abstraction
-- MCP server to provide runtime intelligence and predictive auto-scaling
+- Layered AI integration (SLM → LLM, see [ai-integration.md](ai-integration.md))
 - Security manager integration
 - Slice versioning and hot updates
 
@@ -130,16 +130,21 @@ List<LoadedSlice> loadedSlices()
 - Basic lifecycle management ✅
 - ServiceLoader discovery ✅
 
-### Phase 2: Deployment Orchestration (In Progress)
+### Phase 2: Deployment Orchestration ✅
 
-- Slice registry implementation
-- Multi-cloud deployment abstraction
-- Resource allocation and scaling policies
-- Health monitoring and failure recovery
-- Each node exposes MCP server with access to actual slice deployment
-  information, metrics and notifications about important events in the cluster.
-  Also there are methods to change cluster configuration - add/remove nodes, change slice
-  deployment configuration.
+- Slice registry implementation ✅
+- HTTP Router for external requests ✅
+- Management API for cluster control ✅
+- Health monitoring and failure recovery ✅
+- CLI with REPL and batch modes ✅
+
+### Phase 3: AI Integration (Planned)
+
+- Layered autonomy architecture (see [ai-integration.md](ai-integration.md))
+- Layer 1: Decision tree controller (done)
+- Layer 2: SLM integration (planned)
+- Layer 3: LLM integration (planned)
+- Direct agent API (no MCP)
 
 ## Business Value Proposition
 
@@ -150,6 +155,6 @@ List<LoadedSlice> loadedSlices()
 - **Runtime intelligence** - environment adapts to application needs
 
 ---
-*Last Updated: 2025-08-09*
+*Last Updated: 2025-12-24*
 *Status: Early development, core architecture complete*
 *Architecture: Slice-based, runtime-intelligent, transparent distribution*

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Aether** (v0.3.0) is an AI-driven distributed runtime environment for Java that enables predictive scaling,
+**Aether** (v0.4.0) is an AI-driven distributed runtime environment for Java that enables predictive scaling,
 intelligent orchestration, and seamless multi-cloud deployment without requiring changes to business logic.
 
 **See [docs/vision-and-goals.md](docs/vision-and-goals.md) for complete vision and design principles.**
@@ -27,8 +27,9 @@ intelligent orchestration, and seamless multi-cloud deployment without requiring
 - **cluster/** - Consensus layer (Rabia protocol, `KVStore`, `LeaderManager`)
 - **common/** - Shared utilities and types
 - **example-slice/** - Reference implementation (`StringProcessorSlice`)
+- **demo-order/** - Complete order domain demo (5 slices)
 - **cli/** - Command-line interface for cluster management
-- **mcp/** - Model Context Protocol server integration
+- **mcp/** - (deprecated) Model Context Protocol - replaced by direct agent API
 
 ### Module Dependencies
 
@@ -95,7 +96,7 @@ Maven-style coordinates for slices:
 
 ```java
 // Format: groupId:artifactId:version[-qualifier]
-Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.3.0")
+Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.4.0")
 ```
 
 **Components**:
@@ -123,17 +124,46 @@ Desired cluster configuration stored in consensus KV-Store. Created by:
 }
 ```
 
-### Cluster Controller
+### Cluster Controller & AI Integration
 
 **See [docs/metrics-and-control.md](docs/metrics-and-control.md) for complete specification.**
 
-Pluggable component making topology decisions. Three types:
+**Layered Autonomy Architecture** - cluster survives with only the lowest layer:
 
-- **DecisionTreeController**: Deterministic rules, evaluated every 1 second
-- **SmallLLMController**: Local pattern learning, evaluated every 2-5 seconds
-- **LargeLLMController**: Cloud-based strategic planning, evaluated every 30-60 seconds
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 4: User                                          │
+│  Frequency: On-demand                                   │
+│  Role: Strategic decisions, overrides, teaching         │
+├─────────────────────────────────────────────────────────┤
+│  Layer 3: LLM (Claude, etc.)                            │
+│  Frequency: Minutes-hours                               │
+│  Role: Complex reasoning, anomaly analysis, planning    │
+├─────────────────────────────────────────────────────────┤
+│  Layer 2: SLM (Small Language Model)                    │
+│  Frequency: Seconds-minutes                             │
+│  Role: Pattern recognition, simple decisions            │
+├─────────────────────────────────────────────────────────┤
+│  Layer 1: Lizard Brain (DecisionTreeController)         │
+│  Frequency: Milliseconds (every 1 second)               │
+│  Role: Immediate reactions, scaling rules, health       │
+│  REQUIRED: Cluster MUST survive with only this layer    │
+└─────────────────────────────────────────────────────────┘
+```
 
-Controllers can be **layered** for hybrid intelligence.
+**Key Principles:**
+
+- **Layer 1 is mandatory** - all other layers are optional enhancements
+- **Graceful degradation** - if LLM unavailable, SLM handles; if SLM unavailable, decision tree handles
+- **Escalation flow** - problems flow up (Layer 1 → 4), decisions flow down (Layer 4 → 1)
+- **Each layer is replaceable** - can add/remove/swap/configure/teach upper layers
+- **No MCP** - agents interact directly with Management API (simpler, more reliable)
+
+**Controller Types:**
+
+- **DecisionTreeController** (Layer 1): Deterministic rules, always running, evaluated every 1 second
+- **Future: SLM integration** (Layer 2): Local pattern learning, evaluated every 2-5 seconds
+- **Future: LLM integration** (Layer 3): Cloud-based strategic planning, evaluated every 30-60 seconds
 
 **Controller Responsibilities**:
 
@@ -462,7 +492,10 @@ router.addRoute(QuorumStateNotification.class, this::onQuorumStateChange);
 
 ### Planned 📋
 
-- MCP server integration (low priority)
+- CLI polish and documentation
+- Agent API documentation for direct cluster management
+- SLM integration experiments (Layer 2)
+- LLM integration experiments (Layer 3)
 
 ## Important Implementation Notes
 
@@ -768,6 +801,7 @@ cd example-slice && ../mvnw test
 
 - **Architecture**: `docs/architecture-overview.md` - Comprehensive architecture documentation
 - **High-level**: `docs/aether-high-level-overview.md` - Project overview and concepts
+- **Infrastructure Services**: `docs/infrastructure-services.md` - Platform services (artifact repo, caching, etc.)
 - **Slice lifecycle**: `docs/slice-lifecycle.md` - Detailed lifecycle documentation
 - **Cluster manager**: `docs/cluster-deployment-manager.md` - ClusterDeploymentManager design
 - **JBCT Guide**: `docs/jbct-coder.md` - Java Backend Coding Technology patterns

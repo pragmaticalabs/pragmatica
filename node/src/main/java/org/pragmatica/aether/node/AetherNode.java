@@ -1,16 +1,20 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.api.ManagementServer;
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
+import org.pragmatica.aether.http.HttpRouter;
+import org.pragmatica.aether.http.SliceDispatcher;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.MetricsScheduler;
+import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -63,6 +67,8 @@ public interface AetherNode {
 
     InvocationHandler invocationHandler();
 
+    Option<HttpRouter> httpRouter();
+
     /**
      * Apply commands to the cluster via consensus.
      */
@@ -95,7 +101,8 @@ public interface AetherNode {
                 ControlLoop controlLoop,
                 SliceInvoker sliceInvoker,
                 InvocationHandler invocationHandler,
-                Option<ManagementServer> managementServer
+                Option<ManagementServer> managementServer,
+                Option<HttpRouter> httpRouter
         ) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
@@ -112,6 +119,10 @@ public interface AetherNode {
                                           () -> Promise.success(Unit.unit()),
                                           ManagementServer::start
                                   ))
+                                  .flatMap(_ -> httpRouter.fold(
+                                          () -> Promise.success(Unit.unit()),
+                                          HttpRouter::start
+                                  ))
                                   .onSuccess(_ -> log.info("Aether node {} started successfully", self()));
             }
 
@@ -120,10 +131,14 @@ public interface AetherNode {
                 log.info("Stopping Aether node {}", self());
                 controlLoop.stop();
                 metricsScheduler.stop();
-                return managementServer.fold(
+                return httpRouter.fold(
+                               () -> Promise.success(Unit.unit()),
+                               HttpRouter::stop
+                       )
+                       .flatMap(_ -> managementServer.fold(
                                () -> Promise.success(Unit.unit()),
                                ManagementServer::stop
-                       )
+                       ))
                        .flatMap(_ -> clusterNode.stop())
                        .onSuccess(_ -> log.info("Aether node {} stopped", self()));
             }
@@ -139,7 +154,8 @@ public interface AetherNode {
 
         // Create slice management components
         var sliceRegistry = SliceRegistry.create();
-        var sliceStore = SliceStore.sliceStore(sliceRegistry, config.sliceAction().repositories());
+        var sharedLibraryLoader = new SharedLibraryClassLoader(AetherNode.class.getClassLoader());
+        var sliceStore = SliceStore.sliceStore(sliceRegistry, config.sliceAction().repositories(), sharedLibraryLoader);
 
         // Create Rabia cluster node
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology());
@@ -172,7 +188,7 @@ public interface AetherNode {
         // Create invocation components
         var invocationHandler = InvocationHandler.invocationHandler(config.self(), clusterNode.network());
         var sliceInvoker = SliceInvoker.sliceInvoker(
-                config.self(), clusterNode.network(), endpointRegistry, serializer, deserializer
+                config.self(), clusterNode.network(), endpointRegistry, invocationHandler, serializer, deserializer
         );
 
         // Wire up message routing
@@ -180,12 +196,29 @@ public interface AetherNode {
                         endpointRegistry, metricsCollector, metricsScheduler, controlLoop,
                         sliceInvoker, invocationHandler);
 
+        // Create HTTP router if configured
+        Option<HttpRouter> httpRouter = config.httpRouter().map(setup -> {
+            // Create artifact resolver that parses slice ID strings to Artifact
+            SliceDispatcher.ArtifactResolver artifactResolver = sliceId ->
+                    Artifact.artifact(sliceId)
+                            .fold(cause -> null, artifact -> artifact);
+
+            return HttpRouter.httpRouter(
+                    setup.config(),
+                    setup.routingSections(),
+                    sliceInvoker,
+                    artifactResolver,
+                    serializer,
+                    deserializer
+            );
+        });
+
         // Create the node first (without management server reference)
         var node = new aetherNode(
                 config, router, kvStore, sliceRegistry, sliceStore,
                 clusterNode, nodeDeploymentManager, clusterDeploymentManager, endpointRegistry,
                 metricsCollector, metricsScheduler, controlLoop, sliceInvoker, invocationHandler,
-                Option.empty()
+                Option.empty(), httpRouter
         );
 
         // Create management server if enabled
@@ -195,7 +228,7 @@ public interface AetherNode {
                     config, router, kvStore, sliceRegistry, sliceStore,
                     clusterNode, nodeDeploymentManager, clusterDeploymentManager, endpointRegistry,
                     metricsCollector, metricsScheduler, controlLoop, sliceInvoker, invocationHandler,
-                    Option.some(managementServer)
+                    Option.some(managementServer), httpRouter
             );
         }
 

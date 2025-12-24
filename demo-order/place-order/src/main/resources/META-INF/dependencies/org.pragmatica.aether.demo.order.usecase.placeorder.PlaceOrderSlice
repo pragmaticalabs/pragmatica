@@ -1,0 +1,10 @@
+# Dependencies for PlaceOrderSlice
+
+[shared]
+# Domain types shared across all order slices
+org.pragmatica-lite.aether.demo:order-domain:^0.1.0
+
+[slices]
+# Slice dependencies - called via SliceInvoker
+org.pragmatica-lite.aether.demo:inventory-service:^0.1.0
+org.pragmatica-lite.aether.demo:pricing-service:^0.1.0

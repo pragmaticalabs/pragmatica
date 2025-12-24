@@ -77,6 +77,20 @@ public interface SliceRegistry {
      */
     List<Artifact> allArtifacts();
 
+    /**
+     * Find slice by groupId, artifactId, and version pattern.
+     * <p>
+     * Searches all registered slices for matching groupId and artifactId,
+     * then filters by version pattern.
+     *
+     * @param groupId        Group ID (e.g., "org.example")
+     * @param artifactId     Artifact ID (e.g., "my-lib")
+     * @param versionPattern Version pattern to match
+     *
+     * @return Option containing the first matching slice
+     */
+    Option<Slice> findByArtifactKey(String groupId, String artifactId, VersionPattern versionPattern);
+
     record SliceRegistryImpl(ConcurrentMap<Artifact, Slice> registry) implements SliceRegistry {
 
         @Override
@@ -117,6 +131,19 @@ public interface SliceRegistry {
         @Override
         public List<Artifact> allArtifacts() {
             return List.copyOf(registry.keySet());
+        }
+
+        @Override
+        public Option<Slice> findByArtifactKey(String groupId, String artifactId, VersionPattern versionPattern) {
+            return registry.entrySet()
+                           .stream()
+                           .filter(entry -> entry.getKey().groupId().id().equals(groupId))
+                           .filter(entry -> entry.getKey().artifactId().id().equals(artifactId))
+                           .filter(entry -> versionPattern.matches(entry.getKey().version()))
+                           .map(entry -> entry.getValue())
+                           .findFirst()
+                           .map(Option::option)
+                           .orElse(Option.none());
         }
 
         private boolean matchesClassName(Artifact artifact, String className) {

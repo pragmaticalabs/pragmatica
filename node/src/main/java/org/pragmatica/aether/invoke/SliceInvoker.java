@@ -81,6 +81,19 @@ public interface SliceInvoker {
     <R> Promise<R> invokeWithRetry(Artifact slice, MethodName method, Object request, Class<R> responseType, int maxRetries);
 
     /**
+     * Local invocation - invokes a slice on the local node without network round-trip.
+     * Used by HTTP router for handling incoming requests.
+     *
+     * @param slice        Target slice artifact
+     * @param method       Method to invoke
+     * @param request      Request parameter
+     * @param responseType Expected response type
+     * @param <R>          Response type
+     * @return Promise resolving to response
+     */
+    <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, Class<R> responseType);
+
+    /**
      * Handle response from remote invocation.
      */
     @MessageReceiver
@@ -107,10 +120,11 @@ public interface SliceInvoker {
     static SliceInvoker sliceInvoker(NodeId self,
                                       ClusterNetwork network,
                                       EndpointRegistry endpointRegistry,
+                                      InvocationHandler invocationHandler,
                                       Serializer serializer,
                                       Deserializer deserializer) {
-        return new SliceInvokerImpl(self, network, endpointRegistry, serializer, deserializer,
-                                    DEFAULT_TIMEOUT_MS);
+        return new SliceInvokerImpl(self, network, endpointRegistry, invocationHandler,
+                                    serializer, deserializer, DEFAULT_TIMEOUT_MS);
     }
 
     /**
@@ -119,10 +133,12 @@ public interface SliceInvoker {
     static SliceInvoker sliceInvoker(NodeId self,
                                       ClusterNetwork network,
                                       EndpointRegistry endpointRegistry,
+                                      InvocationHandler invocationHandler,
                                       Serializer serializer,
                                       Deserializer deserializer,
                                       long timeoutMs) {
-        return new SliceInvokerImpl(self, network, endpointRegistry, serializer, deserializer, timeoutMs);
+        return new SliceInvokerImpl(self, network, endpointRegistry, invocationHandler,
+                                    serializer, deserializer, timeoutMs);
     }
 }
 
@@ -130,10 +146,12 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private static final Logger log = LoggerFactory.getLogger(SliceInvokerImpl.class);
     private static final Cause NO_ENDPOINT_FOUND = Causes.cause("No endpoint found for slice/method");
+    private static final Cause SLICE_NOT_FOUND = Causes.cause("Slice not found locally");
 
     private final NodeId self;
     private final ClusterNetwork network;
     private final EndpointRegistry endpointRegistry;
+    private final InvocationHandler invocationHandler;
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final long timeoutMs;
@@ -145,12 +163,14 @@ class SliceInvokerImpl implements SliceInvoker {
     SliceInvokerImpl(NodeId self,
                      ClusterNetwork network,
                      EndpointRegistry endpointRegistry,
+                     InvocationHandler invocationHandler,
                      Serializer serializer,
                      Deserializer deserializer,
                      long timeoutMs) {
         this.self = self;
         this.network = network;
         this.endpointRegistry = endpointRegistry;
+        this.invocationHandler = invocationHandler;
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.timeoutMs = timeoutMs;
@@ -239,6 +259,34 @@ class SliceInvokerImpl implements SliceInvoker {
                         }
                     });
         });
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, Class<R> responseType) {
+        return invocationHandler.getLocalSlice(slice)
+                .fold(
+                        () -> SLICE_NOT_FOUND.<R>promise(),
+                        internalSlice -> {
+                            var inputBuf = Unpooled.buffer();
+                            try {
+                                serializer.write(inputBuf, request);
+                            } catch (Exception e) {
+                                inputBuf.release();
+                                throw e;
+                            }
+
+                            return internalSlice.call(method, inputBuf)
+                                    .onResultRun(inputBuf::release)
+                                    .map(outputBuf -> {
+                                        try {
+                                            return (R) deserializer.read(outputBuf);
+                                        } finally {
+                                            outputBuf.release();
+                                        }
+                                    });
+                        }
+                );
     }
 
     @Override

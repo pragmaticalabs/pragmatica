@@ -293,30 +293,44 @@ See [metrics-and-control.md](metrics-and-control.md) for message definitions:
 - `MetricsUpdate` (node → leader, every 1 sec)
 - `ClusterMetricsSnapshot` (leader → all nodes, every 1 sec)
 
-## MCP Integration Architecture (Optional)
+## AI Integration Architecture
 
-**Note**: MCP server is optional for human operator oversight. AI management is handled through dedicated AI Agent
-Interface on leader node, not MCP.
+**See [ai-integration.md](ai-integration.md) for complete specification.**
 
-### Three-Layer Design
+### Layered Autonomy
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Layer 4: User (CLI, Dashboard)                         │
+├─────────────────────────────────────────────────────────┤
+│  Layer 3: LLM (Claude, GPT) - Minutes/Hours             │
+├─────────────────────────────────────────────────────────┤
+│  Layer 2: SLM (Local model) - Seconds/Minutes           │
+├─────────────────────────────────────────────────────────┤
+│  Layer 1: Decision Tree - Milliseconds                  │
+│  *** REQUIRED: Cluster survives with only this ***      │
+└─────────────────────────────────────────────────────────┘
+```
+
+### External Access
 
 ```
 ┌─────────────────┐  ┌─────────────────┐
-│   CLI Module    │  │   MCP Module    │
-│                 │  │                 │  
-│ aether blueprint│  │ JSON-RPC        │
-│ aether slice    │  │ WebSocket/HTTP  │ 
-│ aether cluster  │  │ MCP Protocol    │
+│   CLI Module    │  │  Agent (Direct) │
+│                 │  │                 │
+│ aether blueprint│  │ HTTP REST API   │
+│ aether slice    │  │ Management API  │
+│ aether cluster  │  │ Metrics Stream  │
 └─────────────────┘  └─────────────────┘
          │                     │
          └─────────┬───────────┘
                    │
          ┌─────────────────┐
-         │ Command Handlers│
+         │ Management API  │
          │                 │
-         │ BlueprintHandler│
-         │ SliceHandler    │  
-         │ ClusterHandler  │
+         │ /api/v1/deploy  │
+         │ /api/v1/scale   │
+         │ /api/v1/status  │
          └─────────────────┘
                    │
          ┌─────────────────┐
@@ -331,41 +345,41 @@ Interface on leader node, not MCP.
 
 ### Design Principles
 
-- **Perfect Parity**: CLI and MCP provide identical functionality
-- **Unified Handlers**: Single command handler implementation for both interfaces
-- **Protocol Agnostic**: Core logic independent of CLI/MCP protocol details
-- **Single Agent**: Only one MCP agent can connect to cluster at a time
+- **Layer 1 is mandatory**: All other layers are optional enhancements
+- **Graceful degradation**: If LLM unavailable, SLM handles; if SLM unavailable, decision tree handles
+- **No MCP**: Agents interact directly with Management API (simpler, more reliable)
+- **Escalation flow**: Problems flow up, decisions flow down
 
-### MCP Capabilities
+### Management API Capabilities
 
-- **Blueprint Management**: Create, read, update, delete blueprints
-- **Cluster Monitoring**: Real-time events, slice status, cluster health
-- **Node Management**: Start/stop/restart nodes (future)
-- **Event Streaming**: Notifications for significant cluster changes
+- **Blueprint Management**: Deploy, scale, undeploy slices
+- **Cluster Monitoring**: Status, metrics, node list
+- **Metrics Stream**: SSE stream for real-time monitoring
+- **Health Checks**: Node and slice health
 
 ## Development Roadmap
 
-### Phase 1: Foundation (MVP)
+### Phase 1: Foundation ✅
 
-1. Extended SliceKVSchema for blueprints (no allocations needed)
-2. ClusterDeploymentManager skeleton with LeaderNotification integration
-3. Basic blueprint CLI commands (publish, get, list)
-4. EndpointRegistry as passive KV-Store watcher
+1. SliceKVSchema with structured keys ✅
+2. ClusterDeploymentManager with allocation ✅
+3. CLI with REPL and batch modes ✅
+4. EndpointRegistry as passive KV-Store watcher ✅
 
-### Phase 2: Core Functionality
+### Phase 2: Core Functionality ✅
 
-1. Blueprint CRUD operations in command handlers
-2. Simple round-robin allocation strategy
-3. Basic reconciliation engine
-4. MCP server with JSON-RPC over WebSocket/HTTP
+1. Blueprint CRUD operations ✅
+2. Round-robin allocation strategy ✅
+3. Reconciliation engine ✅
+4. HTTP Router for external requests ✅
+5. Management API ✅
 
-### Phase 3: Advanced Features
+### Phase 3: AI Integration (Current)
 
-1. AI-based allocation strategies (decision trees)
-2. Automatic rebalancing on node failures
-3. Remote slice invocation via consensus transport
-4. Comprehensive monitoring and metrics
-5. MCP agent connection management
+1. Decision tree controller (Layer 1) ✅
+2. CLI polish and agent API documentation (in progress)
+3. SLM integration (Layer 2) - planned
+4. LLM integration (Layer 3) - planned
 
 ## Implementation Notes
 

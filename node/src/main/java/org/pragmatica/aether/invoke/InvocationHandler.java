@@ -9,6 +9,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.cluster.net.ClusterNetwork;
 import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.message.MessageReceiver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -45,6 +46,14 @@ public interface InvocationHandler {
     void unregisterSlice(Artifact artifact);
 
     /**
+     * Get a local slice for direct invocation.
+     *
+     * @param artifact The slice artifact
+     * @return Option containing the InternalSlice if registered
+     */
+    Option<InternalSlice> getLocalSlice(Artifact artifact);
+
+    /**
      * Create a new InvocationHandler.
      */
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {
@@ -77,6 +86,11 @@ class InvocationHandlerImpl implements InvocationHandler {
     public void unregisterSlice(Artifact artifact) {
         localSlices.remove(artifact);
         log.debug("Unregistered slice from invocation: {}", artifact);
+    }
+
+    @Override
+    public Option<InternalSlice> getLocalSlice(Artifact artifact) {
+        return Option.option(localSlices.get(artifact));
     }
 
     @Override

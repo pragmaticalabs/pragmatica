@@ -20,7 +20,7 @@ reference implementation for creating deployable slices in the Aether runtime en
 ```xml
 <groupId>org.pragmatica-lite.aether</groupId>
 <artifactId>example-slice</artifactId>
-<version>0.3.0</version>
+<version>0.4.0</version>
 ```
 
 ## Usage
@@ -31,12 +31,12 @@ reference implementation for creating deployable slices in the Aether runtime en
 mvn package
 ```
 
-This produces `target/example-slice-0.3.0.jar` which can be loaded by the Aether runtime.
+This produces `target/example-slice-0.4.0.jar` which can be loaded by the Aether runtime.
 
 ### Loading with SliceStore
 
 ```java
-var artifact = Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.3.0");
+var artifact = Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.4.0");
 var sliceStore = SliceStore.sliceManager();
 
 // Load the slice

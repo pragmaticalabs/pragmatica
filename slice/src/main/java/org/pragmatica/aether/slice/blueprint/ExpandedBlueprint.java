@@ -1,5 +1,7 @@
 package org.pragmatica.aether.slice.blueprint;
 
+import org.pragmatica.aether.slice.routing.RoutingSection;
+
 import java.util.List;
 
 public record ExpandedBlueprint(BlueprintId id, List<ResolvedSlice> loadOrder, List<RoutingSection> routing) {

@@ -1,6 +1,12 @@
 package org.pragmatica.aether.slice.blueprint;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.slice.routing.Binding;
+import org.pragmatica.aether.slice.routing.BindingSource;
+import org.pragmatica.aether.slice.routing.Route;
+import org.pragmatica.aether.slice.routing.RouteTarget;
+import org.pragmatica.aether.slice.routing.RoutingSection;
+import org.pragmatica.aether.slice.routing.SliceSpec;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
