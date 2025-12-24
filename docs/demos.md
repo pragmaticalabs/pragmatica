@@ -81,14 +81,14 @@ The web dashboard (`index.html`) provides:
 
 - JDK 21+
 - Maven 3.9+
-- Built Aether project (`./mvnw clean install`)
+- Built Aether project (`mvn clean install`)
 
 ### Running Locally
 
 ```bash
 # Build the demo
 cd demo
-../mvnw package
+.mvn package
 
 # Run with defaults (5 nodes, 1000 req/sec)
 java -jar target/demo-0.4.0.jar
@@ -405,7 +405,7 @@ The `PlaceOrderSlice` demonstrates orchestrated inter-slice calls:
 
 ```bash
 cd demo-order
-../mvnw clean install
+.mvn clean install
 ```
 
 This produces 6 slice JARs:

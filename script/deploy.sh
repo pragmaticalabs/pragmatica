@@ -1,1 +1,1 @@
-./mvnw clean deploy
+mvn clean deploy

@@ -759,22 +759,22 @@ When the specific error doesn't matter, just validate failure occurred:
 
 ### Maven Commands
 
-- Build all modules: `./mvnw clean install`
-- Run all tests: `./mvnw test`
-- Run specific test class: `./mvnw test -Dtest=ClassName`
-- Run specific test method: `./mvnw test -Dtest=ClassName#methodName`
-- Skip tests: `./mvnw install -DskipTests`
-- Compile only: `./mvnw compile`
-- Package without tests: `./mvnw package -DskipTests`
+- Build all modules: `mvn clean install`
+- Run all tests: `mvn test`
+- Run specific test class: `mvn test -Dtest=ClassName`
+- Run specific test method: `mvn test -Dtest=ClassName#methodName`
+- Skip tests: `mvn install -DskipTests`
+- Compile only: `mvn compile`
+- Package without tests: `mvn package -DskipTests`
 
 ### Module-Specific Commands
 
 ```bash
 # Test specific module
-cd slice && ../mvnw test
+cd slice && .mvn test
 
 # Run tests in example-slice
-cd example-slice && ../mvnw test
+cd example-slice && .mvn test
 ```
 
 ## Quick Reference
