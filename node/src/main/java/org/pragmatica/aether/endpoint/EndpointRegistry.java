@@ -129,7 +129,8 @@ public interface EndpointRegistry {
 
                 var lookupKey = artifact.asString() + "/" + methodName.name();
                 var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
-                var index = Math.abs(counter.getAndIncrement() % available.size());
+                // Use bitmask to ensure positive value (handles Integer.MIN_VALUE edge case)
+                var index = (counter.getAndIncrement() & 0x7FFFFFFF) % available.size();
 
                 return Option.option(available.get(index));
             }

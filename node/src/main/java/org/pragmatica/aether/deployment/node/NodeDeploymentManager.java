@@ -22,6 +22,7 @@ import org.pragmatica.cluster.topology.QuorumStateNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.message.MessageReceiver;
 import org.pragmatica.message.MessageRouter;
@@ -67,13 +68,13 @@ public interface NodeDeploymentManager {
 
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
             private static final Fn1<Cause, Class<?>> UNEXPECTED_VALUE_TYPE =
-                    Causes.forValue("Unexpected value type for slice-node key: {}");
+                    Causes.forOneValue("Unexpected value type for slice-node key: {}");
             private static final Fn1<Cause, SliceNodeKey> CLEANUP_FAILED =
-                    Causes.forValue("Failed to cleanup slice {} during abrupt removal");
+                    Causes.forOneValue("Failed to cleanup slice {} during abrupt removal");
             private static final Fn1<Cause, SliceNodeKey> STATE_UPDATE_FAILED =
-                    Causes.forValue("Failed to update slice state for {}");
+                    Causes.forOneValue("Failed to update slice state for {}");
             private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED =
-                    Causes.forValue("Failed to unload slice {}");
+                    Causes.forOneValue("Failed to unload slice {}");
 
             public void whenOurKeyMatches(AetherKey key, Consumer<SliceNodeKey> action) {
                 switch (key) {
@@ -264,41 +265,55 @@ public interface NodeDeploymentManager {
             }
 
             private void handleDeactivating(SliceNodeKey sliceKey) {
-                // 1. Unregister from invocation handler
-                unregisterSliceFromInvocation(sliceKey);
-                // 2. Unpublish endpoints from KV-Store
-                unpublishEndpoints(sliceKey);
-
-                executeWithStateTransition(
-                        sliceKey,
-                        SliceState.DEACTIVATING,
-                        sliceStore.deactivateSlice(sliceKey.artifact()),
-                        SliceState.LOADED,
-                        SliceState.FAILED
-                                          );
+                // Correct order for graceful shutdown:
+                // 1. Unpublish endpoints first (stops new traffic from being routed here)
+                // 2. Then unregister from invocation handler
+                // 3. Then deactivate the slice
+                unpublishEndpoints(sliceKey)
+                    .onResultRun(() -> {
+                        unregisterSliceFromInvocation(sliceKey);
+                        executeWithStateTransition(
+                                sliceKey,
+                                SliceState.DEACTIVATING,
+                                sliceStore.deactivateSlice(sliceKey.artifact()),
+                                SliceState.LOADED,
+                                SliceState.FAILED
+                        );
+                    });
             }
 
-            private void unpublishEndpoints(SliceNodeKey sliceKey) {
+            private Promise<Unit> unpublishEndpoints(SliceNodeKey sliceKey) {
                 var artifact = sliceKey.artifact();
                 var loadedSlice = sliceStore.loaded().stream()
                         .filter(ls -> ls.artifact().equals(artifact))
                         .findFirst();
 
-                loadedSlice.ifPresent(ls -> {
-                    var slice = ls.slice();
-                    var methods = slice.methods();
-                    int instanceNumber = Math.abs(self.id().hashCode());
+                if (loadedSlice.isEmpty()) {
+                    return Promise.success(Unit.unit());
+                }
 
-                    var commands = methods.stream()
-                            .map(method -> createEndpointRemoveCommand(artifact, method.name(), instanceNumber))
-                            .toList();
+                var ls = loadedSlice.get();
+                var slice = ls.slice();
+                var methods = slice.methods();
+                int instanceNumber = Math.abs(self.id().hashCode());
 
-                    if (!commands.isEmpty()) {
-                        cluster.apply(commands)
-                               .onSuccess(_ -> log.info("Unpublished {} endpoints for slice {}", methods.size(), artifact))
-                               .onFailure(cause -> log.error("Failed to unpublish endpoints for {}: {}", artifact, cause.message()));
-                    }
-                });
+                var commands = methods.stream()
+                        .map(method -> createEndpointRemoveCommand(artifact, method.name(), instanceNumber))
+                        .toList();
+
+                if (commands.isEmpty()) {
+                    return Promise.success(Unit.unit());
+                }
+
+                return cluster.apply(commands)
+                       .map(_ -> {
+                           log.info("Unpublished {} endpoints for slice {}", methods.size(), artifact);
+                           return Unit.unit();
+                       })
+                       .mapError(cause -> {
+                           log.error("Failed to unpublish endpoints for {}: {}", artifact, cause.message());
+                           return cause;
+                       });
             }
 
             private KVCommand<AetherKey> createEndpointRemoveCommand(org.pragmatica.aether.artifact.Artifact artifact,

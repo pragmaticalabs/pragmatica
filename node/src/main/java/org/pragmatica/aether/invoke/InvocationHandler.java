@@ -4,9 +4,9 @@ import io.netty.buffer.Unpooled;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.InternalSlice;
 import org.pragmatica.aether.slice.MethodName;
-import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.cluster.net.ClusterNetwork;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.lang.Option;
@@ -54,10 +54,27 @@ public interface InvocationHandler {
     Option<InternalSlice> getLocalSlice(Artifact artifact);
 
     /**
-     * Create a new InvocationHandler.
+     * Get the metrics collector if configured.
+     *
+     * @return Option containing the metrics collector
+     */
+    Option<InvocationMetricsCollector> metricsCollector();
+
+    /**
+     * Create a new InvocationHandler without metrics.
      */
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {
-        return new InvocationHandlerImpl(self, network);
+        return new InvocationHandlerImpl(self, network, Option.empty());
+    }
+
+    /**
+     * Create a new InvocationHandler with metrics collection.
+     *
+     * @param metricsCollector The metrics collector to use
+     */
+    static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network,
+                                                InvocationMetricsCollector metricsCollector) {
+        return new InvocationHandlerImpl(self, network, Option.option(metricsCollector));
     }
 }
 
@@ -67,13 +84,15 @@ class InvocationHandlerImpl implements InvocationHandler {
 
     private final NodeId self;
     private final ClusterNetwork network;
+    private final Option<InvocationMetricsCollector> metricsCollector;
 
     // Local slices available for invocation
     private final Map<Artifact, InternalSlice> localSlices = new ConcurrentHashMap<>();
 
-    InvocationHandlerImpl(NodeId self, ClusterNetwork network) {
+    InvocationHandlerImpl(NodeId self, ClusterNetwork network, Option<InvocationMetricsCollector> metricsCollector) {
         this.self = self;
         this.network = network;
+        this.metricsCollector = metricsCollector;
     }
 
     @Override
@@ -91,6 +110,11 @@ class InvocationHandlerImpl implements InvocationHandler {
     @Override
     public Option<InternalSlice> getLocalSlice(Artifact artifact) {
         return Option.option(localSlices.get(artifact));
+    }
+
+    @Override
+    public Option<InvocationMetricsCollector> metricsCollector() {
+        return metricsCollector;
     }
 
     @Override
@@ -114,24 +138,48 @@ class InvocationHandlerImpl implements InvocationHandler {
 
     private void invokeSliceMethod(InvokeRequest request, InternalSlice internalSlice) {
         var inputBuf = Unpooled.wrappedBuffer(request.payload());
+        var startTime = System.nanoTime();
+        var requestBytes = request.payload().length;
 
         internalSlice.call(request.method(), inputBuf)
                      .onSuccess(outputBuf -> {
-                         if (request.expectResponse()) {
-                             // Convert ByteBuf to byte array
-                             var responseBytes = new byte[outputBuf.readableBytes()];
-                             outputBuf.readBytes(responseBytes);
+                         var durationNs = System.nanoTime() - startTime;
+                         var responseBytes = 0;
+                         try {
+                             responseBytes = outputBuf.readableBytes();
+                             if (request.expectResponse()) {
+                                 // Convert ByteBuf to byte array
+                                 var responseData = new byte[responseBytes];
+                                 outputBuf.readBytes(responseData);
+                                 sendSuccessResponse(request, responseData);
+                             }
+                         } finally {
+                             // Always release outputBuf regardless of expectResponse
                              outputBuf.release();
-
-                             sendSuccessResponse(request, responseBytes);
                          }
+
+                         // Record success metrics
+                         final int respSize = responseBytes;
+                         metricsCollector.onPresent(mc ->
+                             mc.recordSuccess(request.targetSlice(), request.method(),
+                                              durationNs, requestBytes, respSize));
                      })
                      .onFailure(cause -> {
+                         var durationNs = System.nanoTime() - startTime;
                          log.error("Invocation failed [{}]: {}",
                                    request.correlationId(), cause.message());
                          if (request.expectResponse()) {
                              sendErrorResponse(request, cause.message());
                          }
+
+                         // Record failure metrics
+                         metricsCollector.onPresent(mc ->
+                             mc.recordFailure(request.targetSlice(), request.method(),
+                                              durationNs, requestBytes, cause.getClass().getSimpleName()));
+                     })
+                     .onResultRun(() -> {
+                         // Always release inputBuf after call completes
+                         inputBuf.release();
                      });
     }
 

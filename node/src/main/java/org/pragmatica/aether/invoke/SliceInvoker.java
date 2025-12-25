@@ -7,6 +7,7 @@ import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.SliceRuntime.SliceInvokerFacade;
 import org.pragmatica.cluster.net.ClusterNetwork;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.lang.Cause;
@@ -42,7 +43,24 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  * <p>Uses the EndpointRegistry to find the target node for a slice,
  * and routes the invocation via the ClusterNetwork.
  */
-public interface SliceInvoker {
+public interface SliceInvoker extends SliceInvokerFacade {
+
+    /**
+     * Implementation of SliceInvokerFacade for use by slices via SliceRuntime.
+     * Parses string artifact/method and delegates to typed methods.
+     */
+    @Override
+    default <R> Promise<R> invokeAndWait(String sliceArtifact, String methodName, Object request, Class<R> responseType) {
+        return Artifact.artifact(sliceArtifact)
+                .flatMap(artifact -> MethodName.methodName(methodName)
+                        .map(method -> new ArtifactMethod(artifact, method)))
+                .fold(
+                        cause -> cause.promise(),
+                        am -> invokeAndWait(am.artifact(), am.method(), request, responseType)
+                );
+    }
+
+    record ArtifactMethod(Artifact artifact, MethodName method) {}
 
     /**
      * Fire-and-forget invocation - sends request without waiting for response.
@@ -100,6 +118,21 @@ public interface SliceInvoker {
     void onInvokeResponse(InvokeResponse response);
 
     /**
+     * Stop the invoker and release resources.
+     * <p>
+     * Shuts down the retry scheduler, cancels pending invocations,
+     * and cleans up resources.
+     *
+     * @return Promise that completes when shutdown is finished
+     */
+    Promise<Unit> stop();
+
+    /**
+     * Get count of pending invocations (for monitoring).
+     */
+    int pendingCount();
+
+    /**
      * Default timeout for invocations (30 seconds).
      */
     long DEFAULT_TIMEOUT_MS = 30_000;
@@ -147,6 +180,8 @@ class SliceInvokerImpl implements SliceInvoker {
     private static final Logger log = LoggerFactory.getLogger(SliceInvokerImpl.class);
     private static final Cause NO_ENDPOINT_FOUND = Causes.cause("No endpoint found for slice/method");
     private static final Cause SLICE_NOT_FOUND = Causes.cause("Slice not found locally");
+    private static final Cause INVOKER_STOPPED = Causes.cause("SliceInvoker has been stopped");
+    private static final long CLEANUP_INTERVAL_MS = 60_000; // Clean up stale entries every minute
 
     private final NodeId self;
     private final ClusterNetwork network;
@@ -155,10 +190,15 @@ class SliceInvokerImpl implements SliceInvoker {
     private final Serializer serializer;
     private final Deserializer deserializer;
     private final long timeoutMs;
-    private final ScheduledExecutorService retryScheduler;
+    private final ScheduledExecutorService scheduler;
 
     // Pending request-response invocations awaiting responses
-    private final ConcurrentHashMap<String, Promise<Object>> pendingInvocations = new ConcurrentHashMap<>();
+    // Maps correlationId -> (promise, createdAtMs)
+    private final ConcurrentHashMap<String, PendingInvocation> pendingInvocations = new ConcurrentHashMap<>();
+
+    private volatile boolean stopped = false;
+
+    record PendingInvocation(Promise<Object> promise, long createdAtMs) {}
 
     SliceInvokerImpl(NodeId self,
                      ClusterNetwork network,
@@ -174,11 +214,65 @@ class SliceInvokerImpl implements SliceInvoker {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.timeoutMs = timeoutMs;
-        this.retryScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            var t = new Thread(r, "slice-invoker-retry");
+        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            var t = new Thread(r, "slice-invoker-scheduler");
             t.setDaemon(true);
             return t;
         });
+
+        // Schedule periodic cleanup of stale pending invocations
+        scheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
+                                      CLEANUP_INTERVAL_MS, CLEANUP_INTERVAL_MS, TimeUnit.MILLISECONDS);
+    }
+
+    private void cleanupStaleInvocations() {
+        var now = System.currentTimeMillis();
+        var staleThreshold = now - (timeoutMs * 2); // 2x timeout to be safe
+
+        pendingInvocations.entrySet().removeIf(entry -> {
+            var pending = entry.getValue();
+            if (pending.createdAtMs() < staleThreshold) {
+                log.warn("Cleaning up stale pending invocation: {}", entry.getKey());
+                pending.promise().resolve(Result.failure(Causes.cause("Invocation timed out (cleanup)")));
+                return true;
+            }
+            return false;
+        });
+    }
+
+    @Override
+    public Promise<Unit> stop() {
+        if (stopped) {
+            return Promise.success(unit());
+        }
+        stopped = true;
+
+        log.info("Stopping SliceInvoker with {} pending invocations", pendingInvocations.size());
+
+        // Cancel all pending invocations
+        pendingInvocations.forEach((id, pending) -> {
+            pending.promise().resolve(Result.failure(INVOKER_STOPPED));
+        });
+        pendingInvocations.clear();
+
+        // Shutdown scheduler
+        scheduler.shutdown();
+        try {
+            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+
+        log.info("SliceInvoker stopped");
+        return Promise.success(unit());
+    }
+
+    @Override
+    public int pendingCount() {
+        return pendingInvocations.size();
     }
 
     @Override
@@ -203,6 +297,10 @@ class SliceInvokerImpl implements SliceInvoker {
     @Override
     @SuppressWarnings("unchecked")
     public <R> Promise<R> invokeAndWait(Artifact slice, MethodName method, Object request, Class<R> responseType) {
+        if (stopped) {
+            return INVOKER_STOPPED.promise();
+        }
+
         return selectEndpoint(slice, method)
                 .flatMap(endpoint -> {
                     var payload = serializeRequest(request);
@@ -210,8 +308,12 @@ class SliceInvokerImpl implements SliceInvoker {
 
                     // Create pending promise using callback pattern
                     return Promise.<R>promise(pendingPromise -> {
-                        // Store as Object promise for type erasure handling
-                        pendingInvocations.put(correlationId, (Promise<Object>) (Promise<?>) pendingPromise);
+                        // Store with timestamp for cleanup
+                        var pending = new PendingInvocation(
+                                (Promise<Object>) (Promise<?>) pendingPromise,
+                                System.currentTimeMillis()
+                        );
+                        pendingInvocations.put(correlationId, pending);
 
                         // Set timeout to clean up if no response
                         pendingPromise.timeout(timeSpan(timeoutMs).millis())
@@ -236,10 +338,18 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private <R> Promise<R> invokeWithRetryInternal(Artifact slice, MethodName method, Object request,
                                                     Class<R> responseType, int attempt, int maxRetries) {
+        if (stopped) {
+            return INVOKER_STOPPED.promise();
+        }
+
         return Promise.promise(promise -> {
             invokeAndWait(slice, method, request, responseType)
                     .onSuccess(promise::succeed)
                     .onFailure(cause -> {
+                        if (stopped) {
+                            promise.fail(INVOKER_STOPPED);
+                            return;
+                        }
                         if (attempt < maxRetries) {
                             var nextAttempt = attempt + 1;
                             var delayMs = BASE_RETRY_DELAY_MS * (1L << attempt); // Exponential backoff: 100, 200, 400, 800...
@@ -247,7 +357,7 @@ class SliceInvokerImpl implements SliceInvoker {
                             log.debug("Invocation failed, scheduling retry {}/{} in {}ms: {}.{} - {}",
                                       nextAttempt, maxRetries, delayMs, slice, method, cause.message());
 
-                            retryScheduler.schedule(() -> {
+                            scheduler.schedule(() -> {
                                 invokeWithRetryInternal(slice, method, request, responseType, nextAttempt, maxRetries)
                                         .onSuccess(promise::succeed)
                                         .onFailure(promise::fail);
@@ -299,20 +409,23 @@ class SliceInvokerImpl implements SliceInvoker {
             return;
         }
 
+        var promise = pending.promise();
+
         if (response.success()) {
             try {
                 var buf = Unpooled.wrappedBuffer(response.payload());
                 var result = deserializer.read(buf);
-                pending.resolve(Result.success(result));
+                buf.release(); // Release the wrapped buffer
+                promise.resolve(Result.success(result));
                 log.debug("Completed invocation [{}]", response.correlationId());
             } catch (Exception e) {
-                pending.resolve(Result.failure(Causes.fromThrowable(e)));
+                promise.resolve(Result.failure(Causes.fromThrowable(e)));
                 log.error("Failed to deserialize response [{}]: {}",
                           response.correlationId(), e.getMessage());
             }
         } else {
             var errorMessage = new String(response.payload());
-            pending.resolve(Result.failure(new InvocationError(errorMessage)));
+            promise.resolve(Result.failure(new InvocationError(errorMessage)));
             log.debug("Invocation failed [{}]: {}", response.correlationId(), errorMessage);
         }
     }

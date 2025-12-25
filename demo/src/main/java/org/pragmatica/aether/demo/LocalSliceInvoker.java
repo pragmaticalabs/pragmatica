@@ -82,6 +82,18 @@ public final class LocalSliceInvoker implements SliceInvoker {
         // Not used for local invocations
     }
 
+    @Override
+    public Promise<Unit> stop() {
+        slices.clear();
+        methodCache.clear();
+        return Promise.success(unit());
+    }
+
+    @Override
+    public int pendingCount() {
+        return 0; // Local invocations are synchronous
+    }
+
     public int sliceCount() {
         return slices.size();
     }

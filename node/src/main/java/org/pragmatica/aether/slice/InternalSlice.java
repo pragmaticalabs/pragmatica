@@ -121,13 +121,18 @@ public record InternalSlice(
                 Causes::fromThrowable,
                 () -> {
                     ByteBuf output = Unpooled.buffer();
-                    serializer.write(output, response);
-                    return output;
+                    try {
+                        serializer.write(output, response);
+                        return output;
+                    } catch (Exception e) {
+                        output.release(); // Release on serialization failure
+                        throw e;
+                    }
                 }
                            );
     }
 
     // Error constants
     private static final Fn1<Cause, MethodName> METHOD_NOT_FOUND =
-            Causes.forValue("Method not found: {0}");
+            Causes.forOneValue("Method not found: {0}");
 }
