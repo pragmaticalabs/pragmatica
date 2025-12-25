@@ -79,7 +79,7 @@ The web dashboard (`index.html`) provides:
 
 ### Prerequisites
 
-- JDK 21+
+- JDK 25+
 - Maven 3.9+
 - Built Aether project (`mvn clean install`)
 
@@ -88,13 +88,13 @@ The web dashboard (`index.html`) provides:
 ```bash
 # Build the demo
 cd demo
-../mvnw package
+mvn package
 
 # Run with defaults (5 nodes, 1000 req/sec)
-java -jar target/demo-0.4.0.jar
+java -jar target/demo-0.5.0.jar
 
 # Or with custom settings
-CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar target/demo-0.4.0.jar
+CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar target/demo-0.5.0.jar
 ```
 
 The dashboard opens automatically at `http://localhost:8888`.
@@ -405,7 +405,7 @@ The `PlaceOrderSlice` demonstrates orchestrated inter-slice calls:
 
 ```bash
 cd demo-order
-../mvnw clean install
+mvn clean install
 ```
 
 This produces 6 slice JARs:
