@@ -48,7 +48,7 @@ public interface HttpRouter {
     Promise<Unit> stop();
 
     /**
-     * Create an HTTP router.
+     * Create an HTTP router with static routes only (legacy, for backward compatibility).
      */
     static HttpRouter httpRouter(
             RouterConfig config,
@@ -58,7 +58,22 @@ public interface HttpRouter {
             Serializer serializer,
             Deserializer deserializer
     ) {
-        return new HttpRouterImpl(config, routingSections, invoker, artifactResolver, serializer, deserializer);
+        return new HttpRouterImpl(config, routingSections, null, invoker, artifactResolver, serializer, deserializer);
+    }
+
+    /**
+     * Create an HTTP router with dynamic route registry and static fallback routes.
+     */
+    static HttpRouter httpRouter(
+            RouterConfig config,
+            List<RoutingSection> routingSections,
+            RouteRegistry routeRegistry,
+            SliceInvoker invoker,
+            SliceDispatcher.ArtifactResolver artifactResolver,
+            Serializer serializer,
+            Deserializer deserializer
+    ) {
+        return new HttpRouterImpl(config, routingSections, routeRegistry, invoker, artifactResolver, serializer, deserializer);
     }
 }
 
@@ -67,7 +82,8 @@ class HttpRouterImpl implements HttpRouter {
     private static final Logger log = LoggerFactory.getLogger(HttpRouterImpl.class);
 
     private final RouterConfig config;
-    private final RouteMatcher routeMatcher;
+    private final RouteMatcher staticRouteMatcher;
+    private final RouteRegistry routeRegistry;
     private final BindingResolver bindingResolver;
     private final SliceDispatcher dispatcher;
     private final ResponseWriter responseWriter;
@@ -78,13 +94,15 @@ class HttpRouterImpl implements HttpRouter {
     HttpRouterImpl(
             RouterConfig config,
             List<RoutingSection> routingSections,
+            RouteRegistry routeRegistry,
             SliceInvoker invoker,
             SliceDispatcher.ArtifactResolver artifactResolver,
             Serializer serializer,
             Deserializer deserializer
     ) {
         this.config = config;
-        this.routeMatcher = RouteMatcher.routeMatcher(routingSections);
+        this.staticRouteMatcher = RouteMatcher.routeMatcher(routingSections);
+        this.routeRegistry = routeRegistry;
         this.bindingResolver = BindingResolver.bindingResolver(deserializer);
         this.dispatcher = SliceDispatcher.sliceDispatcher(invoker, artifactResolver);
         this.responseWriter = ResponseWriter.responseWriter(serializer);
@@ -105,7 +123,7 @@ class HttpRouterImpl implements HttpRouter {
                             p.addLast(new HttpServerCodec());
                             p.addLast(new HttpObjectAggregator(config.maxContentLength()));
                             p.addLast(new HttpRequestHandler(
-                                    routeMatcher, bindingResolver, dispatcher, responseWriter
+                                    staticRouteMatcher, routeRegistry, bindingResolver, dispatcher, responseWriter
                             ));
                         }
                     });
@@ -146,18 +164,21 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private static final Logger log = LoggerFactory.getLogger(HttpRequestHandler.class);
 
-    private final RouteMatcher routeMatcher;
+    private final RouteMatcher staticRouteMatcher;
+    private final RouteRegistry routeRegistry;
     private final BindingResolver bindingResolver;
     private final SliceDispatcher dispatcher;
     private final ResponseWriter responseWriter;
 
     HttpRequestHandler(
-            RouteMatcher routeMatcher,
+            RouteMatcher staticRouteMatcher,
+            RouteRegistry routeRegistry,
             BindingResolver bindingResolver,
             SliceDispatcher dispatcher,
             ResponseWriter responseWriter
     ) {
-        this.routeMatcher = routeMatcher;
+        this.staticRouteMatcher = staticRouteMatcher;
+        this.routeRegistry = routeRegistry;
         this.bindingResolver = bindingResolver;
         this.dispatcher = dispatcher;
         this.responseWriter = responseWriter;
@@ -177,18 +198,37 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
         log.debug("Received {} {}", method, path);
 
-        // Match route
-        routeMatcher.match(method, path).fold(
-                () -> {
-                    responseWriter.writeError(ctx, HttpResponseStatus.NOT_FOUND,
-                            new HttpRouterError.RouteNotFound(path));
-                    return null;
-                },
-                match -> {
-                    handleMatchedRoute(ctx, method, path, decoder, request, match);
-                    return null;
-                }
+        // Try dynamic routes first (from RouteRegistry), then fall back to static routes
+        var match = matchRoute(method, path);
+        match.fold(
+            () -> {
+                responseWriter.writeError(ctx, HttpResponseStatus.NOT_FOUND,
+                        new HttpRouterError.RouteNotFound(path));
+                return null;
+            },
+            m -> {
+                handleMatchedRoute(ctx, method, path, decoder, request, m);
+                return null;
+            }
         );
+    }
+
+    private org.pragmatica.lang.Option<MatchResult> matchRoute(HttpMethod method, String path) {
+        // Try dynamic routes first
+        if (routeRegistry != null) {
+            var dynamicMatch = routeRegistry.match(method, path);
+            if (dynamicMatch.isPresent()) {
+                log.debug("Matched dynamic route: {} {}", method, path);
+                return dynamicMatch;
+            }
+        }
+
+        // Fall back to static routes
+        var staticMatch = staticRouteMatcher.match(method, path);
+        if (staticMatch.isPresent()) {
+            log.debug("Matched static route: {} {}", method, path);
+        }
+        return staticMatch;
     }
 
     private void handleMatchedRoute(ChannelHandlerContext ctx, HttpMethod method, String path,

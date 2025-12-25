@@ -186,10 +186,58 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Route key format:
+    /// ```
+    /// routes/{method}:{pathHash}
+    /// ```
+    /// Routes use path hash for key uniqueness while storing original pattern in value.
+    record RouteKey(String method, int pathHash) implements AetherKey {
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.RoutePattern routePattern -> routePattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return "routes/" + method + ":" + pathHash;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static RouteKey routeKey(String method, String pathPattern) {
+            return new RouteKey(method.toUpperCase(java.util.Locale.ROOT), pathPattern.hashCode());
+        }
+
+        public static Result<RouteKey> routeKey(String key) {
+            if (!key.startsWith("routes/")) {
+                return ROUTE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var content = key.substring(7); // Remove "routes/"
+            var colonIndex = content.indexOf(':');
+            if (colonIndex == -1) {
+                return ROUTE_KEY_FORMAT_ERROR.apply(key).result();
+            }
+
+            var method = content.substring(0, colonIndex);
+            var hashPart = content.substring(colonIndex + 1);
+
+            return Number.parseInt(hashPart)
+                .map(hash -> new RouteKey(method, hash));
+        }
+    }
+
     Fn1<Cause, String> BLUEPRINT_KEY_FORMAT_ERROR = Causes.forValue("Invalid blueprint key format: %s");
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forValue("Invalid app-blueprint key format: %s");
     Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forValue("Invalid slice key format: %s");
     Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forValue("Invalid endpoint key format: %s");
+    Fn1<Cause, String> ROUTE_KEY_FORMAT_ERROR = Causes.forValue("Invalid route key format: %s");
 
     /// Aether KV-Store structured patterns for key matching
     sealed interface AetherKeyPattern extends StructuredPattern {
@@ -218,6 +266,13 @@ public sealed interface AetherKey extends StructuredKey {
         record EndpointPattern() implements AetherKeyPattern {
             public boolean matches(EndpointKey key) {
                 return false;
+            }
+        }
+
+        /// Pattern for route keys: routes/*
+        record RoutePattern() implements AetherKeyPattern {
+            public boolean matches(RouteKey key) {
+                return true;
             }
         }
     }

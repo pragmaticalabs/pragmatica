@@ -16,4 +16,15 @@ public interface Slice {
     }
 
     List<SliceMethod<?, ?>> methods();
+
+    /**
+     * HTTP routes this slice handles.
+     * Routes are registered automatically during slice activation.
+     * Default implementation returns empty list (no routes).
+     *
+     * @return list of route definitions
+     */
+    default List<SliceRoute> routes() {
+        return List.of();
+    }
 }
