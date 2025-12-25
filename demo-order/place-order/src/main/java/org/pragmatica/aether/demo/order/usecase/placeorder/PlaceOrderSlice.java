@@ -1,6 +1,8 @@
 package org.pragmatica.aether.demo.order.usecase.placeorder;
 
+import org.pragmatica.aether.demo.order.domain.Money;
 import org.pragmatica.aether.demo.order.domain.OrderId;
+import org.pragmatica.aether.demo.order.domain.OrderRepository;
 import org.pragmatica.aether.demo.order.domain.OrderStatus;
 import org.pragmatica.aether.demo.order.inventory.CheckStockRequest;
 import org.pragmatica.aether.demo.order.inventory.ReserveStockRequest;
@@ -146,6 +148,28 @@ public record PlaceOrderSlice() implements Slice {
     }
 
     private PlaceOrderResponse createOrder(ValidWithReservations context) {
+        // Build order items with prices
+        var items = context.request().items().stream()
+            .map(item -> {
+                // Calculate unit price from total / quantity (simplified)
+                var unitPrice = Money.usd("29.99"); // Default price, in production would come from pricing
+                return new OrderRepository.OrderItem(item.productId(), item.quantity(), unitPrice);
+            })
+            .toList();
+
+        // Store the order in the shared repository
+        var order = new OrderRepository.StoredOrder(
+            context.orderId(),
+            context.request().customerId(),
+            OrderStatus.CONFIRMED,
+            context.total().total(),
+            items,
+            context.reservations().stream().map(StockReservation::reservationId).toList(),
+            java.time.Instant.now(),
+            java.time.Instant.now()
+        );
+        OrderRepository.instance().save(order);
+
         return new PlaceOrderResponse(
             context.orderId(),
             OrderStatus.CONFIRMED,

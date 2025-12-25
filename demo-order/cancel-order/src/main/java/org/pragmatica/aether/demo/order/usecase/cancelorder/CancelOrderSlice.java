@@ -1,6 +1,7 @@
 package org.pragmatica.aether.demo.order.usecase.cancelorder;
 
-import org.pragmatica.aether.demo.order.domain.OrderId;
+import org.pragmatica.aether.demo.order.domain.OrderRepository;
+import org.pragmatica.aether.demo.order.domain.OrderRepository.StoredOrder;
 import org.pragmatica.aether.demo.order.domain.OrderStatus;
 import org.pragmatica.aether.demo.order.inventory.ReleaseStockRequest;
 import org.pragmatica.aether.demo.order.inventory.StockReleased;
@@ -15,12 +16,11 @@ import org.pragmatica.lang.type.TypeToken;
 
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * CancelOrder Use Case - cancels an order and releases reserved stock.
+ * Uses shared OrderRepository for cross-slice visibility.
  *
  * Flow:
  * 1. Validate request
@@ -33,9 +33,6 @@ public record CancelOrderSlice() implements Slice {
 
     private static final String INVENTORY = "org.pragmatica-lite.aether.demo:inventory-service:0.1.0";
 
-    // Mock order storage with reservations
-    private static final Map<String, StoredOrder> ORDERS = new ConcurrentHashMap<>();
-
     // Status that allow cancellation
     private static final Set<OrderStatus> CANCELLABLE_STATUSES = Set.of(
         OrderStatus.PENDING,
@@ -43,25 +40,9 @@ public record CancelOrderSlice() implements Slice {
         OrderStatus.PROCESSING
     );
 
-    static {
-        // Add mock orders with reservations
-        ORDERS.put("ORD-12345678", new StoredOrder(
-            new OrderId("ORD-12345678"),
-            OrderStatus.CONFIRMED,
-            List.of("RES-11111111", "RES-22222222")
-        ));
-        ORDERS.put("ORD-87654321", new StoredOrder(
-            new OrderId("ORD-87654321"),
-            OrderStatus.SHIPPED,
-            List.of("RES-33333333")
-        ));
+    private OrderRepository repository() {
+        return OrderRepository.instance();
     }
-
-    private record StoredOrder(
-        OrderId orderId,
-        OrderStatus status,
-        List<String> reservationIds
-    ) {}
 
     public static CancelOrderSlice cancelOrderSlice() {
         return new CancelOrderSlice();
@@ -102,20 +83,19 @@ public record CancelOrderSlice() implements Slice {
     }
 
     private Promise<OrderWithContext> findAndValidateOrder(ValidCancelOrderRequest validRequest) {
-        var order = ORDERS.get(validRequest.orderId().value());
-
-        if (order == null) {
-            return new CancelOrderError.OrderNotFound(validRequest.orderId().value()).promise();
-        }
-
-        if (!CANCELLABLE_STATUSES.contains(order.status())) {
-            return new CancelOrderError.OrderNotCancellable(
-                validRequest.orderId().value(),
-                "Order is in " + order.status() + " status"
-            ).promise();
-        }
-
-        return Promise.success(new OrderWithContext(validRequest, order));
+        return repository().findById(validRequest.orderId().value())
+            .fold(
+                () -> new CancelOrderError.OrderNotFound(validRequest.orderId().value()).<OrderWithContext>promise(),
+                order -> {
+                    if (!CANCELLABLE_STATUSES.contains(order.status())) {
+                        return new CancelOrderError.OrderNotCancellable(
+                            validRequest.orderId().value(),
+                            "Order is in " + order.status() + " status"
+                        ).<OrderWithContext>promise();
+                    }
+                    return Promise.success(new OrderWithContext(validRequest, order));
+                }
+            );
     }
 
     private Promise<OrderWithReleases> releaseAllStock(OrderWithContext context) {
@@ -144,15 +124,9 @@ public record CancelOrderSlice() implements Slice {
     }
 
     private CancelOrderResponse updateAndConfirm(OrderWithReleases context) {
-        // Update order status
+        // Update order status in the repository
         var orderId = context.request().orderId().value();
-        var order = context.order();
-
-        ORDERS.put(orderId, new StoredOrder(
-            order.orderId(),
-            OrderStatus.CANCELLED,
-            order.reservationIds()
-        ));
+        repository().updateStatus(orderId, OrderStatus.CANCELLED);
 
         return new CancelOrderResponse(
             context.request().orderId(),
@@ -165,9 +139,4 @@ public record CancelOrderSlice() implements Slice {
     // Pipeline context records
     private record OrderWithContext(ValidCancelOrderRequest request, StoredOrder order) {}
     private record OrderWithReleases(ValidCancelOrderRequest request, StoredOrder order) {}
-
-    // Method to store order with reservations (called by PlaceOrderSlice)
-    public static void storeOrderWithReservations(OrderId orderId, OrderStatus status, List<String> reservationIds) {
-        ORDERS.put(orderId.value(), new StoredOrder(orderId, status, reservationIds));
-    }
 }
