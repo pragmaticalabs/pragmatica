@@ -8,10 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.5.0] - 2025-12-25
 
 ### Added
-- TBD
+- **Distributed Hash Table (DHT)** - Foundation for infrastructure services
+  - ConsistentHashRing with 1024 partitions and virtual nodes
+  - DHTNode for local operations, DHTClient for remote operations
+  - MemoryStorageEngine with pluggable storage backend
+  - Quorum-based reads/writes with configurable replication
+- **HTTP Route Self-Registration** - Dynamic route management via KV-Store
+  - RouteKey/RouteValue schema for cluster-wide route storage
+  - RouteRegistry with idempotent registration and conflict detection
+  - SliceRoute API for slices to declare routes
+  - Backward compatible with blueprint-defined routes
+- **Artifact Repository Service** - Maven-compatible artifact storage
+  - ArtifactStore with DHT-backed chunked storage (64KB chunks)
+  - MavenProtocolHandler for GET/PUT operations
+  - ArtifactRepoSlice implementing Slice interface
+  - CLI commands: `artifact deploy`, `artifact list`, `artifact versions`
+- **infra-services module** - Infrastructure service slices
+- **C-level resilience demo** with visual dashboard
 
 ### Changed
-- TBD
+- Demo-order slices migrated to route self-registration
+- HttpRouter tries dynamic routes first, falls back to static routes
+- Updated to Java 25 EA in CI
 
 ## [0.4.0] - 2025-12-22
 
