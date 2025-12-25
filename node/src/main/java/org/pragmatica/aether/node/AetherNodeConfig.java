@@ -3,6 +3,7 @@ package org.pragmatica.aether.node;
 import org.pragmatica.aether.http.RouterConfig;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.routing.RoutingSection;
+import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
 import org.pragmatica.cluster.consensus.rabia.ProtocolConfig;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.net.NodeInfo;
@@ -11,6 +12,7 @@ import org.pragmatica.lang.Option;
 
 import java.util.List;
 
+import static org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider.furySerializerFactoryProvider;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
@@ -47,10 +49,14 @@ public record AetherNodeConfig(
             return new HttpRouterSetup(config, routingSections);
         }
     }
+    private static SliceActionConfig defaultSliceConfig() {
+        return SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider());
+    }
+
     public static AetherNodeConfig aetherNodeConfig(NodeId self,
                                                     int port,
                                                     List<NodeInfo> coreNodes) {
-        return aetherNodeConfig(self, port, coreNodes, SliceActionConfig.defaultConfiguration(), DEFAULT_MANAGEMENT_PORT, Option.empty());
+        return aetherNodeConfig(self, port, coreNodes, defaultSliceConfig(), DEFAULT_MANAGEMENT_PORT, Option.empty());
     }
 
     public static AetherNodeConfig aetherNodeConfig(NodeId self,
@@ -92,7 +98,7 @@ public record AetherNodeConfig(
                 coreNodes
         );
 
-        return new AetherNodeConfig(topology, ProtocolConfig.testConfig(), SliceActionConfig.defaultConfiguration(), MANAGEMENT_DISABLED, Option.empty());
+        return new AetherNodeConfig(topology, ProtocolConfig.testConfig(), defaultSliceConfig(), MANAGEMENT_DISABLED, Option.empty());
     }
 
     public NodeId self() {

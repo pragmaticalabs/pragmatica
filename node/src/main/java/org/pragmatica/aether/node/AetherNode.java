@@ -15,6 +15,7 @@ import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.MetricsScheduler;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
+import org.pragmatica.aether.slice.SliceRuntime;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -114,6 +115,10 @@ public interface AetherNode {
             @Override
             public Promise<Unit> start() {
                 log.info("Starting Aether node {}", self());
+
+                // Configure SliceRuntime so slices can access runtime services
+                SliceRuntime.setSliceInvoker(sliceInvoker);
+
                 return clusterNode.start()
                                   .flatMap(_ -> managementServer.fold(
                                           () -> Promise.success(Unit.unit()),
@@ -131,6 +136,7 @@ public interface AetherNode {
                 log.info("Stopping Aether node {}", self());
                 controlLoop.stop();
                 metricsScheduler.stop();
+                SliceRuntime.clear();
                 return httpRouter.fold(
                                () -> Promise.success(Unit.unit()),
                                HttpRouter::stop
@@ -139,6 +145,7 @@ public interface AetherNode {
                                () -> Promise.success(Unit.unit()),
                                ManagementServer::stop
                        ))
+                       .flatMap(_ -> sliceInvoker.stop())
                        .flatMap(_ -> clusterNode.stop())
                        .onSuccess(_ -> log.info("Aether node {} stopped", self()));
             }
