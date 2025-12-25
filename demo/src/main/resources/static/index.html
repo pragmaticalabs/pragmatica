@@ -85,6 +85,14 @@
             </div>
         </div>
 
+        <!-- Node Details Panel -->
+        <div class="panel nodes-panel">
+            <h2>Node Details <span id="slice-count" class="slice-badge">0 slices</span></h2>
+            <div id="nodes-list" class="nodes-list">
+                <div class="node-item placeholder">Waiting for cluster...</div>
+            </div>
+        </div>
+
         <!-- Control Panel -->
         <div class="panel control-panel">
             <div class="control-group">
@@ -100,14 +108,17 @@
             <div class="control-group">
                 <h3>Load Control</h3>
                 <div class="load-control">
-                    <input type="range" id="load-slider" min="100" max="10000" value="1000" step="100">
+                    <input type="range" id="load-slider" min="100" max="100000" value="1000" step="100">
                     <span id="load-value">1000 req/sec</span>
                 </div>
                 <div class="button-row">
                     <button id="btn-load-1k" class="btn btn-primary">1K</button>
                     <button id="btn-load-5k" class="btn btn-primary">5K</button>
                     <button id="btn-load-10k" class="btn btn-primary">10K</button>
-                    <button id="btn-ramp" class="btn btn-info">RAMP UP</button>
+                    <button id="btn-load-25k" class="btn btn-primary">25K</button>
+                    <button id="btn-load-50k" class="btn btn-primary">50K</button>
+                    <button id="btn-load-100k" class="btn btn-primary">100K</button>
+                    <button id="btn-ramp" class="btn btn-info">RAMP</button>
                 </div>
             </div>
 

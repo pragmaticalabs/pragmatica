@@ -7,6 +7,12 @@ import io.netty.channel.socket.SocketChannel;
 import io.netty.channel.socket.nio.NioServerSocketChannel;
 import io.netty.handler.codec.http.*;
 import io.netty.handler.stream.ChunkedWriteHandler;
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.demo.order.inventory.InventoryServiceSlice;
+import org.pragmatica.aether.demo.order.pricing.PricingServiceSlice;
+import org.pragmatica.aether.demo.order.usecase.cancelorder.CancelOrderSlice;
+import org.pragmatica.aether.demo.order.usecase.getorderstatus.GetOrderStatusSlice;
+import org.pragmatica.aether.demo.order.usecase.placeorder.PlaceOrderSlice;
 import org.pragmatica.lang.io.TimeSpan;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,6 +41,7 @@ public final class DemoServer {
     private DemoCluster cluster;
     private LoadGenerator loadGenerator;
     private DemoMetrics metrics;
+    private LocalSliceInvoker sliceInvoker;
     private DemoApiHandler apiHandler;
     private StaticFileHandler staticHandler;
 
@@ -85,7 +92,8 @@ public final class DemoServer {
         metrics = DemoMetrics.demoMetrics();
         cluster = DemoCluster.demoCluster(clusterSize);
         loadGenerator = LoadGenerator.loadGenerator(port, metrics);
-        apiHandler = DemoApiHandler.demoApiHandler(cluster, loadGenerator, metrics);
+        sliceInvoker = initializeSlices();
+        apiHandler = DemoApiHandler.demoApiHandler(cluster, loadGenerator, metrics, sliceInvoker);
         staticHandler = StaticFileHandler.staticFileHandler();
 
         // Start the cluster
@@ -190,6 +198,32 @@ public final class DemoServer {
         } catch (Exception e) {
             log.info("Could not open browser automatically. Please navigate to: {}", url);
         }
+    }
+
+    private LocalSliceInvoker initializeSlices() {
+        log.info("Initializing demo-order slices...");
+
+        var invoker = LocalSliceInvoker.localSliceInvoker();
+
+        // Register service slices first (they have no dependencies)
+        var inventoryArtifact = Artifact.artifact("org.pragmatica-lite.aether.demo:inventory-service:0.1.0").unwrap();
+        var pricingArtifact = Artifact.artifact("org.pragmatica-lite.aether.demo:pricing-service:0.1.0").unwrap();
+
+        invoker.register(inventoryArtifact, InventoryServiceSlice.inventoryServiceSlice());
+        invoker.register(pricingArtifact, PricingServiceSlice.pricingServiceSlice());
+
+        // Register use case slices (they depend on service slices via invoker)
+        var placeOrderArtifact = Artifact.artifact("org.pragmatica-lite.aether.demo:place-order:0.1.0").unwrap();
+        var getOrderStatusArtifact = Artifact.artifact("org.pragmatica-lite.aether.demo:get-order-status:0.1.0").unwrap();
+        var cancelOrderArtifact = Artifact.artifact("org.pragmatica-lite.aether.demo:cancel-order:0.1.0").unwrap();
+
+        invoker.register(placeOrderArtifact, PlaceOrderSlice.placeOrderSlice(invoker));
+        invoker.register(getOrderStatusArtifact, GetOrderStatusSlice.getOrderStatusSlice());
+        invoker.register(cancelOrderArtifact, CancelOrderSlice.cancelOrderSlice(invoker));
+
+        log.info("Registered {} demo-order slices", invoker.sliceCount());
+
+        return invoker;
     }
 
     private static int getEnvInt(String name, int defaultValue) {

@@ -352,6 +352,113 @@ body {
     flex: 1;
 }
 
+/* Nodes Panel */
+.nodes-panel {
+    max-height: 250px;
+}
+
+.nodes-panel h2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.slice-badge {
+    font-size: 0.75rem;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    padding: 3px 8px;
+    border-radius: 10px;
+    font-weight: normal;
+}
+
+.nodes-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.node-item {
+    background: var(--bg-secondary);
+    border-radius: var(--border-radius);
+    padding: 10px 12px;
+    border-left: 3px solid var(--accent-green);
+}
+
+.node-item.leader {
+    border-left-color: var(--accent-yellow);
+    background: linear-gradient(135deg, rgba(245, 158, 11, 0.1), var(--bg-secondary));
+}
+
+.node-item.placeholder {
+    border-left-color: var(--text-muted);
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.node-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.node-id {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.leader-badge {
+    font-size: 0.65rem;
+    background: var(--accent-yellow);
+    color: var(--bg-primary);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-weight: 700;
+}
+
+.node-port {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.node-stats {
+    display: flex;
+    gap: 12px;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.node-stat {
+    font-family: var(--font-mono);
+}
+
+.node-slices {
+    font-size: 0.75rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+.slice-tag {
+    background: var(--bg-secondary);
+    color: var(--accent-green);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.7rem;
+    border: 1px solid var(--accent-green);
+}
+
+.no-slices {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
 /* Control Panel */
 .control-panel {
     display: grid;

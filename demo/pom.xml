@@ -29,6 +29,33 @@
             <artifactId>common</artifactId>
         </dependency>
 
+        <!-- Demo-order slices -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether.demo</groupId>
+            <artifactId>place-order</artifactId>
+            <version>0.1.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether.demo</groupId>
+            <artifactId>get-order-status</artifactId>
+            <version>0.1.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether.demo</groupId>
+            <artifactId>cancel-order</artifactId>
+            <version>0.1.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether.demo</groupId>
+            <artifactId>inventory-service</artifactId>
+            <version>0.1.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether.demo</groupId>
+            <artifactId>pricing-service</artifactId>
+            <version>0.1.0</version>
+        </dependency>
+
         <!-- Pragmatica -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>

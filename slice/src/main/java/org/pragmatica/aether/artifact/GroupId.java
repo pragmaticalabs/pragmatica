@@ -18,5 +18,5 @@ public record GroupId(String id) {
         return id;
     }
 
-    private static final Pattern GROUP_ID_PATTERN = Pattern.compile("^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)+$");
+    private static final Pattern GROUP_ID_PATTERN = Pattern.compile("^[a-z][a-z0-9_-]*(\\.[a-z][a-z0-9_-]*)+$");
 }

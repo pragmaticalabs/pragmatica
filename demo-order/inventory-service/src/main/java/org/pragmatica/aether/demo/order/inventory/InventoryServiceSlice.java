@@ -16,11 +16,11 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public record InventoryServiceSlice() implements Slice {
 
-    // Mock stock data
+    // Mock stock data - high values for demo load testing
     private static final Map<String, Integer> STOCK = new ConcurrentHashMap<>(Map.of(
-        "PROD-ABC123", 100,
-        "PROD-DEF456", 50,
-        "PROD-GHI789", 25
+        "PROD-ABC123", 1_000_000,
+        "PROD-DEF456", 1_000_000,
+        "PROD-GHI789", 1_000_000
     ));
 
     private static final Map<String, ReservedStock> RESERVATIONS = new ConcurrentHashMap<>();

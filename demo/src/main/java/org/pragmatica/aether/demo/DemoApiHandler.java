@@ -17,6 +17,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.demo.order.usecase.placeorder.PlaceOrderRequest;
+import org.pragmatica.aether.demo.order.usecase.placeorder.PlaceOrderRequest.OrderItemRequest;
+import org.pragmatica.aether.demo.order.usecase.placeorder.PlaceOrderResponse;
+import org.pragmatica.aether.slice.MethodName;
+
 import static io.netty.handler.codec.http.HttpResponseStatus.*;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
@@ -28,20 +34,30 @@ import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 public final class DemoApiHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private static final Logger log = LoggerFactory.getLogger(DemoApiHandler.class);
 
+    private static final Artifact PLACE_ORDER_ARTIFACT =
+        Artifact.artifact("org.pragmatica-lite.aether.demo:place-order:0.1.0").unwrap();
+    private static final MethodName PLACE_ORDER_METHOD = MethodName.methodName("placeOrder").unwrap();
+
     private final DemoCluster cluster;
     private final LoadGenerator loadGenerator;
     private final DemoMetrics metrics;
+    private final LocalSliceInvoker sliceInvoker;
     private final List<DemoEvent> events = new CopyOnWriteArrayList<>();
     private final long startTime = System.currentTimeMillis();
 
-    private DemoApiHandler(DemoCluster cluster, LoadGenerator loadGenerator, DemoMetrics metrics) {
+    private DemoApiHandler(DemoCluster cluster, LoadGenerator loadGenerator, DemoMetrics metrics, LocalSliceInvoker sliceInvoker) {
         this.cluster = cluster;
         this.loadGenerator = loadGenerator;
         this.metrics = metrics;
+        this.sliceInvoker = sliceInvoker;
     }
 
-    public static DemoApiHandler demoApiHandler(DemoCluster cluster, LoadGenerator loadGenerator, DemoMetrics metrics) {
-        return new DemoApiHandler(cluster, loadGenerator, metrics);
+    public static DemoApiHandler demoApiHandler(DemoCluster cluster, LoadGenerator loadGenerator, DemoMetrics metrics, LocalSliceInvoker sliceInvoker) {
+        return new DemoApiHandler(cluster, loadGenerator, metrics, sliceInvoker);
+    }
+
+    public int sliceCount() {
+        return sliceInvoker.sliceCount();
     }
 
     @Override
@@ -92,7 +108,7 @@ public final class DemoApiHandler extends SimpleChannelInboundHandler<FullHttpRe
                 loadGenerator.isRunning()
         );
 
-        var response = new StatusResponse(clusterStatus, metricsSnapshot, loadStatus, uptimeSeconds());
+        var response = new StatusResponse(clusterStatus, metricsSnapshot, loadStatus, uptimeSeconds(), sliceInvoker.sliceCount());
         sendResponse(ctx, OK, toJson(response));
     }
 
@@ -227,14 +243,55 @@ public final class DemoApiHandler extends SimpleChannelInboundHandler<FullHttpRe
     }
 
     /**
-     * Handle simulated order placement requests.
-     * This endpoint simulates slice request processing for load testing.
-     * TODO: Wire to actual demo-order slice invocation once slices are deployed.
+     * Handle order placement requests by invoking PlaceOrderSlice.
      */
     private void handlePlaceOrder(ChannelHandlerContext ctx, FullHttpRequest request) {
-        // Simulate processing - just return success with generated order ID
-        var orderId = "ORD-" + System.nanoTime();
-        sendResponse(ctx, OK, "{\"success\":true,\"orderId\":\"" + orderId + "\"}");
+        try {
+            var body = request.content().toString(StandardCharsets.UTF_8);
+
+            // Parse order request from body or generate a random one
+            var orderRequest = parseOrderRequest(body);
+
+            sliceInvoker.invokeAndWait(PLACE_ORDER_ARTIFACT, PLACE_ORDER_METHOD, orderRequest, PlaceOrderResponse.class)
+                .onSuccess(response -> {
+                    var total = response.total();
+                    var totalStr = total.currency() + " " + total.amount().toPlainString();
+                    var json = "{\"success\":true,\"orderId\":\"" + response.orderId().value() + "\"," +
+                               "\"status\":\"" + response.status() + "\"," +
+                               "\"total\":\"" + totalStr + "\"}";
+                    sendResponse(ctx, OK, json);
+                })
+                .onFailure(cause -> {
+                    sendResponse(ctx, INTERNAL_SERVER_ERROR,
+                        "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
+                });
+        } catch (Exception e) {
+            log.error("Error processing order: {}", e.getMessage());
+            sendResponse(ctx, INTERNAL_SERVER_ERROR,
+                "{\"success\":false,\"error\":\"" + escapeJson(e.getMessage()) + "\"}");
+        }
+    }
+
+    private PlaceOrderRequest parseOrderRequest(String body) {
+        // For demo load testing, generate realistic orders
+        // Each order has 1-3 items from the known product catalog
+        var random = java.util.concurrent.ThreadLocalRandom.current();
+        var products = List.of("PROD-ABC123", "PROD-DEF456", "PROD-GHI789");
+        // CustomerId requires 8 digits: CUST-12345678
+        var customerId = String.format("CUST-%08d", random.nextInt(100_000_000));
+
+        var itemCount = 1 + random.nextInt(3);
+        var items = new ArrayList<OrderItemRequest>();
+        for (int i = 0; i < itemCount; i++) {
+            var productId = products.get(random.nextInt(products.size()));
+            var quantity = 1 + random.nextInt(3);  // Keep quantity low
+            items.add(new OrderItemRequest(productId, quantity));
+        }
+
+        // Optionally apply discount (20% chance)
+        var discountCode = random.nextInt(5) == 0 ? "SAVE10" : null;
+
+        return new PlaceOrderRequest(customerId, items, discountCode);
     }
 
     public void addEvent(String type, String message) {
@@ -298,7 +355,8 @@ public final class DemoApiHandler extends SimpleChannelInboundHandler<FullHttpRe
                "\"targetRate\":" + response.load.targetRate + "," +
                "\"running\":" + response.load.running +
                "}," +
-               "\"uptimeSeconds\":" + response.uptimeSeconds +
+               "\"uptimeSeconds\":" + response.uptimeSeconds + "," +
+               "\"sliceCount\":" + response.sliceCount +
                "}";
     }
 
@@ -335,7 +393,7 @@ public final class DemoApiHandler extends SimpleChannelInboundHandler<FullHttpRe
         ctx.close();
     }
 
-    private record StatusResponse(ClusterStatus cluster, MetricsSnapshot metrics, LoadStatus load, long uptimeSeconds) {}
+    private record StatusResponse(ClusterStatus cluster, MetricsSnapshot metrics, LoadStatus load, long uptimeSeconds, int sliceCount) {}
     private record LoadStatus(int currentRate, int targetRate, boolean running) {}
     private record DemoEvent(String timestamp, String type, String message) {}
 }

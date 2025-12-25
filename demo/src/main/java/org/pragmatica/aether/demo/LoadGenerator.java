@@ -198,10 +198,14 @@ public final class LoadGenerator {
                   });
     }
 
+    // Product IDs that match InventoryServiceSlice mock data
+    private static final String[] PRODUCTS = {"PROD-ABC123", "PROD-DEF456", "PROD-GHI789"};
+
     private String createOrderRequest(long requestId) {
-        var customerId = "CUST-" + (requestId % 100);
-        var productId = "PROD-" + String.format("%03d", 1 + random.nextInt(10));
-        var quantity = 1 + random.nextInt(5);
+        // CustomerId requires 8 digits: CUST-12345678
+        var customerId = String.format("CUST-%08d", requestId % 100_000_000);
+        var productId = PRODUCTS[random.nextInt(PRODUCTS.length)];
+        var quantity = 1 + random.nextInt(3);  // Keep quantity low to avoid stock issues
 
         return String.format("""
             {"customerId":"%s","items":[{"productId":"%s","quantity":%d}]}""",

@@ -18,6 +18,8 @@ let nodeMetricsData = [];     // Cached node metrics
 let svg, simulation;
 let width, height;
 let previousNodeIds = [];
+let simulationNodes = [];  // Persistent node data for D3
+let simulationLinks = [];  // Persistent link data for D3
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', () => {
@@ -75,41 +77,70 @@ function initTopology() {
 function updateTopology(clusterData) {
     if (!clusterData || !clusterData.nodes) return;
 
-    const nodeData = clusterData.nodes.map(n => ({
-        id: n.id,
-        isLeader: n.isLeader,
-        state: n.state
-    }));
+    const currentNodeIds = clusterData.nodes.map(n => n.id).sort();
+    const currentNodeIdSet = new Set(currentNodeIds);
+    const previousNodeIdSet = new Set(previousNodeIds);
 
-    // Check if topology actually changed (nodes added/removed)
-    const currentNodeIds = nodeData.map(n => n.id).sort().join(',');
-    const topologyChanged = currentNodeIds !== previousNodeIds.join(',');
+    // Check if topology changed
+    const topologyChanged = currentNodeIds.join(',') !== previousNodeIds.join(',');
 
-    // Create links between all nodes (full mesh)
-    const links = [];
-    for (let i = 0; i < nodeData.length; i++) {
-        for (let j = i + 1; j < nodeData.length; j++) {
-            links.push({
-                source: nodeData[i].id,
-                target: nodeData[j].id
-            });
+    if (topologyChanged) {
+        // Remove nodes that no longer exist
+        simulationNodes = simulationNodes.filter(n => currentNodeIdSet.has(n.id));
+
+        // Add new nodes with initial positions
+        clusterData.nodes.forEach(n => {
+            if (!previousNodeIdSet.has(n.id)) {
+                simulationNodes.push({
+                    id: n.id,
+                    isLeader: n.isLeader,
+                    state: n.state,
+                    x: width / 2 + (Math.random() - 0.5) * 100,
+                    y: height / 2 + (Math.random() - 0.5) * 100
+                });
+            }
+        });
+
+        // Rebuild links (full mesh)
+        simulationLinks = [];
+        for (let i = 0; i < simulationNodes.length; i++) {
+            for (let j = i + 1; j < simulationNodes.length; j++) {
+                simulationLinks.push({
+                    source: simulationNodes[i],
+                    target: simulationNodes[j]
+                });
+            }
         }
+
+        previousNodeIds = currentNodeIds;
     }
 
-    // Update links
+    // Update leader status on existing nodes
+    clusterData.nodes.forEach(n => {
+        const existing = simulationNodes.find(sn => sn.id === n.id);
+        if (existing) {
+            existing.isLeader = n.isLeader;
+            existing.state = n.state;
+        }
+    });
+
+    // Update links in SVG
     const link = svg.selectAll('.link')
-        .data(links, d => `${d.source.id || d.source}-${d.target.id || d.target}`);
+        .data(simulationLinks, d => `${d.source.id}-${d.target.id}`);
 
     link.exit().remove();
 
     link.enter()
         .append('line')
         .attr('class', 'link')
-        .merge(link);
+        .attr('x1', d => d.source.x)
+        .attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x)
+        .attr('y2', d => d.target.y);
 
-    // Update nodes
+    // Update nodes in SVG
     const node = svg.selectAll('.node')
-        .data(nodeData, d => d.id);
+        .data(simulationNodes, d => d.id);
 
     node.exit()
         .transition()
@@ -120,6 +151,7 @@ function updateTopology(clusterData) {
     const nodeEnter = node.enter()
         .append('g')
         .attr('class', 'node')
+        .attr('transform', d => `translate(${d.x},${d.y})`)
         .call(d3.drag()
             .on('start', dragStarted)
             .on('drag', dragged)
@@ -135,22 +167,16 @@ function updateTopology(clusterData) {
         .attr('dy', 4)
         .text(d => d.id.replace('node-', 'N'));
 
-    // Update node styles with smooth transition (no class swap that causes redraw)
-    svg.selectAll('.node').each(function(d) {
-        const nodeGroup = d3.select(this);
-        const nodeDataItem = nodeData.find(n => n.id === d.id);
-        if (nodeDataItem) {
-            nodeGroup.classed('leader', nodeDataItem.isLeader);
-            nodeGroup.classed('healthy', !nodeDataItem.isLeader);
-        }
-    });
+    // Update node styles
+    svg.selectAll('.node')
+        .classed('leader', d => d.isLeader)
+        .classed('healthy', d => !d.isLeader);
 
-    // Only restart simulation when topology actually changes
+    // Update simulation if topology changed
     if (topologyChanged) {
-        simulation.nodes(nodeData);
-        simulation.force('link').links(links);
-        simulation.alpha(0.3).restart();
-        previousNodeIds = nodeData.map(n => n.id).sort();
+        simulation.nodes(simulationNodes);
+        simulation.force('link').links(simulationLinks);
+        simulation.alpha(0.5).restart();
     }
 }
 
@@ -335,7 +361,10 @@ function initControls() {
     document.getElementById('btn-load-1k').addEventListener('click', () => setLoad(1000));
     document.getElementById('btn-load-5k').addEventListener('click', () => setLoad(5000));
     document.getElementById('btn-load-10k').addEventListener('click', () => setLoad(10000));
-    document.getElementById('btn-ramp').addEventListener('click', () => rampLoad(5000, 30000));
+    document.getElementById('btn-load-25k').addEventListener('click', () => setLoad(25000));
+    document.getElementById('btn-load-50k').addEventListener('click', () => setLoad(50000));
+    document.getElementById('btn-load-100k').addEventListener('click', () => setLoad(100000));
+    document.getElementById('btn-ramp').addEventListener('click', () => rampToNextStep());
 
     // Load slider
     const slider = document.getElementById('load-slider');
@@ -398,7 +427,30 @@ async function killNode(nodeId) {
 async function setLoad(rate) {
     await apiPost(`/api/load/set/${rate}`);
     document.getElementById('load-slider').value = rate;
-    document.getElementById('load-value').textContent = `${rate} req/sec`;
+    document.getElementById('load-value').textContent = formatLoadRate(rate);
+}
+
+function formatLoadRate(rate) {
+    if (rate >= 1000) {
+        return `${(rate / 1000).toFixed(rate % 1000 === 0 ? 0 : 1)}K req/sec`;
+    }
+    return `${rate} req/sec`;
+}
+
+// Load step levels for ramp function
+const LOAD_STEPS = [1000, 5000, 10000, 25000, 50000, 100000];
+
+async function rampToNextStep() {
+    const status = await fetchStatus();
+    if (!status) return;
+
+    const currentRate = status.load.currentRate;
+    // Find next step above current rate
+    const nextStep = LOAD_STEPS.find(step => step > currentRate) || LOAD_STEPS[LOAD_STEPS.length - 1];
+
+    if (nextStep > currentRate) {
+        await apiPost('/api/load/ramp', { targetRate: nextStep, durationMs: 10000 });
+    }
 }
 
 async function rampLoad(targetRate, durationMs) {
@@ -522,10 +574,9 @@ async function poll() {
     const newEvents = await fetchEvents();
     updateTimeline(newEvents);
 
-    // Fetch node metrics if enabled
-    if (showNodeMetrics) {
-        await fetchNodeMetrics();
-    }
+    // Fetch node metrics and update node list
+    await fetchNodeMetrics();
+    updateNodesList(status.cluster.nodes, status.sliceCount);
 }
 
 function updateMetricsDisplay(metrics) {
@@ -558,7 +609,7 @@ function updateLoadDisplay(load) {
 
     if (document.activeElement !== slider) {
         slider.value = load.currentRate;
-        loadValue.textContent = `${load.currentRate} req/sec`;
+        loadValue.textContent = formatLoadRate(load.currentRate);
     }
 }
 
@@ -620,4 +671,63 @@ function formatUptime(seconds) {
 function formatEventTime(isoString) {
     const date = new Date(isoString);
     return date.toLocaleTimeString();
+}
+
+function updateNodesList(clusterNodes, sliceCount) {
+    const container = document.getElementById('nodes-list');
+    if (!clusterNodes || clusterNodes.length === 0) {
+        container.innerHTML = '<div class="node-item placeholder">No nodes available</div>';
+        return;
+    }
+
+    // Update slice count badge
+    sliceCount = sliceCount || 0;
+    document.getElementById('slice-count').textContent = `${sliceCount} slice${sliceCount !== 1 ? 's' : ''}`;
+
+    // Sort nodes: leader first, then by id
+    const sortedNodes = [...clusterNodes].sort((a, b) => {
+        if (a.isLeader && !b.isLeader) return -1;
+        if (!a.isLeader && b.isLeader) return 1;
+        return a.id.localeCompare(b.id);
+    });
+
+    // Slice names for display
+    const sliceNames = sliceCount > 0 ? [
+        'inventory-service',
+        'pricing-service',
+        'place-order',
+        'get-order-status',
+        'cancel-order'
+    ] : [];
+
+    let html = '';
+    sortedNodes.forEach(node => {
+        const metrics = nodeMetricsData.find(m => m.nodeId === node.id);
+        const cpuPercent = metrics ? (metrics.cpuUsage * 100).toFixed(0) : '?';
+        const heapUsed = metrics ? metrics.heapUsedMb : '?';
+        const heapMax = metrics ? metrics.heapMaxMb : '?';
+
+        const sliceList = sliceCount > 0
+            ? sliceNames.map(s => `<span class="slice-tag">${s}</span>`).join('')
+            : '<span class="no-slices">No slices deployed</span>';
+
+        html += `
+            <div class="node-item ${node.isLeader ? 'leader' : ''}">
+                <div class="node-header">
+                    <span class="node-id">${node.id}</span>
+                    ${node.isLeader ? '<span class="leader-badge">LEADER</span>' : ''}
+                    <span class="node-port">:${node.port}</span>
+                </div>
+                <div class="node-stats">
+                    <span class="node-stat">CPU: ${cpuPercent}%</span>
+                    <span class="node-stat">Heap: ${heapUsed}/${heapMax}MB</span>
+                </div>
+                <div class="node-slices">
+                    ${sliceList}
+                </div>
+            </div>
+        `;
+    });
+
+    container.innerHTML = html;
 }
