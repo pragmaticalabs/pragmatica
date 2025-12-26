@@ -2,6 +2,12 @@
 
 ## [0.3.9] - 2025-12-25
 
+### Added
+- 3 new lint rules (36 total):
+  - JBCT-ACR-01: Acronym naming convention (HTTPClient → HttpClient)
+  - JBCT-SEAL-01: Error interfaces should be sealed
+  - JBCT-PAT-02: No Fork-Join inside Sequencer (Result.all inside flatMap)
+
 ### Changed
 - Update to Pragmatica Lite 0.8.6
 - AI tools: sync to JBCT v2.0.7
