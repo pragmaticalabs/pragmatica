@@ -1,6 +1,8 @@
 package org.pragmatica.aether.demo;
 
+import org.pragmatica.aether.demo.simulator.DataGenerator;
 import org.pragmatica.aether.demo.simulator.EntryPointMetrics;
+import org.pragmatica.aether.demo.simulator.SimulatorConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -11,14 +13,14 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Generates continuous HTTP load against the cluster for demo purposes.
@@ -29,86 +31,114 @@ public final class LoadGenerator {
 
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(3);
 
-    // Known products that match InventoryServiceSlice mock data
-    private static final List<String> PRODUCTS = List.of("PROD-ABC123", "PROD-DEF456", "PROD-GHI789");
-
     private final int port;
     private final DemoMetrics metrics;
     private final EntryPointMetrics entryPointMetrics;
     private final HttpClient httpClient;
-    private final Random random = new Random();
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final AtomicLong requestCounter = new AtomicLong(0);
+    private final AtomicReference<SimulatorConfig> config;
 
     // Per-entry-point generators
     private final Map<String, EntryPointGenerator> generators = new ConcurrentHashMap<>();
 
     private ScheduledExecutorService scheduler;
 
-    private LoadGenerator(int port, DemoMetrics metrics, EntryPointMetrics entryPointMetrics) {
+    private LoadGenerator(int port, DemoMetrics metrics, EntryPointMetrics entryPointMetrics, SimulatorConfig config) {
         this.port = port;
         this.metrics = metrics;
         this.entryPointMetrics = entryPointMetrics;
+        this.config = new AtomicReference<>(config);
         this.httpClient = HttpClient.newBuilder()
                                     .connectTimeout(REQUEST_TIMEOUT)
                                     .executor(Executors.newVirtualThreadPerTaskExecutor())
                                     .build();
 
-        // Initialize default entry points
-        initializeEntryPoints();
+        // Initialize entry points from config
+        initializeEntryPoints(config);
+    }
+
+    public static LoadGenerator loadGenerator(int port, DemoMetrics metrics, EntryPointMetrics entryPointMetrics, SimulatorConfig config) {
+        return new LoadGenerator(port, metrics, entryPointMetrics, config);
     }
 
     public static LoadGenerator loadGenerator(int port, DemoMetrics metrics, EntryPointMetrics entryPointMetrics) {
-        return new LoadGenerator(port, metrics, entryPointMetrics);
+        return new LoadGenerator(port, metrics, entryPointMetrics, SimulatorConfig.defaultConfig());
     }
 
     /**
      * For backward compatibility with existing code.
      */
     public static LoadGenerator loadGenerator(int port, DemoMetrics metrics) {
-        return new LoadGenerator(port, metrics, EntryPointMetrics.entryPointMetrics());
+        return new LoadGenerator(port, metrics, EntryPointMetrics.entryPointMetrics(), SimulatorConfig.defaultConfig());
     }
 
-    private void initializeEntryPoints() {
+    private void initializeEntryPoints(SimulatorConfig config) {
         // POST /api/orders - place order
+        var placeOrderConfig = config.entryPointConfig("placeOrder");
         generators.put("placeOrder", new EntryPointGenerator(
             "placeOrder",
-            () -> createOrderRequest(requestCounter.incrementAndGet()),
+            placeOrderConfig.buildGenerator("placeOrder"),
             "POST",
             "/api/orders"
         ));
 
         // GET /api/orders/{id} - get order status
+        var getOrderConfig = config.entryPointConfig("getOrderStatus");
         generators.put("getOrderStatus", new EntryPointGenerator(
             "getOrderStatus",
-            this::createGetOrderRequest,
+            getOrderConfig.buildGenerator("getOrderStatus"),
             "GET",
             "/api/orders/{id}"
         ));
 
         // DELETE /api/orders/{id} - cancel order
+        var cancelConfig = config.entryPointConfig("cancelOrder");
         generators.put("cancelOrder", new EntryPointGenerator(
             "cancelOrder",
-            this::createCancelOrderRequest,
+            cancelConfig.buildGenerator("cancelOrder"),
             "DELETE",
             "/api/orders/{id}"
         ));
 
         // GET /api/inventory/{productId} - check stock
+        var checkStockConfig = config.entryPointConfig("checkStock");
         generators.put("checkStock", new EntryPointGenerator(
             "checkStock",
-            this::createCheckStockRequest,
+            checkStockConfig.buildGenerator("checkStock"),
             "GET",
             "/api/inventory/{id}"
         ));
 
         // GET /api/pricing/{productId} - get price
+        var getPriceConfig = config.entryPointConfig("getPrice");
         generators.put("getPrice", new EntryPointGenerator(
             "getPrice",
-            this::createGetPriceRequest,
+            getPriceConfig.buildGenerator("getPrice"),
             "GET",
             "/api/pricing/{id}"
         ));
+    }
+
+    /**
+     * Update configuration and reinitialize generators.
+     */
+    public void updateConfig(SimulatorConfig newConfig) {
+        this.config.set(newConfig);
+        initializeEntryPoints(newConfig);
+
+        // Update rates from new config
+        for (var entry : generators.entrySet()) {
+            var rate = newConfig.effectiveRate(entry.getKey());
+            entry.getValue().setRate(rate);
+            entryPointMetrics.setRate(entry.getKey(), rate);
+        }
+    }
+
+    /**
+     * Get current configuration.
+     */
+    public SimulatorConfig config() {
+        return config.get();
     }
 
     /**
@@ -264,7 +294,7 @@ public final class LoadGenerator {
 
     private void sendRequest(EntryPointGenerator generator) {
         var startTime = System.nanoTime();
-        var requestData = generator.requestFactory.get();
+        var requestData = generator.generateRequest();
 
         var uri = URI.create("http://localhost:" + port + requestData.path());
         var requestBuilder = HttpRequest.newBuilder()
@@ -304,41 +334,6 @@ public final class LoadGenerator {
         }
     }
 
-    // Request factory methods
-
-    private RequestData createOrderRequest(long requestId) {
-        var customerId = String.format("CUST-%08d", requestId % 100_000_000);
-        var productId = PRODUCTS.get(random.nextInt(PRODUCTS.size()));
-        var quantity = 1 + random.nextInt(3);
-
-        var body = String.format("""
-            {"customerId":"%s","items":[{"productId":"%s","quantity":%d}]}""",
-            customerId, productId, quantity);
-
-        return new RequestData("/api/orders", body);
-    }
-
-    private RequestData createGetOrderRequest() {
-        // Generate a plausible order ID
-        var orderId = "ORD-" + System.currentTimeMillis() % 1000000;
-        return new RequestData("/api/orders/" + orderId, "");
-    }
-
-    private RequestData createCancelOrderRequest() {
-        var orderId = "ORD-" + System.currentTimeMillis() % 1000000;
-        return new RequestData("/api/orders/" + orderId, "");
-    }
-
-    private RequestData createCheckStockRequest() {
-        var productId = PRODUCTS.get(random.nextInt(PRODUCTS.size()));
-        return new RequestData("/api/inventory/" + productId, "");
-    }
-
-    private RequestData createGetPriceRequest() {
-        var productId = PRODUCTS.get(random.nextInt(PRODUCTS.size()));
-        return new RequestData("/api/pricing/" + productId, "");
-    }
-
     /**
      * Request data for an entry point call.
      */
@@ -349,19 +344,49 @@ public final class LoadGenerator {
      */
     private static final class EntryPointGenerator {
         final String name;
-        final java.util.function.Supplier<RequestData> requestFactory;
         final String method;
         final String pathPattern;
+        volatile DataGenerator dataGenerator;
 
         final AtomicInteger currentRate = new AtomicInteger(0);
         final AtomicInteger targetRate = new AtomicInteger(0);
 
-        EntryPointGenerator(String name, java.util.function.Supplier<RequestData> requestFactory,
-                           String method, String pathPattern) {
+        EntryPointGenerator(String name, DataGenerator dataGenerator, String method, String pathPattern) {
             this.name = name;
-            this.requestFactory = requestFactory;
+            this.dataGenerator = dataGenerator;
             this.method = method;
             this.pathPattern = pathPattern;
+        }
+
+        /**
+         * Generate request data using the configured DataGenerator.
+         */
+        RequestData generateRequest() {
+            var random = ThreadLocalRandom.current();
+            var data = dataGenerator.generate(random);
+
+            return switch (data) {
+                case DataGenerator.OrderRequestGenerator.OrderRequestData order ->
+                    new RequestData("/api/orders", order.toJson());
+
+                case String orderId when name.equals("getOrderStatus") ->
+                    new RequestData("/api/orders/" + orderId, "");
+
+                case String orderId when name.equals("cancelOrder") ->
+                    new RequestData("/api/orders/" + orderId, "");
+
+                case DataGenerator.StockCheckGenerator.StockCheckData stock ->
+                    new RequestData("/api/inventory/" + stock.productId(), "");
+
+                case DataGenerator.PriceCheckGenerator.PriceCheckData price ->
+                    new RequestData("/api/pricing/" + price.productId(), "");
+
+                case String productId ->
+                    new RequestData(pathPattern.replace("{id}", productId), "");
+
+                default ->
+                    new RequestData(pathPattern, "");
+            };
         }
 
         void setRate(int rate) {

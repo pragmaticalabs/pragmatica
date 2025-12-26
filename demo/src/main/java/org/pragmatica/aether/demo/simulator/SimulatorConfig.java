@@ -50,14 +50,44 @@ public record SimulatorConfig(
         int callsPerSecond,
         boolean enabled,
         List<String> products,
-        List<String> customerIds
+        List<String> customerIds,
+        int minQuantity,
+        int maxQuantity
     ) {
+        private static final List<String> DEFAULT_PRODUCTS = List.of("PROD-ABC123", "PROD-DEF456", "PROD-GHI789");
+
         public static EntryPointConfig defaultConfig() {
-            return new EntryPointConfig(0, true, List.of(), List.of());
+            return new EntryPointConfig(0, true, List.of(), List.of(), 1, 5);
         }
 
         public static EntryPointConfig withRate(int callsPerSecond) {
-            return new EntryPointConfig(callsPerSecond, true, List.of(), List.of());
+            return new EntryPointConfig(callsPerSecond, true, List.of(), List.of(), 1, 5);
+        }
+
+        /**
+         * Get products list, using defaults if empty.
+         */
+        public List<String> effectiveProducts() {
+            return products.isEmpty() ? DEFAULT_PRODUCTS : products;
+        }
+
+        /**
+         * Build a DataGenerator for this entry point type.
+         */
+        public DataGenerator buildGenerator(String entryPointName) {
+            var productGen = new DataGenerator.ProductIdGenerator(effectiveProducts());
+
+            return switch (entryPointName) {
+                case "placeOrder" -> new DataGenerator.OrderRequestGenerator(
+                    productGen,
+                    DataGenerator.CustomerIdGenerator.withDefaults(),
+                    DataGenerator.IntRange.of(minQuantity, maxQuantity)
+                );
+                case "getOrderStatus", "cancelOrder" -> DataGenerator.OrderIdGenerator.withSharedRepository();
+                case "checkStock" -> new DataGenerator.StockCheckGenerator(productGen);
+                case "getPrice" -> new DataGenerator.PriceCheckGenerator(productGen);
+                default -> productGen;
+            };
         }
 
         public String toJson() {
@@ -66,8 +96,8 @@ public record SimulatorConfig(
             var customerIdsJson = customerIds.isEmpty() ? "[]" :
                 "[" + String.join(",", customerIds.stream().map(c -> "\"" + c + "\"").toList()) + "]";
             return String.format(
-                "{\"callsPerSecond\":%d,\"enabled\":%b,\"products\":%s,\"customerIds\":%s}",
-                callsPerSecond, enabled, productsJson, customerIdsJson
+                "{\"callsPerSecond\":%d,\"enabled\":%b,\"products\":%s,\"customerIds\":%s,\"minQuantity\":%d,\"maxQuantity\":%d}",
+                callsPerSecond, enabled, productsJson, customerIdsJson, minQuantity, maxQuantity
             );
         }
     }
@@ -102,7 +132,7 @@ public record SimulatorConfig(
         entryPoints.put("placeOrder", new EntryPointConfig(
             500, true,
             List.of("PROD-ABC123", "PROD-DEF456", "PROD-GHI789"),
-            List.of()
+            List.of(), 1, 5
         ));
         entryPoints.put("getOrderStatus", EntryPointConfig.withRate(0));
         entryPoints.put("cancelOrder", EntryPointConfig.withRate(0));
@@ -146,7 +176,8 @@ public record SimulatorConfig(
         var newEntryPoints = new HashMap<>(entryPoints);
         var existing = entryPointConfig(entryPoint);
         newEntryPoints.put(entryPoint, new EntryPointConfig(
-            rate, existing.enabled(), existing.products(), existing.customerIds()
+            rate, existing.enabled(), existing.products(), existing.customerIds(),
+            existing.minQuantity(), existing.maxQuantity()
         ));
         return new SimulatorConfig(newEntryPoints, slices, loadGeneratorEnabled, globalRateMultiplier);
     }
@@ -237,7 +268,8 @@ public record SimulatorConfig(
             if (entryPoints.containsKey(name)) {
                 var existing = entryPoints.get(name);
                 entryPoints.put(name, new EntryPointConfig(
-                    rate, existing.enabled(), existing.products(), existing.customerIds()
+                    rate, existing.enabled(), existing.products(), existing.customerIds(),
+                    existing.minQuantity(), existing.maxQuantity()
                 ));
             }
         }
