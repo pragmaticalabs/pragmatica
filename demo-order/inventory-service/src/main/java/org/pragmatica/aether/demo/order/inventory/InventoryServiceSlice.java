@@ -4,6 +4,7 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 
 import java.util.List;
@@ -174,6 +175,20 @@ public record InventoryServiceSlice() implements Slice {
         );
     }
 
+    @Override
+    public Promise<Unit> stop() {
+        REFILL_SCHEDULER.shutdown();
+        try {
+            if (!REFILL_SCHEDULER.awaitTermination(1, TimeUnit.SECONDS)) {
+                REFILL_SCHEDULER.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            REFILL_SCHEDULER.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+        return Promise.success(Unit.unit());
+    }
+
     private Promise<StockAvailability> checkStock(CheckStockRequest request) {
         var productId = request.productId();
         var stock = STOCK.get(productId);
@@ -206,24 +221,22 @@ public record InventoryServiceSlice() implements Slice {
             return Promise.success(new StockReservation(reservationId, productId, quantity));
         }
 
-        // Realistic mode: try to decrement stock
-        var current = stock.get();
-        if (current < quantity) {
-            STOCK_OUTS.incrementAndGet();
-            return new InventoryError.InsufficientStock(productId, quantity, current).promise();
-        }
+        // Realistic mode: atomic compare-and-set loop to avoid race conditions
+        while (true) {
+            var current = stock.get();
+            if (current < quantity) {
+                STOCK_OUTS.incrementAndGet();
+                return new InventoryError.InsufficientStock(productId, quantity, current).promise();
+            }
 
-        // Atomic decrement
-        if (stock.addAndGet(-quantity) < 0) {
-            // Race condition - restore and fail
-            stock.addAndGet(quantity);
-            STOCK_OUTS.incrementAndGet();
-            return new InventoryError.InsufficientStock(productId, quantity, stock.get()).promise();
+            if (stock.compareAndSet(current, current - quantity)) {
+                // CAS succeeded - reservation is safe
+                TOTAL_RESERVATIONS.incrementAndGet();
+                RESERVATIONS.put(reservationId, new ReservedStock(productId, quantity));
+                return Promise.success(new StockReservation(reservationId, productId, quantity));
+            }
+            // CAS failed - another thread modified stock, retry
         }
-
-        TOTAL_RESERVATIONS.incrementAndGet();
-        RESERVATIONS.put(reservationId, new ReservedStock(productId, quantity));
-        return Promise.success(new StockReservation(reservationId, productId, quantity));
     }
 
     private Promise<StockReleased> releaseStock(ReleaseStockRequest request) {

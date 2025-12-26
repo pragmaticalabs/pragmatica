@@ -17,11 +17,4 @@ public sealed interface InventoryError extends Cause {
             return "Insufficient stock for " + productId + ": requested " + requested + ", available " + available;
         }
     }
-
-    record ReservationNotFound(String reservationId) implements InventoryError {
-        @Override
-        public String message() {
-            return "Reservation not found: " + reservationId;
-        }
-    }
 }

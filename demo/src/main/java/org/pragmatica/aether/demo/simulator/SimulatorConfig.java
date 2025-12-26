@@ -29,6 +29,21 @@ public record SimulatorConfig(
     private static final Logger log = LoggerFactory.getLogger(SimulatorConfig.class);
 
     /**
+     * Compact constructor with validation.
+     */
+    public SimulatorConfig {
+        if (entryPoints == null) {
+            throw new IllegalArgumentException("entryPoints cannot be null");
+        }
+        if (slices == null) {
+            throw new IllegalArgumentException("slices cannot be null");
+        }
+        if (globalRateMultiplier < 0 || !Double.isFinite(globalRateMultiplier)) {
+            throw new IllegalArgumentException("globalRateMultiplier must be >= 0 and finite, got: " + globalRateMultiplier);
+        }
+    }
+
+    /**
      * Configuration for a single entry point.
      */
     public record EntryPointConfig(
