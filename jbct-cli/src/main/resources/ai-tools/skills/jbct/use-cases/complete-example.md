@@ -49,7 +49,7 @@ public record Email(String value) {
     public static Result<Email> email(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(INVALID_EMAIL, Verify.Is::matches, EMAIL_PATTERN))
+            .filter(INVALID_EMAIL, EMAIL_PATTERN.asMatchPredicate())
             .map(Email::new);
     }
 }
@@ -77,9 +77,9 @@ public record Password(String value) {
     public static Result<Password> password(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(TOO_SHORT, s -> s.length() >= MIN_LENGTH))
-            .flatMap(Verify.ensureFn(NO_DIGIT, Verify.Is::matches, HAS_DIGIT))
-            .flatMap(Verify.ensureFn(NO_UPPER, Verify.Is::matches, HAS_UPPER))
+            .filter(TOO_SHORT, s -> s.length() >= MIN_LENGTH)
+            .filter(NO_DIGIT, HAS_DIGIT.asMatchPredicate())
+            .filter(NO_UPPER, HAS_UPPER.asMatchPredicate())
             .map(Password::new);
     }
 }

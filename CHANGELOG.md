@@ -4,7 +4,9 @@
 
 ### Changed
 - Update to Pragmatica Lite 0.8.6
+- AI tools: sync to JBCT v2.0.7
 - AI tools: replace `Causes.forValue()` with `forOneValue()` in examples
+- AI tools: replace `Verify.ensureFn()` with `.filter(cause, predicate)` pattern
 
 ## [0.3.8] - 2025-12-23
 

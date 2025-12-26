@@ -35,7 +35,7 @@ public record Email(String value) {
     public static Result<Email> email(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(INVALID_EMAIL, Verify.Is::matches, EMAIL_PATTERN))
+            .filter(INVALID_EMAIL, EMAIL_PATTERN.asMatchPredicate())
             .map(Email::new);
     }
 }
@@ -80,11 +80,8 @@ All validation happens during parsing:
 public static Result<Email> email(String raw) {
     return Verify.ensure(raw, Verify.Is::notNull)        // Check not null
         .map(String::trim)                               // Normalize
-        .flatMap(Verify.ensureFn(                        // Validate format
-            INVALID_EMAIL,
-            Verify.Is::matches,
-            EMAIL_PATTERN
-        ))
+        .filter(INVALID_EMAIL,                           // Validate format
+                EMAIL_PATTERN.asMatchPredicate())
         .map(Email::new);                                // Construct only if valid
 }
 ```
@@ -103,9 +100,9 @@ public record UserId(UUID value) {
     public static Result<UserId> userId(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(INVALID_USER_ID, Verify.Is::notEmpty))
+            .filter(INVALID_USER_ID, Verify.Is::notEmpty)
             .flatMap(str -> Result.lift(() -> UUID.fromString(str))
-                                  .mapFailure(e -> INVALID_USER_ID.apply(raw)))
+                                  .mapError(_ -> INVALID_USER_ID.apply(raw)))
             .map(UserId::new);
     }
 
@@ -137,9 +134,9 @@ public record Password(String value) {
     public static Result<Password> password(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(TOO_SHORT, s -> s.length() >= MIN_LENGTH))
-            .flatMap(Verify.ensureFn(NO_DIGIT, Verify.Is::matches, HAS_DIGIT))
-            .flatMap(Verify.ensureFn(NO_UPPER, Verify.Is::matches, HAS_UPPER))
+            .filter(TOO_SHORT, s -> s.length() >= MIN_LENGTH)
+            .filter(NO_DIGIT, HAS_DIGIT.asMatchPredicate())
+            .filter(NO_UPPER, HAS_UPPER.asMatchPredicate())
             .map(Password::new);
     }
 }
@@ -314,7 +311,7 @@ public record OrderItems(List<Item> items) {
 
         // Collect all results
         return Result.allOf(itemResults)
-            .flatMap(Verify.ensureFn(MIN_ITEMS_ERROR, list -> !list.isEmpty()))
+            .filter(MIN_ITEMS_ERROR, list -> !list.isEmpty())
             .map(OrderItems::new);
     }
 }

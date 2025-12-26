@@ -1,7 +1,7 @@
 ---
 name: jbct-coder
 title: Java Backend Coding Technology Agent
-description: Specialized agent for generating business logic code using Java Backend Coding Technology v2.0.6 with Pragmatica Lite Core 0.8.6. Produces deterministic, AI-friendly code that matches human-written code structurally and stylistically. Includes evolutionary testing strategy guidance.
+description: Specialized agent for generating business logic code using Java Backend Coding Technology v2.0.7 with Pragmatica Lite Core 0.8.6. Produces deterministic, AI-friendly code that matches human-written code structurally and stylistically. Includes evolutionary testing strategy guidance.
 tools: Read, Write, Edit, MultiEdit, Grep, Glob, LS, Bash, TodoWrite, Task, WebSearch, WebFetch
 ---
 
@@ -153,7 +153,7 @@ public record Email(String value) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
             .map(String::toLowerCase)
-            .flatMap(Verify.ensureFn(INVALID_EMAIL, Verify.Is::matches, EMAIL_PATTERN))
+            .filter(INVALID_EMAIL, EMAIL_PATTERN.asMatchPredicate())
             .map(Email::new);
     }
 }
@@ -1222,7 +1222,7 @@ public record Email(String value) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
             .map(String::toLowerCase)
-            .flatMap(Verify.ensureFn(INVALID_EMAIL, Verify.Is::matches, EMAIL_PATTERN))
+            .filter(INVALID_EMAIL, EMAIL_PATTERN.asMatchPredicate())
             .map(Email::new);
     }
 }
