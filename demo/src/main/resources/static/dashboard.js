@@ -384,6 +384,19 @@ function initControls() {
         throughputHistory = [];
     });
 
+    // Load generator toggle
+    document.getElementById('load-generator-toggle').addEventListener('change', async (e) => {
+        await apiPost('/api/simulator/config/enabled', { enabled: e.target.checked });
+    });
+
+    // Rate multiplier
+    document.getElementById('btn-apply-multiplier').addEventListener('click', async () => {
+        const multiplier = parseFloat(document.getElementById('rate-multiplier').value);
+        if (!isNaN(multiplier) && multiplier > 0) {
+            await apiPost('/api/simulator/config/multiplier', { multiplier: multiplier });
+        }
+    });
+
     // Modal cancel
     document.getElementById('modal-cancel').addEventListener('click', hideNodeModal);
 

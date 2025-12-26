@@ -8,6 +8,7 @@ import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.*;
 import org.pragmatica.aether.demo.DemoCluster.ClusterStatus;
 import org.pragmatica.aether.demo.DemoMetrics.MetricsSnapshot;
+import org.pragmatica.aether.demo.simulator.SimulatorConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -69,6 +70,7 @@ public final class DemoApiHandler extends SimpleChannelInboundHandler<FullHttpRe
     private final LocalSliceInvoker sliceInvoker;
     private final List<DemoEvent> events = new CopyOnWriteArrayList<>();
     private final long startTime = System.currentTimeMillis();
+    private volatile SimulatorConfig config = SimulatorConfig.defaultConfig();
 
     private DemoApiHandler(DemoCluster cluster, LoadGenerator loadGenerator, DemoMetrics metrics, LocalSliceInvoker sliceInvoker) {
         this.cluster = cluster;
@@ -129,6 +131,14 @@ public final class DemoApiHandler extends SimpleChannelInboundHandler<FullHttpRe
                 handleSimulatorRate(ctx, path.substring("/api/simulator/rate/".length()), request);
             } else if (path.equals("/api/simulator/entrypoints") && method == HttpMethod.GET) {
                 handleSimulatorEntryPoints(ctx);
+            } else if (path.equals("/api/simulator/config") && method == HttpMethod.GET) {
+                handleGetConfig(ctx);
+            } else if (path.equals("/api/simulator/config") && method == HttpMethod.PUT) {
+                handlePutConfig(ctx, request);
+            } else if (path.equals("/api/simulator/config/multiplier") && method == HttpMethod.POST) {
+                handleSetMultiplier(ctx, request);
+            } else if (path.equals("/api/simulator/config/enabled") && method == HttpMethod.POST) {
+                handleSetEnabled(ctx, request);
             } else {
                 sendResponse(ctx, NOT_FOUND, "{\"error\": \"Not found\"}");
             }
@@ -335,6 +345,98 @@ public final class DemoApiHandler extends SimpleChannelInboundHandler<FullHttpRe
         }
         json.append("]}");
         sendResponse(ctx, OK, json.toString());
+    }
+
+    /**
+     * Handle get current simulator config.
+     */
+    private void handleGetConfig(ChannelHandlerContext ctx) {
+        sendResponse(ctx, OK, config.toJson());
+    }
+
+    /**
+     * Handle replace simulator config.
+     */
+    private void handlePutConfig(ChannelHandlerContext ctx, FullHttpRequest request) {
+        try {
+            var body = request.content().toString(StandardCharsets.UTF_8);
+            var newConfig = SimulatorConfig.parseJson(body);
+            config = newConfig;
+
+            // Apply entry point rates to load generator
+            for (var entryPoint : loadGenerator.entryPoints()) {
+                var rate = config.effectiveRate(entryPoint);
+                loadGenerator.setRate(entryPoint, rate);
+            }
+
+            addEvent("CONFIG_UPDATE", "Simulator configuration updated");
+            sendResponse(ctx, OK, "{\"success\":true}");
+        } catch (Exception e) {
+            sendResponse(ctx, BAD_REQUEST, "{\"success\":false,\"error\":\"" + escapeJson(e.getMessage()) + "\"}");
+        }
+    }
+
+    /**
+     * Handle set global rate multiplier.
+     */
+    private void handleSetMultiplier(ChannelHandlerContext ctx, FullHttpRequest request) {
+        try {
+            var body = request.content().toString(StandardCharsets.UTF_8);
+            var pattern = java.util.regex.Pattern.compile("\"multiplier\"\\s*:\\s*([\\d.]+)");
+            var matcher = pattern.matcher(body);
+            if (matcher.find()) {
+                var multiplier = Double.parseDouble(matcher.group(1));
+                config = config.withGlobalMultiplier(multiplier);
+
+                // Apply new rates
+                for (var entryPoint : loadGenerator.entryPoints()) {
+                    var rate = config.effectiveRate(entryPoint);
+                    loadGenerator.setRate(entryPoint, rate);
+                }
+
+                addEvent("MULTIPLIER_SET", "Global rate multiplier set to " + multiplier);
+                sendResponse(ctx, OK, "{\"success\":true,\"multiplier\":" + multiplier + "}");
+            } else {
+                sendResponse(ctx, BAD_REQUEST, "{\"success\":false,\"error\":\"Missing multiplier\"}");
+            }
+        } catch (Exception e) {
+            sendResponse(ctx, BAD_REQUEST, "{\"success\":false,\"error\":\"" + escapeJson(e.getMessage()) + "\"}");
+        }
+    }
+
+    /**
+     * Handle enable/disable load generator.
+     */
+    private void handleSetEnabled(ChannelHandlerContext ctx, FullHttpRequest request) {
+        try {
+            var body = request.content().toString(StandardCharsets.UTF_8);
+            var pattern = java.util.regex.Pattern.compile("\"enabled\"\\s*:\\s*(true|false)");
+            var matcher = pattern.matcher(body);
+            if (matcher.find()) {
+                var enabled = Boolean.parseBoolean(matcher.group(1));
+                config = config.withLoadGeneratorEnabled(enabled);
+
+                if (!enabled) {
+                    // Set all rates to 0
+                    for (var entryPoint : loadGenerator.entryPoints()) {
+                        loadGenerator.setRate(entryPoint, 0);
+                    }
+                } else {
+                    // Restore rates from config
+                    for (var entryPoint : loadGenerator.entryPoints()) {
+                        var rate = config.effectiveRate(entryPoint);
+                        loadGenerator.setRate(entryPoint, rate);
+                    }
+                }
+
+                addEvent("LOAD_GENERATOR", "Load generator " + (enabled ? "enabled" : "disabled"));
+                sendResponse(ctx, OK, "{\"success\":true,\"enabled\":" + enabled + "}");
+            } else {
+                sendResponse(ctx, BAD_REQUEST, "{\"success\":false,\"error\":\"Missing enabled\"}");
+            }
+        } catch (Exception e) {
+            sendResponse(ctx, BAD_REQUEST, "{\"success\":false,\"error\":\"" + escapeJson(e.getMessage()) + "\"}");
+        }
     }
 
     /**

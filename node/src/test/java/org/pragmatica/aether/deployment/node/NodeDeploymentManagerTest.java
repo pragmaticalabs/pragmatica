@@ -458,5 +458,10 @@ class NodeDeploymentManagerTest {
         public Option<InternalSlice> getLocalSlice(Artifact artifact) {
             return Option.none();
         }
+
+        @Override
+        public Option<org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector> metricsCollector() {
+            return Option.none();
+        }
     }
 }
