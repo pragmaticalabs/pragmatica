@@ -81,10 +81,10 @@ class GroupIdTest {
     }
 
     @Test
-    void groupId_with_hyphen_fails() {
+    void groupId_with_hyphen_succeeds() {
         GroupId.groupId("com.example-company")
-               .onSuccessRun(Assertions::fail)
-               .onFailure(cause -> assertThat(cause).isNotNull());
+               .onSuccess(groupId -> assertThat(groupId.id()).isEqualTo("com.example-company"))
+               .onFailureRun(Assertions::fail);
     }
 
     @Test
