@@ -3,7 +3,7 @@
 ## [0.3.9] - 2025-12-25
 
 ### Changed
-- AI tools: update to Pragmatica Lite 0.8.6
+- Update to Pragmatica Lite 0.8.6
 - AI tools: replace `Causes.forValue()` with `forOneValue()` in examples
 
 ## [0.3.8] - 2025-12-23

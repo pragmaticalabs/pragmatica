@@ -15,8 +15,8 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
-        <pragmatica-lite.version>0.8.4</pragmatica-lite.version>
-        <jbct.version>0.3.1</jbct.version>
+        <pragmatica-lite.version>0.8.6</pragmatica-lite.version>
+        <jbct.version>0.3.9</jbct.version>
     </properties>
 
     <dependencies>

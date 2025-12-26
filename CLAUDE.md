@@ -50,8 +50,8 @@ JBCT-VO-01 = "warning"
 
 ## Key Dependencies
 
-- **pragmatica-lite:core** (0.8.4) - Result, Option, Promise types
-- **pragmatica-lite:http-client** (0.8.4) - HTTP operations for upgrade/update
+- **pragmatica-lite:core** (0.8.6) - Result, Option, Promise types
+- **pragmatica-lite:http-client** (0.8.6) - HTTP operations for upgrade/update
 - **java-peglib** - PEG parser generator for CST-based parsing
 - **picocli** - CLI framework
 

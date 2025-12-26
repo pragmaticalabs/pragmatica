@@ -149,6 +149,6 @@ public class UpgradeCommand implements Callable<Integer> {
             return pkg.getImplementationVersion();
         }
         // Fall back to build-time constant
-        return "0.3.1";
+        return "0.3.9";
     }
 }

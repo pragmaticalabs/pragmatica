@@ -1296,7 +1296,7 @@ Structure your review as follows:
 **Example Issues**:
 - ❌ Wrong groupId: `org.pragmatica` → should be `org.pragmatica-lite`
 - ❌ Wrong artifactId: `pragmatica-core` → should be `core`
-- ❌ Outdated version: `0.8.0` → should be `0.8.4`
+- ❌ Outdated version: `0.8.0` → should be `0.8.6`
 
 **Correct Maven dependency**:
 ```xml
