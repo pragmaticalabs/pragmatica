@@ -246,7 +246,7 @@ Add executions to run automatically:
 </plugin>
 ```
 
-## Lint Rules (33 total)
+## Lint Rules (36 total)
 
 ### Return Kinds
 
@@ -293,6 +293,7 @@ Add executions to run automatically:
 | Rule | Severity | Description |
 |------|----------|-------------|
 | `JBCT-PAT-01` | WARNING | Use functional iteration instead of raw loops |
+| `JBCT-PAT-02` | WARNING | No Fork-Join inside Sequencer (Result.all inside flatMap) |
 | `JBCT-SEQ-01` | WARNING | Chain length limit (2-5 steps) |
 
 ### Style
@@ -345,6 +346,18 @@ Add executions to run automatically:
 | `JBCT-ZONE-01` | WARNING | Step interfaces should use Zone 2 verbs (validate, process, handle) |
 | `JBCT-ZONE-02` | WARNING | Leaf functions should use Zone 3 verbs (get, fetch, parse) |
 | `JBCT-ZONE-03` | WARNING | No zone mixing in sequencer chains |
+
+### Naming Conventions
+
+| Rule | Severity | Description |
+|------|----------|-------------|
+| `JBCT-ACR-01` | WARNING | Acronyms should use PascalCase (HttpClient, not HTTPClient) |
+
+### Sealed Types
+
+| Rule | Severity | Description |
+|------|----------|-------------|
+| `JBCT-SEAL-01` | WARNING | Error interfaces extending Cause should be sealed |
 
 ## Formatter Style
 

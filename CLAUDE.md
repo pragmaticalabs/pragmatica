@@ -126,7 +126,7 @@ The CST preserves all source information including whitespace and comments, enab
 - `CstPrinter` - Prints CST back to source with formatting rules
 - `Java25Parser` - Generated PEG parser producing CST with trivia
 - `JbctLinter` - Entry point for linting (delegates to CstLinter)
-- `CstLinter` - CST-based linter with 30 lint rules
+- `CstLinter` - CST-based linter with 36 lint rules
 - `ConfigLoader` - TOML config loading with priority chain
 - `GitHubReleaseChecker` - Check GitHub Releases for updates
 - `JarInstaller` - Download and install JAR updates
