@@ -11,6 +11,7 @@ import org.pragmatica.aether.demo.DemoMetrics.MetricsSnapshot;
 import org.pragmatica.aether.demo.simulator.BackendSimulation;
 import org.pragmatica.aether.demo.simulator.SimulatorConfig;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -652,7 +653,7 @@ public final class DemoApiHandler extends SimpleChannelInboundHandler<FullHttpRe
     /**
      * Apply backend simulation for a slice based on current config.
      */
-    private Promise<org.pragmatica.lang.Unit> applySimulation(String sliceName) {
+    private Promise<Unit> applySimulation(String sliceName) {
         var sliceConfig = config.sliceConfig(sliceName);
         return sliceConfig.buildSimulation().apply();
     }

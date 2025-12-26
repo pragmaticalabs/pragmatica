@@ -114,6 +114,27 @@ public record SimulatorConfig(
         double spikeChance,
         int spikeLatencyMs
     ) {
+        public SliceConfig {
+            if (stockMode == null || (!stockMode.equals("infinite") && !stockMode.equals("realistic"))) {
+                throw new IllegalArgumentException("stockMode must be 'infinite' or 'realistic'");
+            }
+            if (baseLatencyMs < 0) {
+                throw new IllegalArgumentException("baseLatencyMs must be >= 0");
+            }
+            if (jitterMs < 0) {
+                throw new IllegalArgumentException("jitterMs must be >= 0");
+            }
+            if (failureRate < 0 || failureRate > 1) {
+                throw new IllegalArgumentException("failureRate must be between 0 and 1");
+            }
+            if (spikeChance < 0 || spikeChance > 1) {
+                throw new IllegalArgumentException("spikeChance must be between 0 and 1");
+            }
+            if (spikeLatencyMs < 0) {
+                throw new IllegalArgumentException("spikeLatencyMs must be >= 0");
+            }
+        }
+
         public static SliceConfig defaultConfig() {
             return new SliceConfig("infinite", 0, 0, 0, 0.0, 0.0, 0);
         }

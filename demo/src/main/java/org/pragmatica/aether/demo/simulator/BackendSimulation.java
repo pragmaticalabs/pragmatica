@@ -9,6 +9,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Framework for simulating realistic backend behavior including latency and failures.
@@ -17,13 +18,33 @@ import java.util.concurrent.TimeUnit;
 public sealed interface BackendSimulation {
 
     /**
+     * Thread counter for unique naming.
+     */
+    AtomicInteger THREAD_COUNTER = new AtomicInteger(0);
+
+    /**
      * Shared scheduler for latency simulation.
      */
     ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(2, r -> {
-        var t = new Thread(r, "backend-simulation");
+        var t = new Thread(r, "backend-simulation-" + THREAD_COUNTER.incrementAndGet());
         t.setDaemon(true);
         return t;
     });
+
+    /**
+     * Shutdown the scheduler. Should be called on application shutdown.
+     */
+    static void shutdown() {
+        SCHEDULER.shutdown();
+        try {
+            if (!SCHEDULER.awaitTermination(5, TimeUnit.SECONDS)) {
+                SCHEDULER.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            SCHEDULER.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 
     /**
      * Apply the simulation effect.
@@ -124,6 +145,7 @@ public sealed interface BackendSimulation {
             if (errorTypes == null || errorTypes.isEmpty()) {
                 throw new IllegalArgumentException("errorTypes cannot be null or empty");
             }
+            errorTypes = List.copyOf(errorTypes);
         }
 
         @Override
@@ -153,6 +175,7 @@ public sealed interface BackendSimulation {
             if (simulations == null || simulations.isEmpty()) {
                 throw new IllegalArgumentException("simulations cannot be null or empty");
             }
+            simulations = List.copyOf(simulations);
         }
 
         @Override
