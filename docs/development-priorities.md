@@ -82,7 +82,7 @@ See [infrastructure-services.md](infrastructure-services.md) for full vision.
 
 ## Deprecated
 
-- **MCP Server** - Replaced by direct agent API (see [ai-integration.md](ai-integration.md))
+- **MCP Server** - Replaced by direct agent API (see [metrics-and-control.md](metrics-and-control.md))
 
 ## Implementation Approach
 
@@ -93,4 +93,4 @@ Focus on stability and documentation before adding AI layers:
 3. Decision tree must handle all common cases
 4. Only then add SLM/LLM layers
 
-See [ai-integration.md](ai-integration.md) for AI integration architecture.
+See [metrics-and-control.md](metrics-and-control.md) for controller architecture.

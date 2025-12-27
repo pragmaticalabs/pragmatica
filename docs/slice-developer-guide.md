@@ -474,7 +474,7 @@ private Promise<User> getUser(UserId id) {
 }
 
 private static final Fn1<Cause, UserId> USER_NOT_FOUND =
-    Causes.forValue("User not found: {0}");
+    Causes.forOneValue("User not found: {}");
 ```
 
 ### 4. Use Records for Immutability

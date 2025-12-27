@@ -202,7 +202,7 @@ Each layer can veto or modify decisions from lower layers.
 - Leader shapes metrics to minimize token costs
 - AI decisions translate to KV-Store updates
 - Layered autonomy: decision tree (required) → SLM → LLM → user (all optional)
-- See [ai-integration.md](ai-integration.md) for architecture details
+- See [metrics-and-control.md](metrics-and-control.md) for architecture details
 
 ## Metrics Collection Strategy
 

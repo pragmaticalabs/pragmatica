@@ -289,7 +289,7 @@ See [metrics-and-control.md](metrics-and-control.md) for message definitions:
 
 ## AI Integration Architecture
 
-**See [ai-integration.md](ai-integration.md) for complete specification.**
+**See [metrics-and-control.md](metrics-and-control.md) for the controller specification.**
 
 ### Layered Autonomy
 

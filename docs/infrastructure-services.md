@@ -405,6 +405,6 @@ Each service can configure its own trade-off:
 
 ## Related Documents
 
-- [ai-integration.md](ai-integration.md) - Layered autonomy architecture
+- [metrics-and-control.md](metrics-and-control.md) - Layered autonomy architecture
 - [architecture-overview.md](architecture-overview.md) - Core Aether architecture
 - [demos.md](demos.md) - Current blueprint format and slice patterns
