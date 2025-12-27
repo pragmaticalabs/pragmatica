@@ -73,7 +73,7 @@ public class UpgradeCommand implements Callable<Integer> {
                                     return 1;
                                 }
 
-                                return performUpgrade(release.downloadUrl().unwrap(), release.version());
+                                return performUpgrade(release.downloadUrl().getOrThrow("Download URL expected"), release.version());
                             });
     }
 
@@ -116,7 +116,7 @@ public class UpgradeCommand implements Callable<Integer> {
                                                  System.out.println("Downloading version " + release.version() + "...");
                                                  var installer = JarInstaller.jarInstaller();
                                                  var targetPath = JarInstaller.defaultInstallPath();
-                                                 return installer.install(release.downloadUrl().unwrap(), targetPath)
+                                                 return installer.install(release.downloadUrl().getOrThrow("Download URL expected"), targetPath)
                                                                  .map(_ -> release.version());
                                              });
                            })

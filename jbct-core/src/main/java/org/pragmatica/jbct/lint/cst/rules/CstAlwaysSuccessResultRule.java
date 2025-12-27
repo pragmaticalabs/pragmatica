@@ -45,7 +45,7 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     private boolean returnsResult(CstNode method, String source) {
         var returnType = childByRule(method, RuleId.Type.class);
         if (returnType.isEmpty()) return false;
-        var typeText = text(returnType.unwrap(), source);
+        var typeText = text(returnType.getOrThrow("Return type expected"), source);
         return typeText.startsWith("Result<");
     }
 

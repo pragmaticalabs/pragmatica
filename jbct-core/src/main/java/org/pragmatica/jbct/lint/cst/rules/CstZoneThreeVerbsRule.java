@@ -74,7 +74,7 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
             return false;
         }
 
-        var memberText = text(classMember.unwrap(), source);
+        var memberText = text(classMember.getOrThrow("ClassMember expected"), source);
 
         // Check if private
         if (!memberText.contains("private ")) {

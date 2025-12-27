@@ -56,7 +56,7 @@ public class CstNestedWrapperRule implements CstLintRule {
         if (returnType.isEmpty()) {
             return Stream.empty();
         }
-        var typeText = text(returnType.unwrap(),
+        var typeText = text(returnType.getOrThrow("Return type expected"),
                             source)
                        .trim();
         var nestedPattern = detectNestedWrapper(typeText);

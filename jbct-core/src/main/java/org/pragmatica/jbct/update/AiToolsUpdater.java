@@ -101,10 +101,9 @@ public final class AiToolsUpdater {
         return getLatestCommitSha()
                 .map(latestSha -> {
                     var currentSha = getCurrentVersion();
-                    if (currentSha.isEmpty() || !currentSha.unwrap().equals(latestSha)) {
-                        return Option.option(latestSha);
-                    }
-                    return Option.none();
+                    return currentSha.filter(sha -> sha.equals(latestSha))
+                                     .map(_ -> Option.<String>none())
+                                     .or(() -> Option.option(latestSha));
                 });
     }
 
@@ -127,7 +126,8 @@ public final class AiToolsUpdater {
         return getLatestCommitSha()
                 .flatMap(latestSha -> {
                     var currentSha = getCurrentVersion();
-                    if (!force && currentSha.isPresent() && currentSha.unwrap().equals(latestSha)) {
+                    var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha)).isPresent();
+                    if (isUpToDate) {
                         return Result.success(List.<Path>of());
                     }
 
@@ -172,19 +172,13 @@ public final class AiToolsUpdater {
             // Download skill files
             for (var file : SKILL_FILES) {
                 var targetPath = claudeDir.resolve(file);
-                var result = downloadFile(file, targetPath);
-                if (result.isSuccess()) {
-                    downloadedFiles.add(result.unwrap());
-                }
+                downloadFile(file, targetPath).onSuccess(downloadedFiles::add);
             }
 
             // Download agent files
             for (var file : AGENT_FILES) {
                 var targetPath = agentsDir.resolve(file);
-                var result = downloadFile(file, targetPath);
-                if (result.isSuccess()) {
-                    downloadedFiles.add(result.unwrap());
-                }
+                downloadFile(file, targetPath).onSuccess(downloadedFiles::add);
             }
 
             // Save version

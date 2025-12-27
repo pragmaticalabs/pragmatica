@@ -42,14 +42,11 @@ public class UpdateCommand implements Callable<Integer> {
                                 return 1;
                             },
                             updateAvailable -> {
-                                if (updateAvailable.isPresent()) {
-                                System.out.println("Update available: " + updateAvailable.unwrap()
-                                                                                        .substring(0, 7));
+                                updateAvailable.onPresent(commit ->
+                                    System.out.println("Update available: " + commit.substring(0, 7)));
+                                updateAvailable.onEmpty(() ->
+                                    System.out.println("AI tools are up to date."));
                                 return 0;
-                            }else {
-                                System.out.println("AI tools are up to date.");
-                                return 0;
-                            }
                             });
     }
 

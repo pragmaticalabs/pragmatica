@@ -152,9 +152,12 @@ public final class JarInstaller {
             }
 
             // Remove backup on success
-            if (backup.isPresent()) {
-                Files.deleteIfExists(backup.unwrap());
-            }
+            backup.onPresent(backupPath -> {
+                try {
+                    Files.deleteIfExists(backupPath);
+                } catch (IOException ignored) {
+                }
+            });
 
             return Result.success(targetPath);
         } catch (Exception e) {

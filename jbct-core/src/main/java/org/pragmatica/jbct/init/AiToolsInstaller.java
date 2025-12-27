@@ -63,16 +63,12 @@ public final class AiToolsInstaller {
             Files.createDirectories(agentsDir);
 
             // Install skills
-            var skillsResult = installFromResources(AI_TOOLS_PATH + SKILLS_SUBPATH, skillsDir);
-            if (skillsResult.isSuccess()) {
-                installedFiles.addAll(skillsResult.unwrap());
-            }
+            installFromResources(AI_TOOLS_PATH + SKILLS_SUBPATH, skillsDir)
+                .onSuccess(installedFiles::addAll);
 
             // Install agents
-            var agentsResult = installFromResources(AI_TOOLS_PATH + AGENTS_SUBPATH, agentsDir);
-            if (agentsResult.isSuccess()) {
-                installedFiles.addAll(agentsResult.unwrap());
-            }
+            installFromResources(AI_TOOLS_PATH + AGENTS_SUBPATH, agentsDir)
+                .onSuccess(installedFiles::addAll);
 
             return Result.success(installedFiles);
         } catch (Exception e) {

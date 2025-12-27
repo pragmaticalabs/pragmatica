@@ -28,26 +28,22 @@ public final class ConfigLoader {
      */
     public static JbctConfig load(Option<Path> explicitConfigPath, Option<Path> workingDirectory) {
         // Start with defaults
-        JbctConfig config = JbctConfig.DEFAULT;
+        var config = JbctConfig.DEFAULT;
+
         // Layer 1: User config (~/.jbct/config.toml)
-        var userConfig = loadUserConfig();
-        if (userConfig.isPresent()) {
-            config = config.merge(userConfig.unwrap());
-        }
+        config = loadUserConfig().map(config::merge)
+                                 .or(config);
+
         // Layer 2: Project config (./jbct.toml)
         var projectDir = workingDirectory.or(() -> Path.of(System.getProperty("user.dir")));
-        var projectConfig = loadProjectConfig(projectDir);
-        if (projectConfig.isPresent()) {
-            config = config.merge(projectConfig.unwrap());
-        }
+        config = loadProjectConfig(projectDir).map(config::merge)
+                                              .or(config);
+
         // Layer 3: Explicit config file (highest priority)
-        if (explicitConfigPath.isPresent()) {
-            var explicitConfig = loadFromFile(explicitConfigPath.unwrap());
-            if (explicitConfig.isPresent()) {
-                config = config.merge(explicitConfig.unwrap());
-            }
-        }
-        return config;
+        var finalConfig = config;
+        return explicitConfigPath.flatMap(ConfigLoader::loadFromFile)
+                                 .map(finalConfig::merge)
+                                 .or(finalConfig);
     }
 
     /**
