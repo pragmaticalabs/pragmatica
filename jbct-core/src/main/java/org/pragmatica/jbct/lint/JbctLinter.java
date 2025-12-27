@@ -13,13 +13,11 @@ import java.util.List;
  *
  * Uses CST-based linter for accurate trivia-preserving analysis.
  */
-public class JbctLinter implements Linter {
+public class JbctLinter {
 
-    private final LintContext context;
     private final CstLinter delegate;
 
     private JbctLinter(LintContext context) {
-        this.context = context;
         this.delegate = CstLinter.cstLinter(context);
     }
 
@@ -37,18 +35,11 @@ public class JbctLinter implements Linter {
         return new JbctLinter(context);
     }
 
-    @Override
     public Result<List<Diagnostic>> lint(SourceFile source) {
         return delegate.lint(source);
     }
 
-    @Override
     public Result<Boolean> check(SourceFile source) {
         return delegate.check(source);
-    }
-
-    @Override
-    public LintContext context() {
-        return context;
     }
 }

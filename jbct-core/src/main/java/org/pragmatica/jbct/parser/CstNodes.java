@@ -239,4 +239,14 @@ public final class CstNodes {
     public static int startColumn(CstNode node) {
         return node.span().start().column();
     }
+
+    /**
+     * Extract package name from a compilation unit root node.
+     */
+    public static String packageName(CstNode root, String source) {
+        return findFirst(root, RuleId.PackageDecl.class)
+               .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+               .map(qn -> text(qn, source))
+               .or("");
+    }
 }

@@ -1,12 +1,17 @@
 # Changelog
 
-## [0.3.9] - 2025-12-26
+## [0.3.9] - 2025-12-27
 
 ### Added
 - 3 new lint rules (36 total):
   - JBCT-ACR-01: Acronym naming convention (HTTPClient → HttpClient)
   - JBCT-SEAL-01: Error interfaces should be sealed
   - JBCT-PAT-02: No Fork-Join inside Sequencer (Result.all inside flatMap)
+- FileCollector utility for shared file collection logic
+- HttpClients singleton for shared HTTP client instances
+- AbstractJbctMojo base class for Maven plugin mojos
+- LintContext.fromConfig() factory method
+- CstNodes.packageName() helper method
 
 ### Changed
 - Update to Pragmatica Lite 0.9.0
@@ -23,6 +28,13 @@
 - Fix formatting issues in UpgradeCommand
 - Fix spacing in CstReturnKindRule
 - Remove unused Trivia import from CstFormatter
+- Fix JbctConfig.merge() to use value equality instead of reference equality
+
+### Removed
+- Formatter and Linter interfaces (unnecessary abstraction)
+- Unused description() method from CstLintRule and all implementations
+- Unused isDirty() method from SourceFile
+- Unused resourcePath parameter from AiToolsInstaller
 
 ## [0.3.8] - 2025-12-23
 

@@ -21,10 +21,6 @@ public class CstNoBusinessExceptionsRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "No business exceptions - use Result<T> for errors";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

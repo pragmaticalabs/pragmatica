@@ -15,13 +15,11 @@ import org.pragmatica.lang.Result;
  *
  * Uses CST-based formatter for trivia (whitespace/comments) preservation.
  */
-public class JbctFormatter implements Formatter {
+public class JbctFormatter {
 
-    private final FormatterConfig config;
     private final CstFormatter delegate;
 
     private JbctFormatter(FormatterConfig config) {
-        this.config = config;
         this.delegate = CstFormatter.cstFormatter(config);
     }
 
@@ -39,18 +37,11 @@ public class JbctFormatter implements Formatter {
         return new JbctFormatter(config);
     }
 
-    @Override
     public Result<SourceFile> format(SourceFile source) {
         return delegate.format(source);
     }
 
-    @Override
     public Result<Boolean> isFormatted(SourceFile source) {
         return delegate.isFormatted(source);
-    }
-
-    @Override
-    public FormatterConfig config() {
-        return config;
     }
 }

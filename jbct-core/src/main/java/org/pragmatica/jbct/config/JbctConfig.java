@@ -99,15 +99,15 @@ public record JbctConfig(
             return this;
         }
 
-        // Merge formatter config
+        // Merge formatter config (use other if different from default)
         var mergedFormatter = this.formatter;
-        if (other.formatter != FormatterConfig.DEFAULT) {
+        if (!other.formatter.equals(FormatterConfig.DEFAULT)) {
             mergedFormatter = other.formatter;
         }
 
-        // Merge lint config
+        // Merge lint config (use other if different from default)
         var mergedLint = this.lint;
-        if (other.lint != LintConfig.DEFAULT) {
+        if (!other.lint.equals(LintConfig.DEFAULT)) {
             mergedLint = other.lint;
         }
 

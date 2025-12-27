@@ -1,14 +1,13 @@
 package org.pragmatica.jbct.upgrade;
 
 import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Files;
@@ -35,11 +34,7 @@ public final class JarInstaller {
      * Create installer with default settings.
      */
     public static JarInstaller jarInstaller() {
-        var client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
-        return new JarInstaller(JdkHttpOperations.jdkHttpOperations(client));
+        return new JarInstaller(HttpClients.httpOperations());
     }
 
     /**

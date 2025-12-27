@@ -2,14 +2,13 @@ package org.pragmatica.jbct.update;
 
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
-import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -68,11 +67,8 @@ public final class AiToolsUpdater {
      */
     public static AiToolsUpdater aiToolsUpdater() {
         var userHome = System.getProperty("user.home");
-        var client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
         return new AiToolsUpdater(
-                JdkHttpOperations.jdkHttpOperations(client),
+                HttpClients.httpOperations(),
                 Path.of(userHome, ".claude"),
                 Path.of(userHome, ".jbct")
         );
@@ -82,14 +78,7 @@ public final class AiToolsUpdater {
      * Create updater with custom directories.
      */
     public static AiToolsUpdater aiToolsUpdater(Path claudeDir, Path jbctDir) {
-        var client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
-        return new AiToolsUpdater(
-                JdkHttpOperations.jdkHttpOperations(client),
-                claudeDir,
-                jbctDir
-        );
+        return new AiToolsUpdater(HttpClients.httpOperations(), claudeDir, jbctDir);
     }
 
     /**

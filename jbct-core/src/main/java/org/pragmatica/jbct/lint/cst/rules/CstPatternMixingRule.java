@@ -30,10 +30,6 @@ public class CstPatternMixingRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Fork-Join patterns (Result.all) should not be nested inside Sequencer patterns (flatMap)";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

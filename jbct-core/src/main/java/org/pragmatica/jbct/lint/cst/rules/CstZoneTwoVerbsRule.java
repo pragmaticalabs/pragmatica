@@ -44,10 +44,6 @@ public class CstZoneTwoVerbsRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Step interfaces should use Zone 2 orchestration verbs";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

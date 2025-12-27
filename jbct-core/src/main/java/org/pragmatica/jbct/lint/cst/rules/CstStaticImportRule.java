@@ -40,10 +40,6 @@ public class CstStaticImportRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Prefer static imports for Pragmatica factory methods";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

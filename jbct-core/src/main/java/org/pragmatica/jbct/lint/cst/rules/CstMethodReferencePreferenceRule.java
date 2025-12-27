@@ -44,10 +44,6 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Prefer method references over equivalent lambdas";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

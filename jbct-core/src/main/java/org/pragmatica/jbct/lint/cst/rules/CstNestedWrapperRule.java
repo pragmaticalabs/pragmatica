@@ -32,10 +32,6 @@ public class CstNestedWrapperRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "No nested wrappers like Promise<Result<T>> or Option<Option<T>>";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

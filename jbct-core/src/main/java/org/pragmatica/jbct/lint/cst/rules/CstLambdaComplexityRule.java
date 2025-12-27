@@ -21,10 +21,6 @@ public class CstLambdaComplexityRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "No complex logic (if, switch, try) in lambdas";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

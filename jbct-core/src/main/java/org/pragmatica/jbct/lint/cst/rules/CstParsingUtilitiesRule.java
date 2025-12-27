@@ -92,10 +92,6 @@ public class CstParsingUtilitiesRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Use Pragmatica parsing utilities for Result-based error handling";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

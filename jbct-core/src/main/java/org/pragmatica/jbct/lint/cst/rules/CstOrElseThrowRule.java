@@ -23,10 +23,6 @@ public class CstOrElseThrowRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Don't use orElseThrow() - use Result/Option composition";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

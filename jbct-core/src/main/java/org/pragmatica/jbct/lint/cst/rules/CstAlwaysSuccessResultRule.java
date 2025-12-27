@@ -21,10 +21,6 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Avoid Result<T> when method always succeeds - return T directly";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

@@ -1,19 +1,13 @@
 package org.pragmatica.jbct.maven;
 
-import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.project.MavenProject;
-import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.format.JbctFormatter;
 import org.pragmatica.jbct.shared.SourceFile;
-import org.pragmatica.jbct.shared.SourceRoot;
-import org.pragmatica.lang.Option;
 
-import java.io.File;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -24,33 +18,18 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Does not modify files - only reports violations.
  */
 @Mojo(name = "format-check", defaultPhase = LifecyclePhase.VERIFY)
-public class FormatCheckMojo extends AbstractMojo {
-
-    @Parameter(defaultValue = "${project}", readonly = true, required = true)
-    private MavenProject project;
-
-    @Parameter(property = "jbct.sourceDirectory", defaultValue = "${project.build.sourceDirectory}")
-    private File sourceDirectory;
-
-    @Parameter(property = "jbct.testSourceDirectory", defaultValue = "${project.build.testSourceDirectory}")
-    private File testSourceDirectory;
-
-    @Parameter(property = "jbct.skip", defaultValue = "false")
-    private boolean skip;
+public class FormatCheckMojo extends AbstractJbctMojo {
 
     @Parameter(property = "jbct.includeTests", defaultValue = "true")
-    private boolean includeTests;
+    protected boolean includeTests;
 
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
-        if (skip) {
-            getLog().info("Skipping JBCT format check");
+        if (shouldSkip("format check")) {
             return;
         }
 
-        // Load configuration from jbct.toml
-        var projectDir = project.getBasedir().toPath();
-        var config = ConfigLoader.load(Option.none(), Option.option(projectDir));
+        var config = loadConfig();
         var formatter = JbctFormatter.jbctFormatter(config.formatter());
         var filesToProcess = collectJavaFiles();
 
@@ -81,27 +60,6 @@ public class FormatCheckMojo extends AbstractMojo {
         }
 
         getLog().info("All files are properly formatted.");
-    }
-
-    private List<Path> collectJavaFiles() {
-        var files = new ArrayList<Path>();
-
-        if (sourceDirectory != null && sourceDirectory.exists()) {
-            collectFromDirectory(sourceDirectory.toPath(), files);
-        }
-
-        if (includeTests && testSourceDirectory != null && testSourceDirectory.exists()) {
-            collectFromDirectory(testSourceDirectory.toPath(), files);
-        }
-
-        return files;
-    }
-
-    private void collectFromDirectory(Path directory, List<Path> files) {
-        SourceRoot.sourceRoot(directory)
-                .flatMap(SourceRoot::findJavaFiles)
-                .onSuccess(files::addAll)
-                .onFailure(cause -> getLog().warn("Error scanning " + directory + ": " + cause.message()));
     }
 
     private void checkFile(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {

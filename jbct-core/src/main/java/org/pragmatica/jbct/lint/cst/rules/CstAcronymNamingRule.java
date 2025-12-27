@@ -28,10 +28,6 @@ public class CstAcronymNamingRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Acronyms in names should use PascalCase (HttpClient, not HTTPClient)";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

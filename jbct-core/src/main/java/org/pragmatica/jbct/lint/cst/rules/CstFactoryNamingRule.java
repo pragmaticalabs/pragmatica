@@ -23,10 +23,6 @@ public class CstFactoryNamingRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Factory methods should be named after the type: TypeName.typeName()";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

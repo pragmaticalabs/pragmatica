@@ -26,10 +26,6 @@ public class CstConstructorBypassRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Use factory methods instead of direct constructor calls";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

@@ -6,13 +6,12 @@ import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.JbctLinter;
 import org.pragmatica.jbct.lint.LintContext;
+import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
-import org.pragmatica.jbct.shared.SourceRoot;
 import org.pragmatica.lang.Option;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
-import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -123,20 +122,7 @@ public class LintCommand implements Callable<Integer> {
     }
 
     private List<Path> collectJavaFiles() {
-        var files = new ArrayList<Path>();
-
-        for (var path : paths) {
-            if (Files.isDirectory(path)) {
-                SourceRoot.sourceRoot(path)
-                        .flatMap(SourceRoot::findJavaFiles)
-                        .onSuccess(files::addAll)
-                        .onFailure(cause -> System.err.println("Error scanning " + path + ": " + cause.message()));
-            } else if (path.toString().endsWith(".java")) {
-                files.add(path);
-            }
-        }
-
-        return files;
+        return FileCollector.collectJavaFiles(paths, System.err::println);
     }
 
     private void processFile(Path file,

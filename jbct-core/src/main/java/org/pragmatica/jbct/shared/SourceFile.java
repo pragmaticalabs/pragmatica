@@ -51,12 +51,4 @@ public record SourceFile(Path path, String content) {
     public String fileName() {
         return path.getFileName().toString();
     }
-
-    /**
-     * Check if content differs from the original file.
-     */
-    public Result<Boolean> isDirty() {
-        return lift(Causes::fromThrowable, () -> Files.readString(path))
-                .map(original -> !original.equals(content));
-    }
 }

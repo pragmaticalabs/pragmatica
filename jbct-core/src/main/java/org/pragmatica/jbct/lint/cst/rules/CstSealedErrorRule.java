@@ -25,10 +25,6 @@ public class CstSealedErrorRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Error interfaces extending Cause should be sealed for exhaustive matching";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

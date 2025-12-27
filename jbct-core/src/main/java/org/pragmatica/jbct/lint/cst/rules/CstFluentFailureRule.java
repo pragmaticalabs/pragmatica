@@ -21,10 +21,6 @@ public class CstFluentFailureRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Prefer cause.result() over Result.failure(cause)";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

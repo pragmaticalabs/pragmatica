@@ -21,10 +21,6 @@ public class CstVoidTypeRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Use Unit instead of Void for side-effect methods";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

@@ -26,10 +26,6 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Use imports instead of fully qualified class names";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
