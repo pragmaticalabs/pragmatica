@@ -18,11 +18,6 @@ public interface CstLintRule {
     String ruleId();
 
     /**
-     * Get a short description of what this rule checks.
-     */
-    String description();
-
-    /**
      * Analyze a CST root node and return any diagnostics.
      *
      * @param root   the root CST node (CompilationUnit)

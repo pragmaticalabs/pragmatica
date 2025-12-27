@@ -66,22 +66,16 @@ public final class ProjectInitializer {
             var createdFiles = new java.util.ArrayList<Path>();
 
             // Create pom.xml
-            var pomResult = createFile("pom.xml.template", projectDir.resolve("pom.xml"));
-            if (pomResult.isSuccess()) {
-                createdFiles.add(pomResult.unwrap());
-            }
+            createFile("pom.xml.template", projectDir.resolve("pom.xml"))
+                .onSuccess(createdFiles::add);
 
             // Create jbct.toml
-            var configResult = createFile("jbct.toml.template", projectDir.resolve("jbct.toml"));
-            if (configResult.isSuccess()) {
-                createdFiles.add(configResult.unwrap());
-            }
+            createFile("jbct.toml.template", projectDir.resolve("jbct.toml"))
+                .onSuccess(createdFiles::add);
 
             // Create .gitignore
-            var gitignoreResult = createFile("gitignore.template", projectDir.resolve(".gitignore"));
-            if (gitignoreResult.isSuccess()) {
-                createdFiles.add(gitignoreResult.unwrap());
-            }
+            createFile("gitignore.template", projectDir.resolve(".gitignore"))
+                .onSuccess(createdFiles::add);
 
             // Create .gitkeep files
             var srcKeep = srcMainJava.resolve(packagePath).resolve(".gitkeep");

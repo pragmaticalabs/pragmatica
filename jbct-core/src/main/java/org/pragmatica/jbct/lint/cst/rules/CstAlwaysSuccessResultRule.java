@@ -21,10 +21,6 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Avoid Result<T> when method always succeeds - return T directly";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
@@ -45,7 +41,7 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     private boolean returnsResult(CstNode method, String source) {
         var returnType = childByRule(method, RuleId.Type.class);
         if (returnType.isEmpty()) return false;
-        var typeText = text(returnType.unwrap(), source);
+        var typeText = text(returnType.getOrThrow("Return type expected"), source);
         return typeText.startsWith("Result<");
     }
 

@@ -22,10 +22,6 @@ public class CstChainLengthRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Method chains should be 2-5 steps; longer chains should be split";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

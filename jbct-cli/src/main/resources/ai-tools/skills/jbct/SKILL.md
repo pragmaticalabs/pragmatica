@@ -62,7 +62,7 @@ public record Email(String value) {
     public static Result<Email> email(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(INVALID_EMAIL, Verify.Is::matches, PATTERN))
+            .filter(INVALID_EMAIL, PATTERN.asMatchPredicate())
             .map(Email::new);
     }
 }
@@ -107,8 +107,7 @@ Network.parseUUID(raw)            // Result<UUID>
 public record Age(int value) {
     public static Result<Age> age(String raw) {
         return Number.parseInt(raw)
-            .flatMap(Verify.ensureFn(Causes.cause("Age 0-150"),
-                                     Verify.Is::between, 0, 150))
+            .filter(Causes.cause("Age 0-150"), v -> Verify.Is.between(v, 0, 150))
             .map(Age::new);
     }
 }
@@ -478,20 +477,20 @@ void execute_succeeds_forValidInput() {
 
 ## Pragmatica Lite Core Library
 
-JBCT uses **Pragmatica Lite Core 0.8.4** for functional types.
+JBCT uses **Pragmatica Lite Core 0.9.0** for functional types.
 
 **Maven (preferred):**
 ```xml
 <dependency>
    <groupId>org.pragmatica-lite</groupId>
    <artifactId>core</artifactId>
-   <version>0.8.4</version>
+   <version>0.9.0</version>
 </dependency>
 ```
 
 **Gradle (only if explicitly requested):**
 ```gradle
-implementation 'org.pragmatica-lite:core:0.8.4'
+implementation 'org.pragmatica-lite:core:0.9.0'
 ```
 
 Library documentation: https://central.sonatype.com/artifact/org.pragmatica-lite/core

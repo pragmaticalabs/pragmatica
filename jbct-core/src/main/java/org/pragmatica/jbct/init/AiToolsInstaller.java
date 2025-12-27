@@ -63,16 +63,12 @@ public final class AiToolsInstaller {
             Files.createDirectories(agentsDir);
 
             // Install skills
-            var skillsResult = installFromResources(AI_TOOLS_PATH + SKILLS_SUBPATH, skillsDir);
-            if (skillsResult.isSuccess()) {
-                installedFiles.addAll(skillsResult.unwrap());
-            }
+            installFromResources(AI_TOOLS_PATH + SKILLS_SUBPATH, skillsDir)
+                .onSuccess(installedFiles::addAll);
 
             // Install agents
-            var agentsResult = installFromResources(AI_TOOLS_PATH + AGENTS_SUBPATH, agentsDir);
-            if (agentsResult.isSuccess()) {
-                installedFiles.addAll(agentsResult.unwrap());
-            }
+            installFromResources(AI_TOOLS_PATH + AGENTS_SUBPATH, agentsDir)
+                .onSuccess(installedFiles::addAll);
 
             return Result.success(installedFiles);
         } catch (Exception e) {
@@ -94,7 +90,7 @@ public final class AiToolsInstaller {
                 return installFromJar(resourcePath, targetDir);
             } else {
                 // Running from filesystem (development)
-                return installFromFilesystem(Path.of(resource.toURI()), targetDir, resourcePath);
+                return installFromFilesystem(Path.of(resource.toURI()), targetDir);
             }
         } catch (Exception e) {
             return Result.failure(Causes.cause("Failed to install from " + resourcePath + ": " + e.getMessage()));
@@ -140,7 +136,7 @@ public final class AiToolsInstaller {
         }
     }
 
-    private Result<List<Path>> installFromFilesystem(Path sourcePath, Path targetDir, String resourcePath) {
+    private Result<List<Path>> installFromFilesystem(Path sourcePath, Path targetDir) {
         var installedFiles = new ArrayList<Path>();
 
         try {

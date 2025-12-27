@@ -21,10 +21,6 @@ public class CstLambdaBracesRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "No braces in lambda bodies - extract complex logic to methods";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

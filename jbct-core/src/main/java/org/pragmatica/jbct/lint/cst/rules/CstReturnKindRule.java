@@ -20,7 +20,7 @@ public class CstReturnKindRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-01";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";
 
-    private static final Set<String>FORBIDDEN_TYPES = Set.of(
+    private static final Set<String> FORBIDDEN_TYPES = Set.of(
     "Optional", "CompletableFuture", "Future", "CompletionStage");
 
     @Override
@@ -28,10 +28,6 @@ public class CstReturnKindRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Business methods must use only four return kinds: T, Option<T>, Result<T>, Promise<T>";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
@@ -61,7 +57,7 @@ public class CstReturnKindRule implements CstLintRule {
         if (returnType.isEmpty()) {
             return Stream.empty();
         }
-        var typeText = text(returnType.unwrap(),
+        var typeText = text(returnType.getOrThrow("Return type expected"),
                             source)
                        .trim();
         var methodName = childByRule(method, RuleId.Identifier.class)

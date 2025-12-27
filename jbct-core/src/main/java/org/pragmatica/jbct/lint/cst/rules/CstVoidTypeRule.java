@@ -21,10 +21,6 @@ public class CstVoidTypeRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Use Unit instead of Void for side-effect methods";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
@@ -45,7 +41,7 @@ public class CstVoidTypeRule implements CstLintRule {
     private boolean returnsBoxedVoid(CstNode method, String source) {
         var returnType = childByRule(method, RuleId.Type.class);
         if (returnType.isEmpty()) return false;
-        var typeText = text(returnType.unwrap(),
+        var typeText = text(returnType.getOrThrow("Return type expected"),
                             source)
                        .trim();
         return typeText.equals("Void") || typeText.contains("<Void>");

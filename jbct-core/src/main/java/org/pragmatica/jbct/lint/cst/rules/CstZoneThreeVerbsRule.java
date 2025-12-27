@@ -45,10 +45,6 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Leaf functions should use Zone 3 implementation verbs";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
@@ -74,7 +70,7 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
             return false;
         }
 
-        var memberText = text(classMember.unwrap(), source);
+        var memberText = text(classMember.getOrThrow("ClassMember expected"), source);
 
         // Check if private
         if (!memberText.contains("private ")) {

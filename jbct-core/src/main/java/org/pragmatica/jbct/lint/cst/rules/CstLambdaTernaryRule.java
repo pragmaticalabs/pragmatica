@@ -21,10 +21,6 @@ public class CstLambdaTernaryRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "No ternary operators in lambdas - use filter() or extract";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

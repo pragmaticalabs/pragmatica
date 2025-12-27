@@ -2,14 +2,13 @@ package org.pragmatica.jbct.update;
 
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
-import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -68,11 +67,8 @@ public final class AiToolsUpdater {
      */
     public static AiToolsUpdater aiToolsUpdater() {
         var userHome = System.getProperty("user.home");
-        var client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
         return new AiToolsUpdater(
-                JdkHttpOperations.create(client),
+                HttpClients.httpOperations(),
                 Path.of(userHome, ".claude"),
                 Path.of(userHome, ".jbct")
         );
@@ -82,14 +78,7 @@ public final class AiToolsUpdater {
      * Create updater with custom directories.
      */
     public static AiToolsUpdater aiToolsUpdater(Path claudeDir, Path jbctDir) {
-        var client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
-        return new AiToolsUpdater(
-                JdkHttpOperations.create(client),
-                claudeDir,
-                jbctDir
-        );
+        return new AiToolsUpdater(HttpClients.httpOperations(), claudeDir, jbctDir);
     }
 
     /**
@@ -101,10 +90,9 @@ public final class AiToolsUpdater {
         return getLatestCommitSha()
                 .map(latestSha -> {
                     var currentSha = getCurrentVersion();
-                    if (currentSha.isEmpty() || !currentSha.unwrap().equals(latestSha)) {
-                        return Option.option(latestSha);
-                    }
-                    return Option.none();
+                    return currentSha.filter(sha -> sha.equals(latestSha))
+                                     .map(_ -> Option.<String>none())
+                                     .or(() -> Option.option(latestSha));
                 });
     }
 
@@ -127,7 +115,8 @@ public final class AiToolsUpdater {
         return getLatestCommitSha()
                 .flatMap(latestSha -> {
                     var currentSha = getCurrentVersion();
-                    if (!force && currentSha.isPresent() && currentSha.unwrap().equals(latestSha)) {
+                    var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha)).isPresent();
+                    if (isUpToDate) {
                         return Result.success(List.<Path>of());
                     }
 
@@ -172,19 +161,13 @@ public final class AiToolsUpdater {
             // Download skill files
             for (var file : SKILL_FILES) {
                 var targetPath = claudeDir.resolve(file);
-                var result = downloadFile(file, targetPath);
-                if (result.isSuccess()) {
-                    downloadedFiles.add(result.unwrap());
-                }
+                downloadFile(file, targetPath).onSuccess(downloadedFiles::add);
             }
 
             // Download agent files
             for (var file : AGENT_FILES) {
                 var targetPath = agentsDir.resolve(file);
-                var result = downloadFile(file, targetPath);
-                if (result.isSuccess()) {
-                    downloadedFiles.add(result.unwrap());
-                }
+                downloadFile(file, targetPath).onSuccess(downloadedFiles::add);
             }
 
             // Save version

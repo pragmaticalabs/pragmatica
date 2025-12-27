@@ -26,10 +26,6 @@ public class CstConstructorReferenceRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Prefer X::new over v -> new X(v)";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

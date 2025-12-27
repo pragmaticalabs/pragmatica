@@ -61,7 +61,7 @@ option.async(UserError.NotFound.INSTANCE)
 public static Result<Email> email(String raw) {
     return Verify.ensure(raw, Verify.Is::notNull)
         .map(String::trim)
-        .flatMap(Verify.ensureFn(INVALID_EMAIL, Verify.Is::matches, EMAIL_PATTERN))
+        .filter(INVALID_EMAIL, EMAIL_PATTERN.asMatchPredicate())
         .map(Email::new);
 }
 

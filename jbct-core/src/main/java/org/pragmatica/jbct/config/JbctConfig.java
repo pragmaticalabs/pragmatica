@@ -1,10 +1,12 @@
 package org.pragmatica.jbct.config;
 
+import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintConfig;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -32,27 +34,27 @@ public record JbctConfig(
     );
 
     /**
-     * Create config from parsed TOML data.
+     * Create config from parsed TOML document.
      */
-    public static JbctConfig fromToml(Map<String, Map<String, Object>> toml) {
+    public static JbctConfig fromToml(TomlDocument toml) {
         // Format section
         var formatterConfig = FormatterConfig.DEFAULT
-                .withMaxLineLength(TomlParser.getInt(toml, "format", "maxLineLength", 120))
-                .withIndentSize(TomlParser.getInt(toml, "format", "indentSize", 4))
-                .withUseTabs(TomlParser.getBoolean(toml, "format", "useTabs", false))
-                .withAlignChainedCalls(TomlParser.getBoolean(toml, "format", "alignChainedCalls", true))
-                .withAlignArguments(TomlParser.getBoolean(toml, "format", "alignArguments", true))
-                .withAlignParameters(TomlParser.getBoolean(toml, "format", "alignParameters", true))
-                .withOrganizeImports(TomlParser.getBoolean(toml, "format", "organizeImports", true));
+                .withMaxLineLength(toml.getInt("format", "maxLineLength").or(120))
+                .withIndentSize(toml.getInt("format", "indentSize").or(4))
+                .withUseTabs(toml.getBoolean("format", "useTabs").or(false))
+                .withAlignChainedCalls(toml.getBoolean("format", "alignChainedCalls").or(true))
+                .withAlignArguments(toml.getBoolean("format", "alignArguments").or(true))
+                .withAlignParameters(toml.getBoolean("format", "alignParameters").or(true))
+                .withOrganizeImports(toml.getBoolean("format", "organizeImports").or(true));
 
         // Lint section
-        boolean failOnWarning = TomlParser.getBoolean(toml, "lint", "failOnWarning", false);
+        boolean failOnWarning = toml.getBoolean("lint", "failOnWarning").or(false);
 
         // Lint rules section
         Map<String, DiagnosticSeverity> ruleSeverities = new HashMap<>(LintConfig.DEFAULT.ruleSeverities());
-        Set<String> disabledRules = new java.util.HashSet<>(LintConfig.DEFAULT.disabledRules());
+        Set<String> disabledRules = new HashSet<>(LintConfig.DEFAULT.disabledRules());
 
-        var rulesSection = TomlParser.getSection(toml, "lint.rules");
+        var rulesSection = toml.getSection("lint.rules");
         for (var entry : rulesSection.entrySet()) {
             String ruleId = entry.getKey();
             String severityStr = entry.getValue().toLowerCase();
@@ -81,8 +83,10 @@ public record JbctConfig(
         );
 
         // Project section
-        var sourceDirectories = TomlParser.getStringList(toml, "project", "sourceDirectories", List.of("src/main/java"));
-        var businessPackages = TomlParser.getStringList(toml, "lint", "businessPackages", List.of("**.usecase.**", "**.domain.**"));
+        var sourceDirectories = toml.getStringList("project", "sourceDirectories")
+                                    .or(List.of("src/main/java"));
+        var businessPackages = toml.getStringList("lint", "businessPackages")
+                                   .or(List.of("**.usecase.**", "**.domain.**"));
 
         return new JbctConfig(formatterConfig, lintConfig, sourceDirectories, businessPackages);
     }
@@ -95,15 +99,15 @@ public record JbctConfig(
             return this;
         }
 
-        // Merge formatter config
+        // Merge formatter config (use other if different from default)
         var mergedFormatter = this.formatter;
-        if (other.formatter != FormatterConfig.DEFAULT) {
+        if (!other.formatter.equals(FormatterConfig.DEFAULT)) {
             mergedFormatter = other.formatter;
         }
 
-        // Merge lint config
+        // Merge lint config (use other if different from default)
         var mergedLint = this.lint;
-        if (other.lint != LintConfig.DEFAULT) {
+        if (!other.lint.equals(LintConfig.DEFAULT)) {
             mergedLint = other.lint;
         }
 

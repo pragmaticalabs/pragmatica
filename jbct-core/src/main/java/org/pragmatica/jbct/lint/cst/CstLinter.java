@@ -137,7 +137,13 @@ public class CstLinter {
             // Zones (JBCT-ZONE-*)
             new CstZoneTwoVerbsRule(),         // JBCT-ZONE-01
             new CstZoneThreeVerbsRule(),       // JBCT-ZONE-02
-            new CstZoneMixingRule()            // JBCT-ZONE-03
+            new CstZoneMixingRule(),           // JBCT-ZONE-03
+            // Acronym naming (JBCT-ACR-*)
+            new CstAcronymNamingRule(),        // JBCT-ACR-01
+            // Sealed interfaces (JBCT-SEAL-*)
+            new CstSealedErrorRule(),          // JBCT-SEAL-01
+            // Pattern mixing (JBCT-PAT-02)
+            new CstPatternMixingRule()         // JBCT-PAT-02
         );
     }
 }

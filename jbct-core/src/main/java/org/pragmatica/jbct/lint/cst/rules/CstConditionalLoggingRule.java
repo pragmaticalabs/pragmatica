@@ -21,10 +21,6 @@ public class CstConditionalLoggingRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "No conditional logging - let log level handle filtering";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

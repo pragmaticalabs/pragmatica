@@ -90,4 +90,12 @@ public record LintContext(
                 .toList();
         return new LintContext(compiledPatterns, config, fileName);
     }
+
+    /**
+     * Factory method from JbctConfig.
+     */
+    public static LintContext fromConfig(org.pragmatica.jbct.config.JbctConfig jbctConfig) {
+        return lintContext(jbctConfig.businessPackages())
+               .withConfig(jbctConfig.lint());
+    }
 }

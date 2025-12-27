@@ -2,12 +2,11 @@ package org.pragmatica.jbct.upgrade;
 
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
-import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.net.URI;
-import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.regex.Pattern;
@@ -35,26 +34,14 @@ public final class GitHubReleaseChecker {
      * Create a release checker with default settings.
      */
     public static GitHubReleaseChecker releaseChecker() {
-        var client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
-        return new GitHubReleaseChecker(
-                JdkHttpOperations.create(client),
-                GITHUB_API_URL
-        );
+        return new GitHubReleaseChecker(HttpClients.httpOperations(), GITHUB_API_URL);
     }
 
     /**
      * Create a release checker with custom API URL (for testing).
      */
     public static GitHubReleaseChecker releaseChecker(String apiUrl) {
-        var client = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
-        return new GitHubReleaseChecker(
-                JdkHttpOperations.create(client),
-                apiUrl
-        );
+        return new GitHubReleaseChecker(HttpClients.httpOperations(), apiUrl);
     }
 
     /**

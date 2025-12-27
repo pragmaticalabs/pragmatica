@@ -38,18 +38,11 @@ public class CstDomainIoRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "No I/O operations in domain packages";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
-        // Only check domain packages
+        var packageName = packageName(root, source);
+        // Only check domain packages (not usecase)
         if (!isDomainPackage(packageName)) {
             return Stream.empty();
         }
@@ -61,11 +54,7 @@ public class CstDomainIoRule implements CstLintRule {
     }
 
     private boolean isDomainPackage(String packageName) {
-        return packageName.contains(".domain") ||
-        packageName.contains(".model") ||
-        packageName.contains(".entity") ||
-        packageName.endsWith(".domain") ||
-        packageName.endsWith(".model");
+        return packageName.contains(".domain.") || packageName.endsWith(".domain");
     }
 
     private boolean isIoImport(CstNode imp, String source) {

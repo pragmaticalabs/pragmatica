@@ -99,10 +99,6 @@ public class CstVerifyPredicatesRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Use Verify.Is predicates for validation";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

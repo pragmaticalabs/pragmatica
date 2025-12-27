@@ -25,10 +25,6 @@ public class CstUtilityClassRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Use sealed interface with 'unused' record instead of utility class";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

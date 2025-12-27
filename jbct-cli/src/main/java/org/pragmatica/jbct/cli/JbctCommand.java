@@ -11,7 +11,7 @@ import picocli.CommandLine.Option;
         name = "jbct",
         description = "JBCT code formatting and linting tool",
         mixinStandardHelpOptions = true,
-        version = "0.3.1",
+        versionProvider = JbctCommand.VersionProvider.class,
         subcommands = {
                 FormatCommand.class,
                 LintCommand.class,
@@ -37,5 +37,15 @@ public class JbctCommand implements Runnable {
     public void run() {
         // If no subcommand is specified, print help
         CommandLine.usage(this, System.out);
+    }
+
+    /**
+     * Version provider that reads version from resource file.
+     */
+    public static class VersionProvider implements CommandLine.IVersionProvider {
+        @Override
+        public String[] getVersion() {
+            return new String[] { Version.get() };
+        }
     }
 }

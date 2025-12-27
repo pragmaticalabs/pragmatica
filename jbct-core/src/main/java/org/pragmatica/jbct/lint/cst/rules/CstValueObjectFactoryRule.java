@@ -21,10 +21,6 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Value objects should have factory methods returning Result<T>";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

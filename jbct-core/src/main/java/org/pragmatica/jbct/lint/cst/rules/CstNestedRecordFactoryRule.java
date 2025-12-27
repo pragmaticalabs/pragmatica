@@ -21,10 +21,6 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Use case factories should return lambdas, not nested record implementations";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

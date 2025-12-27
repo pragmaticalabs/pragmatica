@@ -4,7 +4,6 @@ import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.format.FormattingError;
 import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
-import org.pragmatica.jbct.parser.Java25Parser.Trivia;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
 

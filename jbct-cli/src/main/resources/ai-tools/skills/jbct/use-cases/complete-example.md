@@ -42,14 +42,14 @@ public record Email(String value) {
         Pattern.compile("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$");
 
     private static final Fn1<Cause, String> INVALID_EMAIL =
-        Causes.forValue("Invalid email: {}");
+        Causes.forOneValue("Invalid email: %s");
 
     private Email {}
 
     public static Result<Email> email(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(INVALID_EMAIL, Verify.Is::matches, EMAIL_PATTERN))
+            .filter(INVALID_EMAIL, EMAIL_PATTERN.asMatchPredicate())
             .map(Email::new);
     }
 }
@@ -66,20 +66,20 @@ public record Password(String value) {
     private static final Pattern HAS_UPPER = Pattern.compile(".*[A-Z].*");
 
     private static final Fn1<Cause, String> TOO_SHORT =
-        Causes.forValue("Password too short (min " + MIN_LENGTH + ")");
+        Causes.forOneValue("Password too short (min " + MIN_LENGTH + ")");
     private static final Fn1<Cause, String> NO_DIGIT =
-        Causes.forValue("Password must contain digit");
+        Causes.forOneValue("Password must contain digit");
     private static final Fn1<Cause, String> NO_UPPER =
-        Causes.forValue("Password must contain uppercase letter");
+        Causes.forOneValue("Password must contain uppercase letter");
 
     private Password {}
 
     public static Result<Password> password(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(TOO_SHORT, s -> s.length() >= MIN_LENGTH))
-            .flatMap(Verify.ensureFn(NO_DIGIT, Verify.Is::matches, HAS_DIGIT))
-            .flatMap(Verify.ensureFn(NO_UPPER, Verify.Is::matches, HAS_UPPER))
+            .filter(TOO_SHORT, s -> s.length() >= MIN_LENGTH)
+            .filter(NO_DIGIT, HAS_DIGIT.asMatchPredicate())
+            .filter(NO_UPPER, HAS_UPPER.asMatchPredicate())
             .map(Password::new);
     }
 }

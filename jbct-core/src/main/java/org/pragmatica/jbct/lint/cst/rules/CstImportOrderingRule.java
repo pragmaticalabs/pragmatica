@@ -32,10 +32,6 @@ public class CstImportOrderingRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "Import ordering: java → javax → org.pragmatica → third-party → project → static";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

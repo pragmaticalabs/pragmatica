@@ -63,7 +63,11 @@ public record LintConfig(
                     // Zones
                     Map.entry("JBCT-ZONE-01", DiagnosticSeverity.WARNING), // Zone 2 verbs for steps
                     Map.entry("JBCT-ZONE-02", DiagnosticSeverity.WARNING), // Zone 3 verbs for leaves
-                    Map.entry("JBCT-ZONE-03", DiagnosticSeverity.WARNING)  // No zone mixing
+                    Map.entry("JBCT-ZONE-03", DiagnosticSeverity.WARNING), // No zone mixing
+                    // Acronyms and patterns
+                    Map.entry("JBCT-ACR-01", DiagnosticSeverity.WARNING),  // Acronym naming
+                    Map.entry("JBCT-SEAL-01", DiagnosticSeverity.WARNING), // Sealed error interfaces
+                    Map.entry("JBCT-PAT-02", DiagnosticSeverity.WARNING)   // No Fork-Join inside Sequencer
             ),
             Set.of(),
             false

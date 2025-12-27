@@ -21,10 +21,6 @@ public class CstLoggerParameterRule implements CstLintRule {
         return RULE_ID;
     }
 
-    @Override
-    public String description() {
-        return "No Logger as method parameter - component owns its logger";
-    }
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {

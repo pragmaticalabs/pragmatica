@@ -26,7 +26,7 @@ public record Email(String value) {
         Pattern.compile("^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$");
 
     private static final Fn1<Cause, String> INVALID_EMAIL =
-        Causes.forValue("Invalid email: {}");
+        Causes.forOneValue("Invalid email: %s");
 
     // Private constructor - cannot construct directly
     private Email {}
@@ -35,7 +35,7 @@ public record Email(String value) {
     public static Result<Email> email(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(INVALID_EMAIL, Verify.Is::matches, EMAIL_PATTERN))
+            .filter(INVALID_EMAIL, EMAIL_PATTERN.asMatchPredicate())
             .map(Email::new);
     }
 }
@@ -80,11 +80,8 @@ All validation happens during parsing:
 public static Result<Email> email(String raw) {
     return Verify.ensure(raw, Verify.Is::notNull)        // Check not null
         .map(String::trim)                               // Normalize
-        .flatMap(Verify.ensureFn(                        // Validate format
-            INVALID_EMAIL,
-            Verify.Is::matches,
-            EMAIL_PATTERN
-        ))
+        .filter(INVALID_EMAIL,                           // Validate format
+                EMAIL_PATTERN.asMatchPredicate())
         .map(Email::new);                                // Construct only if valid
 }
 ```
@@ -96,16 +93,16 @@ public static Result<Email> email(String raw) {
 ```java
 public record UserId(UUID value) {
     private static final Fn1<Cause, String> INVALID_USER_ID =
-        Causes.forValue("Invalid user ID: {}");
+        Causes.forOneValue("Invalid user ID: %s");
 
     private UserId {}
 
     public static Result<UserId> userId(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(INVALID_USER_ID, Verify.Is::notEmpty))
+            .filter(INVALID_USER_ID, Verify.Is::notEmpty)
             .flatMap(str -> Result.lift(() -> UUID.fromString(str))
-                                  .mapFailure(e -> INVALID_USER_ID.apply(raw)))
+                                  .mapError(_ -> INVALID_USER_ID.apply(raw)))
             .map(UserId::new);
     }
 
@@ -126,20 +123,20 @@ public record Password(String value) {
     private static final Pattern HAS_UPPER = Pattern.compile(".*[A-Z].*");
 
     private static final Fn1<Cause, String> TOO_SHORT =
-        Causes.forValue("Password too short (min " + MIN_LENGTH + "): {}");
+        Causes.forOneValue("Password too short (min " + MIN_LENGTH + "): %s");
     private static final Fn1<Cause, String> NO_DIGIT =
-        Causes.forValue("Password must contain digit: {}");
+        Causes.forOneValue("Password must contain digit: %s");
     private static final Fn1<Cause, String> NO_UPPER =
-        Causes.forValue("Password must contain uppercase: {}");
+        Causes.forOneValue("Password must contain uppercase: %s");
 
     private Password {}
 
     public static Result<Password> password(String raw) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
-            .flatMap(Verify.ensureFn(TOO_SHORT, s -> s.length() >= MIN_LENGTH))
-            .flatMap(Verify.ensureFn(NO_DIGIT, Verify.Is::matches, HAS_DIGIT))
-            .flatMap(Verify.ensureFn(NO_UPPER, Verify.Is::matches, HAS_UPPER))
+            .filter(TOO_SHORT, s -> s.length() >= MIN_LENGTH)
+            .filter(NO_DIGIT, HAS_DIGIT.asMatchPredicate())
+            .filter(NO_UPPER, HAS_UPPER.asMatchPredicate())
             .map(Password::new);
     }
 }
@@ -178,10 +175,10 @@ Use constants with descriptive names:
 
 ```java
 private static final Fn1<Cause, String> INVALID_EMAIL =
-    Causes.forValue("Invalid email: {}");
+    Causes.forOneValue("Invalid email: %s");
 
 private static final Fn1<Cause, String> TOO_SHORT =
-    Causes.forValue("Password too short: {}");
+    Causes.forOneValue("Password too short: %s");
 ```
 
 ## Validated Inputs
@@ -302,7 +299,7 @@ public record UserProfile(
 ```java
 public record OrderItems(List<Item> items) {
     private static final Fn1<Cause, Integer> MIN_ITEMS_ERROR =
-        Causes.forValue("Order must have at least {} items");
+        Causes.forOneValue("Order must have at least %d items");
 
     private OrderItems {}
 
@@ -314,7 +311,7 @@ public record OrderItems(List<Item> items) {
 
         // Collect all results
         return Result.allOf(itemResults)
-            .flatMap(Verify.ensureFn(MIN_ITEMS_ERROR, list -> !list.isEmpty()))
+            .filter(MIN_ITEMS_ERROR, list -> !list.isEmpty())
             .map(OrderItems::new);
     }
 }
