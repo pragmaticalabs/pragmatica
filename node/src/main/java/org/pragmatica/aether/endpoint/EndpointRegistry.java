@@ -14,6 +14,7 @@ import org.pragmatica.message.MessageReceiver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -121,7 +122,10 @@ public interface EndpointRegistry {
 
             @Override
             public Option<Endpoint> selectEndpoint(Artifact artifact, MethodName methodName) {
-                var available = findEndpoints(artifact, methodName);
+                // Sort endpoints to ensure consistent round-robin order across calls
+                var available = findEndpoints(artifact, methodName).stream()
+                        .sorted(Comparator.comparing(e -> e.nodeId().id()))
+                        .toList();
 
                 if (available.isEmpty()) {
                     return Option.none();

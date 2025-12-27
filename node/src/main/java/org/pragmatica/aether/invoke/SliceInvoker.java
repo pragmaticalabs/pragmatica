@@ -386,15 +386,21 @@ class SliceInvokerImpl implements SliceInvoker {
                                 throw e;
                             }
 
-                            return internalSlice.call(method, inputBuf)
-                                    .onResultRun(inputBuf::release)
-                                    .map(outputBuf -> {
-                                        try {
-                                            return (R) deserializer.read(outputBuf);
-                                        } finally {
-                                            outputBuf.release();
-                                        }
-                                    });
+                            try {
+                                return internalSlice.call(method, inputBuf)
+                                        .onResultRun(inputBuf::release)
+                                        .map(outputBuf -> {
+                                            try {
+                                                return (R) deserializer.read(outputBuf);
+                                            } finally {
+                                                outputBuf.release();
+                                            }
+                                        });
+                            } catch (Exception e) {
+                                // Release buffer if call() throws synchronously
+                                inputBuf.release();
+                                throw e;
+                            }
                         }
                 );
     }

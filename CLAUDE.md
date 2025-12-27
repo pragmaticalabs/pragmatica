@@ -21,7 +21,7 @@ intelligent orchestration, and seamless multi-cloud deployment without requiring
 
 ### Core Modules
 
-- **slice-api/** - Slice interface definitions (`Slice`, `SliceMethod`, deprecated `EntryPoint`)
+- **slice-api/** - Slice interface definitions (`Slice`, `SliceMethod`, `SliceRoute`)
 - **slice/** - Slice management (`SliceStore`, `SliceState`, `Artifact` types, KV schema)
 - **node/** - Runtime node implementation (`NodeDeploymentManager`, `ManagementServer`, metrics, controller)
 - **cluster/** - Consensus layer (Rabia protocol, `KVStore`, `LeaderManager`)

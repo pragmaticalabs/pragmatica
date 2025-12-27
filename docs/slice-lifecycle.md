@@ -1,6 +1,6 @@
 # Slice Lifecycle
 
-Although main focus of this document is the Slice lifecycle, it inevitably touches several other complonents.
+Although main focus of this document is the Slice lifecycle, it inevitably touches several other components.
 
 ## Glossary
 

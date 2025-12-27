@@ -215,7 +215,13 @@ public class RabiaEngine<C extends Command> {
 
     /// Starts a new phase with pending commands.
     private void startPhase() {
-        if (isInPhase.get() || pendingBatches.isEmpty()) {
+        // Use compareAndSet to atomically check and set - prevents race condition
+        if (!isInPhase.compareAndSet(false, true)) {
+            return;
+        }
+
+        if (pendingBatches.isEmpty()) {
+            isInPhase.set(false);  // Reset since we won't actually start
             return;
         }
 
@@ -230,8 +236,6 @@ public class RabiaEngine<C extends Command> {
 
         var phaseData = getOrCreatePhaseData(phase);
         phaseData.proposals.put(self, batch);
-
-        isInPhase.set(true);
 
         network.broadcast(new Propose<>(self, phase, batch));
     }

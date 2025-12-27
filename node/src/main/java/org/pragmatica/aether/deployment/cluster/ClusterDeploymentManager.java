@@ -21,6 +21,8 @@ import org.pragmatica.message.MessageReceiver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.pragmatica.cluster.state.kvstore.KVStore;
+
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -85,12 +87,42 @@ public interface ClusterDeploymentManager {
         record Active(
                 NodeId self,
                 ClusterNode<KVCommand<AetherKey>> cluster,
+                KVStore<AetherKey, AetherValue> kvStore,
                 Map<Artifact, Blueprint> blueprints,
                 Map<SliceNodeKey, SliceState> sliceStates,
                 List<NodeId> activeNodes
         ) implements ClusterDeploymentState {
 
             private static final Logger log = LoggerFactory.getLogger(Active.class);
+
+            /**
+             * Rebuild state from KVStore snapshot on leader activation.
+             * This ensures the new leader has complete knowledge of desired and actual state.
+             */
+            void rebuildStateFromKVStore() {
+                log.info("Rebuilding cluster deployment state from KVStore");
+
+                kvStore.snapshot().forEach((key, value) -> {
+                    switch (key) {
+                        case BlueprintKey blueprintKey when value instanceof BlueprintValue blueprintValue -> {
+                            var artifact = blueprintKey.artifact();
+                            var instances = (int) blueprintValue.instanceCount();
+                            blueprints.put(artifact, new Blueprint(artifact, instances));
+                            log.debug("Restored blueprint: {} with {} instances", artifact, instances);
+                        }
+                        case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue sliceNodeValue -> {
+                            sliceStates.put(sliceNodeKey, sliceNodeValue.state());
+                            log.debug("Restored slice state: {} = {}", sliceNodeKey, sliceNodeValue.state());
+                        }
+                        default -> {
+                            // Ignore other key types (routes, endpoints, etc.)
+                        }
+                    }
+                });
+
+                log.info("Restored {} blueprints and {} slice states from KVStore",
+                         blueprints.size(), sliceStates.size());
+            }
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
@@ -313,11 +345,13 @@ public interface ClusterDeploymentManager {
      */
     static ClusterDeploymentManager clusterDeploymentManager(
             NodeId self,
-            ClusterNode<KVCommand<AetherKey>> cluster
-                                                            ) {
+            ClusterNode<KVCommand<AetherKey>> cluster,
+            KVStore<AetherKey, AetherValue> kvStore
+    ) {
         record clusterDeploymentManager(
                 NodeId self,
                 ClusterNode<KVCommand<AetherKey>> cluster,
+                KVStore<AetherKey, AetherValue> kvStore,
                 AtomicReference<ClusterDeploymentState> state
         ) implements ClusterDeploymentManager {
 
@@ -331,6 +365,7 @@ public interface ClusterDeploymentManager {
                     var activeState = new ClusterDeploymentState.Active(
                             self,
                             cluster,
+                            kvStore,
                             new ConcurrentHashMap<>(),
                             new ConcurrentHashMap<>(),
                             new CopyOnWriteArrayList<>()
@@ -338,7 +373,8 @@ public interface ClusterDeploymentManager {
 
                     state.set(activeState);
 
-                    // Perform initial reconciliation
+                    // Rebuild state from KVStore and reconcile
+                    activeState.rebuildStateFromKVStore();
                     activeState.reconcile();
                 } else {
                     log.info("Node {} is not leader, deactivating cluster deployment manager", self);
@@ -365,6 +401,7 @@ public interface ClusterDeploymentManager {
         return new clusterDeploymentManager(
                 self,
                 cluster,
+                kvStore,
                 new AtomicReference<>(new ClusterDeploymentState.Dormant())
         );
     }

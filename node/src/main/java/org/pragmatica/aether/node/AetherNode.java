@@ -181,7 +181,7 @@ public interface AetherNode {
         );
 
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(
-                config.self(), clusterNode
+                config.self(), clusterNode, kvStore
         );
 
         // Create endpoint registry

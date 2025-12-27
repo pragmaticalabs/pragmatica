@@ -11,6 +11,7 @@ import org.slf4j.LoggerFactory;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
@@ -51,7 +52,7 @@ public sealed interface MessageRouter {
             @Override
             public <R extends Message> MessageRouter addRoute(Class<? extends R> messageType,
                                                               Consumer<? extends R> receiver) {
-                routingTable.computeIfAbsent((Class<T>) messageType, _ -> new ArrayList<>())
+                routingTable.computeIfAbsent((Class<T>) messageType, _ -> new CopyOnWriteArrayList<>())
                             .add((Consumer<T>) receiver);
 
                 return this;

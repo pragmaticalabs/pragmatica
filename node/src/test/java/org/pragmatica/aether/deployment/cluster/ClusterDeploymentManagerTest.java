@@ -14,6 +14,7 @@ import org.pragmatica.cluster.leader.LeaderNotification;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.cluster.topology.TopologyChangeNotification;
@@ -32,6 +33,7 @@ class ClusterDeploymentManagerTest {
     private NodeId node2;
     private NodeId node3;
     private TestClusterNode clusterNode;
+    private TestKVStore kvStore;
     private ClusterDeploymentManager manager;
 
     @BeforeEach
@@ -40,7 +42,8 @@ class ClusterDeploymentManagerTest {
         node2 = NodeId.randomNodeId();
         node3 = NodeId.randomNodeId();
         clusterNode = new TestClusterNode(self);
-        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode);
+        kvStore = new TestKVStore();
+        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore);
     }
 
     // === Leader State Tests ===
@@ -405,6 +408,17 @@ class ClusterDeploymentManagerTest {
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             appliedCommands.addAll(commands);
             return Promise.success((List<R>) commands.stream().map(_ -> Unit.unit()).toList());
+        }
+    }
+
+    static class TestKVStore extends KVStore<AetherKey, AetherValue> {
+        public TestKVStore() {
+            super(null, null, null);
+        }
+
+        @Override
+        public java.util.Map<AetherKey, AetherValue> snapshot() {
+            return new java.util.HashMap<>();
         }
     }
 }

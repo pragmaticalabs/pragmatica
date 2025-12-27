@@ -225,12 +225,15 @@ public final class ForgeCluster {
             return Option.none();
         }
 
-        return nodeInfos.keySet()
-                        .stream()
-                        .sorted()
-                        .findFirst()
-                        .map(Option::option)
-                        .orElse(Option.none());
+        // Take snapshot and sort to ensure consistent leader detection
+        var sortedNodes = nodeInfos.keySet()
+                                   .stream()
+                                   .sorted()
+                                   .toList();
+
+        return sortedNodes.isEmpty()
+               ? Option.none()
+               : Option.option(sortedNodes.getFirst());
     }
 
     /**

@@ -74,9 +74,11 @@ public interface LeaderManager {
             }
 
             private void stop() {
-                currentLeader().set(null);
-                notifyLeaderChange();
+                // Set inactive first to prevent new elections during shutdown
                 active.set(false);
+                currentLeader().set(null);
+                // Send notification directly since active is now false
+                router().route(leaderChange(option(null), false));
             }
         }
 

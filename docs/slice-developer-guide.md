@@ -14,6 +14,7 @@ public interface Slice {
     default Promise<Unit> start();
     default Promise<Unit> stop();
     List<SliceMethod<?, ?>> methods();
+    default List<SliceRoute> routes();
 }
 ```
 
@@ -133,6 +134,88 @@ private Promise<ValidationResult> validateEmail(EmailAddress email) {
     // Implementation
 }
 ```
+
+### HTTP Routes
+
+#### routes()
+
+**Purpose**: Declare HTTP routes this slice handles. Routes are automatically registered when the slice activates and
+unregistered when it deactivates.
+
+**Returns**: List of `SliceRoute` descriptors.
+
+**Default implementation**: Returns empty list (no HTTP routes).
+
+**Example**:
+
+```java
+@Override
+public List<SliceRoute> routes() {
+    return List.of(
+        SliceRoute.get("/api/users/{id}", "getUser")
+            .withPathVar("id")
+            .build(),
+        SliceRoute.post("/api/users", "createUser")
+            .withBody()
+            .build(),
+        SliceRoute.put("/api/users/{id}", "updateUser")
+            .withPathVar("id")
+            .withBody()
+            .build(),
+        SliceRoute.delete("/api/users/{id}", "deleteUser")
+            .withPathVar("id")
+            .build()
+    );
+}
+```
+
+#### SliceRoute Builder API
+
+Create routes using the static factory methods:
+
+```java
+SliceRoute.get(pathPattern, methodName)    // HTTP GET
+SliceRoute.post(pathPattern, methodName)   // HTTP POST
+SliceRoute.put(pathPattern, methodName)    // HTTP PUT
+SliceRoute.delete(pathPattern, methodName) // HTTP DELETE
+SliceRoute.patch(pathPattern, methodName)  // HTTP PATCH
+```
+
+Add bindings to specify how request data maps to method parameters:
+
+```java
+.withBody()                    // Request body → parameter
+.withBody("customParamName")   // Request body → named parameter
+.withPathVar("id")             // Path variable → parameter
+.withQueryVar("page")          // Query parameter → parameter
+.withHeader("userId", "X-User-Id")  // Header → parameter
+```
+
+Finalize with `.build()`:
+
+```java
+SliceRoute.post("/api/orders", "placeOrder")
+    .withBody()
+    .withHeader("requestId", "X-Request-Id")
+    .build()
+```
+
+#### Path Patterns
+
+Path patterns support variables using `{name}` syntax:
+
+- `/api/users` - literal path
+- `/api/users/{id}` - path with variable
+- `/api/users/{userId}/orders/{orderId}` - multiple variables
+
+#### Route Registration Lifecycle
+
+1. **Activation**: When slice becomes ACTIVE, runtime registers all routes
+2. **Request handling**: HTTP requests matching routes invoke the corresponding method
+3. **Deactivation**: When last instance of slice deactivates, routes are unregistered
+
+**Note**: Multiple instances of the same slice share routes. Routes are only unregistered when the last instance
+deactivates.
 
 ## Lifecycle Contract
 
