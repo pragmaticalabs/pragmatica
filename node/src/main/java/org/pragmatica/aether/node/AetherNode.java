@@ -4,6 +4,8 @@ import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
+import org.pragmatica.aether.deployment.cluster.BlueprintService;
+import org.pragmatica.aether.deployment.cluster.BlueprintServiceImpl;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
@@ -20,6 +22,7 @@ import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.SliceRuntime;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
+import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.leader.LeaderNotification;
@@ -72,6 +75,8 @@ public interface AetherNode {
 
     Option<HttpRouter> httpRouter();
 
+    BlueprintService blueprintService();
+
     /**
      * Apply commands to the cluster via consensus.
      */
@@ -104,6 +109,7 @@ public interface AetherNode {
                 ControlLoop controlLoop,
                 SliceInvoker sliceInvoker,
                 InvocationHandler invocationHandler,
+                BlueprintService blueprintService,
                 Option<ManagementServer> managementServer,
                 Option<HttpRouter> httpRouter
         ) implements AetherNode {
@@ -205,6 +211,11 @@ public interface AetherNode {
                 config.self(), clusterNode.network(), endpointRegistry, invocationHandler, serializer, deserializer
         );
 
+        // Create blueprint service using composite repository from configuration
+        var blueprintService = BlueprintServiceImpl.blueprintService(
+                clusterNode, kvStore, compositeRepository(config.sliceAction().repositories())
+        );
+
         // Wire up message routing
         configureRoutes(router, kvStore, nodeDeploymentManager, clusterDeploymentManager,
                         endpointRegistry, routeRegistry, metricsCollector, metricsScheduler, controlLoop,
@@ -232,7 +243,7 @@ public interface AetherNode {
                 config, router, kvStore, sliceRegistry, sliceStore,
                 clusterNode, nodeDeploymentManager, clusterDeploymentManager, endpointRegistry,
                 metricsCollector, metricsScheduler, controlLoop, sliceInvoker, invocationHandler,
-                Option.empty(), httpRouter
+                blueprintService, Option.empty(), httpRouter
         );
 
         // Create management server if enabled
@@ -242,7 +253,7 @@ public interface AetherNode {
                     config, router, kvStore, sliceRegistry, sliceStore,
                     clusterNode, nodeDeploymentManager, clusterDeploymentManager, endpointRegistry,
                     metricsCollector, metricsScheduler, controlLoop, sliceInvoker, invocationHandler,
-                    Option.some(managementServer), httpRouter
+                    blueprintService, Option.some(managementServer), httpRouter
             );
         }
 
@@ -327,5 +338,19 @@ public interface AetherNode {
                                         }
                                 )
                 );
+    }
+
+    /**
+     * Create a composite repository that tries each repository in order until one succeeds.
+     * <p>
+     * Note: For simplicity, currently uses the first repository only.
+     * Multi-repository fallback can be added if needed.
+     */
+    private static Repository compositeRepository(java.util.List<Repository> repositories) {
+        if (repositories.isEmpty()) {
+            return artifact -> org.pragmatica.lang.utils.Causes.cause("No repositories configured").promise();
+        }
+        // Use first repository (most configurations use a single repository)
+        return repositories.getFirst();
     }
 }

@@ -23,6 +23,76 @@ public interface SharedDependencyLoader {
     Logger log = LoggerFactory.getLogger(SharedDependencyLoader.class);
 
     /**
+     * Process API dependencies from [api] section.
+     * <p>
+     * API JARs (with -api classifier) contain typed interfaces used by generated proxies.
+     * They are loaded into SharedLibraryClassLoader for cross-slice type visibility.
+     *
+     * @param dependencies        List of API dependencies from [api] section
+     * @param sharedLibraryLoader The shared library classloader
+     * @param repository          Repository to locate artifacts
+     * @return Promise that completes when all API JARs are loaded
+     */
+    static Promise<Void> processApiDependencies(
+            List<ArtifactDependency> dependencies,
+            SharedLibraryClassLoader sharedLibraryLoader,
+            Repository repository
+    ) {
+        if (dependencies.isEmpty()) {
+            return Promise.success(null);
+        }
+
+        return processApiSequentially(dependencies, sharedLibraryLoader, repository);
+    }
+
+    private static Promise<Void> processApiSequentially(
+            List<ArtifactDependency> dependencies,
+            SharedLibraryClassLoader sharedLibraryLoader,
+            Repository repository
+    ) {
+        if (dependencies.isEmpty()) {
+            return Promise.success(null);
+        }
+
+        var dependency = dependencies.getFirst();
+        var remaining = dependencies.subList(1, dependencies.size());
+
+        return loadApiIntoShared(dependency, sharedLibraryLoader, repository)
+                .flatMap(_ -> processApiSequentially(remaining, sharedLibraryLoader, repository));
+    }
+
+    private static Promise<Void> loadApiIntoShared(
+            ArtifactDependency dependency,
+            SharedLibraryClassLoader sharedLibraryLoader,
+            Repository repository
+    ) {
+        // Check if already loaded using fold pattern
+        return sharedLibraryLoader.checkCompatibility(dependency).fold(
+                // Not loaded yet - load into shared
+                () -> toArtifact(dependency)
+                        .async()
+                        .flatMap(repository::locate)
+                        .map(location -> {
+                            var version = extractVersion(dependency.versionPattern());
+                            sharedLibraryLoader.addArtifact(
+                                    dependency.groupId(),
+                                    dependency.artifactId(),
+                                    version,
+                                    location.url()
+                            );
+                            log.debug("Loaded API dependency {} into SharedLibraryClassLoader",
+                                      dependency.asString());
+                            return null;
+                        }),
+                // Already loaded - API JARs don't have version conflicts (they're interfaces)
+                _ -> {
+                    log.debug("API dependency {} already loaded", dependency.asString());
+                    return Promise.success(null);
+                }
+        );
+    }
+
+    /**
      * Result of processing shared dependencies for a slice.
      *
      * @param sliceClassLoader   The ClassLoader to use for loading the slice

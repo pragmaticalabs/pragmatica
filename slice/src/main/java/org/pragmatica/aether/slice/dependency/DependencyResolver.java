@@ -186,13 +186,18 @@ public interface DependencyResolver {
                                                              SliceRegistry registry,
                                                              SharedLibraryClassLoader sharedLibraryLoader,
                                                              Set<String> resolutionPath) {
-        // Process shared dependencies first
-        return SharedDependencyLoader.processSharedDependencies(
+        // Process API dependencies first (loaded into SharedLibraryClassLoader like [shared])
+        // API JARs contain typed interfaces used by generated proxies
+        return SharedDependencyLoader.processApiDependencies(
+                depFile.api(),
+                sharedLibraryLoader,
+                repository
+        ).flatMap(_ -> SharedDependencyLoader.processSharedDependencies(
                 depFile.shared(),
                 sharedLibraryLoader,
                 repository,
                 location.url()
-        ).flatMap(sharedResult -> {
+        )).flatMap(sharedResult -> {
             // Now load the slice class and resolve slice dependencies
             return loadClass(manifest.sliceClassName(), sharedResult.sliceClassLoader())
                     .flatMap(sliceClass -> resolveSliceDependencies(

@@ -6,6 +6,8 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceBridgeImpl;
 import org.pragmatica.aether.slice.SliceRoute;
+import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
+import org.pragmatica.aether.slice.serialization.SerializerFactoryProvider;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.routing.Binding;
@@ -249,11 +251,10 @@ public interface NodeDeploymentManager {
 
                 loadedSlice.ifPresent(ls -> {
                     var slice = ls.slice();
-                    var serializerProvider = configuration.serializerProvider();
-
+                    // Use configured provider or default to Fury (thread-safe, no pooling needed)
+                    SerializerFactoryProvider serializerProvider = configuration.serializerProvider();
                     if (serializerProvider == null) {
-                        log.warn("No SerializerFactoryProvider configured, skipping invocation registration for {}", artifact);
-                        return;
+                        serializerProvider = FurySerializerFactoryProvider.furySerializerFactoryProvider();
                     }
 
                     // Create SerializerFactory from provider using all type tokens
