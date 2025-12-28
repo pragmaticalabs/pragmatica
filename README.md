@@ -12,6 +12,7 @@ changes to business logic.
   automatically
 - **Transparent Distribution**: Write business logic without distributed systems concerns
 - **Slice-Based Deployment**: Deploy use cases (lean slices) or services (service slices) with unified management
+- **Typed Slice APIs**: Compile-time type safety for inter-slice communication via annotation processor
 
 ## Core Concepts
 
@@ -34,6 +35,25 @@ External AI observes metrics, learns patterns, and makes topology decisions:
 ### Convergence Model
 
 Runtime continuously reconciles actual deployment with desired state stored in consensus KV-Store.
+
+### Rabia Consensus
+
+Leaderless CFT (crash-fault-tolerant) consensus algorithm providing:
+
+- Cluster-wide state consistency
+- Automatic leader election for coordination tasks
+- No persistent event log required
+
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Inter-slice Invocation** | Type-safe RPC with retry, timeout, and load balancing |
+| **ClassLoader Isolation** | Slices isolated via SliceBridge with byte[] boundary |
+| **Metrics Collection** | Per-node JVM metrics and per-entry-point call metrics |
+| **Decision Tree Controller** | Programmatic scaling rules evaluated every second |
+| **Management API** | HTTP API for cluster inspection and control |
+| **Artifact Repository** | Built-in DHT-backed Maven-compatible repository |
 
 ## Quick Start
 
@@ -78,29 +98,38 @@ curl -X POST http://localhost:8080/api/orders \
   -d '{"customerId": "CUST-123", "items": [{"productId": "PROD-ABC", "quantity": 2}]}'
 ```
 
-### Documentation
+## Documentation
 
 | Document | Description |
 |----------|-------------|
 | [Vision & Goals](docs/vision-and-goals.md) | Architecture and design principles |
+| [Architecture Overview](docs/architecture-overview.md) | System architecture and components |
+| [Typed Slice API Design](docs/typed-slice-api-design.md) | Compile-time type-safe slice APIs |
 | [Forge & Demos](docs/demos.md) | Cluster simulator and demo guide |
 | [Aether Node](docs/aether-node.md) | Node configuration and API |
 | [Slice Lifecycle](docs/slice-lifecycle.md) | Slice state machine |
 | [Slice Developer Guide](docs/slice-developer-guide.md) | How to write slices |
+| [Metrics & Control](docs/metrics-and-control.md) | Metrics collection and AI control layers |
+| [Infrastructure Services](docs/infrastructure-services.md) | Built-in platform services |
 
 ## Project Structure
 
 ```
 aetherx/
-├── slice-api/       # Slice interface definitions
-├── slice/           # Slice management, KV schema
-├── node/            # Runtime node (AetherNode)
-├── cluster/         # Rabia consensus, KVStore
-├── forge/           # Cluster simulator with dashboard
-├── cli/             # Command-line interface
-├── example-slice/   # Reference slice implementation
-└── examples/        # Demo applications
-    └── order-demo/  # Multi-slice order domain
+├── slice-annotations/  # @Slice annotation for typed APIs
+├── slice-api/          # Slice interface definitions
+├── slice/              # Slice management, ClassLoader isolation
+├── node/               # Runtime node (AetherNode, metrics, invocation)
+├── cluster/            # Rabia consensus, KVStore
+├── common/             # Shared utilities
+├── http-server/        # HTTP server infrastructure
+├── forge/              # Cluster simulator with dashboard
+├── cli/                # Command-line interface
+├── infra-services/     # Infrastructure services
+│   └── artifact-repo/  # DHT-backed Maven repository
+├── example-slice/      # Reference slice implementation
+└── examples/
+    └── order-demo/     # Multi-slice order domain (5 slices)
 ```
 
 ## License
@@ -114,4 +143,3 @@ This means you can:
 - Evaluate and test freely
 
 The software converts to Apache License 2.0 on January 1, 2030.
-
