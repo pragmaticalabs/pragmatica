@@ -224,9 +224,9 @@ metrics.get("calls.failed");   // Failed calls
 
 The leader node aggregates metrics from all nodes via `MetricsScheduler`:
 
-1. All nodes push `MetricsUpdate` to leader (every 1 second)
-2. Leader aggregates into `ClusterMetricsSnapshot`
-3. Leader broadcasts snapshot to all nodes
+1. Leader sends `MetricsPing` to all nodes (every 1 second)
+2. Nodes respond with `MetricsPong` containing their metrics
+3. All nodes store received metrics for cluster-wide visibility
 
 ## Control Loop
 

@@ -543,4 +543,4 @@ aether scale order-processor --instances 0
 
 - [Scaling Guide](scaling.md) - Configure auto-scaling
 - [Forge Guide](forge-guide.md) - Chaos testing
-- [Core Concepts](concepts.md) - Deep dive into Aether internals
+- [Architecture](architecture-overview.md) - Deep dive into Aether internals

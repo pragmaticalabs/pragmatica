@@ -656,4 +656,4 @@ aether forge events --type chaos
 
 - [Scaling Guide](scaling.md) - Understand what Forge tests
 - [CLI Reference](cli-reference.md) - All Forge commands
-- [Core Concepts](concepts.md) - How Aether handles failures
+- [Architecture](architecture-overview.md) - How Aether handles failures

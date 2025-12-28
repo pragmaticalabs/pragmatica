@@ -462,7 +462,7 @@ See [Forge Testing Guide](forge-guide.md) for details.
 
 ## Next Steps
 
-- [Core Concepts](concepts.md) - Understand slices, blueprints, and scaling
+- [Slice Lifecycle](slice-lifecycle.md) - Understand slice states and transitions
 - [Migration Guide](migration-guide.md) - Extract slices from existing code
 - [Scaling Guide](scaling.md) - Configure scaling behavior
 - [CLI Reference](cli-reference.md) - All CLI commands

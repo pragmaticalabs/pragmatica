@@ -134,7 +134,7 @@ Controllers can be **layered** for hybrid intelligence (decision tree + LLM).
 
 Controllers receive:
 
-- **Current metrics**: Latest ClusterMetricsSnapshot
+- **Current metrics**: Latest aggregated metrics from MetricsPong responses
 - **Historical metrics**: 2-hour sliding window
 - **Cluster events**: Node joins/leaves, leadership changes, slice lifecycle, blueprint changes, KV-Store commits
 - **Current topology**: Nodes, slices, blueprints
@@ -208,11 +208,12 @@ Each layer can veto or modify decisions from lower layers.
 
 **See [metrics-and-control.md](metrics-and-control.md) for complete specification.**
 
-### Core Metrics (Minimal Set)
+### Core Metrics
 
-1. **Node CPU Usage** - Per-node CPU utilization (0.0 to 1.0)
-2. **Calls Per Entry Point** - Request count per slice entry point per cycle
-3. **Total Call Duration** - Aggregate time spent processing per entry point per cycle
+1. **CPU Usage** (`cpu.usage`) - Node CPU utilization (0.0 to 1.0)
+2. **Heap Memory** (`heap.used`, `heap.max`, `heap.usage`) - JVM heap statistics
+3. **Per-Method Call Stats** (`method.{name}.calls`, `method.{name}.duration.total`, `method.{name}.duration.avg`)
+4. **Custom Metrics** - Slice-defined metrics
 
 **Collection Frequency**: Every 1 second
 
@@ -220,13 +221,13 @@ Each layer can veto or modify decisions from lower layers.
 
 **Goal**: Zero consensus I/O, fast leader recovery, all nodes have cluster-wide view
 
-**Strategy: Push to Leader + Broadcast Aggregated State**
+**Strategy: Leader Ping + Node Pong**
 
 ```
 Every 1 Second:
-1. All nodes push MetricsUpdate to leader (via MessageRouter)
-2. Leader aggregates metrics
-3. Leader broadcasts ClusterMetricsSnapshot to all nodes
+1. Leader sends MetricsPing to all nodes (includes leader's own metrics)
+2. Each node responds with MetricsPong (containing their local metrics)
+3. All nodes store received metrics and maintain sliding window
 ```
 
 **Key Benefits**:
@@ -239,7 +240,7 @@ Every 1 Second:
 
 **On Leader Failover**:
 
-- New leader uses last received ClusterMetricsSnapshot
+- New leader uses last received metrics from MetricsPong responses
 - If stale (> 2 sec), requests fresh snapshot from all nodes
 - Recovery time: 1-2 RTTs (~10-100 ms)
 - Data loss: 1-2 update cycles (acceptable)
@@ -251,13 +252,13 @@ The system operates through continuous reconciliation:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                 Metrics Collection (All Nodes)               │
-│  Every 1 sec: Push MetricsUpdate to leader                  │
+│  Leader sends MetricsPing, nodes respond with MetricsPong   │
 └───────────────────────────┬─────────────────────────────────┘
                             │
                             ▼
 ┌─────────────────────────────────────────────────────────────┐
 │              Leader - Metrics Aggregation                    │
-│  Aggregate + broadcast ClusterMetricsSnapshot to all nodes  │
+│  Leader receives MetricsPong from all nodes, stores locally │
 └───────────────────────────┬─────────────────────────────────┘
                             │
                             ▼
