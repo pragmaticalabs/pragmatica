@@ -41,7 +41,7 @@ import java.util.concurrent.Callable;
  */
 @Command(name = "aether-cli",
          mixinStandardHelpOptions = true,
-         version = "Aether CLI 0.6.0",
+         version = "Aether CLI 0.6.1",
          description = "Command-line interface for Aether cluster management",
          subcommands = {
                  AetherCli.StatusCommand.class,
@@ -87,7 +87,7 @@ public class AetherCli implements Runnable {
     }
 
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether CLI v0.6.0 - Connected to " + nodeAddress);
+        System.out.println("Aether CLI v0.6.1 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
 

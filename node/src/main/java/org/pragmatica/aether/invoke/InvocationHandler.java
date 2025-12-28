@@ -1,12 +1,10 @@
 package org.pragmatica.aether.invoke;
 
-import io.netty.buffer.Unpooled;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
-import org.pragmatica.aether.slice.InternalSlice;
-import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.cluster.net.ClusterNetwork;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.lang.Option;
@@ -34,10 +32,10 @@ public interface InvocationHandler {
     void onInvokeRequest(InvokeRequest request);
 
     /**
-     * Register an internal slice for handling invocations.
+     * Register a slice bridge for handling invocations.
      * Called when a slice becomes active.
      */
-    void registerSlice(Artifact artifact, InternalSlice internalSlice);
+    void registerSlice(Artifact artifact, SliceBridge bridge);
 
     /**
      * Unregister a slice.
@@ -46,12 +44,12 @@ public interface InvocationHandler {
     void unregisterSlice(Artifact artifact);
 
     /**
-     * Get a local slice for direct invocation.
+     * Get a local slice bridge for direct invocation.
      *
      * @param artifact The slice artifact
-     * @return Option containing the InternalSlice if registered
+     * @return Option containing the SliceBridge if registered
      */
-    Option<InternalSlice> getLocalSlice(Artifact artifact);
+    Option<SliceBridge> getLocalSlice(Artifact artifact);
 
     /**
      * Get the metrics collector if configured.
@@ -86,8 +84,8 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final ClusterNetwork network;
     private final Option<InvocationMetricsCollector> metricsCollector;
 
-    // Local slices available for invocation
-    private final Map<Artifact, InternalSlice> localSlices = new ConcurrentHashMap<>();
+    // Local slice bridges available for invocation
+    private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
 
     InvocationHandlerImpl(NodeId self, ClusterNetwork network, Option<InvocationMetricsCollector> metricsCollector) {
         this.self = self;
@@ -96,8 +94,8 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     @Override
-    public void registerSlice(Artifact artifact, InternalSlice internalSlice) {
-        localSlices.put(artifact, internalSlice);
+    public void registerSlice(Artifact artifact, SliceBridge bridge) {
+        localSlices.put(artifact, bridge);
         log.debug("Registered slice for invocation: {}", artifact);
     }
 
@@ -108,7 +106,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     @Override
-    public Option<InternalSlice> getLocalSlice(Artifact artifact) {
+    public Option<SliceBridge> getLocalSlice(Artifact artifact) {
         return Option.option(localSlices.get(artifact));
     }
 
@@ -122,9 +120,9 @@ class InvocationHandlerImpl implements InvocationHandler {
         log.debug("Received invocation request [{}]: {}.{}",
                   request.correlationId(), request.targetSlice(), request.method());
 
-        var internalSlice = localSlices.get(request.targetSlice());
+        var bridge = localSlices.get(request.targetSlice());
 
-        if (internalSlice == null) {
+        if (bridge == null) {
             log.warn("Slice not found for invocation: {}", request.targetSlice());
             if (request.expectResponse()) {
                 sendErrorResponse(request, "Slice not found: " + request.targetSlice());
@@ -133,54 +131,41 @@ class InvocationHandlerImpl implements InvocationHandler {
         }
 
         // Invoke the slice method
-        invokeSliceMethod(request, internalSlice);
+        invokeSliceMethod(request, bridge);
     }
 
-    private void invokeSliceMethod(InvokeRequest request, InternalSlice internalSlice) {
-        var inputBuf = Unpooled.wrappedBuffer(request.payload());
+    private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
 
-        internalSlice.call(request.method(), inputBuf)
-                     .onSuccess(outputBuf -> {
-                         var durationNs = System.nanoTime() - startTime;
-                         var responseBytes = 0;
-                         try {
-                             responseBytes = outputBuf.readableBytes();
-                             if (request.expectResponse()) {
-                                 // Convert ByteBuf to byte array
-                                 var responseData = new byte[responseBytes];
-                                 outputBuf.readBytes(responseData);
-                                 sendSuccessResponse(request, responseData);
-                             }
-                         } finally {
-                             // Always release outputBuf regardless of expectResponse
-                             outputBuf.release();
-                         }
+        // SliceBridge uses byte[] directly - no ByteBuf conversion needed
+        bridge.invoke(request.method().name(), request.payload())
+              .onSuccess(responseData -> {
+                  var durationNs = System.nanoTime() - startTime;
+                  var responseBytes = responseData.length;
 
-                         // Record success metrics
-                         final int respSize = responseBytes;
-                         metricsCollector.onPresent(mc ->
-                             mc.recordSuccess(request.targetSlice(), request.method(),
-                                              durationNs, requestBytes, respSize));
-                     })
-                     .onFailure(cause -> {
-                         var durationNs = System.nanoTime() - startTime;
-                         log.error("Invocation failed [{}]: {}",
-                                   request.correlationId(), cause.message());
-                         if (request.expectResponse()) {
-                             sendErrorResponse(request, cause.message());
-                         }
+                  if (request.expectResponse()) {
+                      sendSuccessResponse(request, responseData);
+                  }
 
-                         // Record failure metrics
-                         metricsCollector.onPresent(mc ->
-                             mc.recordFailure(request.targetSlice(), request.method(),
-                                              durationNs, requestBytes, cause.getClass().getSimpleName()));
-                     })
-                     .onResultRun(() -> {
-                         // Always release inputBuf after call completes
-                         inputBuf.release();
-                     });
+                  // Record success metrics
+                  metricsCollector.onPresent(mc ->
+                      mc.recordSuccess(request.targetSlice(), request.method(),
+                                       durationNs, requestBytes, responseBytes));
+              })
+              .onFailure(cause -> {
+                  var durationNs = System.nanoTime() - startTime;
+                  log.error("Invocation failed [{}]: {}",
+                            request.correlationId(), cause.message());
+                  if (request.expectResponse()) {
+                      sendErrorResponse(request, cause.message());
+                  }
+
+                  // Record failure metrics
+                  metricsCollector.onPresent(mc ->
+                      mc.recordFailure(request.targetSlice(), request.method(),
+                                       durationNs, requestBytes, cause.getClass().getSimpleName()));
+              });
     }
 
     private void sendSuccessResponse(InvokeRequest request, byte[] payload) {

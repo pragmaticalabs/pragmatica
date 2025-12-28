@@ -133,10 +133,10 @@ ThresholdStrategy.composite(
 
 ```java
 // With default adaptive strategy (10-1000ms, 3x multiplier)
-var collector = InvocationMetricsCollector.createDefault();
+var collector = InvocationMetricsCollector.invocationMetricsCollector();
 
 // With custom strategy
-var collector = InvocationMetricsCollector.create(
+var collector = InvocationMetricsCollector.invocationMetricsCollector(
     ThresholdStrategy.adaptive(10, 500, 2.0)
 );
 ```

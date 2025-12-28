@@ -2,11 +2,12 @@ package org.pragmatica.aether.deployment.node;
 
 import org.pragmatica.aether.http.RouteRegistry;
 import org.pragmatica.aether.invoke.InvocationHandler;
-import org.pragmatica.aether.slice.InternalSlice;
-import org.pragmatica.aether.slice.InternalSlice.InternalMethod;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceActionConfig;
+import org.pragmatica.aether.slice.SliceBridgeImpl;
 import org.pragmatica.aether.slice.SliceRoute;
+import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
+import org.pragmatica.aether.slice.serialization.SerializerFactoryProvider;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.routing.Binding;
@@ -174,25 +175,42 @@ public interface NodeDeploymentManager {
             }
 
             private void handleLoaded(SliceNodeKey sliceKey) {
-                // Slice is loaded - auto-activate it
-                // In future, this could include health checks or dependency validation
-                log.info("Slice {} loaded, auto-activating", sliceKey.artifact());
-                transitionTo(sliceKey, SliceState.ACTIVATE);
+                // Only auto-activate if slice is actually loaded in our store
+                // (protects against externally-set states like in tests)
+                var isLoaded = sliceStore.loaded().stream()
+                        .anyMatch(ls -> ls.artifact().equals(sliceKey.artifact()));
+
+                if (isLoaded) {
+                    log.info("Slice {} loaded, auto-activating", sliceKey.artifact());
+                    transitionTo(sliceKey, SliceState.ACTIVATE);
+                } else {
+                    log.debug("Slice {} state is LOADED but not found in SliceStore, skipping auto-activation",
+                              sliceKey.artifact());
+                }
             }
 
             private void handleActivating(SliceNodeKey sliceKey) {
-                executeWithStateTransition(
-                        sliceKey,
-                        SliceState.ACTIVATING,
-                        sliceStore.activateSlice(sliceKey.artifact()),
-                        SliceState.ACTIVE,
-                        SliceState.FAILED
-                                          );
+                // Only activate if slice is actually loaded in our store
+                var isLoaded = sliceStore.loaded().stream()
+                        .anyMatch(ls -> ls.artifact().equals(sliceKey.artifact()));
+
+                if (isLoaded) {
+                    executeWithStateTransition(
+                            sliceKey,
+                            SliceState.ACTIVATING,
+                            sliceStore.activateSlice(sliceKey.artifact()),
+                            SliceState.ACTIVE,
+                            SliceState.FAILED
+                                              );
+                } else {
+                    log.debug("Slice {} state is ACTIVATE but not found in SliceStore, skipping activation",
+                              sliceKey.artifact());
+                }
             }
 
             private void handleActive(SliceNodeKey sliceKey) {
                 // Slice is now active and serving requests
-                // 1. Create InternalSlice and register with InvocationHandler
+                // 1. Create SliceBridge and register with InvocationHandler
                 registerSliceForInvocation(sliceKey);
                 // 2. Publish endpoints to KV-Store
                 publishEndpoints(sliceKey);
@@ -250,19 +268,11 @@ public interface NodeDeploymentManager {
 
                 loadedSlice.ifPresent(ls -> {
                     var slice = ls.slice();
-                    var serializerProvider = configuration.serializerProvider();
-
+                    // Use configured provider or default to Fury (thread-safe, no pooling needed)
+                    SerializerFactoryProvider serializerProvider = configuration.serializerProvider();
                     if (serializerProvider == null) {
-                        log.warn("No SerializerFactoryProvider configured, skipping invocation registration for {}", artifact);
-                        return;
+                        serializerProvider = FurySerializerFactoryProvider.furySerializerFactoryProvider();
                     }
-
-                    // Build method map for InternalSlice
-                    Map<MethodName, InternalMethod> methodMap = slice.methods().stream()
-                            .collect(Collectors.toMap(
-                                    method -> method.name(),
-                                    method -> new InternalMethod(method, method.parameterType(), method.returnType())
-                            ));
 
                     // Create SerializerFactory from provider using all type tokens
                     var typeTokens = slice.methods().stream()
@@ -270,9 +280,9 @@ public interface NodeDeploymentManager {
                             .collect(Collectors.toList());
                     var serializerFactory = serializerProvider.createFactory(typeTokens);
 
-                    // Create and register InternalSlice
-                    var internalSlice = new InternalSlice(artifact, slice, methodMap, serializerFactory);
-                    invocationHandler.registerSlice(artifact, internalSlice);
+                    // Create and register SliceBridge
+                    var sliceBridge = SliceBridgeImpl.sliceBridge(artifact, slice, serializerFactory);
+                    invocationHandler.registerSlice(artifact, sliceBridge);
                     log.info("Registered slice {} for invocation", artifact);
                 });
             }

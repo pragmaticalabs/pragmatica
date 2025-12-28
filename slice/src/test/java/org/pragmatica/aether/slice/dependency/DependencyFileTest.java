@@ -8,7 +8,60 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DependencyFileTest {
 
     @Test
-    void parse_full_file_with_both_sections() {
+    void parse_full_file_with_all_sections() {
+        var content = """
+                # Comment line
+
+                [api]
+                org.example:inventory-service-api:^1.0.0
+                org.example:pricing-service-api:^1.0.0
+
+                [shared]
+                org.pragmatica-lite:core:^0.8.0
+                org.example:order-domain:^1.0.0
+
+                [slices]
+                org.example:notification-service:^1.0.0
+                """;
+
+        DependencyFile.parse(content)
+                      .onFailureRun(Assertions::fail)
+                      .onSuccess(file -> {
+                          assertThat(file.api()).hasSize(2);
+                          assertThat(file.shared()).hasSize(2);
+                          assertThat(file.slices()).hasSize(1);
+
+                          assertThat(file.api().get(0).groupId()).isEqualTo("org.example");
+                          assertThat(file.api().get(0).artifactId()).isEqualTo("inventory-service-api");
+
+                          assertThat(file.hasApiDependencies()).isTrue();
+                          assertThat(file.hasSharedDependencies()).isTrue();
+                          assertThat(file.hasSliceDependencies()).isTrue();
+                      });
+    }
+
+    @Test
+    void parse_only_api_section() {
+        var content = """
+                [api]
+                org.example:inventory-service-api:^1.0.0
+                org.example:pricing-service-api:^1.0.0
+                """;
+
+        DependencyFile.parse(content)
+                      .onFailureRun(Assertions::fail)
+                      .onSuccess(file -> {
+                          assertThat(file.api()).hasSize(2);
+                          assertThat(file.shared()).isEmpty();
+                          assertThat(file.slices()).isEmpty();
+                          assertThat(file.hasApiDependencies()).isTrue();
+                          assertThat(file.hasSharedDependencies()).isFalse();
+                          assertThat(file.hasSliceDependencies()).isFalse();
+                      });
+    }
+
+    @Test
+    void parse_file_with_shared_and_slices_sections() {
         var content = """
                 # Comment line
 
@@ -24,6 +77,7 @@ class DependencyFileTest {
         DependencyFile.parse(content)
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
+                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).hasSize(2);
                           assertThat(file.slices()).hasSize(2);
 
@@ -46,8 +100,10 @@ class DependencyFileTest {
         DependencyFile.parse(content)
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
+                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).hasSize(2);
                           assertThat(file.slices()).isEmpty();
+                          assertThat(file.hasApiDependencies()).isFalse();
                           assertThat(file.hasSharedDependencies()).isTrue();
                           assertThat(file.hasSliceDependencies()).isFalse();
                       });
@@ -63,8 +119,10 @@ class DependencyFileTest {
         DependencyFile.parse(content)
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
+                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).isEmpty();
                           assertThat(file.slices()).hasSize(1);
+                          assertThat(file.hasApiDependencies()).isFalse();
                           assertThat(file.hasSharedDependencies()).isFalse();
                           assertThat(file.hasSliceDependencies()).isTrue();
                       });
@@ -82,6 +140,7 @@ class DependencyFileTest {
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
                           // Lines without section are treated as slice dependencies
+                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).isEmpty();
                           assertThat(file.slices()).hasSize(2);
                       });
@@ -95,6 +154,7 @@ class DependencyFileTest {
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
                           assertThat(file.isEmpty()).isTrue();
+                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).isEmpty();
                           assertThat(file.slices()).isEmpty();
                       });

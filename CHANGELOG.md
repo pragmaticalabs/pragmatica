@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2025-12-28
+
+### Added
+- **slice-annotations module** - Minimal module with `@Slice` annotation for compile-time type safety
+- **SliceBridge interface** - Node-Slice communication using byte[] boundary for classloader isolation
+- **FrameworkClassLoader** - ClassLoader with Platform ClassLoader parent for framework class isolation
+- **SliceBridgeImpl** - Bridge implementation with Fury serialization at boundary
+- **DependencyFile [api] section** - Support for typed slice dependencies in dependency files
+- **Historical metrics sliding window** - 2-hour sliding window for pattern detection in MetricsCollector
+- **BlueprintService** - Wired into AetherNode for application blueprint management
+- **Typed Slice API design documentation** - Comprehensive design for compile-time type-safe slice APIs
+- **jbct-cli task specification** - Detailed implementation requirements for annotation processor and maven plugin
+
+### Changed
+- **InvocationHandler** - Now uses SliceBridge instead of InternalSlice
+- **SliceInvoker.invokeLocal()** - Updated to use SliceBridge byte[] interface
+- **NodeDeploymentManager** - Creates SliceBridgeImpl for slice registration
+- **NodeDeploymentManager** - Default to Fury serializer when none configured
+- **SharedDependencyLoader** - Process [api] section dependencies into SharedLibraryClassLoader
+- **AetherNode** - Wire FrameworkClassLoader with graceful fallback
+- **InvocationMetricsCollector** - Renamed factory methods to follow naming convention
+
+### Fixed
+- Remove RuntimeException in DependencyFile and SliceDependencies (use Result.lift pattern)
+- Remove empty MCP module from build
+
+### Removed
+- **InternalSlice** - Replaced by SliceBridgeImpl with cleaner byte[] boundary
+- **mcp module** - Deprecated, replaced by direct agent API
+
 ## [0.6.0] - 2025-12-27
 
 ### Added

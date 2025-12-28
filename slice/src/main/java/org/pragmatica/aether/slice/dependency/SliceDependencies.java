@@ -4,7 +4,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.BufferedReader;
-import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
@@ -56,8 +55,6 @@ public interface SliceDependencies {
                 }
 
                 return dependencies;
-            } catch (IOException e) {
-                throw new RuntimeException("Failed to read dependencies from " + resourcePath, e);
             }
         });
     }

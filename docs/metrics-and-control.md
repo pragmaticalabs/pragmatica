@@ -26,101 +26,74 @@ decisions (scaling, deployment) are made by a pluggable **Cluster Controller** t
 │                    Every 1 Second Cycle                          │
 └─────────────────────────────────────────────────────────────────┘
 
-Step 1: Nodes Push Raw Metrics to Leader
+Step 1: Leader Sends MetricsPing to All Nodes
+┌──────────────┐
+│   Leader     │ ─────> MetricsPing (includes leader metrics)
+│   (Node A)   │                         │
+└──────────────┘                         │
+                                         ▼
+                              ┌─────────────────┐
+                              │  Node 1, 2, 3   │
+                              └─────────────────┘
+
+Step 2: Nodes Respond with MetricsPong
 ┌─────────┐                                    ┌──────────────┐
-│ Node 1  │ ─────> MetricsUpdate ────────────> │              │
+│ Node 1  │ ─────> MetricsPong ──────────────> │              │
 └─────────┘                                    │              │
 ┌─────────┐                                    │   Leader     │
-│ Node 2  │ ─────> MetricsUpdate ────────────> │   (Node A)   │
+│ Node 2  │ ─────> MetricsPong ──────────────> │   (Node A)   │
 └─────────┘                                    │              │
 ┌─────────┐                                    │              │
-│ Node 3  │ ─────> MetricsUpdate ────────────> │              │
-└─────────┘                                    └──────┬───────┘
-                                                      │
-                                               Aggregate
-                                                      │
-Step 2: Leader Broadcasts Aggregated Metrics         ▼
-                                               ┌──────────────┐
-┌─────────┐                                    │  Aggregated  │
-│ Node 1  │ <───── ClusterMetricsSnapshot ──── │   Metrics    │
-└─────────┘                                    │              │
-┌─────────┐                                    │              │
-│ Node 2  │ <───── ClusterMetricsSnapshot ──── │              │
+│ Node 3  │ ─────> MetricsPong ──────────────> │              │
 └─────────┘                                    └──────────────┘
-┌─────────┐
-│ Node 3  │ <───── ClusterMetricsSnapshot ────
-└─────────┘
 
 Benefits:
-- All nodes have cluster-wide view
+- All nodes store received metrics from ping/pong exchange
+- Each node maintains 2-hour sliding window of historical data
 - Any node can become leader (already has aggregated state)
-- Leader failure = new leader already has recent aggregated snapshot
+- Leader failure = new leader has recent snapshot from last ping
 - Fast recovery (new leader continues from last broadcast)
 ```
 
 ### Message Definitions
 
-#### MetricsUpdate (Node → Leader)
+#### MetricsPing (Leader → All Nodes)
 
 ```java
-record MetricsUpdate(
-    NodeId nodeId,
-    long timestamp,
-    double cpuUsage,          // 0.0 to 1.0
-    Map<MethodName, CallStats> methodStats,
-    long sequenceNumber       // Monotonic counter for detecting gaps
-) {
-    record CallStats(
-        long callCount,       // Total calls since last update
-        long totalDurationMs  // Total time spent processing
-    ) {}
-}
+record MetricsPing(
+    NodeId sender,           // Leader node ID
+    Map<String, Double> metrics  // Leader's own metrics
+) {}
 ```
 
 **Frequency**: Every 1 second
 **Transport**: MessageRouter (non-blocking send)
-**Size**: ~50-200 bytes depending on method count
 
-#### ClusterMetricsSnapshot (Leader → All Nodes)
+#### MetricsPong (Node → Leader)
 
 ```java
-record ClusterMetricsSnapshot(
-    long timestamp,
-    Map<NodeId, NodeMetrics> nodeMetrics,
-    ClusterAggregates aggregates,
-    long sequenceNumber
-) {
-    record NodeMetrics(
-        double cpuUsage,
-        Map<MethodName, CallStats> methodStats,
-        boolean healthy          // Based on recent heartbeat
-    ) {}
-
-    record ClusterAggregates(
-        double totalCpuUsage,
-        double avgCpuUsage,
-        Map<MethodName, AggregateCallStats> methodAggregates
-    ) {}
-
-    record AggregateCallStats(
-        long totalCalls,
-        long totalDurationMs,
-        double avgDurationMs,
-        int instanceCount
-    ) {}
-}
+record MetricsPong(
+    NodeId sender,           // Responding node ID
+    Map<String, Double> metrics  // Node's local metrics
+) {}
 ```
 
-**Frequency**: Every 1 second (immediately after aggregation)
-**Transport**: MessageRouter (broadcast to all nodes)
-**Size**: ~200-500 bytes depending on cluster size
+**Metrics map includes:**
+- `cpu.usage` - CPU utilization (0.0 to 1.0)
+- `heap.used`, `heap.max`, `heap.usage` - JVM heap metrics
+- `method.{name}.calls` - Call count per method
+- `method.{name}.duration.total` - Total duration per method (ms)
+- `method.{name}.duration.avg` - Average duration per method (ms)
+- Custom slice-defined metrics
+
+**Size**: ~100-500 bytes depending on method count
 
 ### Leader Failover Recovery
 
 When new leader is elected:
 
 ```
-1. New leader checks local ClusterMetricsSnapshot
+1. New leader checks locally stored metrics from MetricsPong responses
    - If recent (< 2 seconds old): Continue using it
    - If stale: Request fresh snapshot from all nodes
 
@@ -249,8 +222,8 @@ public interface ClusterController {
      * Context provided to controller for decision making.
      */
     record ControlContext(
-        ClusterMetricsSnapshot currentMetrics,
-        List<ClusterMetricsSnapshot> historicalMetrics,  // Sliding window
+        Map<NodeId, Map<String, Double>> currentMetrics,
+        Map<NodeId, List<MetricsSnapshot>> historicalMetrics,  // Sliding window
         List<ClusterEvent> recentEvents,
         ClusterTopology topology,
         Map<Artifact, Blueprint> currentBlueprints
@@ -424,8 +397,8 @@ class LeaderControlLoop {
 
 **Per Node** (10 entry points):
 
-- Outbound: 100 bytes/sec (MetricsUpdate at 1 Hz)
-- Inbound: 300 bytes/sec (ClusterMetricsSnapshot broadcast)
+- Outbound: 100 bytes/sec (MetricsPong at 1 Hz)
+- Inbound: 100 bytes/sec (MetricsPing from leader)
 - Total: 400 bytes/sec per node
 
 **Cluster-wide** (10 nodes):
@@ -483,7 +456,7 @@ class LeaderControlLoop {
 ### Leader Fails Mid-Cycle
 
 - New leader elected by consensus
-- New leader has last ClusterMetricsSnapshot (< 2 seconds old)
+- New leader has stored metrics from last ping/pong cycle (< 2 seconds old)
 - New leader requests fresh snapshot from all nodes
 - Control loop resumes within 1-2 cycles
 

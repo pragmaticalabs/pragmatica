@@ -66,8 +66,8 @@ Observes metrics + events, produces blueprint changes and node actions:
 └──────────────────────────────┘  └───────────────────┘  └───────────────────┘
             │                              │                       │
             │  ┌───────────────────────────┴───────────────────────┘
-            │  │  Every 1 sec: MetricsUpdate (push to leader)
-            │  │  Every 1 sec: ClusterMetricsSnapshot (broadcast from leader)
+            │  │  Every 1 sec: MetricsPing (leader → nodes)
+            │  │  Every 1 sec: MetricsPong (nodes → leader)
             │  │
             └──┴──────────── Consensus KV-Store ──────────────────
                      (State, Blueprints, Endpoints - NO metrics)
@@ -105,8 +105,8 @@ Pluggable component making topology decisions:
 
 Aggregates metrics from all nodes and broadcasts cluster-wide snapshot:
 
-- Receives MetricsUpdate from all nodes (via MessageRouter)
-- Aggregates into ClusterMetricsSnapshot every second
+- Sends MetricsPing to all nodes (via MessageRouter)
+- Receives MetricsPong from all nodes every second
 - Broadcasts snapshot to all nodes
 - Maintains 2-hour sliding window for pattern detection
 
@@ -124,7 +124,7 @@ Collects local metrics and pushes to leader:
 - **Calls Per Entry Point**: Request count per entry point per cycle
 - **Total Call Duration**: Aggregate processing time per cycle
 
-Pushes MetricsUpdate to leader every 1 second via MessageRouter.
+Responds to MetricsPing with MetricsPong every 1 second via MessageRouter.
 
 ### ClusterEventBus
 
@@ -202,7 +202,7 @@ Pure event-driven component that:
 ### Controller-Driven Blueprint Updates
 
 1. **MetricsCollector** (all nodes) pushes metrics to leader every 1 second
-2. **MetricsAggregator** (leader) aggregates and broadcasts ClusterMetricsSnapshot
+2. **MetricsScheduler** (leader) sends MetricsPing and collects MetricsPong responses
 3. **ClusterEventBus** delivers events to controller
 4. **Cluster Controller** (leader) evaluates metrics + events at configured frequency
 5. **Cluster Controller** produces blueprint changes and node actions
@@ -284,8 +284,8 @@ endpoints/{group-id}:{artifact-id}:{version}/{method-name}:{instance} → {
 
 See [metrics-and-control.md](metrics-and-control.md) for message definitions:
 
-- `MetricsUpdate` (node → leader, every 1 sec)
-- `ClusterMetricsSnapshot` (leader → all nodes, every 1 sec)
+- `MetricsPing` (leader → all nodes, every 1 sec)
+- `MetricsPong` (nodes → leader, every 1 sec)
 
 ## AI Integration Architecture
 

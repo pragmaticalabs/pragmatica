@@ -23,7 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  *
  * <h3>Usage:</h3>
  * <pre>{@code
- * var collector = InvocationMetricsCollector.create(ThresholdStrategy.adaptive(10, 1000));
+ * var collector = InvocationMetricsCollector.invocationMetricsCollector(ThresholdStrategy.adaptive(10, 1000));
  *
  * // Record invocation
  * collector.record(artifact, method, durationNs, success, requestBytes, responseBytes, errorType);
@@ -52,14 +52,14 @@ public final class InvocationMetricsCollector {
     /**
      * Create a new metrics collector with the given threshold strategy.
      */
-    public static InvocationMetricsCollector create(ThresholdStrategy thresholdStrategy) {
+    public static InvocationMetricsCollector invocationMetricsCollector(ThresholdStrategy thresholdStrategy) {
         return new InvocationMetricsCollector(thresholdStrategy);
     }
 
     /**
      * Create with default adaptive threshold (10ms - 1000ms, 3x multiplier).
      */
-    public static InvocationMetricsCollector createDefault() {
+    public static InvocationMetricsCollector invocationMetricsCollector() {
         return new InvocationMetricsCollector(ThresholdStrategy.adaptive(10, 1000));
     }
 
