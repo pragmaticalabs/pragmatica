@@ -21,14 +21,19 @@ ProvidesDirective <- 'provides' ^ QualifiedName 'with' QualifiedName (',' Qualif
 
 TypeDecl <- Annotation* Modifier* TypeKind
 TypeKind <- ClassDecl / InterfaceDecl / EnumDecl / RecordDecl / AnnotationDecl
-ClassDecl <- 'class' ^ Identifier TypeParams? ('extends' Type)? ImplementsClause? PermitsClause? ClassBody
-InterfaceDecl <- 'interface' ^ Identifier TypeParams? ('extends' TypeList)? PermitsClause? ClassBody
-AnnotationDecl <- '@' 'interface' ^ Identifier AnnotationBody
+ClassDecl <- ClassKW ^ Identifier TypeParams? ('extends' Type)? ImplementsClause? PermitsClause? ClassBody
+InterfaceDecl <- InterfaceKW ^ Identifier TypeParams? ('extends' TypeList)? PermitsClause? ClassBody
+AnnotationDecl <- '@' InterfaceKW ^ Identifier AnnotationBody
+# Type declaration keywords with word boundary (prevents 'class' matching prefix of 'className')
+ClassKW <- < 'class' ![a-zA-Z0-9_$] >
+InterfaceKW <- < 'interface' ![a-zA-Z0-9_$] >
 AnnotationBody <- '{' AnnotationMember* '}'
 AnnotationMember <- Annotation* Modifier* (AnnotationElemDecl / FieldDecl / TypeKind) / ';'
 AnnotationElemDecl <- Type Identifier '(' ')' ('default' AnnotationElem)? ';'
-EnumDecl <- 'enum' ^ Identifier ImplementsClause? EnumBody
-RecordDecl <- 'record' ^ Identifier TypeParams? '(' RecordComponents? ')' ImplementsClause? RecordBody
+EnumDecl <- EnumKW ^ Identifier ImplementsClause? EnumBody
+RecordDecl <- RecordKW ^ Identifier TypeParams? '(' RecordComponents? ')' ImplementsClause? RecordBody
+EnumKW <- < 'enum' ![a-zA-Z0-9_$] >
+RecordKW <- < 'record' ![a-zA-Z0-9_$] >
 ImplementsClause <- 'implements' ^ TypeList
 PermitsClause <- 'permits' ^ TypeList
 TypeList <- Type (',' Type)*

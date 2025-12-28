@@ -1,15 +1,10 @@
 # Changelog
 
-## [0.3.12] - 2025-12-28
-
-### Added
-- TBD
-
-### Changed
-- TBD
+## [0.3.12] - 2025-12-29
 
 ### Fixed
-- TBD
+- Parser: add word boundaries to type declaration keywords (`class`, `interface`, `enum`, `record`)
+- Grammar: identifiers like `className`, `interfaceType`, `enumValue`, `recordData` now parse correctly
 
 ## [0.3.11] - 2025-12-28
 
