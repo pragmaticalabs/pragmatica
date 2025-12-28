@@ -1,145 +1,171 @@
 # Pragmatica Aether
 
-**Pragmatica Aether Distributed Runtime** - AI-driven distributed runtime environment for Java applications
+**Distributed Runtime for Java — Without the Microservices Complexity**
 
-Aether enables predictive scaling, intelligent orchestration, and seamless multi-cloud deployment without requiring
-changes to business logic.
+Aether lets you scale Java applications horizontally without rewriting them as microservices. Write simple business logic, deploy it as **slices**, and let Aether handle distribution, scaling, and resilience automatically.
 
-## What Makes Aether Different
+## The Problem with Microservices
 
-- **Predictive, Not Reactive**: AI learns traffic patterns and scales BEFORE load increases
-- **Intelligent Orchestration**: Complex deployments (rolling updates, canary, blue/green, cloud migration) handled
-  automatically
-- **Transparent Distribution**: Write business logic without distributed systems concerns
-- **Slice-Based Deployment**: Deploy use cases (lean slices) or services (service slices) with unified management
-- **Typed Slice APIs**: Compile-time type safety for inter-slice communication via annotation processor
+Microservices promise scalability but deliver complexity:
+- Dozens of services to deploy and monitor
+- Network calls everywhere, each a potential failure point
+- Distributed transactions, eventual consistency headaches
+- Months of infrastructure work before writing business logic
 
-## Core Concepts
+**There's a simpler way.**
 
-### Slices
+## Aether's Approach
 
-Independently deployable units with well-defined entry points:
+```
+┌────────────────────────────────────────────────────────────────┐
+│  You write:            │  Aether handles:                     │
+│  ─────────             │  ──────────────                       │
+│  Business logic        │  Distribution across nodes           │
+│  Use cases             │  Automatic scaling                    │
+│  Domain services       │  Failure recovery                     │
+│                        │  Load balancing                       │
+│                        │  Metrics & monitoring                 │
+└────────────────────────────────────────────────────────────────┘
+```
 
-- **Service Slices**: Traditional microservices with multiple entry points
-- **Lean Slices**: Single use case or event handler with one entry point
+Your code stays simple. A single use case:
 
-### AI-Driven Management
+```java
+@Slice
+public interface PlaceOrder {
+    Promise<OrderResult> execute(PlaceOrderRequest request);
 
-External AI observes metrics, learns patterns, and makes topology decisions:
+    static PlaceOrder placeOrder(InventoryService inventory, PricingService pricing) {
+        return request ->
+            inventory.checkStock(request.items())
+                .flatMap(stock -> pricing.calculateTotal(request.items()))
+                .flatMap(total -> createOrder(request, stock, total));
+    }
+}
+```
 
-- When to scale slice instances
-- When to start/stop compute nodes
-- How to perform complex deployments
-- Where to deploy across clouds
+Aether deploys it, scales it when needed, and handles failures — all transparent to your code.
 
-### Convergence Model
+## Two Paths to Scalability
 
-Runtime continuously reconciles actual deployment with desired state stored in consensus KV-Store.
+### New Projects
 
-### Rabia Consensus
+Start with [JBCT](https://github.com/siy/pragmatica-lite) patterns. Each use case becomes a slice. Scale from day one.
 
-Leaderless CFT (crash-fault-tolerant) consensus algorithm providing:
+→ [Getting Started Guide](docs/getting-started.md)
 
-- Cluster-wide state consistency
-- Automatic leader election for coordination tasks
-- No persistent event log required
+### Existing Monoliths
 
-## Key Features
+Extract hot paths into slices gradually. No big bang rewrite.
 
-| Feature | Description |
-|---------|-------------|
-| **Inter-slice Invocation** | Type-safe RPC with retry, timeout, and load balancing |
-| **ClassLoader Isolation** | Slices isolated via SliceBridge with byte[] boundary |
-| **Metrics Collection** | Per-node JVM metrics and per-entry-point call metrics |
-| **Decision Tree Controller** | Programmatic scaling rules evaluated every second |
-| **Management API** | HTTP API for cluster inspection and control |
-| **Artifact Repository** | Built-in DHT-backed Maven-compatible repository |
+→ [Migration Guide](docs/migration-guide.md)
 
 ## Quick Start
 
-### Prerequisites
-
-- JDK 25+
-- Maven 3.9+
-
-### Build
+**Requires Java 25**
 
 ```bash
+# Create new project
+aether init my-app
+cd my-app
+
+# Build
 mvn clean install
+
+# Start cluster and deploy
+aether start
+aether deploy hello-world
+
+# Test
+curl http://localhost:8080/hello?name=World
+# {"message": "Hello, World!"}
+
+# Scale it
+aether scale hello-world --instances 3
 ```
 
-### Try Aether Forge (Cluster Simulator)
+## Try Forge (Chaos Testing)
 
-The fastest way to see Aether in action:
+See Aether's resilience in action:
 
 ```bash
 cd forge
 mvn package
 java -jar target/forge-0.6.1.jar
+# Open http://localhost:8888
 ```
 
-This starts a 5-node cluster with a visual dashboard at `http://localhost:8888`.
-Try killing nodes, adding nodes, and adjusting load to see resilience in action.
+Kill nodes, inject latency, watch recovery — all from the dashboard.
 
-### Run the Order Demo
-
-```bash
-# Build demo slices
-cd examples/order-demo
-mvn clean install
-
-# Start cluster and deploy
-aether cluster start --nodes 3
-aether blueprint apply demo-order.blueprint
-
-# Test the API
-curl -X POST http://localhost:8080/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"customerId": "CUST-123", "items": [{"productId": "PROD-ABC", "quantity": 2}]}'
-```
+→ [Forge Guide](docs/forge-guide.md)
 
 ## Documentation
 
+### Start Here
 | Document | Description |
 |----------|-------------|
-| [Vision & Goals](docs/vision-and-goals.md) | Architecture and design principles |
-| [Architecture Overview](docs/architecture-overview.md) | System architecture and components |
-| [Typed Slice API Design](docs/typed-slice-api-design.md) | Compile-time type-safe slice APIs |
-| [Forge & Demos](docs/demos.md) | Cluster simulator and demo guide |
-| [Aether Node](docs/aether-node.md) | Node configuration and API |
-| [Slice Lifecycle](docs/slice-lifecycle.md) | Slice state machine |
-| [Slice Developer Guide](docs/slice-developer-guide.md) | How to write slices |
-| [Metrics & Control](docs/metrics-and-control.md) | Metrics collection and AI control layers |
-| [Infrastructure Services](docs/infrastructure-services.md) | Built-in platform services |
+| **[Introduction](docs/introduction.md)** | What Aether is and why it exists |
+| **[Getting Started](docs/getting-started.md)** | Create your first project |
+| **[Migration Guide](docs/migration-guide.md)** | Extract slices from existing code |
+
+### Core Concepts
+| Document | Description |
+|----------|-------------|
+| [Scaling](docs/scaling.md) | How and when scaling happens |
+| [Slice Lifecycle](docs/slice-lifecycle.md) | Slice states and transitions |
+| [Architecture](docs/architecture-overview.md) | System internals |
+
+### Reference
+| Document | Description |
+|----------|-------------|
+| [CLI Reference](docs/cli-reference.md) | All commands |
+| [Forge Guide](docs/forge-guide.md) | Chaos testing |
+| [Slice Developer Guide](docs/slice-developer-guide.md) | Writing slices |
+
+### Design Documents
+| Document | Description |
+|----------|-------------|
+| [Vision & Goals](docs/vision-and-goals.md) | Long-term direction |
+| [Metrics & Control](docs/metrics-and-control.md) | AI control layers |
+| [Typed Slice APIs](docs/typed-slice-api-design.md) | Compile-time type safety |
+
+## Key Features
+
+| Feature | Benefit |
+|---------|---------|
+| **Automatic Scaling** | Scales based on CPU, latency, request rate |
+| **Predictive Scaling** | Learns patterns, scales before load spikes |
+| **No Cold Starts** | Instances stay warm, no container spin-up |
+| **Failure Recovery** | Automatic retry, failover, rebalancing |
+| **Type-Safe Invocation** | Compile-time checks for slice calls |
+| **Chaos Testing** | Built-in Forge for resilience testing |
 
 ## Project Structure
 
 ```
 aetherx/
-├── slice-annotations/  # @Slice annotation for typed APIs
-├── slice-api/          # Slice interface definitions
-├── slice/              # Slice management, ClassLoader isolation
-├── node/               # Runtime node (AetherNode, metrics, invocation)
-├── cluster/            # Rabia consensus, KVStore
-├── common/             # Shared utilities
-├── http-server/        # HTTP server infrastructure
-├── forge/              # Cluster simulator with dashboard
-├── cli/                # Command-line interface
-├── infra-services/     # Infrastructure services
-│   └── artifact-repo/  # DHT-backed Maven repository
-├── example-slice/      # Reference slice implementation
+├── slice-api/           # Slice interface
+├── slice/               # Slice management
+├── node/                # Runtime (AetherNode)
+├── cluster/             # Rabia consensus
+├── forge/               # Chaos testing dashboard
+├── cli/                 # Command-line tools
 └── examples/
-    └── order-demo/     # Multi-slice order domain (5 slices)
+    └── order-demo/      # Complete demo (5 slices)
 ```
+
+## Requirements
+
+- **Java 25** (required)
+- Maven 3.9+
 
 ## License
 
-Pragmatica Aether Distributed Runtime is licensed under the [Business Source License 1.1](LICENSE).
+[Business Source License 1.1](LICENSE)
 
-This means you can:
-- Use internally at any scale
-- Integrate into your applications
-- Modify and create derivative works
-- Evaluate and test freely
+Free for internal use at any scale. Converts to Apache 2.0 on January 1, 2030.
 
-The software converts to Apache License 2.0 on January 1, 2030.
+## Links
+
+- [JBCT Patterns](https://github.com/siy/pragmatica-lite) - Recommended coding style
+- [Changelog](CHANGELOG.md) - Release history
