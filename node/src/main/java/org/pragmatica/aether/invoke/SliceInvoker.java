@@ -377,30 +377,13 @@ class SliceInvokerImpl implements SliceInvoker {
         return invocationHandler.getLocalSlice(slice)
                 .fold(
                         () -> SLICE_NOT_FOUND.<R>promise(),
-                        internalSlice -> {
-                            var inputBuf = Unpooled.buffer();
-                            try {
-                                serializer.write(inputBuf, request);
-                            } catch (Exception e) {
-                                inputBuf.release();
-                                throw e;
-                            }
+                        bridge -> {
+                            // Encode request to byte array
+                            var inputBytes = serializer.encode(request);
 
-                            try {
-                                return internalSlice.call(method, inputBuf)
-                                        .onResultRun(inputBuf::release)
-                                        .map(outputBuf -> {
-                                            try {
-                                                return (R) deserializer.read(outputBuf);
-                                            } finally {
-                                                outputBuf.release();
-                                            }
-                                        });
-                            } catch (Exception e) {
-                                // Release buffer if call() throws synchronously
-                                inputBuf.release();
-                                throw e;
-                            }
+                            // Invoke via SliceBridge using byte[] interface
+                            return bridge.invoke(method.name(), inputBytes)
+                                    .map(outputBytes -> (R) deserializer.decode(outputBytes));
                         }
                 );
     }

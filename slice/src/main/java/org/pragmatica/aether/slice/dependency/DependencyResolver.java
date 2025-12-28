@@ -4,11 +4,15 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.Slice;
+import org.pragmatica.aether.slice.SliceBridge;
+import org.pragmatica.aether.slice.SliceBridgeImpl;
 import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceManifest;
 import org.pragmatica.aether.slice.SliceManifest.SliceManifestInfo;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
+import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
+import org.pragmatica.aether.slice.serialization.SerializerFactory;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -60,6 +64,47 @@ public interface DependencyResolver {
                 () -> resolveWithSharedLoader(artifact, repository, registry, sharedLibraryLoader, new HashSet<>()),
                 Promise::success
         );
+    }
+
+    /**
+     * Resolve a slice and return a SliceBridge for isolated communication.
+     * <p>
+     * This method resolves the slice and wraps it in a SliceBridge that handles
+     * serialization/deserialization at the boundary using byte arrays.
+     *
+     * @param artifact            The slice artifact to resolve
+     * @param repository          Repository to locate artifacts
+     * @param registry            Registry to track loaded slices
+     * @param sharedLibraryLoader ClassLoader for shared dependencies
+     * @param serializerFactory   Factory for serialization
+     * @return Promise of resolved SliceBridge
+     */
+    static Promise<SliceBridge> resolveBridge(Artifact artifact,
+                                               Repository repository,
+                                               SliceRegistry registry,
+                                               SharedLibraryClassLoader sharedLibraryLoader,
+                                               SerializerFactory serializerFactory) {
+        return resolve(artifact, repository, registry, sharedLibraryLoader)
+                .map(slice -> SliceBridgeImpl.sliceBridge(artifact, slice, serializerFactory));
+    }
+
+    /**
+     * Resolve a slice and return a SliceBridge using default Fury serialization.
+     *
+     * @param artifact            The slice artifact to resolve
+     * @param repository          Repository to locate artifacts
+     * @param registry            Registry to track loaded slices
+     * @param sharedLibraryLoader ClassLoader for shared dependencies
+     * @return Promise of resolved SliceBridge
+     */
+    static Promise<SliceBridge> resolveBridge(Artifact artifact,
+                                               Repository repository,
+                                               SliceRegistry registry,
+                                               SharedLibraryClassLoader sharedLibraryLoader) {
+        var serializerFactory = FurySerializerFactoryProvider
+                .furySerializerFactoryProvider()
+                .createFactory(List.of());
+        return resolveBridge(artifact, repository, registry, sharedLibraryLoader, serializerFactory);
     }
 
     private static Promise<Slice> resolveWithSharedLoader(Artifact artifact,

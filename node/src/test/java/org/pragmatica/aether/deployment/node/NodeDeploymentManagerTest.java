@@ -12,7 +12,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.http.RouteRegistry;
 import org.pragmatica.aether.invoke.InvocationHandler;
-import org.pragmatica.aether.slice.InternalSlice;
+import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
@@ -451,7 +451,7 @@ class NodeDeploymentManagerTest {
         }
 
         @Override
-        public void registerSlice(Artifact artifact, InternalSlice internalSlice) {
+        public void registerSlice(Artifact artifact, SliceBridge bridge) {
             registeredSlices.add(artifact);
         }
 
@@ -461,7 +461,7 @@ class NodeDeploymentManagerTest {
         }
 
         @Override
-        public Option<InternalSlice> getLocalSlice(Artifact artifact) {
+        public Option<SliceBridge> getLocalSlice(Artifact artifact) {
             return Option.none();
         }
 

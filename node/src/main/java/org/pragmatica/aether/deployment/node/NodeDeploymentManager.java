@@ -2,10 +2,9 @@ package org.pragmatica.aether.deployment.node;
 
 import org.pragmatica.aether.http.RouteRegistry;
 import org.pragmatica.aether.invoke.InvocationHandler;
-import org.pragmatica.aether.slice.InternalSlice;
-import org.pragmatica.aether.slice.InternalSlice.InternalMethod;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceActionConfig;
+import org.pragmatica.aether.slice.SliceBridgeImpl;
 import org.pragmatica.aether.slice.SliceRoute;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
@@ -257,22 +256,15 @@ public interface NodeDeploymentManager {
                         return;
                     }
 
-                    // Build method map for InternalSlice
-                    Map<MethodName, InternalMethod> methodMap = slice.methods().stream()
-                            .collect(Collectors.toMap(
-                                    method -> method.name(),
-                                    method -> new InternalMethod(method, method.parameterType(), method.returnType())
-                            ));
-
                     // Create SerializerFactory from provider using all type tokens
                     var typeTokens = slice.methods().stream()
                             .flatMap(m -> java.util.stream.Stream.of(m.parameterType(), m.returnType()))
                             .collect(Collectors.toList());
                     var serializerFactory = serializerProvider.createFactory(typeTokens);
 
-                    // Create and register InternalSlice
-                    var internalSlice = new InternalSlice(artifact, slice, methodMap, serializerFactory);
-                    invocationHandler.registerSlice(artifact, internalSlice);
+                    // Create and register SliceBridge
+                    var sliceBridge = SliceBridgeImpl.sliceBridge(artifact, slice, serializerFactory);
+                    invocationHandler.registerSlice(artifact, sliceBridge);
                     log.info("Registered slice {} for invocation", artifact);
                 });
             }
