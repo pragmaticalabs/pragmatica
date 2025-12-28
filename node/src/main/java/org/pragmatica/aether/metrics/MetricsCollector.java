@@ -63,6 +63,18 @@ public interface MetricsCollector {
      */
     Map<String, Double> metricsFor(NodeId nodeId);
 
+    /**
+     * Get historical metrics within the sliding window (2 hours).
+     *
+     * @return Map of NodeId to list of timestamped snapshots, oldest first
+     */
+    Map<NodeId, java.util.List<MetricsSnapshot>> historicalMetrics();
+
+    /**
+     * Immutable metrics snapshot with timestamp.
+     */
+    record MetricsSnapshot(long timestamp, Map<String, Double> metrics) {}
+
     @MessageReceiver
     void onMetricsPing(MetricsPing ping);
 
@@ -82,6 +94,9 @@ public interface MetricsCollector {
  */
 class MetricsCollectorImpl implements MetricsCollector {
 
+    // Sliding window duration: 2 hours in milliseconds
+    private static final long SLIDING_WINDOW_MS = 2 * 60 * 60 * 1000L;
+
     private final NodeId self;
     private final ClusterNetwork network;
 
@@ -98,8 +113,8 @@ class MetricsCollectorImpl implements MetricsCollector {
     // Metrics received from other nodes
     private final ConcurrentHashMap<NodeId, Map<String, Double>> remoteMetrics = new ConcurrentHashMap<>();
 
-    // Sliding window for historical metrics (simplified: just keep latest snapshot per node)
-    private final ConcurrentHashMap<NodeId, MetricsSnapshot> historicalMetrics = new ConcurrentHashMap<>();
+    // Sliding window for historical metrics - list of snapshots per node, oldest first
+    private final ConcurrentHashMap<NodeId, java.util.concurrent.CopyOnWriteArrayList<MetricsSnapshot>> historicalMetricsMap = new ConcurrentHashMap<>();
 
     MetricsCollectorImpl(NodeId self, ClusterNetwork network) {
         this.self = self;
@@ -170,13 +185,29 @@ class MetricsCollectorImpl implements MetricsCollector {
     }
 
     @Override
+    public Map<NodeId, java.util.List<MetricsSnapshot>> historicalMetrics() {
+        var cutoff = System.currentTimeMillis() - SLIDING_WINDOW_MS;
+        var result = new ConcurrentHashMap<NodeId, java.util.List<MetricsSnapshot>>();
+
+        historicalMetricsMap.forEach((nodeId, snapshots) -> {
+            // Filter to only include snapshots within the window
+            var filtered = snapshots.stream()
+                    .filter(s -> s.timestamp() >= cutoff)
+                    .toList();
+            if (!filtered.isEmpty()) {
+                result.put(nodeId, filtered);
+            }
+        });
+
+        return result;
+    }
+
+    @Override
     public void onMetricsPing(MetricsPing ping) {
         // Store sender's metrics (but don't overwrite our own)
         if (!ping.sender().equals(self)) {
             remoteMetrics.put(ping.sender(), ping.metrics());
-            historicalMetrics.put(ping.sender(), new MetricsSnapshot(
-                    System.currentTimeMillis(), ping.metrics()
-            ));
+            addToHistory(ping.sender(), ping.metrics());
         }
 
         // Respond with our metrics
@@ -188,10 +219,25 @@ class MetricsCollectorImpl implements MetricsCollector {
         // Store responder's metrics (but don't overwrite our own)
         if (!pong.sender().equals(self)) {
             remoteMetrics.put(pong.sender(), pong.metrics());
-            historicalMetrics.put(pong.sender(), new MetricsSnapshot(
-                    System.currentTimeMillis(), pong.metrics()
-            ));
+            addToHistory(pong.sender(), pong.metrics());
         }
+    }
+
+    /**
+     * Add metrics snapshot to historical window and cleanup old entries.
+     */
+    private void addToHistory(NodeId nodeId, Map<String, Double> metrics) {
+        var snapshots = historicalMetricsMap.computeIfAbsent(
+                nodeId,
+                _ -> new java.util.concurrent.CopyOnWriteArrayList<>()
+        );
+
+        var now = System.currentTimeMillis();
+        snapshots.add(new MetricsSnapshot(now, metrics));
+
+        // Cleanup old entries outside the sliding window
+        var cutoff = now - SLIDING_WINDOW_MS;
+        snapshots.removeIf(s -> s.timestamp() < cutoff);
     }
 
     /**
@@ -206,9 +252,4 @@ class MetricsCollectorImpl implements MetricsCollector {
             totalDuration.add(durationMs);
         }
     }
-
-    /**
-     * Immutable metrics snapshot with timestamp.
-     */
-    private record MetricsSnapshot(long timestamp, Map<String, Double> metrics) {}
 }
