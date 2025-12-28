@@ -175,20 +175,37 @@ public interface NodeDeploymentManager {
             }
 
             private void handleLoaded(SliceNodeKey sliceKey) {
-                // Slice is loaded - auto-activate it
-                // In future, this could include health checks or dependency validation
-                log.info("Slice {} loaded, auto-activating", sliceKey.artifact());
-                transitionTo(sliceKey, SliceState.ACTIVATE);
+                // Only auto-activate if slice is actually loaded in our store
+                // (protects against externally-set states like in tests)
+                var isLoaded = sliceStore.loaded().stream()
+                        .anyMatch(ls -> ls.artifact().equals(sliceKey.artifact()));
+
+                if (isLoaded) {
+                    log.info("Slice {} loaded, auto-activating", sliceKey.artifact());
+                    transitionTo(sliceKey, SliceState.ACTIVATE);
+                } else {
+                    log.debug("Slice {} state is LOADED but not found in SliceStore, skipping auto-activation",
+                              sliceKey.artifact());
+                }
             }
 
             private void handleActivating(SliceNodeKey sliceKey) {
-                executeWithStateTransition(
-                        sliceKey,
-                        SliceState.ACTIVATING,
-                        sliceStore.activateSlice(sliceKey.artifact()),
-                        SliceState.ACTIVE,
-                        SliceState.FAILED
-                                          );
+                // Only activate if slice is actually loaded in our store
+                var isLoaded = sliceStore.loaded().stream()
+                        .anyMatch(ls -> ls.artifact().equals(sliceKey.artifact()));
+
+                if (isLoaded) {
+                    executeWithStateTransition(
+                            sliceKey,
+                            SliceState.ACTIVATING,
+                            sliceStore.activateSlice(sliceKey.artifact()),
+                            SliceState.ACTIVE,
+                            SliceState.FAILED
+                                              );
+                } else {
+                    log.debug("Slice {} state is ACTIVATE but not found in SliceStore, skipping activation",
+                              sliceKey.artifact());
+                }
             }
 
             private void handleActive(SliceNodeKey sliceKey) {

@@ -369,6 +369,21 @@ public class ReconfigurationIT {
         connectedNodes.add(newNode1);
         connectedNodes.add(newNode2);
 
+        // Wait for state to propagate to all nodes before comparing
+        int expectedEntries = initialCommands + 1 + postReconfigCommands; // 50 + 1 + 20 = 71
+        await().atMost(TIMEOUT)
+               .pollInterval(Duration.ofMillis(100))
+               .until(() -> {
+                   for (var nodeId : connectedNodes) {
+                       var nodeState = cluster.stores().get(nodeId).snapshot();
+                       if (nodeState.size() < expectedEntries) {
+                           log.debug("Node {} has {} entries, waiting for {}", nodeId, nodeState.size(), expectedEntries);
+                           return false;
+                       }
+                   }
+                   return true;
+               });
+
         var referenceState = cluster.stores().get(survivingNode).snapshot();
 
         for (var nodeId : connectedNodes) {

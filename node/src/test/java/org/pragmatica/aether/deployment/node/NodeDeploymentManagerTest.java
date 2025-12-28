@@ -141,6 +141,9 @@ class NodeDeploymentManagerTest {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
+        // Slice must be loaded before it can be activated
+        sliceStore.markAsLoaded(artifact);
+
         manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
         sendValuePut(key, SliceState.ACTIVATE);
 
@@ -250,6 +253,9 @@ class NodeDeploymentManagerTest {
     void successful_activation_transitions_to_active_state() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
+
+        // Slice must be loaded before it can be activated
+        sliceStore.markAsLoaded(artifact);
 
         manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
         sendValuePut(key, SliceState.ACTIVATE);
@@ -362,6 +368,7 @@ class NodeDeploymentManagerTest {
         final List<Artifact> activateCalls = new CopyOnWriteArrayList<>();
         final List<Artifact> deactivateCalls = new CopyOnWriteArrayList<>();
         final List<Artifact> unloadCalls = new CopyOnWriteArrayList<>();
+        final List<LoadedSlice> loadedSlices = new CopyOnWriteArrayList<>();
         boolean failNextLoad = false;
 
         @Override
@@ -371,7 +378,9 @@ class NodeDeploymentManagerTest {
                 failNextLoad = false;
                 return Promise.failure(org.pragmatica.lang.utils.Causes.cause("Load failed"));
             }
-            return Promise.success(new TestLoadedSlice(artifact, null));
+            var loadedSlice = new TestLoadedSlice(artifact, null);
+            loadedSlices.add(loadedSlice);
+            return Promise.success(loadedSlice);
         }
 
         @Override
@@ -389,6 +398,7 @@ class NodeDeploymentManagerTest {
         @Override
         public Promise<Unit> unloadSlice(Artifact artifact) {
             unloadCalls.add(artifact);
+            loadedSlices.removeIf(ls -> ls.artifact().equals(artifact));
             return Promise.success(Unit.unit());
         }
 
@@ -399,7 +409,12 @@ class NodeDeploymentManagerTest {
 
         @Override
         public List<LoadedSlice> loaded() {
-            return List.of();
+            return List.copyOf(loadedSlices);
+        }
+
+        // Helper to simulate a pre-loaded slice without calling loadSlice
+        void markAsLoaded(Artifact artifact) {
+            loadedSlices.add(new TestLoadedSlice(artifact, null));
         }
     }
 
