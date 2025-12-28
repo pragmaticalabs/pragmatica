@@ -22,7 +22,7 @@ import java.util.Map;
  * using byte arrays for serialized data. It wraps a Slice instance and handles all
  * serialization/deserialization at the boundary.
  * <p>
- * The implementation is similar to InternalSlice but uses byte[] instead of ByteBuf
+ * This implementation uses byte[] at the boundary, avoiding Netty types in the API
  * to maintain complete isolation from Netty at the API level.
  * <p>
  * <b>Invocation Flow:</b>

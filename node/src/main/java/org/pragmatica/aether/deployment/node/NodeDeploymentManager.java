@@ -191,7 +191,7 @@ public interface NodeDeploymentManager {
 
             private void handleActive(SliceNodeKey sliceKey) {
                 // Slice is now active and serving requests
-                // 1. Create InternalSlice and register with InvocationHandler
+                // 1. Create SliceBridge and register with InvocationHandler
                 registerSliceForInvocation(sliceKey);
                 // 2. Publish endpoints to KV-Store
                 publishEndpoints(sliceKey);
