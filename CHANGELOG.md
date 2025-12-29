@@ -9,6 +9,10 @@
   - CLI commands: `jbct init --slice` and `jbct verify-slice`
   - Model classes: `SliceModel`, `MethodModel`, `DependencyModel`
   - Generators: `ApiInterfaceGenerator`, `ProxyClassGenerator`, `FactoryClassGenerator`, `ManifestGenerator`
+- **JBCT-SLICE-01**: New lint rule enforces slice API interface usage
+  - External slice dependencies must use API interface from `.api` subpackage
+  - Requires `slicePackages` configuration in `jbct.toml` (opt-in rule)
+  - Detects violations from both slice and non-slice code
 
 ### Fixed
 - Parser: add word boundaries to type declaration keywords (`class`, `interface`, `enum`, `record`)

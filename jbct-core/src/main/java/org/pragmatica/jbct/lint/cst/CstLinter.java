@@ -143,7 +143,9 @@ public class CstLinter {
             // Sealed interfaces (JBCT-SEAL-*)
             new CstSealedErrorRule(),          // JBCT-SEAL-01
             // Pattern mixing (JBCT-PAT-02)
-            new CstPatternMixingRule()         // JBCT-PAT-02
+            new CstPatternMixingRule(),        // JBCT-PAT-02
+            // Slice API usage (JBCT-SLICE-*)
+            new CstSliceApiUsageRule()         // JBCT-SLICE-01
         );
     }
 }

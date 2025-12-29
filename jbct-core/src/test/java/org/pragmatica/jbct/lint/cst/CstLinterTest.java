@@ -14,7 +14,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Comprehensive test suite for all 30 JBCT lint rules.
+ * Comprehensive test suite for all 37 JBCT lint rules.
  * Each test verifies that violations are properly detected.
  */
 class CstLinterTest {
@@ -1949,6 +1949,259 @@ class CstLinterTest {
             assertTrue(diagnostics.isEmpty() ||
                        diagnostics.stream().noneMatch(d -> d.ruleId().startsWith("JBCT-")),
                        "No JBCT rules should trigger for adapter packages");
+        }
+    }
+
+    // ========== JBCT-SLICE-* Slice Rules ==========
+
+    @Nested
+    @DisplayName("JBCT-SLICE-01: External slice dependencies must use API interface")
+    class SliceApiUsageTests {
+
+        // Slice package convention configured via slicePackages in jbct.toml
+        // API package convention: <slicePackage>.api
+
+        private CstLinter sliceLinter;
+
+        @BeforeEach
+        void setUpSliceLinter() {
+            // Configure slice packages for these tests
+            var sliceContext = LintContext.lintContext(List.of("**.usecase.**", "**.domain.**"))
+                .withSlicePackages(List.of("**.usecase.**"));
+            sliceLinter = CstLinter.cstLinter(sliceContext);
+        }
+
+        private List<Diagnostic> lintWithSlices(String source) {
+            var sourceFile = SourceFile.sourceFile(Path.of("Test.java"), source);
+            assertTrue(sourceFile.isSuccess(), () -> "SourceFile creation failed: " + sourceFile);
+            var result = sliceLinter.lint(sourceFile.unwrap());
+            assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
+            return result.unwrap();
+        }
+
+        @Test
+        void detectsExternalSliceDependencyNotUsingApi() {
+            var diagnostics = lintWithSlices("""
+                package com.example.usecase.order;
+                import org.pragmatica.lang.Result;
+                import com.example.usecase.inventory.InventoryService;
+                public interface OrderService {
+                    Result<Order> createOrder(OrderRequest request);
+
+                    static OrderService orderService(InventoryService inventory) {
+                        return request -> Result.success(null);
+                    }
+                }
+                class Order {}
+                class OrderRequest {}
+                """);
+            assertHasRule(diagnostics, "JBCT-SLICE-01");
+        }
+
+        @Test
+        void allowsExternalSliceDependencyUsingApi() {
+            var diagnostics = lintWithSlices("""
+                package com.example.usecase.order;
+                import org.pragmatica.lang.Result;
+                import com.example.usecase.inventory.api.InventoryService;
+                public interface OrderService {
+                    Result<Order> createOrder(OrderRequest request);
+
+                    static OrderService orderService(InventoryService inventory) {
+                        return request -> Result.success(null);
+                    }
+                }
+                class Order {}
+                class OrderRequest {}
+                """);
+            assertNoRule(diagnostics, "JBCT-SLICE-01");
+        }
+
+        @Test
+        void allowsInternalSliceDependency() {
+            // Types from same slice (same usecase.<name>) are allowed
+            var diagnostics = lintWithSlices("""
+                package com.example.usecase.order;
+                import org.pragmatica.lang.Result;
+                import com.example.usecase.order.internal.OrderRepository;
+                public interface OrderService {
+                    Result<Order> createOrder(OrderRequest request);
+
+                    static OrderService orderService(OrderRepository repo) {
+                        return request -> Result.success(null);
+                    }
+                }
+                class Order {}
+                class OrderRequest {}
+                """);
+            assertNoRule(diagnostics, "JBCT-SLICE-01");
+        }
+
+        @Test
+        void allowsPrimitiveAndJdkTypes() {
+            var diagnostics = lintWithSlices("""
+                package com.example.usecase.order;
+                import org.pragmatica.lang.Result;
+                import java.util.List;
+                public interface OrderService {
+                    Result<Order> createOrder(OrderRequest request);
+
+                    static OrderService orderService(List<String> config, int timeout) {
+                        return request -> Result.success(null);
+                    }
+                }
+                class Order {}
+                class OrderRequest {}
+                """);
+            assertNoRule(diagnostics, "JBCT-SLICE-01");
+        }
+
+        @Test
+        void allowsPragmaticaTypes() {
+            var diagnostics = lintWithSlices("""
+                package com.example.usecase.order;
+                import org.pragmatica.lang.Result;
+                import org.pragmatica.lang.Option;
+                public interface OrderService {
+                    Result<Order> createOrder(OrderRequest request);
+
+                    static OrderService orderService(Option<String> config) {
+                        return request -> Result.success(null);
+                    }
+                }
+                class Order {}
+                class OrderRequest {}
+                """);
+            assertNoRule(diagnostics, "JBCT-SLICE-01");
+        }
+
+        @Test
+        void detectsMultipleExternalSliceDependencies() {
+            var diagnostics = lintWithSlices("""
+                package com.example.usecase.order;
+                import org.pragmatica.lang.Result;
+                import com.example.usecase.inventory.InventoryService;
+                import com.example.usecase.payment.PaymentGateway;
+                public interface OrderService {
+                    Result<Order> createOrder(OrderRequest request);
+
+                    static OrderService orderService(InventoryService inventory, PaymentGateway payment) {
+                        return request -> Result.success(null);
+                    }
+                }
+                class Order {}
+                class OrderRequest {}
+                """);
+            // Should detect both violations
+            var sliceViolations = diagnostics.stream()
+                .filter(d -> d.ruleId().equals("JBCT-SLICE-01"))
+                .count();
+            assertEquals(2, sliceViolations, "Expected 2 JBCT-SLICE-01 violations");
+        }
+
+        @Test
+        void noViolationForNonSlicePackage() {
+            // Types from non-slice packages (not matching slicePackages pattern) are not flagged
+            var diagnostics = lintWithSlices("""
+                package com.example.usecase.order;
+                import org.pragmatica.lang.Result;
+                import com.example.common.StringFormatter;
+                import com.example.utils.DateHelper;
+                public interface OrderService {
+                    Result<Order> createOrder(OrderRequest request);
+
+                    static OrderService orderService(StringFormatter formatter, DateHelper helper) {
+                        return request -> Result.success(null);
+                    }
+                }
+                class Order {}
+                class OrderRequest {}
+                """);
+            // StringFormatter and DateHelper are not from slice packages (not matching **.usecase.**)
+            assertNoRule(diagnostics, "JBCT-SLICE-01");
+        }
+
+        @Test
+        void noViolationForNoFactoryMethod() {
+            // Interfaces without a factory method are not checked
+            var diagnostics = lintWithSlices("""
+                package com.example.usecase.order;
+                import org.pragmatica.lang.Result;
+                import com.example.usecase.inventory.InventoryService;
+                public interface OrderService {
+                    Result<Order> createOrder(OrderRequest request);
+                    // No factory method - so dependencies are not checked
+                }
+                class Order {}
+                class OrderRequest {}
+                """);
+            assertNoRule(diagnostics, "JBCT-SLICE-01");
+        }
+
+        @Test
+        void allowsDomainTypes() {
+            // Types from domain packages are allowed (not matching slicePackages pattern)
+            var diagnostics = lintWithSlices("""
+                package com.example.usecase.order;
+                import org.pragmatica.lang.Result;
+                import com.example.domain.shared.UserId;
+                public interface OrderService {
+                    Result<Order> createOrder(OrderRequest request);
+
+                    static OrderService orderService(UserId adminId) {
+                        return request -> Result.success(null);
+                    }
+                }
+                class Order {}
+                class OrderRequest {}
+                """);
+            assertNoRule(diagnostics, "JBCT-SLICE-01");
+        }
+
+        @Test
+        void skipsSilentlyWhenNotConfigured() {
+            // When slicePackages is not configured, rule should be silently skipped
+            var diagnostics = lint("""
+                package com.example.usecase.order;
+                import org.pragmatica.lang.Result;
+                import com.example.usecase.inventory.InventoryService;
+                public interface OrderService {
+                    Result<Order> createOrder(OrderRequest request);
+
+                    static OrderService orderService(InventoryService inventory) {
+                        return request -> Result.success(null);
+                    }
+                }
+                class Order {}
+                class OrderRequest {}
+                """);
+            // Should have no SLICE-01 diagnostics at all when not configured
+            assertNoRule(diagnostics, "JBCT-SLICE-01");
+        }
+
+        @Test
+        void detectsSliceImportFromNonSliceCode() {
+            // Non-slice code importing slice directly should be flagged
+            var nonSliceContext = LintContext.lintContext(List.of("**.usecase.**", "**.domain.**"))
+                .withSlicePackages(List.of("**.usecase.**"));
+            var nonSliceLinter = CstLinter.cstLinter(nonSliceContext);
+
+            var sourceFile = SourceFile.sourceFile(Path.of("Test.java"), """
+                package com.example.adapter.http;
+                import org.pragmatica.lang.Result;
+                import com.example.usecase.order.OrderService;
+                public interface OrderController {
+                    Result<String> handleOrder(String request);
+
+                    static OrderController orderController(OrderService orderService) {
+                        return request -> Result.success("ok");
+                    }
+                }
+                """);
+            assertTrue(sourceFile.isSuccess());
+            var result = nonSliceLinter.lint(sourceFile.unwrap());
+            assertTrue(result.isSuccess());
+            assertHasRule(result.unwrap(), "JBCT-SLICE-01");
         }
     }
 }

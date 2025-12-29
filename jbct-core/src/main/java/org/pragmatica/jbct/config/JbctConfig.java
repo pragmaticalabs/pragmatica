@@ -20,17 +20,20 @@ public record JbctConfig(
         FormatterConfig formatter,
         LintConfig lint,
         List<String> sourceDirectories,
-        List<String> businessPackages
+        List<String> businessPackages,
+        List<String> slicePackages
 ) {
 
     /**
      * Default configuration.
+     * Note: slicePackages is empty by default - must be configured for JBCT-SLICE-01 rule.
      */
     public static final JbctConfig DEFAULT = new JbctConfig(
             FormatterConfig.DEFAULT,
             LintConfig.DEFAULT,
             List.of("src/main/java"),
-            List.of("**.usecase.**", "**.domain.**")
+            List.of("**.usecase.**", "**.domain.**"),
+            List.of()  // Empty - requires explicit configuration
     );
 
     /**
@@ -88,7 +91,11 @@ public record JbctConfig(
         var businessPackages = toml.getStringList("lint", "businessPackages")
                                    .or(List.of("**.usecase.**", "**.domain.**"));
 
-        return new JbctConfig(formatterConfig, lintConfig, sourceDirectories, businessPackages);
+        // Slice packages - empty by default, must be explicitly configured
+        var slicePackages = toml.getStringList("lint", "slicePackages")
+                                .or(List.of());
+
+        return new JbctConfig(formatterConfig, lintConfig, sourceDirectories, businessPackages, slicePackages);
     }
 
     /**
@@ -123,7 +130,13 @@ public record JbctConfig(
             mergedBusinessPackages = other.businessPackages;
         }
 
-        return new JbctConfig(mergedFormatter, mergedLint, mergedSourceDirs, mergedBusinessPackages);
+        // Merge slice packages (use other if not empty)
+        var mergedSlicePackages = this.slicePackages;
+        if (!other.slicePackages.isEmpty()) {
+            mergedSlicePackages = other.slicePackages;
+        }
+
+        return new JbctConfig(mergedFormatter, mergedLint, mergedSourceDirs, mergedBusinessPackages, mergedSlicePackages);
     }
 
     /**
@@ -153,6 +166,15 @@ public record JbctConfig(
                 .map(s -> "\"" + s + "\"")
                 .collect(Collectors.joining(", ")));
         sb.append("]\n");
+        sb.append("# Slice packages for JBCT-SLICE-01 rule (required for external slice dependency checking)\n");
+        sb.append("# Example: slicePackages = [\"**.usecase.**\"]\n");
+        if (!slicePackages.isEmpty()) {
+            sb.append("slicePackages = [");
+            sb.append(slicePackages.stream()
+                    .map(s -> "\"" + s + "\"")
+                    .collect(Collectors.joining(", ")));
+            sb.append("]\n");
+        }
         sb.append("\n");
 
         // Lint rules section

@@ -67,7 +67,9 @@ public record LintConfig(
                     // Acronyms and patterns
                     Map.entry("JBCT-ACR-01", DiagnosticSeverity.WARNING),  // Acronym naming
                     Map.entry("JBCT-SEAL-01", DiagnosticSeverity.WARNING), // Sealed error interfaces
-                    Map.entry("JBCT-PAT-02", DiagnosticSeverity.WARNING)   // No Fork-Join inside Sequencer
+                    Map.entry("JBCT-PAT-02", DiagnosticSeverity.WARNING),  // No Fork-Join inside Sequencer
+                    // Slice
+                    Map.entry("JBCT-SLICE-01", DiagnosticSeverity.ERROR)   // External slices must use API interface
             ),
             Set.of(),
             false

@@ -8,6 +8,7 @@ import java.util.regex.Pattern;
  */
 public record LintContext(
         List<Pattern> businessPackagePatterns,
+        List<Pattern> slicePackagePatterns,
         LintConfig config,
         String fileName
 ) {
@@ -18,6 +19,21 @@ public record LintContext(
     public boolean isBusinessPackage(String packageName) {
         return businessPackagePatterns.stream()
                 .anyMatch(pattern -> pattern.matcher(packageName).matches());
+    }
+
+    /**
+     * Check if a package name matches any slice package pattern.
+     */
+    public boolean isSlicePackage(String packageName) {
+        return slicePackagePatterns.stream()
+                .anyMatch(pattern -> pattern.matcher(packageName).matches());
+    }
+
+    /**
+     * Check if slice packages are configured.
+     */
+    public boolean hasSlicePackages() {
+        return !slicePackagePatterns.isEmpty();
     }
 
     /**
@@ -43,6 +59,7 @@ public record LintContext(
                         Pattern.compile(".*\\.usecase\\..*"),
                         Pattern.compile(".*\\.domain\\..*")
                 ),
+                List.of(),  // No slice packages by default
                 LintConfig.defaultConfig(),
                 "Unknown.java"
         );
@@ -56,7 +73,7 @@ public record LintContext(
                 .map(LintContext::globToRegex)
                 .map(Pattern::compile)
                 .toList();
-        return new LintContext(patterns, LintConfig.defaultConfig(), "Unknown.java");
+        return new LintContext(patterns, List.of(), LintConfig.defaultConfig(), "Unknown.java");
     }
 
     private static String globToRegex(String glob) {
@@ -70,14 +87,14 @@ public record LintContext(
      * Builder-style method to set config.
      */
     public LintContext withConfig(LintConfig config) {
-        return new LintContext(businessPackagePatterns, config, fileName);
+        return new LintContext(businessPackagePatterns, slicePackagePatterns, config, fileName);
     }
 
     /**
      * Builder-style method to set file name.
      */
     public LintContext withFileName(String fileName) {
-        return new LintContext(businessPackagePatterns, config, fileName);
+        return new LintContext(businessPackagePatterns, slicePackagePatterns, config, fileName);
     }
 
     /**
@@ -88,7 +105,18 @@ public record LintContext(
                 .map(LintContext::globToRegex)
                 .map(Pattern::compile)
                 .toList();
-        return new LintContext(compiledPatterns, config, fileName);
+        return new LintContext(compiledPatterns, slicePackagePatterns, config, fileName);
+    }
+
+    /**
+     * Builder-style method to set slice package patterns from glob strings.
+     */
+    public LintContext withSlicePackages(List<String> patterns) {
+        var compiledPatterns = patterns.stream()
+                .map(LintContext::globToRegex)
+                .map(Pattern::compile)
+                .toList();
+        return new LintContext(businessPackagePatterns, compiledPatterns, config, fileName);
     }
 
     /**
@@ -96,6 +124,7 @@ public record LintContext(
      */
     public static LintContext fromConfig(org.pragmatica.jbct.config.JbctConfig jbctConfig) {
         return lintContext(jbctConfig.businessPackages())
+               .withSlicePackages(jbctConfig.slicePackages())
                .withConfig(jbctConfig.lint());
     }
 }
