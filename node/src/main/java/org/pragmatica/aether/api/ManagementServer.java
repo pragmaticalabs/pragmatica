@@ -20,6 +20,7 @@ import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpResponseStatus;
 import io.netty.handler.codec.http.HttpServerCodec;
 import io.netty.handler.codec.http.HttpVersion;
+import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
 import io.netty.util.CharsetUtil;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.node.AetherNode;
@@ -34,6 +35,8 @@ import org.pragmatica.lang.utils.Causes;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
@@ -71,6 +74,8 @@ class ManagementServerImpl implements ManagementServer {
     private final Supplier<AetherNode> nodeSupplier;
     private final NioEventLoopGroup bossGroup;
     private final NioEventLoopGroup workerGroup;
+    private final AlertManager alertManager;
+    private final DashboardMetricsPublisher metricsPublisher;
     private Channel serverChannel;
 
     ManagementServerImpl(int port, Supplier<AetherNode> nodeSupplier) {
@@ -78,6 +83,8 @@ class ManagementServerImpl implements ManagementServer {
         this.nodeSupplier = nodeSupplier;
         this.bossGroup = new NioEventLoopGroup(1);
         this.workerGroup = new NioEventLoopGroup();
+        this.alertManager = new AlertManager();
+        this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager);
     }
 
     @Override
@@ -92,14 +99,17 @@ class ManagementServerImpl implements ManagementServer {
                             ChannelPipeline p = ch.pipeline();
                             p.addLast(new HttpServerCodec());
                             p.addLast(new HttpObjectAggregator(MAX_CONTENT_LENGTH));
-                            p.addLast(new HttpRequestHandler(nodeSupplier));
+                            p.addLast(new WebSocketServerProtocolHandler("/ws/dashboard", null, true));
+                            p.addLast(new DashboardWebSocketHandler(metricsPublisher));
+                            p.addLast(new HttpRequestHandler(nodeSupplier, alertManager));
                         }
                     });
 
             bootstrap.bind(port).addListener(future -> {
                 if (future.isSuccess()) {
                     serverChannel = ((io.netty.channel.ChannelFuture) future).channel();
-                    log.info("Management server started on port {}", port);
+                    metricsPublisher.start();
+                    log.info("Management server started on port {} (dashboard at /dashboard)", port);
                     promise.succeed(unit());
                 } else {
                     log.error("Failed to start management server on port {}", port, future.cause());
@@ -112,6 +122,7 @@ class ManagementServerImpl implements ManagementServer {
     @Override
     public Promise<Unit> stop() {
         return Promise.promise(promise -> {
+            metricsPublisher.stop();
             if (serverChannel != null) {
                 serverChannel.close().addListener(f -> {
                     bossGroup.shutdownGracefully();
@@ -132,11 +143,16 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private static final Logger log = LoggerFactory.getLogger(HttpRequestHandler.class);
     private static final String CONTENT_TYPE_JSON = "application/json";
+    private static final String CONTENT_TYPE_HTML = "text/html; charset=UTF-8";
+    private static final String CONTENT_TYPE_CSS = "text/css; charset=UTF-8";
+    private static final String CONTENT_TYPE_JS = "application/javascript; charset=UTF-8";
 
     private final Supplier<AetherNode> nodeSupplier;
+    private final AlertManager alertManager;
 
-    HttpRequestHandler(Supplier<AetherNode> nodeSupplier) {
+    HttpRequestHandler(Supplier<AetherNode> nodeSupplier, AlertManager alertManager) {
         this.nodeSupplier = nodeSupplier;
+        this.alertManager = alertManager;
     }
 
     @Override
@@ -164,6 +180,16 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private void handleGet(ChannelHandlerContext ctx, String uri) {
         var node = nodeSupplier.get();
 
+        // Handle dashboard static files
+        if (uri.equals("/dashboard") || uri.equals("/dashboard/")) {
+            serveDashboardFile(ctx, "index.html", CONTENT_TYPE_HTML);
+            return;
+        }
+        if (uri.equals("/dashboard/style.css")) {
+            serveDashboardFile(ctx, "style.css", CONTENT_TYPE_CSS);
+            return;
+        }
+
         // Handle repository requests
         if (uri.startsWith("/repository/")) {
             handleRepositoryGet(ctx, node, uri);
@@ -174,7 +200,11 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             case "/status" -> buildStatusResponse(node);
             case "/nodes" -> buildNodesResponse(node);
             case "/slices" -> buildSlicesResponse(node);
+            case "/slices/status" -> buildSlicesStatusResponse(node);
             case "/metrics" -> buildMetricsResponse(node);
+            case "/invocation-metrics" -> buildInvocationMetricsResponse(node);
+            case "/thresholds" -> alertManager.thresholdsAsJson();
+            case "/alerts" -> buildAlertsResponse();
             case "/health" -> "{\"status\":\"ok\"}";
             default -> null;
         };
@@ -183,6 +213,25 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             sendJson(ctx, response);
         } else {
             sendError(ctx, HttpResponseStatus.NOT_FOUND);
+        }
+    }
+
+    private void serveDashboardFile(ChannelHandlerContext ctx, String filename, String contentType) {
+        try (InputStream is = getClass().getResourceAsStream("/dashboard/" + filename)) {
+            if (is == null) {
+                sendError(ctx, HttpResponseStatus.NOT_FOUND);
+                return;
+            }
+            var content = new String(is.readAllBytes(), StandardCharsets.UTF_8);
+            var buf = Unpooled.copiedBuffer(content, CharsetUtil.UTF_8);
+            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf);
+            response.headers().set(HttpHeaderNames.CONTENT_TYPE, contentType);
+            response.headers().setInt(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
+            response.headers().set(HttpHeaderNames.CACHE_CONTROL, "no-cache");
+            ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        } catch (Exception e) {
+            log.error("Error serving dashboard file: {}", filename, e);
+            sendError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR);
         }
     }
 
@@ -453,6 +502,39 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
         sb.append("}");
         return sb.toString();
+    }
+
+    private String buildSlicesStatusResponse(AetherNode node) {
+        var sb = new StringBuilder();
+        sb.append("{\"slices\":[");
+
+        var slices = node.sliceStore().loaded();
+        boolean first = true;
+        for (var slice : slices) {
+            if (!first) sb.append(",");
+            sb.append("{");
+            sb.append("\"artifact\":\"").append(slice.artifact().asString()).append("\",");
+            sb.append("\"state\":\"ACTIVE\","); // TODO: get actual state from kvstore
+            sb.append("\"instances\":[{");
+            sb.append("\"nodeId\":\"").append(node.self().id()).append("\",");
+            sb.append("\"state\":\"ACTIVE\",");
+            sb.append("\"health\":\"HEALTHY\"");
+            sb.append("}]");
+            sb.append("}");
+            first = false;
+        }
+
+        sb.append("]}");
+        return sb.toString();
+    }
+
+    private String buildInvocationMetricsResponse(AetherNode node) {
+        // TODO: expose invocationMetricsCollector via AetherNode interface
+        return "{\"snapshots\":[]}";
+    }
+
+    private String buildAlertsResponse() {
+        return "{\"active\":" + alertManager.activeAlertsAsJson() + ",\"history\":" + alertManager.alertHistoryAsJson() + "}";
     }
 
     private void sendJson(ChannelHandlerContext ctx, String content) {

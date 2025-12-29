@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aether Dashboard</title>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body x-data="dashboard()" x-init="init()">
+    <!-- Header -->
+    <header class="header">
+        <div class="header-left">
+            <h1>Aether Dashboard</h1>
+            <span class="connection-status" :class="{ connected: wsConnected, disconnected: !wsConnected }">
+                <span x-text="wsConnected ? 'Connected' : 'Disconnected'"></span>
+            </span>
+        </div>
+        <div class="header-right">
+            <span class="cluster-info">
+                <span class="node-count" x-text="nodes.length + ' node' + (nodes.length !== 1 ? 's' : '')"></span>
+                <span class="uptime" x-text="formatUptime(uptime)"></span>
+            </span>
+            <button class="nodes-toggle" @click="showNodes = !showNodes">
+                <span x-text="showNodes ? 'Hide Nodes' : 'Show Nodes'"></span>
+            </button>
+        </div>
+    </header>
+
+    <!-- Nodes Panel (collapsible) -->
+    <div class="nodes-panel" x-show="showNodes" x-transition>
+        <template x-for="node in nodes" :key="node.id">
+            <div class="node-badge" :class="{ leader: node.isLeader }">
+                <span class="node-id" x-text="node.id"></span>
+                <span x-show="node.isLeader" class="leader-badge">Leader</span>
+            </div>
+        </template>
+    </div>
+
+    <!-- Tab Navigation -->
+    <nav class="tabs">
+        <button class="tab" :class="{ active: tab === 'metrics' }" @click="tab = 'metrics'">Metrics</button>
+        <button class="tab" :class="{ active: tab === 'slices' }" @click="tab = 'slices'">Slices</button>
+        <button class="tab" :class="{ active: tab === 'history' }" @click="tab = 'history'; loadHistory()">History</button>
+        <button class="tab" :class="{ active: tab === 'alerts' }" @click="tab = 'alerts'">Alerts</button>
+    </nav>
+
+    <!-- Tab Content -->
+    <main class="content">
+        <!-- Metrics Tab -->
+        <div x-show="tab === 'metrics'" x-transition class="tab-content">
+            <div class="metrics-grid">
+                <!-- Per-node metrics cards -->
+                <template x-for="(nodeMetrics, nodeId) in metrics.load" :key="nodeId">
+                    <div class="metric-card">
+                        <h3 class="card-title" x-text="nodeId"></h3>
+                        <div class="metric-list">
+                            <template x-for="(value, name) in nodeMetrics" :key="name">
+                                <div class="metric-item">
+                                    <span class="metric-name" x-text="name"></span>
+                                    <span class="metric-value" :class="getMetricClass(name, value)"
+                                          x-text="formatMetricValue(name, value)"></span>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </template>
+            </div>
+
+            <!-- Invocation metrics -->
+            <div class="invocation-section" x-show="metrics.invocations && metrics.invocations.length > 0">
+                <h2>Invocation Metrics</h2>
+                <table class="invocation-table">
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Count</th>
+                            <th>Success</th>
+                            <th>Avg Latency</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <template x-for="inv in metrics.invocations" :key="inv.artifact + inv.method">
+                            <tr>
+                                <td x-text="inv.method"></td>
+                                <td x-text="inv.count"></td>
+                                <td x-text="inv.successCount"></td>
+                                <td x-text="formatNanos(inv.avgLatencyNs)"></td>
+                            </tr>
+                        </template>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Slices Tab -->
+        <div x-show="tab === 'slices'" x-transition class="tab-content">
+            <div class="slices-grid">
+                <template x-for="slice in slices" :key="slice">
+                    <div class="slice-card">
+                        <h3 class="slice-artifact" x-text="slice"></h3>
+                        <div class="slice-state">
+                            <span class="state-label">State:</span>
+                            <span class="state-value">ACTIVE</span>
+                        </div>
+                    </div>
+                </template>
+                <div x-show="slices.length === 0" class="empty-state">
+                    No slices loaded
+                </div>
+            </div>
+        </div>
+
+        <!-- History Tab -->
+        <div x-show="tab === 'history'" x-transition class="tab-content">
+            <div class="history-controls">
+                <label>Time Range:</label>
+                <select x-model="historyRange" @change="loadHistory()">
+                    <option value="5m">5 minutes</option>
+                    <option value="15m">15 minutes</option>
+                    <option value="1h">1 hour</option>
+                    <option value="2h">2 hours</option>
+                </select>
+            </div>
+            <div class="chart-container">
+                <canvas id="historyChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Alerts Tab -->
+        <div x-show="tab === 'alerts'" x-transition class="tab-content">
+            <!-- Threshold Configuration -->
+            <div class="thresholds-section">
+                <h2>Thresholds</h2>
+                <div class="threshold-grid">
+                    <template x-for="(threshold, metric) in thresholds" :key="metric">
+                        <div class="threshold-card">
+                            <h4 x-text="metric"></h4>
+                            <div class="threshold-inputs">
+                                <label>
+                                    Warning:
+                                    <input type="number" step="0.01" min="0" max="1"
+                                           :value="threshold.warning"
+                                           @change="updateThreshold(metric, $event.target.value, threshold.critical)">
+                                </label>
+                                <label>
+                                    Critical:
+                                    <input type="number" step="0.01" min="0" max="1"
+                                           :value="threshold.critical"
+                                           @change="updateThreshold(metric, threshold.warning, $event.target.value)">
+                                </label>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+
+            <!-- Active Alerts -->
+            <div class="alerts-section">
+                <h2>Active Alerts</h2>
+                <div class="alerts-list">
+                    <template x-for="alert in activeAlerts" :key="alert.metric + alert.nodeId">
+                        <div class="alert-item" :class="alert.severity.toLowerCase()">
+                            <span class="alert-severity" x-text="alert.severity"></span>
+                            <span class="alert-metric" x-text="alert.metric"></span>
+                            <span class="alert-node" x-text="alert.nodeId"></span>
+                            <span class="alert-value" x-text="formatMetricValue(alert.metric, alert.value)"></span>
+                        </div>
+                    </template>
+                    <div x-show="activeAlerts.length === 0" class="empty-state">
+                        No active alerts
+                    </div>
+                </div>
+            </div>
+
+            <!-- Alert History -->
+            <div class="alert-history-section">
+                <h2>Alert History</h2>
+                <div class="alerts-list">
+                    <template x-for="entry in alertHistory" :key="entry.timestamp + entry.metric + entry.nodeId">
+                        <div class="alert-history-item" :class="entry.severity.toLowerCase()">
+                            <span class="alert-time" x-text="formatTime(entry.timestamp)"></span>
+                            <span class="alert-status" x-text="entry.status"></span>
+                            <span class="alert-metric" x-text="entry.metric"></span>
+                            <span class="alert-node" x-text="entry.nodeId"></span>
+                        </div>
+                    </template>
+                    <div x-show="alertHistory.length === 0" class="empty-state">
+                        No alert history
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        function dashboard() {
+            return {
+                // State
+                tab: 'metrics',
+                wsConnected: false,
+                showNodes: false,
+                nodes: [],
+                slices: [],
+                metrics: { load: {}, invocations: [] },
+                thresholds: {},
+                activeAlerts: [],
+                alertHistory: [],
+                historyRange: '1h',
+                historyData: {},
+                uptime: 0,
+                startTime: Date.now(),
+                ws: null,
+                reconnectTimer: null,
+                historyChart: null,
+
+                init() {
+                    this.connect();
+                    setInterval(() => {
+                        this.uptime = Math.floor((Date.now() - this.startTime) / 1000);
+                    }, 1000);
+                },
+
+                connect() {
+                    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                    const wsUrl = `${protocol}//${window.location.host}/ws/dashboard`;
+
+                    this.ws = new WebSocket(wsUrl);
+
+                    this.ws.onopen = () => {
+                        this.wsConnected = true;
+                        if (this.reconnectTimer) {
+                            clearTimeout(this.reconnectTimer);
+                            this.reconnectTimer = null;
+                        }
+                    };
+
+                    this.ws.onclose = () => {
+                        this.wsConnected = false;
+                        this.scheduleReconnect();
+                    };
+
+                    this.ws.onerror = () => {
+                        this.wsConnected = false;
+                    };
+
+                    this.ws.onmessage = (event) => {
+                        this.handleMessage(JSON.parse(event.data));
+                    };
+                },
+
+                scheduleReconnect() {
+                    if (!this.reconnectTimer) {
+                        this.reconnectTimer = setTimeout(() => {
+                            this.reconnectTimer = null;
+                            this.connect();
+                        }, 3000);
+                    }
+                },
+
+                handleMessage(msg) {
+                    switch (msg.type) {
+                        case 'INITIAL_STATE':
+                            this.nodes = msg.data.nodes || [];
+                            this.slices = msg.data.slices || [];
+                            this.thresholds = msg.data.thresholds || {};
+                            this.metrics = msg.data.metrics || { load: {}, invocations: [] };
+                            break;
+                        case 'METRICS_UPDATE':
+                            this.metrics = msg.data || { load: {}, invocations: [] };
+                            break;
+                        case 'ALERT':
+                            this.handleAlert(msg.data);
+                            break;
+                        case 'HISTORY':
+                            this.historyData = msg.nodes || {};
+                            this.updateHistoryChart();
+                            break;
+                    }
+                },
+
+                handleAlert(alert) {
+                    // Update active alerts
+                    const key = alert.metric + ':' + alert.nodeId;
+                    const existing = this.activeAlerts.findIndex(a =>
+                        a.metric === alert.metric && a.nodeId === alert.nodeId);
+
+                    if (existing >= 0) {
+                        this.activeAlerts[existing] = alert;
+                    } else {
+                        this.activeAlerts.push(alert);
+                    }
+                },
+
+                loadHistory() {
+                    if (this.ws && this.wsConnected) {
+                        this.ws.send(JSON.stringify({
+                            type: 'GET_HISTORY',
+                            timeRange: this.historyRange
+                        }));
+                    }
+                },
+
+                updateThreshold(metric, warning, critical) {
+                    if (this.ws && this.wsConnected) {
+                        this.ws.send(JSON.stringify({
+                            type: 'SET_THRESHOLD',
+                            metric: metric,
+                            warning: parseFloat(warning),
+                            critical: parseFloat(critical)
+                        }));
+                        this.thresholds[metric] = {
+                            warning: parseFloat(warning),
+                            critical: parseFloat(critical)
+                        };
+                    }
+                },
+
+                updateHistoryChart() {
+                    const ctx = document.getElementById('historyChart');
+                    if (!ctx) return;
+
+                    const datasets = [];
+                    const colors = ['#4ade80', '#60a5fa', '#f472b6', '#facc15', '#a78bfa'];
+                    let colorIndex = 0;
+
+                    for (const [nodeId, snapshots] of Object.entries(this.historyData)) {
+                        const cpuData = snapshots.map(s => ({
+                            x: s.timestamp,
+                            y: s.metrics['cpu.usage'] || 0
+                        }));
+
+                        datasets.push({
+                            label: `${nodeId} CPU`,
+                            data: cpuData,
+                            borderColor: colors[colorIndex % colors.length],
+                            fill: false,
+                            tension: 0.1
+                        });
+                        colorIndex++;
+                    }
+
+                    if (this.historyChart) {
+                        this.historyChart.destroy();
+                    }
+
+                    this.historyChart = new Chart(ctx, {
+                        type: 'line',
+                        data: { datasets },
+                        options: {
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            scales: {
+                                x: {
+                                    type: 'linear',
+                                    title: { display: true, text: 'Time' },
+                                    ticks: {
+                                        callback: (value) => new Date(value).toLocaleTimeString()
+                                    }
+                                },
+                                y: {
+                                    min: 0,
+                                    max: 1,
+                                    title: { display: true, text: 'CPU Usage' }
+                                }
+                            },
+                            plugins: {
+                                legend: { position: 'top' }
+                            }
+                        }
+                    });
+                },
+
+                // Formatting helpers
+                formatUptime(seconds) {
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = seconds % 60;
+                    return `${h}h ${m}m ${s}s`;
+                },
+
+                formatMetricValue(name, value) {
+                    if (name.includes('usage') || name.includes('percent')) {
+                        return (value * 100).toFixed(1) + '%';
+                    }
+                    if (name.includes('bytes') || name.includes('memory')) {
+                        return this.formatBytes(value);
+                    }
+                    if (typeof value === 'number') {
+                        return value.toFixed(2);
+                    }
+                    return value;
+                },
+
+                formatBytes(bytes) {
+                    if (bytes < 1024) return bytes + ' B';
+                    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+                    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+                    return (bytes / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+                },
+
+                formatNanos(ns) {
+                    if (ns < 1000) return ns + ' ns';
+                    if (ns < 1000000) return (ns / 1000).toFixed(1) + ' us';
+                    if (ns < 1000000000) return (ns / 1000000).toFixed(1) + ' ms';
+                    return (ns / 1000000000).toFixed(2) + ' s';
+                },
+
+                formatTime(timestamp) {
+                    return new Date(timestamp).toLocaleTimeString();
+                },
+
+                getMetricClass(name, value) {
+                    const threshold = this.thresholds[name];
+                    if (!threshold) return '';
+                    if (value >= threshold.critical) return 'critical';
+                    if (value >= threshold.warning) return 'warning';
+                    return 'normal';
+                }
+            };
+        }
+    </script>
+</body>
+</html>

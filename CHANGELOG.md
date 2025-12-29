@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.3] - 2025-12-29
 
 ### Added
+- **Production dashboard** - Real-time cluster monitoring at `/dashboard` with Alpine.js and Chart.js
+- **WebSocket metrics streaming** - 1-second broadcast of cluster metrics via `/ws/dashboard`
+- **Alert management** - Configurable thresholds with in-memory alert tracking
+- **Dashboard tabs** - Metrics, Slices, History, and Alerts views
+- **New API endpoints** - `/slices/status`, `/invocation-metrics`, `/thresholds`, `/alerts`
 
 ### Changed
 
