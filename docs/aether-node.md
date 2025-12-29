@@ -58,6 +58,8 @@ An Aether cluster consists of multiple AetherNodes that:
 | `HttpRouter` | HTTP request routing to slices |
 | `SliceInvoker` | Inter-slice invocation with retry |
 | `ManagementServer` | REST API for cluster management |
+| `MavenProtocolHandler` | Maven-compatible artifact repository |
+| `ArtifactStore` | DHT-backed artifact storage |
 
 ## Configuration
 
@@ -106,6 +108,7 @@ var config = aetherNodeConfig(
 | `sliceAction` | `SliceActionConfig` | Slice lifecycle timeouts |
 | `managementPort` | `int` | REST API port (0 to disable) |
 | `httpRouter` | `Option<RouterConfig>` | HTTP routing configuration |
+| `artifactRepo` | `DHTConfig` | Artifact repository replication settings |
 
 ## Starting a Node
 
@@ -142,6 +145,8 @@ The Management Server provides REST endpoints for cluster administration.
 | `/metrics` | GET | Current cluster metrics |
 | `/blueprint` | POST | Deploy a new blueprint |
 | `/blueprint/{artifact}` | DELETE | Remove a deployed blueprint |
+| `/repository/**` | GET | Retrieve artifact from repository |
+| `/repository/**` | PUT | Deploy artifact to repository |
 
 ### Example Responses
 

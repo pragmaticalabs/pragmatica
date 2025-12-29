@@ -2,101 +2,107 @@
 
 ## Overview
 
-Infrastructure Services are special slices that provide cluster-wide platform capabilities. Unlike application slices, they are deployed automatically from an infrastructure repository when required by application blueprints.
+Aether provides built-in infrastructure services as part of the core runtime. These services are automatically available on every node without requiring separate deployment.
 
-## Architecture
+## Current Implementation
+
+### Artifact Repository (Built-in)
+
+The artifact repository is integrated directly into AetherNode, providing Maven-compatible artifact storage.
+
+**Architecture:**
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  Application Blueprint                                           │
-│  requires: [artifact-repo, http-routing]                        │
-│  slices: [order-service, inventory-service, ...]                │
-└─────────────────────────────────────────────────────────────────┘
-                              ↓
-                    (auto-resolved from)
-                              ↓
-┌─────────────────────────────────────────────────────────────────┐
-│  Infrastructure Service Repository                               │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐               │
-│  │artifact-repo│ │http-routing │ │  caching    │ ...           │
-│  └─────────────┘ └─────────────┘ └─────────────┘               │
+│  ManagementServer (HTTP API)                                     │
+│  └─ /repository/**  (Maven protocol)                            │
 └─────────────────────────────────────────────────────────────────┘
                               ↓
 ┌─────────────────────────────────────────────────────────────────┐
-│  Aether Core                                                     │
-│  consensus (Rabia) | slice lifecycle | metrics | decision tree  │
+│  MavenProtocolHandler                                            │
+│  └─ Parse paths, handle GET/PUT                                  │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  ArtifactStore                                                   │
+│  └─ Chunked storage, version listing                             │
+└─────────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────────┐
+│  Distributed Hash Table (DHT)                                    │
+│  └─ Consistent hashing, configurable replication                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Key Principles
+**Value:**
+- No external Nexus/Artifactory required
+- Self-contained deployment story
+- Enables air-gapped deployments
+- First-run experience: `aether artifact deploy my-app.jar` just works
 
-### 1. Infrastructure Services ARE Slices
+**Replication Configuration:**
 
-No special runtime treatment. Infrastructure services follow the same:
-- Slice interface
-- Lifecycle (load → activate → active)
-- Inter-slice communication
-- Monitoring and metrics
+The DHT supports configurable replication via `DHTConfig`:
 
-The only difference is deployment order and source (infra repo vs application artifact).
+| Mode | Replication Factor | Use Case |
+|------|-------------------|----------|
+| `DEFAULT` | 3 (quorum 2) | Production - balance between redundancy and efficiency |
+| `FULL` | 0 (all nodes) | Testing/Forge - simple, all nodes have everything |
+| `SINGLE_NODE` | 1 | Development - single node setup |
 
-### 2. Automatic Resolution
+```java
+// In AetherNodeConfig
+AetherNodeConfig.aetherNodeConfig(self, port, coreNodes, sliceConfig,
+    managementPort, httpRouter, DHTConfig.DEFAULT);  // 3 replicas
 
-When Aether loads an application blueprint with `requires: [artifact-repo]`:
-1. Check if `artifact-repo` service is already running
-2. If not, load from infrastructure repository
-3. If not in repository, fail blueprint deployment
-4. Start infrastructure service before application slices
+// For tests/Forge - full replication
+AetherNodeConfig.testConfig(self, port, coreNodes);  // Uses DHTConfig.FULL
+```
 
-### 3. Unified Discovery
+**CLI Usage:**
 
-Application slices find infrastructure services using the same mechanisms as inter-slice calls:
-- Well-known service names (e.g., `artifact-repo`, `caching`)
-- Standard SliceInvoker API
-- Same retry and timeout handling
+```bash
+# Deploy artifact
+aether artifact deploy target/my-slice.jar -g com.example -a my-slice -v 1.0.0
+
+# List artifacts
+aether artifact list
+
+# List versions
+aether artifact versions com.example:my-slice
+```
+
+**Maven Protocol:**
+
+The repository supports standard Maven GET/PUT operations:
+
+```bash
+# Deploy via Maven
+mvn deploy -DaltDeploymentRepository=aether::default::http://localhost:8080/repository
+
+# Or curl
+curl -X PUT http://localhost:8080/repository/com/example/my-slice/1.0.0/my-slice-1.0.0.jar \
+  --data-binary @target/my-slice-1.0.0.jar
+```
+
+### Forge Integration
+
+Forge (testing simulator) automatically provides artifact repository on the same port as the dashboard API. This enables testing deployment flows without external infrastructure.
+
+```bash
+# Start Forge
+./script/aether-forge.sh
+
+# Deploy to Forge's repository
+curl -X PUT http://localhost:8888/repository/com/example/test/1.0.0/test-1.0.0.jar \
+  --data-binary @test.jar
+```
 
 ## Planned Infrastructure Services
 
-### Priority 1: Artifact Repository
+### HTTP Routing Service (Future)
 
-**Purpose**: Maven-compatible repository for deploying and retrieving slice artifacts.
-
-**Value**:
-- Eliminates need for external Nexus/Artifactory/Archiva
-- Self-contained deployment story
-- Enables air-gapped deployments
-- First-run experience: `aether deploy my-app.jar` just works
-
-**Interface**:
-```java
-public interface ArtifactRepository {
-    // Deploy artifact
-    Promise<Unit> deploy(Artifact artifact, byte[] content);
-
-    // Resolve artifact
-    Promise<byte[]> resolve(Artifact artifact);
-
-    // List versions
-    Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
-
-    // Check existence
-    Promise<Boolean> exists(Artifact artifact);
-}
-```
-
-**Protocol**: Subset of Maven repository protocol (enough for deploy + resolve).
-
-**Storage**: Distributed hash map with persistence (see Foundation section).
-
-### Priority 2: HTTP Routing Service
-
-**Purpose**: External HTTP request routing to slices.
-
-**Value**:
-- Removes routing configuration from blueprint
-- Slices self-register routes on startup
-- Enables dynamic routing changes
-- Cleaner separation of concerns
+Self-registration based routing to replace blueprint-defined routes.
 
 **Current** (routing in blueprint):
 ```
@@ -114,76 +120,30 @@ httpRouting.register(
 );
 ```
 
-**Blueprint becomes**:
-```toml
-[blueprint]
-name = "order-system"
-requires = ["http-routing"]
+### Caching Service (Future)
 
-[slices]
-"org.example:place-order:1.0.0" = 3
-"org.example:get-order-status:1.0.0" = 2
-```
+Distributed cache with configurable consistency, built on the same DHT foundation.
 
-### Priority 3: Caching Service
-
-**Purpose**: Distributed cache with configurable consistency.
-
-**Value**:
-- Eliminates Redis/Memcached dependency
-- Integrated with Aether patterns
-- Per-cache configuration
-
-**Interface** (Apache Ignite-inspired):
 ```java
 public interface CacheService {
-    // Get or create named cache
     <K, V> Promise<Cache<K, V>> cache(String name, CacheConfig config);
 }
 
-public interface Cache<K, V> {
-    Promise<Option<V>> get(K key);
-    Promise<Unit> put(K key, V value);
-    Promise<Unit> putWithTtl(K key, V value, Duration ttl);
-    Promise<Boolean> remove(K key);
-    Promise<Unit> clear();
-}
-
 public record CacheConfig(
-    int replicas,           // Number of copies (e.g., 3)
-    int writeQuorum,        // ACKs needed for success (e.g., 2)
+    int replicas,           // Number of copies
+    int writeQuorum,        // ACKs needed for success
     Duration defaultTtl,    // Default TTL
     EvictionPolicy eviction // LRU, LFU, etc.
 ) {}
 ```
 
-### Future: Messaging & Streaming
+## Foundation: Distributed Hash Table
 
-**Lightweight Messaging**:
-- Point-to-point with delivery guarantees
-- Fire-and-forget option
-- Request-reply pattern
-
-**Pub-Sub**:
-- Topic-based subscription
-- Durable subscriptions option
-
-**Streaming** (Kafka-like):
-- Persistent event log
-- Consumer groups
-- Replay from offset
-
-These are deferred until customer demand is clear.
-
-## Foundation: Distributed Hash Map
-
-All infrastructure services share a common foundation: a distributed hash map with optional persistence.
+All infrastructure services share a common DHT foundation with consistent hashing.
 
 ### Design
 
-**NOT the consensus KV-Store**: The existing Rabia-based KV-Store is for cluster metadata - consistent but not optimized for performance.
-
-**New component**: Consistent hashing implementation for data distribution.
+**Separate from consensus KV-Store**: The Rabia-based KV-Store handles cluster metadata (blueprints, slice states). The DHT handles data distribution for infrastructure services.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -201,8 +161,8 @@ All infrastructure services share a common foundation: a distributed hash map wi
 │              ┌───────────────────────┐                          │
 │              │   Storage Engines     │                          │
 │              │  ┌────────┐ ┌──────┐  │                          │
-│              │  │KV DB   │ │Off-  │  │                          │
-│              │  │Engine  │ │Heap  │  │                          │
+│              │  │Memory  │ │Future│  │                          │
+│              │  │Engine  │ │ KV DB│  │                          │
 │              │  └────────┘ └──────┘  │                          │
 │              └───────────────────────┘                          │
 └─────────────────────────────────────────────────────────────────┘
@@ -214,197 +174,50 @@ All infrastructure services share a common foundation: a distributed hash map wi
 
 ### Consistent Hashing
 
-**Approach**: Similar to Apache Ignite, but simpler.
-
-**Partition assignment**:
-- Hash key → partition (e.g., 1024 partitions)
-- Partition → primary node + replica nodes
-- SMR tracks partition assignments (not data)
-
-**Replication**:
-- Configurable replica count (e.g., 3)
-- Configurable write quorum (e.g., 2 of 3)
-- Async replication with configurable consistency
-
-**Failure handling**:
-- Node failure triggers partition reassignment via SMR
-- Surviving replicas serve reads
-- Background rebalancing restores replica count
+**Key features:**
+- Configurable replica count (1, 3, or full)
+- Quorum-based writes
+- Node failure triggers automatic rebalancing
 
 ### Storage Engines
 
-**1. KV Database Engine**:
-- Persistent storage
+**1. Memory Engine** (current):
+- In-memory ConcurrentHashMap
+- Fast, suitable for testing and small deployments
+- Data lost on restart
+
+**2. Persistent Engine** (future):
 - Write-ahead log
 - Compaction
-- For: artifact repository, durable caches
-
-**2. Off-Heap Memory Engine**:
-- In-memory with off-heap storage
-- Fast access, no GC pressure
-- For: session caches, hot data
-
-### Why This Works
-
-Starting with SMR (Rabia) provides:
-- Reliable partition map
-- Membership tracking
-- Leader for coordination tasks
-
-Adding consistent hashing provides:
-- Horizontal data scaling
-- Configurable consistency/availability tradeoff
-- Independent of consensus performance
-
-This is the opposite of Ignite's evolution (DHT first, consensus later) but may be simpler because cluster coordination is already solved.
-
-## Blueprint Dependencies
-
-### Syntax
-
-```toml
-[blueprint]
-name = "order-system"
-requires = ["artifact-repo", "http-routing", "caching"]
-
-[slices]
-"org.example:place-order:1.0.0" = 3
-"org.example:inventory:1.0.0" = 2
-```
-
-### Resolution Flow
-
-1. Parse blueprint
-2. Check `requires` list
-3. For each required service:
-   - If running: continue
-   - If not running: load from infra repo
-   - If not in repo: fail with clear error
-4. Wait for infrastructure services to reach ACTIVE
-5. Deploy application slices
-
-### Error Messages
-
-```
-Blueprint deployment failed:
-
-Required infrastructure service 'caching' not found.
-
-Available services in infrastructure repository:
-  - artifact-repo (v1.0.0)
-  - http-routing (v1.0.0)
-
-To add caching service:
-  aether infra install caching
-```
-
-## Bootstrap Strategy
-
-### Problem
-
-Artifact-repo can't load itself from artifact-repo.
-
-### Solution: Two-Phase Bootstrap
-
-**Phase 1 - Bundled Bootstrap**:
-- Aether distribution ships with core infra services embedded
-- Located in `lib/infra/` or similar
-- Includes: artifact-repo, http-routing (minimal set)
-
-**Phase 2 - Self-Hosted**:
-- Once artifact-repo is running, it stores infra services
-- Upgrades deployed through artifact-repo itself
-- Bundled versions used only for cold start
-
-### Bootstrap Flow
-
-```
-1. Aether starts
-2. Check if artifact-repo running in cluster
-3. If not: load from bundled lib/infra/artifact-repo.jar
-4. Artifact-repo starts, registers itself
-5. Future loads come from artifact-repo
-6. Upgrade: deploy new version → restart → picks up new version
-```
-
-### Upgrade Path
-
-```bash
-# Deploy new infra service version
-aether deploy lib/infra/artifact-repo-2.0.0.jar
-
-# Rolling restart picks up new version
-aether cluster rolling-restart
-```
-
-## Implementation Roadmap
-
-### Phase 1: Foundation (Month 2)
-- [ ] Distributed hash map design
-- [ ] Consistent hashing implementation
-- [ ] Basic storage engine (in-memory)
-
-### Phase 2: Artifact Repository (Month 2-3)
-- [ ] Maven protocol subset
-- [ ] Deploy/resolve operations
-- [ ] Integration with slice loading
-- [ ] CLI: `aether deploy artifact.jar`
-
-### Phase 3: HTTP Routing Service (Month 3)
-- [ ] Self-registration API
-- [ ] Route management
-- [ ] Migration from blueprint routing
-- [ ] Backward compatibility
-
-### Phase 4: Caching Service (Month 4+)
-- [ ] Cache API
-- [ ] Configurable consistency
-- [ ] TTL and eviction
-- [ ] Persistent storage engine
-
-### Future Phases
-- Messaging service
-- Pub-sub service
-- Streaming service
-- Distributed file system
+- For production artifact storage
 
 ## Trade-offs and Decisions
 
-### Why Infrastructure Services vs Built-in Features?
+### Why Built-in vs Separate Slices?
 
-**Pros of service approach**:
-- Dogfoods slice architecture
-- Optional - don't pay for what you don't use
-- Upgradable independently
-- Testable in isolation
+The artifact repository is built into AetherNode rather than deployed as a slice because:
 
-**Cons**:
-- More moving parts at startup
-- Bootstrap complexity
+1. **Bootstrap problem**: Can't load slice JARs from repository if repository isn't running
+2. **Simpler operations**: No separate deployment/upgrade path
+3. **Always available**: Every node can serve artifacts
+4. **Testing parity**: Same code path in production and Forge
 
-**Decision**: Services approach is cleaner. Bootstrap with bundled, then self-host.
+### Why Not External Solutions?
 
-### Why Not Use Existing Solutions?
-
-Could embed Redis, H2, etc. But:
-- Adds external dependencies
+Could use Nexus, Artifactory, or S3. But:
+- Adds external dependency
 - Different operational model
 - Doesn't leverage Aether's distribution
+- Complicates air-gapped deployments
 
-Building on Aether's foundation provides:
+Building on Aether's DHT provides:
 - Unified management
 - Consistent APIs
 - Single system to operate
-
-### Consistency vs Availability
-
-Each service can configure its own trade-off:
-- Artifact repo: Strong consistency (don't serve stale artifacts)
-- Caching: Configurable per cache
-- Messaging: At-least-once or at-most-once per use case
+- Automatic replication
 
 ## Related Documents
 
-- [metrics-and-control.md](metrics-and-control.md) - Layered autonomy architecture
+- [CLI Reference](guide/cli-reference.md) - Artifact CLI commands
 - [architecture-overview.md](architecture-overview.md) - Core Aether architecture
-- [demos.md](demos.md) - Current blueprint format and slice patterns
+- [Forge Guide](guide/forge-guide.md) - Testing with artifact deployment
