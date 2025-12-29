@@ -60,28 +60,57 @@ Extract hot paths into slices gradually. No big bang rewrite.
 
 → [Migration Guide](docs/guide/migration-guide.md)
 
-## Quick Start
+## Installation
 
 **Requires Java 25**
 
+### Quick Install (Linux/macOS)
+
 ```bash
-# Create new project
-aether init my-app
-cd my-app
+curl -fsSL https://raw.githubusercontent.com/siy/aether/main/install.sh | sh
+```
 
-# Build
-mvn clean install
+The installer:
+- Downloads `aether`, `aether-node`, and `aether-forge`
+- Installs to `~/.aether/`
+- Adds `~/.aether/bin` to PATH
 
-# Start cluster and deploy
-aether start
-aether deploy hello-world
+Custom install location: `AETHER_HOME=/custom/path sh install.sh`
 
-# Test
-curl http://localhost:8080/hello?name=World
-# {"message": "Hello, World!"}
+### Manual Installation
+
+Download JARs from [releases](https://github.com/siy/aether/releases):
+
+```bash
+java -jar aether.jar --help
+java -jar aether-node.jar --help
+java -jar aether-forge.jar
+```
+
+### Build from Source
+
+```bash
+git clone https://github.com/siy/aether.git
+cd aether
+mvn package -DskipTests
+
+# JARs:
+#   cli/target/aether.jar
+#   node/target/aether-node.jar
+#   forge/target/aether-forge.jar
+```
+
+## Quick Start
+
+```bash
+# Check cluster status
+aether status
+
+# Deploy a slice
+aether deploy org.example:my-slice:1.0.0
 
 # Scale it
-aether scale hello-world --instances 3
+aether scale org.example:my-slice:1.0.0 3
 ```
 
 ## Try Forge (Chaos Testing)
@@ -89,9 +118,7 @@ aether scale hello-world --instances 3
 See Aether's resilience in action:
 
 ```bash
-cd forge
-mvn package
-java -jar target/forge-0.6.2.jar
+aether-forge
 # Open http://localhost:8888
 ```
 
