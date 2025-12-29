@@ -17,7 +17,9 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.cluster.topology.TopologyChangeNotification;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
 import org.pragmatica.message.MessageReceiver;
+import org.pragmatica.message.MessageRouter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -88,6 +90,7 @@ public interface ClusterDeploymentManager {
                 NodeId self,
                 ClusterNode<KVCommand<AetherKey>> cluster,
                 KVStore<AetherKey, AetherValue> kvStore,
+                MessageRouter router,
                 Map<Artifact, Blueprint> blueprints,
                 Map<SliceNodeKey, SliceState> sliceStates,
                 List<NodeId> activeNodes
@@ -290,6 +293,10 @@ public interface ClusterDeploymentManager {
             private void issueLoadCommand(SliceNodeKey sliceKey) {
                 log.info("Issuing LOAD command for {}", sliceKey);
 
+                // Emit deployment started event for metrics via MessageRouter
+                var timestamp = System.currentTimeMillis();
+                router.route(new DeploymentStarted(sliceKey.artifact(), sliceKey.nodeId(), timestamp));
+
                 var value = new SliceNodeValue(SliceState.LOAD);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(sliceKey, value);
 
@@ -346,12 +353,14 @@ public interface ClusterDeploymentManager {
     static ClusterDeploymentManager clusterDeploymentManager(
             NodeId self,
             ClusterNode<KVCommand<AetherKey>> cluster,
-            KVStore<AetherKey, AetherValue> kvStore
+            KVStore<AetherKey, AetherValue> kvStore,
+            MessageRouter router
     ) {
         record clusterDeploymentManager(
                 NodeId self,
                 ClusterNode<KVCommand<AetherKey>> cluster,
                 KVStore<AetherKey, AetherValue> kvStore,
+                MessageRouter router,
                 AtomicReference<ClusterDeploymentState> state
         ) implements ClusterDeploymentManager {
 
@@ -366,6 +375,7 @@ public interface ClusterDeploymentManager {
                             self,
                             cluster,
                             kvStore,
+                            router,
                             new ConcurrentHashMap<>(),
                             new ConcurrentHashMap<>(),
                             new CopyOnWriteArrayList<>()
@@ -402,6 +412,7 @@ public interface ClusterDeploymentManager {
                 self,
                 cluster,
                 kvStore,
+                router,
                 new AtomicReference<>(new ClusterDeploymentState.Dormant())
         );
     }

@@ -1,335 +1,355 @@
 # Aether CLI Reference
 
+## Overview
+
+Aether provides three command-line tools:
+
+| Tool | Purpose | Script |
+|------|---------|--------|
+| `aether-cli` | Cluster management CLI | `script/aether-cli.sh` |
+| `aether-node` | Run a cluster node | `script/aether-node.sh` |
+| `aether-forge` | Testing simulator | `script/aether-forge.sh` |
+
 ## Installation
 
-```bash
-# Download
-curl -sSL https://aether.pragmatica.dev/install.sh | bash
+### Build from Source
 
-# Or build from source
+```bash
 git clone https://github.com/pragmatica-lite/aether.git
-cd aether && mvn install -DskipTests
-alias aether="java -jar cli/target/cli-0.6.2.jar"
+cd aether
+mvn package -DskipTests
 ```
 
-## Commands Overview
+### Run Scripts
 
-| Command | Description |
-|---------|-------------|
-| `aether init` | Create new project |
-| `aether start` | Start local cluster |
-| `aether stop` | Stop cluster |
-| `aether status` | Show cluster status |
-| `aether deploy` | Deploy a slice |
-| `aether undeploy` | Remove a slice |
-| `aether scale` | Scale slice instances |
-| `aether node` | Manage cluster nodes |
-| `aether logs` | View slice logs |
-| `aether events` | View cluster events |
-| `aether forge` | Chaos testing |
-
-## Project Commands
-
-### aether init
-
-Create a new Aether project:
+After building, use the scripts in the `script/` directory:
 
 ```bash
-aether init my-app
-aether init my-app --group-id com.example
-aether init my-app --template order-demo
+./script/aether-cli.sh status
+./script/aether-node.sh --port=8091
+./script/aether-forge.sh
 ```
 
-Options:
-- `--group-id` - Maven group ID (default: com.example)
-- `--template` - Project template (minimal, order-demo)
-- `--java` - Java version (default: 25)
+---
 
-## Cluster Commands
+## aether-cli: Cluster Management
 
-### aether start
+Interactive CLI for managing Aether clusters.
 
-Start a local cluster:
+### Usage
 
 ```bash
-aether start                    # Single node
-aether start --nodes 3          # 3-node cluster
-aether start --config app.yml   # From config file
+# Batch mode - execute single command
+./script/aether-cli.sh [options] <command>
+
+# REPL mode - interactive shell
+./script/aether-cli.sh [options]
 ```
 
-Options:
-- `--nodes` - Number of nodes (default: 1)
-- `--port` - Base port (default: 4040)
-- `--config` - Configuration file
-- `--background` - Run in background
+### Options
 
-### aether stop
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-c, --connect <host:port>` | Node address to connect to | `localhost:8080` |
+| `-h, --help` | Show help | |
+| `-V, --version` | Show version | |
 
-Stop the cluster:
+### Commands
 
-```bash
-aether stop                     # Graceful shutdown
-aether stop --force             # Immediate termination
-```
-
-### aether status
+#### status
 
 Show cluster status:
 
 ```bash
-aether status
-aether status --watch           # Live updates
-aether status --verbose         # Detailed info
-aether status --json            # JSON output
+aether-cli status
 ```
 
 Output:
 ```
-Cluster: healthy (3 nodes)
-
-Nodes:
-  node-1 (leader)  localhost:4040  CPU: 45%  Heap: 234MB/512MB
-  node-2           localhost:4041  CPU: 38%  Heap: 189MB/512MB
-  node-3           localhost:4042  CPU: 42%  Heap: 201MB/512MB
-
-Slices:
-  order-processor     3 instances  45 req/s  P99: 23ms
-  inventory-service   2 instances  120 req/s  P99: 8ms
+Cluster Status:
+  Leader: node-1
+  Nodes: 3
+  Healthy: true
 ```
 
-## Deployment Commands
+#### nodes
 
-### aether deploy
+List cluster nodes:
+
+```bash
+aether-cli nodes
+```
+
+Output:
+```
+Nodes:
+  node-1 (leader)  localhost:8091  ACTIVE
+  node-2           localhost:8092  ACTIVE
+  node-3           localhost:8093  ACTIVE
+```
+
+#### slices
+
+List deployed slices:
+
+```bash
+aether-cli slices
+```
+
+Output:
+```
+Slices:
+  org.example:order-processor:1.0.0    3 instances  ACTIVE
+  org.example:inventory:1.0.0          2 instances  ACTIVE
+```
+
+#### metrics
+
+Show cluster metrics:
+
+```bash
+aether-cli metrics
+```
+
+Output:
+```
+Metrics:
+  CPU: 45% (node-1), 38% (node-2), 42% (node-3)
+  Memory: 234MB/512MB, 189MB/512MB, 201MB/512MB
+
+  Deployments (last 10):
+    org.example:order:1.0.0  node-1  1234ms  SUCCESS
+    org.example:order:1.0.0  node-2  1156ms  SUCCESS
+```
+
+#### health
+
+Health check:
+
+```bash
+aether-cli health
+```
+
+#### deploy
 
 Deploy a slice:
 
 ```bash
-aether deploy order-processor
-aether deploy com.example:order-processor:1.0.0
-aether deploy order-processor --instances 3
-aether deploy order-processor --node node-1
+aether-cli deploy <artifact> [instances]
+
+# Examples
+aether-cli deploy org.example:order:1.0.0
+aether-cli deploy org.example:order:1.0.0 3
 ```
 
-Options:
-- `--instances` - Number of instances (default: 1)
-- `--node` - Target node for placement
-- `--wait` - Wait for deployment to complete
+#### scale
 
-### aether undeploy
+Scale a slice:
+
+```bash
+aether-cli scale <artifact> <instances>
+
+# Example
+aether-cli scale org.example:order:1.0.0 5
+```
+
+#### undeploy
 
 Remove a slice:
 
 ```bash
-aether undeploy order-processor
-aether undeploy order-processor --force
+aether-cli undeploy <artifact>
+
+# Example
+aether-cli undeploy org.example:order:1.0.0
 ```
 
-Options:
-- `--force` - Skip graceful shutdown
+#### artifact
 
-### aether scale
-
-Scale slice instances:
+Artifact operations (resolve, info):
 
 ```bash
-aether scale order-processor --instances 5
-aether scale order-processor --min 2 --max 10
-aether scale order-processor --target-cpu 70
-aether scale order-processor --auto=false
+aether-cli artifact resolve <coordinate>
+aether-cli artifact info <coordinate>
 ```
 
-Options:
-- `--instances` - Exact instance count
-- `--min` - Minimum instances
-- `--max` - Maximum instances
-- `--target-cpu` - Target CPU percentage
-- `--target-latency` - Target P99 latency
-- `--auto` - Enable/disable auto-scaling
+### REPL Mode
 
-## Node Commands
-
-### aether node add
-
-Add a node to the cluster:
+Start interactive mode by omitting the command:
 
 ```bash
-aether node add --port 4043
-aether node add --address node-4.example.com:4040
+./script/aether-cli.sh --connect localhost:8080
+
+Aether CLI v0.6.2 - Connected to localhost:8080
+Type 'help' for available commands, 'exit' to quit.
+
+aether> status
+Cluster Status:
+  Leader: node-1
+  Nodes: 3
+  Healthy: true
+
+aether> nodes
+...
+
+aether> exit
 ```
 
-### aether node remove
-
-Remove a node:
+### Examples
 
 ```bash
-aether node remove node-4
-aether node remove node-4 --force
+# Check cluster status
+./script/aether-cli.sh status
+
+# Connect to specific node
+./script/aether-cli.sh --connect node1.example.com:8080 status
+
+# Deploy a slice with 3 instances
+./script/aether-cli.sh deploy org.example:my-slice:1.0.0 3
+
+# Interactive mode
+./script/aether-cli.sh --connect localhost:8080
 ```
 
-### aether node list
+---
 
-List all nodes:
+## aether-node: Cluster Node
+
+Run an Aether cluster node.
+
+### Usage
 
 ```bash
-aether node list
-aether node list --json
+./script/aether-node.sh [options]
 ```
 
-## Observability Commands
+### Options
 
-### aether logs
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--node-id=<id>` | Node identifier | Random UUID |
+| `--port=<port>` | Cluster port | 8090 |
+| `--peers=<list>` | Comma-separated peer addresses | Self only |
 
-View slice logs:
+### Peer Address Format
+
+```
+host:port           # Auto-generate node ID from address
+nodeId:host:port    # Explicit node ID
+```
+
+### Examples
 
 ```bash
-aether logs order-processor
-aether logs order-processor --tail 100
-aether logs order-processor --follow
-aether logs order-processor --since 1h
-aether logs --all                        # All slices
+# Start single node (standalone)
+./script/aether-node.sh
+
+# Start node with specific ID and port
+./script/aether-node.sh --node-id=node-1 --port=8091
+
+# Start node and join cluster
+./script/aether-node.sh \
+  --node-id=node-2 \
+  --port=8092 \
+  --peers=localhost:8091,localhost:8092
 ```
 
-Options:
-- `--tail` - Number of lines
-- `--follow` - Stream new logs
-- `--since` - Time range (1h, 30m, etc.)
-- `--node` - Logs from specific node
+### Starting a 3-Node Cluster
 
-### aether events
-
-View cluster events:
+Run each command in a separate terminal:
 
 ```bash
-aether events
-aether events --type scaling
-aether events --type deployment
-aether events --type failure
-aether events --last 50
-aether events --follow
+# Terminal 1
+./script/aether-node.sh \
+  --node-id=node-1 \
+  --port=8091 \
+  --peers=localhost:8091,localhost:8092,localhost:8093
+
+# Terminal 2
+./script/aether-node.sh \
+  --node-id=node-2 \
+  --port=8092 \
+  --peers=localhost:8091,localhost:8092,localhost:8093
+
+# Terminal 3
+./script/aether-node.sh \
+  --node-id=node-3 \
+  --port=8093 \
+  --peers=localhost:8091,localhost:8092,localhost:8093
 ```
 
-Options:
-- `--type` - Event type filter
-- `--last` - Number of events
-- `--follow` - Stream new events
-- `--json` - JSON output
+---
 
-### aether metrics
+## aether-forge: Testing Simulator
 
-View metrics:
+Standalone cluster simulator with visual dashboard for load and chaos testing.
+
+### Usage
 
 ```bash
-aether metrics
-aether metrics order-processor
-aether metrics --export prometheus
+./script/aether-forge.sh
 ```
 
-## Forge Commands
+### Environment Variables
 
-### aether forge start
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `FORGE_PORT` | Dashboard HTTP port | 8888 |
+| `CLUSTER_SIZE` | Number of simulated nodes | 5 |
+| `LOAD_RATE` | Initial requests per second | 1000 |
 
-Start Forge testing environment:
+### Examples
 
 ```bash
-aether forge start
-aether forge start --nodes 5
-aether forge start --headless
-aether forge start --config forge.yml
+# Start with defaults
+./script/aether-forge.sh
+
+# Custom cluster size
+CLUSTER_SIZE=10 ./script/aether-forge.sh
+
+# Custom load rate
+LOAD_RATE=5000 ./script/aether-forge.sh
+
+# Custom port
+FORGE_PORT=9999 ./script/aether-forge.sh
+
+# All options
+FORGE_PORT=9999 CLUSTER_SIZE=10 LOAD_RATE=5000 ./script/aether-forge.sh
 ```
 
-Options:
-- `--nodes` - Number of simulated nodes
-- `--headless` - No dashboard
-- `--config` - Configuration file
-- `--duration` - Run duration (headless mode)
+### Dashboard
 
-### aether forge stop
+After starting, open the dashboard in your browser:
 
-Stop Forge:
+```
+http://localhost:8888
+```
+
+The dashboard provides:
+- Real-time cluster visualization
+- Load generation controls
+- Chaos injection (kill nodes, network partitions)
+- Metrics monitoring
+
+### REST API
+
+Forge exposes a REST API for automation:
 
 ```bash
-aether forge stop
+# Get cluster status
+curl http://localhost:8888/api/cluster
+
+# Get metrics
+curl http://localhost:8888/api/metrics
+
+# Kill a node
+curl -X POST http://localhost:8888/api/chaos/kill-node/node-3
+
+# Set load rate
+curl -X POST http://localhost:8888/api/load/rate/500
 ```
 
-### aether forge status
-
-Show Forge status:
-
-```bash
-aether forge status
-aether forge status --json
-```
-
-### aether forge chaos
-
-Inject chaos:
-
-```bash
-aether forge chaos kill-node node-3
-aether forge chaos kill-leader
-aether forge chaos kill-random
-aether forge chaos rolling-restart --delay 30s
-aether forge chaos inject-latency --slice order-processor --delay 500ms
-aether forge chaos partition --isolate node-2,node-3 --duration 2m
-```
-
-### aether forge scenario
-
-Run test scenarios:
-
-```bash
-aether forge scenario run node-failure.yml
-aether forge scenario run scenarios/          # Run all in directory
-aether forge scenario list
-aether forge scenario validate my-scenario.yml
-```
-
-### aether forge load
-
-Control load generation:
-
-```bash
-aether forge load start --rps 200
-aether forge load stop
-aether forge load status
-aether forge load set --rps 500
-```
-
-## Configuration Commands
-
-### aether config
-
-Manage configuration:
-
-```bash
-aether config show
-aether config set scaling.maxInstances 20
-aether config get scaling.maxInstances
-aether config validate
-```
-
-## Utility Commands
-
-### aether version
-
-Show version:
-
-```bash
-aether version
-# Aether CLI 0.6.2
-# Runtime 0.6.2
-# Java 25
-```
-
-### aether help
-
-Get help:
-
-```bash
-aether help
-aether help deploy
-aether deploy --help
-```
+---
 
 ## Exit Codes
 
@@ -339,40 +359,9 @@ aether deploy --help
 | 1 | General error |
 | 2 | Invalid arguments |
 | 3 | Connection failed |
-| 4 | Timeout |
-| 5 | Deployment failed |
-
-## Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `AETHER_HOME` | Aether installation directory | `~/.aether` |
-| `AETHER_CONFIG` | Default config file | `aether.yml` |
-| `AETHER_CLUSTER` | Cluster address | `localhost:4040` |
-| `AETHER_LOG_LEVEL` | CLI log level | `INFO` |
-
-## Configuration File
-
-```yaml
-# ~/.aether/config.yml
-cluster:
-  address: localhost:4040
-  timeout: 30s
-
-defaults:
-  instances: 2
-  scaling:
-    min: 1
-    max: 10
-    targetCpu: 70
-
-logging:
-  level: INFO
-  format: text  # or json
-```
 
 ## See Also
 
-- [Getting Started](getting-started.md)
-- [Scaling Guide](scaling.md)
-- [Forge Guide](forge-guide.md)
+- [Getting Started](getting-started.md) - First steps with Aether
+- [Forge Guide](forge-guide.md) - Detailed Forge documentation
+- [Scaling Guide](scaling.md) - Scaling configuration

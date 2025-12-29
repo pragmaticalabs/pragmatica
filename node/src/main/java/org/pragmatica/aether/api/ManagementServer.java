@@ -315,10 +315,12 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     }
 
     private String buildMetricsResponse(AetherNode node) {
-        var allMetrics = node.metricsCollector().allMetrics();
         var sb = new StringBuilder();
-        sb.append("{\"metrics\":{");
+        sb.append("{");
 
+        // Load metrics section
+        sb.append("\"load\":{");
+        var allMetrics = node.metricsCollector().allMetrics();
         boolean firstNode = true;
         for (var entry : allMetrics.entrySet()) {
             if (!firstNode) sb.append(",");
@@ -334,8 +336,47 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             sb.append("}");
             firstNode = false;
         }
+        sb.append("},");
 
-        sb.append("}}");
+        // Deployment metrics section
+        sb.append("\"deployments\":{");
+        var deploymentMetrics = node.deploymentMetricsCollector().allDeploymentMetrics();
+        boolean firstArtifact = true;
+        for (var entry : deploymentMetrics.entrySet()) {
+            if (!firstArtifact) sb.append(",");
+            sb.append("\"").append(entry.getKey().asString()).append("\":[");
+
+            boolean firstDeployment = true;
+            for (var metrics : entry.getValue()) {
+                if (!firstDeployment) sb.append(",");
+                sb.append("{");
+                sb.append("\"nodeId\":\"").append(metrics.nodeId().id()).append("\",");
+                sb.append("\"status\":\"").append(metrics.status().name()).append("\",");
+                sb.append("\"fullDeploymentMs\":").append(metrics.fullDeploymentTime()).append(",");
+                sb.append("\"netDeploymentMs\":").append(metrics.netDeploymentTime()).append(",");
+                sb.append("\"transitions\":{");
+
+                var latencies = metrics.transitionLatencies();
+                boolean firstLatency = true;
+                for (var latency : latencies.entrySet()) {
+                    if (!firstLatency) sb.append(",");
+                    sb.append("\"").append(latency.getKey()).append("\":").append(latency.getValue());
+                    firstLatency = false;
+                }
+
+                sb.append("},");
+                sb.append("\"startTime\":").append(metrics.startTime()).append(",");
+                sb.append("\"activeTime\":").append(metrics.activeTime());
+                sb.append("}");
+                firstDeployment = false;
+            }
+
+            sb.append("]");
+            firstArtifact = false;
+        }
+        sb.append("}");
+
+        sb.append("}");
         return sb.toString();
     }
 

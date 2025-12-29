@@ -17,6 +17,9 @@ import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.MetricsScheduler;
+import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
+import org.pragmatica.aether.metrics.deployment.DeploymentMetricsCollector;
+import org.pragmatica.aether.metrics.deployment.DeploymentMetricsScheduler;
 import org.pragmatica.aether.slice.FrameworkClassLoader;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.SliceRuntime;
@@ -26,6 +29,7 @@ import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.leader.LeaderNotification;
+import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.MetricsMessage;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.node.rabia.NodeConfig;
@@ -67,6 +71,8 @@ public interface AetherNode {
 
     MetricsCollector metricsCollector();
 
+    DeploymentMetricsCollector deploymentMetricsCollector();
+
     ControlLoop controlLoop();
 
     SliceInvoker sliceInvoker();
@@ -106,6 +112,8 @@ public interface AetherNode {
                 EndpointRegistry endpointRegistry,
                 MetricsCollector metricsCollector,
                 MetricsScheduler metricsScheduler,
+                DeploymentMetricsCollector deploymentMetricsCollector,
+                DeploymentMetricsScheduler deploymentMetricsScheduler,
                 ControlLoop controlLoop,
                 SliceInvoker sliceInvoker,
                 InvocationHandler invocationHandler,
@@ -144,6 +152,7 @@ public interface AetherNode {
                 log.info("Stopping Aether node {}", self());
                 controlLoop.stop();
                 metricsScheduler.stop();
+                deploymentMetricsScheduler.stop();
                 SliceRuntime.clear();
                 return httpRouter.fold(
                                () -> Promise.success(Unit.unit()),
@@ -182,13 +191,21 @@ public interface AetherNode {
         // Create route registry for dynamic route registration (before node deployment manager)
         var routeRegistry = RouteRegistry.routeRegistry(clusterNode, kvStore);
 
+        // Create deployment metrics components
+        var deploymentMetricsCollector = DeploymentMetricsCollector.deploymentMetricsCollector(
+                config.self(), clusterNode.network()
+        );
+        var deploymentMetricsScheduler = DeploymentMetricsScheduler.deploymentMetricsScheduler(
+                config.self(), clusterNode.network(), deploymentMetricsCollector
+        );
+
         // Create deployment managers
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(
                 config.self(), router, sliceStore, clusterNode, kvStore, invocationHandler, routeRegistry, config.sliceAction()
         );
 
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(
-                config.self(), clusterNode, kvStore
+                config.self(), clusterNode, kvStore, router
         );
 
         // Create endpoint registry
@@ -218,8 +235,9 @@ public interface AetherNode {
 
         // Wire up message routing
         configureRoutes(router, kvStore, nodeDeploymentManager, clusterDeploymentManager,
-                        endpointRegistry, routeRegistry, metricsCollector, metricsScheduler, controlLoop,
-                        sliceInvoker, invocationHandler);
+                        endpointRegistry, routeRegistry, metricsCollector, metricsScheduler,
+                        deploymentMetricsCollector, deploymentMetricsScheduler,
+                        controlLoop, sliceInvoker, invocationHandler);
 
         // Create HTTP router if configured
         Option<HttpRouter> httpRouter = config.httpRouter().map(routerConfig -> {
@@ -242,7 +260,8 @@ public interface AetherNode {
         var node = new aetherNode(
                 config, router, kvStore, sliceRegistry, sliceStore,
                 clusterNode, nodeDeploymentManager, clusterDeploymentManager, endpointRegistry,
-                metricsCollector, metricsScheduler, controlLoop, sliceInvoker, invocationHandler,
+                metricsCollector, metricsScheduler, deploymentMetricsCollector, deploymentMetricsScheduler,
+                controlLoop, sliceInvoker, invocationHandler,
                 blueprintService, Option.empty(), httpRouter
         );
 
@@ -252,7 +271,8 @@ public interface AetherNode {
             return new aetherNode(
                     config, router, kvStore, sliceRegistry, sliceStore,
                     clusterNode, nodeDeploymentManager, clusterDeploymentManager, endpointRegistry,
-                    metricsCollector, metricsScheduler, controlLoop, sliceInvoker, invocationHandler,
+                    metricsCollector, metricsScheduler, deploymentMetricsCollector, deploymentMetricsScheduler,
+                    controlLoop, sliceInvoker, invocationHandler,
                     blueprintService, Option.some(managementServer), httpRouter
             );
         }
@@ -268,6 +288,8 @@ public interface AetherNode {
                                         RouteRegistry routeRegistry,
                                         MetricsCollector metricsCollector,
                                         MetricsScheduler metricsScheduler,
+                                        DeploymentMetricsCollector deploymentMetricsCollector,
+                                        DeploymentMetricsScheduler deploymentMetricsScheduler,
                                         ControlLoop controlLoop,
                                         SliceInvoker sliceInvoker,
                                         InvocationHandler invocationHandler) {
@@ -298,6 +320,21 @@ public interface AetherNode {
         // Metrics messages
         router.addRoute(MetricsMessage.MetricsPing.class, metricsCollector::onMetricsPing);
         router.addRoute(MetricsMessage.MetricsPong.class, metricsCollector::onMetricsPong);
+
+        // Deployment metrics messages
+        router.addRoute(DeploymentMetricsMessage.DeploymentMetricsPing.class, deploymentMetricsCollector::onDeploymentMetricsPing);
+        router.addRoute(DeploymentMetricsMessage.DeploymentMetricsPong.class, deploymentMetricsCollector::onDeploymentMetricsPong);
+        router.addRoute(TopologyChangeNotification.class, deploymentMetricsCollector::onTopologyChange);
+
+        // Deployment events (dispatched locally via MessageRouter)
+        router.addRoute(DeploymentEvent.DeploymentStarted.class, deploymentMetricsCollector::onDeploymentStarted);
+        router.addRoute(DeploymentEvent.StateTransition.class, deploymentMetricsCollector::onStateTransition);
+        router.addRoute(DeploymentEvent.DeploymentCompleted.class, deploymentMetricsCollector::onDeploymentCompleted);
+        router.addRoute(DeploymentEvent.DeploymentFailed.class, deploymentMetricsCollector::onDeploymentFailed);
+
+        // Deployment metrics scheduler leader/topology notifications
+        router.addRoute(LeaderNotification.LeaderChange.class, deploymentMetricsScheduler::onLeaderChange);
+        router.addRoute(TopologyChangeNotification.class, deploymentMetricsScheduler::onTopologyChange);
 
         // Invocation messages
         router.addRoute(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest);

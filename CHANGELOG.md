@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.6.2] - 2025-12-29
 
 ### Added
+- **Deployment metrics** - Track slice deployment timing with full/net deployment time and transition latencies
+- **DeploymentMetricsCollector** - Collect and aggregate deployment metrics across cluster with leader-based broadcast
+- **DeploymentMetricsScheduler** - Periodic deployment metrics distribution (5-second interval)
+- **Enhanced /metrics endpoint** - Now includes both load and deployment metrics in JSON response
 - **slice-annotations module** - Minimal module with `@Slice` annotation for compile-time type safety
 - **SliceBridge interface** - Node-Slice communication using byte[] boundary for classloader isolation
 - **FrameworkClassLoader** - ClassLoader with Platform ClassLoader parent for framework class isolation
