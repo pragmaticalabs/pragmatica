@@ -121,6 +121,31 @@ public final class SliceProjectInitializer {
                 .onSuccess(createdFiles::add)
                 .onFailure(cause -> errors.add(cause.message()));
 
+            // Create deploy scripts
+            var deployForgePath = projectDir.resolve("deploy-forge.sh");
+            createFile("deploy-forge.sh.template", deployForgePath)
+                .onSuccess(path -> {
+                    makeExecutable(path);
+                    createdFiles.add(path);
+                })
+                .onFailure(cause -> errors.add(cause.message()));
+
+            var deployTestPath = projectDir.resolve("deploy-test.sh");
+            createFile("deploy-test.sh.template", deployTestPath)
+                .onSuccess(path -> {
+                    makeExecutable(path);
+                    createdFiles.add(path);
+                })
+                .onFailure(cause -> errors.add(cause.message()));
+
+            var deployProdPath = projectDir.resolve("deploy-prod.sh");
+            createFile("deploy-prod.sh.template", deployProdPath)
+                .onSuccess(path -> {
+                    makeExecutable(path);
+                    createdFiles.add(path);
+                })
+                .onFailure(cause -> errors.add(cause.message()));
+
             // Check for accumulated errors
             if (!errors.isEmpty()) {
                 return Causes.cause("File creation errors: " + String.join("; ", errors)).result();
@@ -183,6 +208,9 @@ public final class SliceProjectInitializer {
             case "SampleRequest.java.template" -> SAMPLE_REQUEST_TEMPLATE;
             case "SampleResponse.java.template" -> SAMPLE_RESPONSE_TEMPLATE;
             case "SliceTest.java.template" -> SLICE_TEST_TEMPLATE;
+            case "deploy-forge.sh.template" -> DEPLOY_FORGE_TEMPLATE;
+            case "deploy-test.sh.template" -> DEPLOY_TEST_TEMPLATE;
+            case "deploy-prod.sh.template" -> DEPLOY_PROD_TEMPLATE;
             default -> null;
         };
     }
@@ -208,6 +236,17 @@ public final class SliceProjectInitializer {
         return sb.toString();
     }
 
+    private static void makeExecutable(Path path) {
+        try {
+            var perms = Files.getPosixFilePermissions(path);
+            perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
+            perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
+            Files.setPosixFilePermissions(path, perms);
+        } catch (UnsupportedOperationException | IOException e) {
+            // Ignore on Windows or if permissions cannot be set
+        }
+    }
+
     // Inline templates
     private static final String SLICE_POM_TEMPLATE = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -229,6 +268,9 @@ public final class SliceProjectInitializer {
 
             <properties>
                 <slice.class>{{basePackage}}.{{sliceName}}</slice.class>
+                <aether.forge.url>http://localhost:8080</aether.forge.url>
+                <aether.test.url>http://test.example.com:8080</aether.test.url>
+                <aether.prod.url>http://prod.example.com:8080</aether.prod.url>
             </properties>
 
             <dependencies>
@@ -258,6 +300,78 @@ public final class SliceProjectInitializer {
                     </plugin>
                 </plugins>
             </build>
+
+            <profiles>
+                <profile>
+                    <id>deploy-forge</id>
+                    <properties>
+                        <aether.deploy.url>${aether.forge.url}</aether.deploy.url>
+                    </properties>
+                    <build>
+                        <plugins>
+                            <plugin>
+                                <groupId>org.pragmatica-lite.aether</groupId>
+                                <artifactId>aether-maven-plugin</artifactId>
+                                <executions>
+                                    <execution>
+                                        <id>deploy-slice</id>
+                                        <phase>deploy</phase>
+                                        <goals>
+                                            <goal>deploy-slice</goal>
+                                        </goals>
+                                    </execution>
+                                </executions>
+                            </plugin>
+                        </plugins>
+                    </build>
+                </profile>
+                <profile>
+                    <id>deploy-test</id>
+                    <properties>
+                        <aether.deploy.url>${aether.test.url}</aether.deploy.url>
+                    </properties>
+                    <build>
+                        <plugins>
+                            <plugin>
+                                <groupId>org.pragmatica-lite.aether</groupId>
+                                <artifactId>aether-maven-plugin</artifactId>
+                                <executions>
+                                    <execution>
+                                        <id>deploy-slice</id>
+                                        <phase>deploy</phase>
+                                        <goals>
+                                            <goal>deploy-slice</goal>
+                                        </goals>
+                                    </execution>
+                                </executions>
+                            </plugin>
+                        </plugins>
+                    </build>
+                </profile>
+                <profile>
+                    <id>deploy-prod</id>
+                    <properties>
+                        <aether.deploy.url>${aether.prod.url}</aether.deploy.url>
+                    </properties>
+                    <build>
+                        <plugins>
+                            <plugin>
+                                <groupId>org.pragmatica-lite.aether</groupId>
+                                <artifactId>aether-maven-plugin</artifactId>
+                                <executions>
+                                    <execution>
+                                        <id>deploy-slice</id>
+                                        <phase>deploy</phase>
+                                        <goals>
+                                            <goal>deploy-slice</goal>
+                                        </goals>
+                                    </execution>
+                                </executions>
+                            </plugin>
+                        </plugins>
+                    </build>
+                </profile>
+            </profiles>
         </project>
         """;
 
@@ -368,6 +482,29 @@ public final class SliceProjectInitializer {
                 response.onSuccess(r -> assertThat(r.result()).contains("test"));
             }
         }
+        """;
+
+    private static final String DEPLOY_FORGE_TEMPLATE = """
+        #!/bin/bash
+        # Deploy slice to local Aether Forge instance
+        set -e
+        mvn clean deploy -Pdeploy-forge -DskipTests
+        """;
+
+    private static final String DEPLOY_TEST_TEMPLATE = """
+        #!/bin/bash
+        # Deploy slice to test Aether instance
+        set -e
+        mvn clean deploy -Pdeploy-test -DskipTests
+        """;
+
+    private static final String DEPLOY_PROD_TEMPLATE = """
+        #!/bin/bash
+        # Deploy slice to production Aether instance
+        set -e
+        echo "Deploying to PRODUCTION. Press Ctrl+C to cancel, or Enter to continue..."
+        read -r
+        mvn clean deploy -Pdeploy-prod -DskipTests
         """;
 
     public Path projectDir() {

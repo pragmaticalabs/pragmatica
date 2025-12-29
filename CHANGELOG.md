@@ -9,6 +9,7 @@
   - CLI commands: `jbct init --slice` and `jbct verify-slice`
   - Model classes: `SliceModel`, `MethodModel`, `DependencyModel`
   - Generators: `ApiInterfaceGenerator`, `ProxyClassGenerator`, `FactoryClassGenerator`, `ManifestGenerator`
+  - Deploy scripts: `deploy-forge.sh`, `deploy-test.sh`, `deploy-prod.sh` with Maven profiles for Aether deployment
 - **JBCT-SLICE-01**: New lint rule enforces slice API usage
   - External slice dependencies must import from `.api` subpackage
   - Requires `slicePackages` configuration in `jbct.toml` (opt-in rule)
