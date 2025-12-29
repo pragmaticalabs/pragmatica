@@ -21,6 +21,7 @@ import org.pragmatica.cluster.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.message.MessageRouter;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -34,6 +35,7 @@ class ClusterDeploymentManagerTest {
     private NodeId node3;
     private TestClusterNode clusterNode;
     private TestKVStore kvStore;
+    private MessageRouter router;
     private ClusterDeploymentManager manager;
 
     @BeforeEach
@@ -43,7 +45,8 @@ class ClusterDeploymentManagerTest {
         node3 = NodeId.randomNodeId();
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
-        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore);
+        router = MessageRouter.mutable();
+        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router);
     }
 
     // === Leader State Tests ===
@@ -421,4 +424,5 @@ class ClusterDeploymentManagerTest {
             return new java.util.HashMap<>();
         }
     }
+
 }

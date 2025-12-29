@@ -153,7 +153,7 @@ Create a new Maven module for the slice:
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-api</artifactId>
-            <version>0.6.1</version>
+            <version>0.6.2</version>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite</groupId>

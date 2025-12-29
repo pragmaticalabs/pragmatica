@@ -23,6 +23,7 @@ import io.netty.handler.codec.http.HttpVersion;
 import io.netty.util.CharsetUtil;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.net.NodeId;
@@ -64,7 +65,7 @@ public interface ManagementServer {
 class ManagementServerImpl implements ManagementServer {
 
     private static final Logger log = LoggerFactory.getLogger(ManagementServerImpl.class);
-    private static final int MAX_CONTENT_LENGTH = 65536; // 64KB
+    private static final int MAX_CONTENT_LENGTH = 64 * 1024 * 1024; // 64MB for artifact uploads
 
     private final int port;
     private final Supplier<AetherNode> nodeSupplier;
@@ -152,9 +153,9 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
         if (method == HttpMethod.GET) {
             handleGet(ctx, uri);
-        } else if (method == HttpMethod.POST) {
-            var body = request.content().toString(CharsetUtil.UTF_8);
-            handlePost(ctx, uri, body);
+        } else if (method == HttpMethod.POST || method == HttpMethod.PUT) {
+            // Handle both POST and PUT for repository uploads (Maven uses PUT)
+            handlePost(ctx, uri, request);
         } else {
             sendError(ctx, HttpResponseStatus.METHOD_NOT_ALLOWED);
         }
@@ -162,6 +163,12 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private void handleGet(ChannelHandlerContext ctx, String uri) {
         var node = nodeSupplier.get();
+
+        // Handle repository requests
+        if (uri.startsWith("/repository/")) {
+            handleRepositoryGet(ctx, node, uri);
+            return;
+        }
 
         var response = switch (uri) {
             case "/status" -> buildStatusResponse(node);
@@ -179,15 +186,59 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         }
     }
 
-    private void handlePost(ChannelHandlerContext ctx, String uri, String body) {
+    private void handleRepositoryGet(ChannelHandlerContext ctx, AetherNode node, String uri) {
+        node.mavenProtocolHandler().handleGet(uri)
+            .onSuccess(response -> {
+                var httpStatus = HttpResponseStatus.valueOf(response.statusCode());
+                var httpResponse = new DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1, httpStatus,
+                        Unpooled.wrappedBuffer(response.content())
+                );
+                httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, response.contentType());
+                httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().length);
+                ctx.writeAndFlush(httpResponse).addListener(ChannelFutureListener.CLOSE);
+            })
+            .onFailure(cause -> sendJsonError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, cause.message()));
+    }
+
+    private void handlePost(ChannelHandlerContext ctx, String uri, FullHttpRequest request) {
         var node = nodeSupplier.get();
 
+        // Handle repository PUT requests (binary content)
+        if (uri.startsWith("/repository/")) {
+            handleRepositoryPut(ctx, node, uri, request);
+            return;
+        }
+
+        // For other endpoints, read as string
+        var body = request.content().toString(CharsetUtil.UTF_8);
         switch (uri) {
             case "/deploy" -> handleDeploy(ctx, node, body);
             case "/scale" -> handleScale(ctx, node, body);
             case "/undeploy" -> handleUndeploy(ctx, node, body);
+            case "/blueprint" -> handleBlueprint(ctx, node, body);
             default -> sendError(ctx, HttpResponseStatus.NOT_FOUND);
         }
+    }
+
+    private void handleRepositoryPut(ChannelHandlerContext ctx, AetherNode node, String uri, FullHttpRequest request) {
+        // Read binary content directly from ByteBuf
+        var byteBuf = request.content();
+        var content = new byte[byteBuf.readableBytes()];
+        byteBuf.readBytes(content);
+
+        node.mavenProtocolHandler().handlePut(uri, content)
+            .onSuccess(response -> {
+                var httpStatus = HttpResponseStatus.valueOf(response.statusCode());
+                var httpResponse = new DefaultFullHttpResponse(
+                        HttpVersion.HTTP_1_1, httpStatus,
+                        Unpooled.wrappedBuffer(response.content())
+                );
+                httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, response.contentType());
+                httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().length);
+                ctx.writeAndFlush(httpResponse).addListener(ChannelFutureListener.CLOSE);
+            })
+            .onFailure(cause -> sendJsonError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, cause.message()));
     }
 
     // Simple JSON parsing helpers
@@ -273,6 +324,30 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                 .onFailure(cause -> sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, cause.message()));
     }
 
+    private void handleBlueprint(ChannelHandlerContext ctx, AetherNode node, String body) {
+        BlueprintParser.parse(body)
+                       .onSuccess(blueprint -> {
+                           // Build commands for all slices in blueprint
+                           var commands = blueprint.slices().stream()
+                                                   .map(spec -> {
+                                                       AetherKey key = new AetherKey.BlueprintKey(spec.artifact());
+                                                       AetherValue value = new AetherValue.BlueprintValue(spec.instances());
+                                                       return (KVCommand<AetherKey>) new KVCommand.Put<>(key, value);
+                                                   })
+                                                   .toList();
+
+                           if (commands.isEmpty()) {
+                               sendJson(ctx, "{\"status\":\"applied\",\"blueprint\":\"" + blueprint.id().asString() + "\",\"slices\":0}");
+                               return;
+                           }
+
+                           node.apply(commands)
+                               .onSuccess(_ -> sendJson(ctx, "{\"status\":\"applied\",\"blueprint\":\"" + blueprint.id().asString() + "\",\"slices\":" + commands.size() + "}"))
+                               .onFailure(cause -> sendJsonError(ctx, HttpResponseStatus.INTERNAL_SERVER_ERROR, cause.message()));
+                       })
+                       .onFailure(cause -> sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, cause.message()));
+    }
+
     private String buildStatusResponse(AetherNode node) {
         var sb = new StringBuilder();
         sb.append("{");
@@ -315,10 +390,12 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     }
 
     private String buildMetricsResponse(AetherNode node) {
-        var allMetrics = node.metricsCollector().allMetrics();
         var sb = new StringBuilder();
-        sb.append("{\"metrics\":{");
+        sb.append("{");
 
+        // Load metrics section
+        sb.append("\"load\":{");
+        var allMetrics = node.metricsCollector().allMetrics();
         boolean firstNode = true;
         for (var entry : allMetrics.entrySet()) {
             if (!firstNode) sb.append(",");
@@ -334,8 +411,47 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             sb.append("}");
             firstNode = false;
         }
+        sb.append("},");
 
-        sb.append("}}");
+        // Deployment metrics section
+        sb.append("\"deployments\":{");
+        var deploymentMetrics = node.deploymentMetricsCollector().allDeploymentMetrics();
+        boolean firstArtifact = true;
+        for (var entry : deploymentMetrics.entrySet()) {
+            if (!firstArtifact) sb.append(",");
+            sb.append("\"").append(entry.getKey().asString()).append("\":[");
+
+            boolean firstDeployment = true;
+            for (var metrics : entry.getValue()) {
+                if (!firstDeployment) sb.append(",");
+                sb.append("{");
+                sb.append("\"nodeId\":\"").append(metrics.nodeId().id()).append("\",");
+                sb.append("\"status\":\"").append(metrics.status().name()).append("\",");
+                sb.append("\"fullDeploymentMs\":").append(metrics.fullDeploymentTime()).append(",");
+                sb.append("\"netDeploymentMs\":").append(metrics.netDeploymentTime()).append(",");
+                sb.append("\"transitions\":{");
+
+                var latencies = metrics.transitionLatencies();
+                boolean firstLatency = true;
+                for (var latency : latencies.entrySet()) {
+                    if (!firstLatency) sb.append(",");
+                    sb.append("\"").append(latency.getKey()).append("\":").append(latency.getValue());
+                    firstLatency = false;
+                }
+
+                sb.append("},");
+                sb.append("\"startTime\":").append(metrics.startTime()).append(",");
+                sb.append("\"activeTime\":").append(metrics.activeTime());
+                sb.append("}");
+                firstDeployment = false;
+            }
+
+            sb.append("]");
+            firstArtifact = false;
+        }
+        sb.append("}");
+
+        sb.append("}");
         return sb.toString();
     }
 

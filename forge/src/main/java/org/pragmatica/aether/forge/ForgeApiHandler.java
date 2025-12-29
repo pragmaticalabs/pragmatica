@@ -177,6 +177,10 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                 handleGetModes(ctx);
             } else if (path.startsWith("/api/simulator/mode/") && method == HttpMethod.PUT) {
                 handleSetMode(ctx, path.substring("/api/simulator/mode/".length()));
+            } else if (path.startsWith("/repository/") && method == HttpMethod.GET) {
+                handleRepositoryGet(ctx, path);
+            } else if (path.startsWith("/repository/") && (method == HttpMethod.PUT || method == HttpMethod.POST)) {
+                handleRepositoryPut(ctx, path, request);
             } else {
                 sendResponse(ctx, NOT_FOUND, "{\"error\": \"Not found\"}");
             }
@@ -809,6 +813,63 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
             var rate = cfg.loadGeneratorEnabled() ? cfg.effectiveRate(entryPoint) : 0;
             loadGenerator.setRate(entryPoint, rate);
         }
+    }
+
+    // ==================== Repository API Handlers ====================
+
+    /**
+     * Handle GET /repository/** - retrieve artifact from DHT.
+     */
+    private void handleRepositoryGet(ChannelHandlerContext ctx, String path) {
+        var nodes = cluster.allNodes();
+        if (nodes.isEmpty()) {
+            sendResponse(ctx, SERVICE_UNAVAILABLE, "{\"error\": \"No nodes available\"}");
+            return;
+        }
+        var node = nodes.getFirst();
+        node.mavenProtocolHandler().handleGet(path)
+            .onSuccess(response -> {
+                if (response.statusCode() == 200) {
+                    var content = Unpooled.wrappedBuffer(response.content());
+                    var httpResponse = new DefaultFullHttpResponse(HTTP_1_1, OK, content);
+                    httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, response.contentType());
+                    httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().length);
+                    httpResponse.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+                    ctx.writeAndFlush(httpResponse).addListener(ChannelFutureListener.CLOSE);
+                } else if (response.statusCode() == 404) {
+                    sendResponse(ctx, NOT_FOUND, "{\"error\": \"Artifact not found\"}");
+                } else {
+                    sendResponse(ctx, HttpResponseStatus.valueOf(response.statusCode()),
+                        new String(response.content(), StandardCharsets.UTF_8));
+                }
+            })
+            .onFailure(cause -> sendResponse(ctx, INTERNAL_SERVER_ERROR,
+                "{\"error\": \"" + escapeJson(cause.message()) + "\"}"));
+    }
+
+    /**
+     * Handle PUT/POST /repository/** - store artifact in DHT.
+     */
+    private void handleRepositoryPut(ChannelHandlerContext ctx, String path, FullHttpRequest request) {
+        var nodes = cluster.allNodes();
+        if (nodes.isEmpty()) {
+            sendResponse(ctx, SERVICE_UNAVAILABLE, "{\"error\": \"No nodes available\"}");
+            return;
+        }
+        var node = nodes.getFirst();
+        var byteBuf = request.content();
+        var content = new byte[byteBuf.readableBytes()];
+        byteBuf.readBytes(content);
+
+        node.mavenProtocolHandler().handlePut(path, content)
+            .onSuccess(response -> {
+                var json = String.format("{\"success\":true,\"path\":\"%s\",\"size\":%d}",
+                    escapeJson(path), content.length);
+                sendResponse(ctx, OK, json);
+                addEvent("ARTIFACT_DEPLOYED", "Deployed " + path + " (" + content.length + " bytes)");
+            })
+            .onFailure(cause -> sendResponse(ctx, INTERNAL_SERVER_ERROR,
+                "{\"error\": \"" + escapeJson(cause.message()) + "\"}"));
     }
 
     public void addEvent(String type, String message) {

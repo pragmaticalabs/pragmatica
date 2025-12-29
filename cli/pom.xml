@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.6.1</version>
+        <version>0.6.2</version>
     </parent>
 
     <artifactId>cli</artifactId>
@@ -58,8 +58,18 @@
                                     <mainClass>org.pragmatica.aether.cli.AetherCli</mainClass>
                                 </transformer>
                             </transformers>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
-                            <finalName>aether-cli</finalName>
+                            <finalName>aether</finalName>
                         </configuration>
                     </execution>
                 </executions>

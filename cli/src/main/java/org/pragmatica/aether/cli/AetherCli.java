@@ -39,9 +39,9 @@ import java.util.concurrent.Callable;
  * aether> exit
  * </pre>
  */
-@Command(name = "aether-cli",
+@Command(name = "aether",
          mixinStandardHelpOptions = true,
-         version = "Aether CLI 0.6.1",
+         version = "Aether 0.6.2",
          description = "Command-line interface for Aether cluster management",
          subcommands = {
                  AetherCli.StatusCommand.class,
@@ -52,6 +52,7 @@ import java.util.concurrent.Callable;
                  AetherCli.DeployCommand.class,
                  AetherCli.ScaleCommand.class,
                  AetherCli.UndeployCommand.class,
+                 AetherCli.BlueprintCommand.class,
                  AetherCli.ArtifactCommand.class
          })
 public class AetherCli implements Runnable {
@@ -87,7 +88,7 @@ public class AetherCli implements Runnable {
     }
 
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether CLI v0.6.1 - Connected to " + nodeAddress);
+        System.out.println("Aether v0.6.2 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
 
@@ -414,6 +415,54 @@ public class AetherCli implements Runnable {
                 var response = artifactParent.parent.fetchFromNode(path);
                 System.out.println(response);
                 return 0;
+            }
+        }
+    }
+
+    @Command(name = "blueprint",
+             description = "Blueprint management",
+             subcommands = {
+                     BlueprintCommand.ApplyCommand.class
+             })
+    static class BlueprintCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "apply", description = "Apply a blueprint file to the cluster")
+        static class ApplyCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueprintCommand blueprintParent;
+
+            @Parameters(index = "0", description = "Path to the blueprint file (.toml)")
+            private Path blueprintPath;
+
+            @Override
+            public Integer call() {
+                try {
+                    if (!Files.exists(blueprintPath)) {
+                        System.err.println("Blueprint file not found: " + blueprintPath);
+                        return 1;
+                    }
+
+                    var content = Files.readString(blueprintPath);
+                    var response = blueprintParent.parent.postToNode("/blueprint", content);
+
+                    if (response.contains("\"error\":")) {
+                        System.out.println("Failed to apply blueprint: " + response);
+                        return 1;
+                    }
+
+                    System.out.println(formatJson(response));
+                    return 0;
+                } catch (IOException e) {
+                    System.err.println("Error reading blueprint file: " + e.getMessage());
+                    return 1;
+                }
             }
         }
     }

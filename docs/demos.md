@@ -96,10 +96,10 @@ cd forge
 mvn package
 
 # Run with defaults (5 nodes, 1000 req/sec)
-java -jar target/forge-0.6.1.jar
+java -jar target/forge-0.6.2.jar
 
 # Or with custom settings
-CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar target/forge-0.6.1.jar
+CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar target/forge-0.6.2.jar
 ```
 
 The dashboard opens automatically at `http://localhost:8888`.

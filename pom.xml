@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>aether</artifactId>
-    <version>0.6.1</version>
+    <version>0.6.2</version>
     <packaging>pom</packaging>
     <name>Pragmatica Aether Distributed Runtime</name>
     <description>AI-driven distributed runtime environment for Java applications</description>
@@ -97,6 +97,12 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>cluster</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>artifact-repo</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

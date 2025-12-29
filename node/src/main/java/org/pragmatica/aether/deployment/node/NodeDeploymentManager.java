@@ -2,6 +2,7 @@ package org.pragmatica.aether.deployment.node;
 
 import org.pragmatica.aether.http.RouteRegistry;
 import org.pragmatica.aether.invoke.InvocationHandler;
+import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceBridgeImpl;
@@ -71,6 +72,7 @@ public interface NodeDeploymentManager {
                 KVStore<AetherKey, AetherValue> kvStore,
                 InvocationHandler invocationHandler,
                 RouteRegistry routeRegistry,
+                MessageRouter router,
                 ConcurrentHashMap<SliceNodeKey, SliceDeployment> deployments
         ) implements NodeDeploymentState {
 
@@ -126,8 +128,22 @@ public interface NodeDeploymentManager {
 
             private void recordDeployment(SliceNodeKey sliceKey, SliceState state) {
                 var timestamp = System.currentTimeMillis();
+                var previousDeployment = deployments.get(sliceKey);
+                var previousState = previousDeployment != null ? previousDeployment.state() : null;
+
                 var deployment = new SliceDeployment(sliceKey, state, timestamp);
                 deployments.put(sliceKey, deployment);
+
+                // Emit state transition event for metrics via MessageRouter
+                // For initial LOAD, use LOAD as both from and to (captures loadTime)
+                var effectiveFromState = previousState != null ? previousState : state;
+                router.route(new StateTransition(sliceKey.artifact(), self, effectiveFromState, state, timestamp));
+
+                // Emit deployment failed event if transitioning to FAILED
+                // We do this here because we have access to previousState
+                if (state == SliceState.FAILED && previousState != null) {
+                    router.route(new DeploymentFailed(sliceKey.artifact(), self, previousState, timestamp));
+                }
             }
 
             private boolean shouldForceCleanup(SliceDeployment deployment) {
@@ -216,6 +232,8 @@ public interface NodeDeploymentManager {
                 publishEndpoints(sliceKey);
                 // 3. Register HTTP routes declared by slice
                 registerRoutes(sliceKey);
+                // 4. Emit deployment completed event for metrics via MessageRouter
+                router.route(new DeploymentCompleted(sliceKey.artifact(), self, System.currentTimeMillis()));
             }
 
             private void registerRoutes(SliceNodeKey sliceKey) {
@@ -411,6 +429,7 @@ public interface NodeDeploymentManager {
             private void handleFailed(SliceNodeKey sliceKey) {
                 // Slice has failed - cleanup and prepare for unloading
                 // Log the failure and await UNLOAD command
+                // Note: DeploymentFailed event is emitted in recordDeployment() where we have access to previousState
             }
 
             private void handleUnloading(SliceNodeKey sliceKey) {
@@ -528,6 +547,7 @@ public interface NodeDeploymentManager {
                             kvStore(),
                             invocationHandler(),
                             routeRegistry(),
+                            router(),
                             new ConcurrentHashMap<>()
                     ));
                     case DISAPPEARED -> {
