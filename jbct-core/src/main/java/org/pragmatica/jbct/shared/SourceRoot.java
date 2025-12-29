@@ -14,16 +14,17 @@ import static org.pragmatica.lang.Result.lift;
  * Value object representing a source root directory containing Java files.
  */
 public record SourceRoot(Path path) {
-
     /**
      * Factory method to create a SourceRoot, validating the path exists and is a directory.
      */
     public static Result<SourceRoot> sourceRoot(Path path) {
         if (!Files.exists(path)) {
-            return Causes.cause("Path does not exist: " + path).result();
+            return Causes.cause("Path does not exist: " + path)
+                         .result();
         }
         if (!Files.isDirectory(path)) {
-            return Causes.cause("Path is not a directory: " + path).result();
+            return Causes.cause("Path is not a directory: " + path)
+                         .result();
         }
         return Result.success(new SourceRoot(path));
     }
@@ -32,14 +33,15 @@ public record SourceRoot(Path path) {
      * Find all Java source files in this source root.
      */
     public Result<List<Path>> findJavaFiles() {
-        return lift(Causes::fromThrowable, () -> {
-            try (Stream<Path> walk = Files.walk(path)) {
-                return walk
-                        .filter(Files::isRegularFile)
-                        .filter(p -> p.toString().endsWith(".java"))
-                        .toList();
-            }
-        });
+        return lift(Causes::fromThrowable,
+                    () -> {
+                        try (Stream<Path> walk = Files.walk(path)) {
+                        return walk.filter(Files::isRegularFile)
+                                   .filter(p -> p.toString()
+                                                 .endsWith(".java"))
+                                   .toList();
+                    }
+                    });
     }
 
     /**
@@ -47,11 +49,11 @@ public record SourceRoot(Path path) {
      */
     public Result<List<SourceFile>> loadJavaFiles() {
         return findJavaFiles()
-                .flatMap(paths -> {
-                    var results = paths.stream()
-                            .map(SourceFile::sourceFile)
-                            .toList();
-                    return Result.allOf(results);
-                });
+               .flatMap(paths -> {
+                            var results = paths.stream()
+                                               .map(SourceFile::sourceFile)
+                                               .toList();
+                            return Result.allOf(results);
+                        });
     }
 }

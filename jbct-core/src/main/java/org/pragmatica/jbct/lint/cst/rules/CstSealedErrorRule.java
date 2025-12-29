@@ -25,21 +25,20 @@ public class CstSealedErrorRule implements CstLintRule {
         return RULE_ID;
     }
 
-
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         return findAll(root, RuleId.InterfaceDecl.class)
-            .stream()
-            .filter(iface -> extendsCause(iface, source))
-            .filter(iface -> !isSealed(iface, source))
-            .map(iface -> createDiagnostic(iface, source, ctx));
+               .stream()
+               .filter(iface -> extendsCause(iface, source))
+               .filter(iface -> !isSealed(iface, source))
+               .map(iface -> createDiagnostic(iface, source, ctx));
     }
 
     private boolean extendsCause(CstNode iface, String source) {
         // Check if interface extends Cause by examining the text
         var ifaceText = text(iface, source);
         return ifaceText.contains("extends Cause") ||
-               ifaceText.contains("extends ") && ifaceText.contains("Cause");
+        ifaceText.contains("extends ") && ifaceText.contains("Cause");
     }
 
     private boolean isSealed(CstNode iface, String source) {
@@ -56,22 +55,22 @@ public class CstSealedErrorRule implements CstLintRule {
 
     private String getInterfaceName(CstNode iface, String source) {
         return childByRule(iface, RuleId.Identifier.class)
-            .map(id -> text(id, source).trim())
-            .or("(unknown)");
+               .map(id -> text(id, source)
+                          .trim())
+               .or("(unknown)");
     }
 
     private Diagnostic createDiagnostic(CstNode iface, String source, LintContext ctx) {
         var name = getInterfaceName(iface, source);
-        return Diagnostic.diagnostic(
-            RULE_ID,
-            ctx.severityFor(RULE_ID),
-            ctx.fileName(),
-            startLine(iface),
-            startColumn(iface),
-            "Error interface '" + name + "' extends Cause but is not sealed",
-            "Sealed error interfaces enable exhaustive pattern matching in switch expressions. "
-            + "When handling errors, the compiler can verify all cases are covered."
-        ).withExample("""
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(iface),
+                                     startColumn(iface),
+                                     "Error interface '" + name + "' extends Cause but is not sealed",
+                                     "Sealed error interfaces enable exhaustive pattern matching in switch expressions. "
+                                     + "When handling errors, the compiler can verify all cases are covered.")
+                         .withExample("""
             // Before (unsealed)
             public interface LoginError extends Cause {
                 record InvalidCredentials() implements LoginError { ... }
@@ -91,6 +90,6 @@ public class CstSealedErrorRule implements CstLintRule {
                 // Compiler error if case is missing
             }
             """)
-        .withDocLink(DOC_LINK);
+                         .withDocLink(DOC_LINK);
     }
 }

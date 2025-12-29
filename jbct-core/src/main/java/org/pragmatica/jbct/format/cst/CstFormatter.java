@@ -15,7 +15,6 @@ import java.util.List;
  * Uses the generated Java25Parser for parsing and preserves trivia (whitespace/comments).
  */
 public class CstFormatter {
-
     private final FormatterConfig config;
     private final Java25Parser parser;
 
@@ -34,13 +33,15 @@ public class CstFormatter {
 
     public Result<SourceFile> format(SourceFile source) {
         return parse(source)
-            .map(cst -> formatCst(cst, source.content()))
-            .map(source::withContent);
+               .map(cst -> formatCst(cst,
+                                     source.content()))
+               .map(source::withContent);
     }
 
     public Result<Boolean> isFormatted(SourceFile source) {
         return format(source)
-            .map(formatted -> formatted.content().equals(source.content()));
+               .map(formatted -> formatted.content()
+                                          .equals(source.content()));
     }
 
     private Result<CstNode> parse(SourceFile source) {
@@ -48,7 +49,11 @@ public class CstFormatter {
         if (result.isSuccess()) {
             return result;
         }
-        return FormattingError.parseError(source.fileName(), 1, 1, "Parse error").result();
+        return FormattingError.parseError(source.fileName(),
+                                          1,
+                                          1,
+                                          "Parse error")
+                              .result();
     }
 
     private String formatCst(CstNode root, String source) {

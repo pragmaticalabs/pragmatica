@@ -9,8 +9,6 @@ import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.shared.FileCollector;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Option;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Parameters;
 
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -18,97 +16,85 @@ import java.util.List;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Parameters;
+
 /**
  * Lint command for JBCT static analysis.
  */
 @Command(
-        name = "lint",
-        description = "Analyze Java source files for JBCT compliance",
-        mixinStandardHelpOptions = true
-)
+ name = "lint",
+ description = "Analyze Java source files for JBCT compliance",
+ mixinStandardHelpOptions = true)
 public class LintCommand implements Callable<Integer> {
-
     @Parameters(
-            paramLabel = "<path>",
-            description = "Files or directories to lint",
-            arity = "1..*"
-    )
+    paramLabel = "<path>",
+    description = "Files or directories to lint",
+    arity = "1..*")
     List<Path> paths;
 
     @picocli.CommandLine.Option(
-            names = {"--format", "-f"},
-            description = "Output format: text, json, sarif",
-            defaultValue = "text"
-    )
+    names = {"--format", "-f"},
+    description = "Output format: text, json, sarif",
+    defaultValue = "text")
     OutputFormat outputFormat;
 
     @picocli.CommandLine.Option(
-            names = {"--fail-on-warning", "-w"},
-            description = "Treat warnings as errors"
-    )
+    names = {"--fail-on-warning", "-w"},
+    description = "Treat warnings as errors")
     boolean failOnWarning;
 
     @picocli.CommandLine.Option(
-            names = {"--verbose", "-v"},
-            description = "Show verbose output"
-    )
+    names = {"--verbose", "-v"},
+    description = "Show verbose output")
     boolean verbose;
 
     @picocli.CommandLine.Option(
-            names = {"--config"},
-            description = "Path to configuration file"
-    )
+    names = {"--config"},
+    description = "Path to configuration file")
     Path configPath;
 
     public enum OutputFormat {
-        text, json, sarif
+        text,
+        json,
+        sarif
     }
 
     @Override
     public Integer call() {
         // Load configuration
         var config = ConfigLoader.load(
-                Option.option(configPath),
-                Option.none()
-        );
+        Option.option(configPath), Option.none());
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
-
         var filesToProcess = collectJavaFiles();
-
         if (filesToProcess.isEmpty()) {
             System.out.println("No Java files found.");
             return 0;
         }
-
         if (verbose) {
             System.out.println("Found " + filesToProcess.size() + " Java file(s) to lint.");
         }
-
         var allDiagnostics = new ArrayList<Diagnostic>();
         var errors = new AtomicInteger(0);
         var warnings = new AtomicInteger(0);
         var infos = new AtomicInteger(0);
         var parseErrors = new AtomicInteger(0);
-
         for (var file : filesToProcess) {
             processFile(file, linter, allDiagnostics, errors, warnings, infos, parseErrors);
         }
-
         // Output results
         printResults(allDiagnostics);
-
         // Print summary
         printSummary(filesToProcess.size(), errors.get(), warnings.get(), infos.get(), parseErrors.get());
-
         // Return appropriate exit code
         if (parseErrors.get() > 0 || errors.get() > 0) {
-            return 2; // Errors found
+            return 2;
         }
         if (failOnWarning && warnings.get() > 0) {
-            return 1; // Warnings treated as errors
+            return 1;
         }
-        return 0; // Success
+        return 0;
     }
 
     private LintContext createContext(JbctConfig jbctConfig) {
@@ -117,8 +103,8 @@ public class LintCommand implements Callable<Integer> {
             lintConfig = lintConfig.withFailOnWarning(true);
         }
         return LintContext.defaultContext()
-                .withConfig(lintConfig)
-                .withBusinessPackages(jbctConfig.businessPackages());
+                          .withConfig(lintConfig)
+                          .withBusinessPackages(jbctConfig.businessPackages());
     }
 
     private List<Path> collectJavaFiles() {
@@ -133,31 +119,30 @@ public class LintCommand implements Callable<Integer> {
                              AtomicInteger infos,
                              AtomicInteger parseErrors) {
         SourceFile.sourceFile(file)
-                .flatMap(linter::lint)
-                .onSuccess(diagnostics -> {
-                    allDiagnostics.addAll(diagnostics);
-                    for (var d : diagnostics) {
-                        switch (d.severity()) {
-                            case ERROR -> errors.incrementAndGet();
-                            case WARNING -> warnings.incrementAndGet();
-                            case INFO -> infos.incrementAndGet();
-                        }
-                    }
-                    if (verbose && diagnostics.isEmpty()) {
-                        System.out.println("  ✓ " + file);
-                    }
-                })
-                .onFailure(cause -> {
-                    parseErrors.incrementAndGet();
-                    System.err.println("  ✗ " + file + ": " + cause.message());
-                });
+                  .flatMap(linter::lint)
+                  .onSuccess(diagnostics -> {
+                                 allDiagnostics.addAll(diagnostics);
+                                 for (var d : diagnostics) {
+                                 switch (d.severity()) {
+            case ERROR -> errors.incrementAndGet();
+            case WARNING -> warnings.incrementAndGet();
+            case INFO -> infos.incrementAndGet();
+        }
+                             }
+                                 if (verbose && diagnostics.isEmpty()) {
+                                 System.out.println("  ✓ " + file);
+                             }
+                             })
+                  .onFailure(cause -> {
+                                 parseErrors.incrementAndGet();
+                                 System.err.println("  ✗ " + file + ": " + cause.message());
+                             });
     }
 
     private void printResults(List<Diagnostic> diagnostics) {
         if (diagnostics.isEmpty()) {
             return;
         }
-
         switch (outputFormat) {
             case text -> printTextResults(diagnostics);
             case json -> printJsonResults(diagnostics);
@@ -175,11 +160,13 @@ public class LintCommand implements Callable<Integer> {
     private void printJsonResults(List<Diagnostic> diagnostics) {
         var sb = new StringBuilder();
         sb.append("[\n");
-        for (int i = 0; i < diagnostics.size(); i++) {
+        for (int i = 0; i < diagnostics.size(); i++ ) {
             var d = diagnostics.get(i);
             sb.append("  {\n");
             sb.append("    \"ruleId\": \"%s\",\n".formatted(d.ruleId()));
-            sb.append("    \"severity\": \"%s\",\n".formatted(d.severity().name().toLowerCase()));
+            sb.append("    \"severity\": \"%s\",\n".formatted(d.severity()
+                                                               .name()
+                                                               .toLowerCase()));
             sb.append("    \"file\": \"%s\",\n".formatted(escapeJson(d.file())));
             sb.append("    \"line\": %d,\n".formatted(d.line()));
             sb.append("    \"column\": %d,\n".formatted(d.column()));
@@ -208,7 +195,7 @@ public class LintCommand implements Callable<Integer> {
         sb.append("      }\n");
         sb.append("    },\n");
         sb.append("    \"results\": [\n");
-        for (int i = 0; i < diagnostics.size(); i++) {
+        for (int i = 0; i < diagnostics.size(); i++ ) {
             var d = diagnostics.get(i);
             sb.append("      {\n");
             sb.append("        \"ruleId\": \"%s\",\n".formatted(d.ruleId()));
@@ -217,7 +204,8 @@ public class LintCommand implements Callable<Integer> {
             sb.append("        \"locations\": [{\n");
             sb.append("          \"physicalLocation\": {\n");
             sb.append("            \"artifactLocation\": { \"uri\": \"%s\" },\n".formatted(escapeJson(d.file())));
-            sb.append("            \"region\": { \"startLine\": %d, \"startColumn\": %d }\n".formatted(d.line(), d.column()));
+            sb.append("            \"region\": { \"startLine\": %d, \"startColumn\": %d }\n".formatted(d.line(),
+                                                                                                       d.column()));
             sb.append("          }\n");
             sb.append("        }]\n");
             sb.append("      }");
@@ -250,18 +238,14 @@ public class LintCommand implements Callable<Integer> {
 
     private void printSummary(int filesChecked, int errors, int warnings, int infos, int parseErrors) {
         System.out.println();
-
         if (parseErrors > 0) {
             System.out.println("Parse errors: " + parseErrors);
         }
-
         if (errors == 0 && warnings == 0 && infos == 0) {
             System.out.println("✓ All " + filesChecked + " file(s) passed JBCT compliance check.");
-        } else {
-            System.out.println("Checked " + filesChecked + " file(s): " +
-                               errors + " error(s), " +
-                               warnings + " warning(s), " +
-                               infos + " info(s)");
+        }else {
+            System.out.println("Checked " + filesChecked + " file(s): " + errors + " error(s), " + warnings
+                               + " warning(s), " + infos + " info(s)");
         }
     }
 }

@@ -20,14 +20,13 @@ public class CstReturnKindRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-01";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";
 
-    private static final Set<String> FORBIDDEN_TYPES = Set.of(
+    private static final Set<String>FORBIDDEN_TYPES = Set.of(
     "Optional", "CompletableFuture", "Future", "CompletionStage");
 
     @Override
     public String ruleId() {
         return RULE_ID;
     }
-
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
@@ -47,7 +46,8 @@ public class CstReturnKindRule implements CstLintRule {
     private boolean isPrivateMethod(CstNode method, CstNode root, String source) {
         // Find the ClassMember ancestor which contains the Modifier
         return findAncestor(root, method, RuleId.ClassMember.class)
-               .map(cm -> text(cm, source).contains("private "))
+               .map(cm -> text(cm, source)
+                          .contains("private "))
                .or(false);
     }
 

@@ -21,7 +21,6 @@ public class CstFluentFailureRule implements CstLintRule {
         return RULE_ID;
     }
 
-
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
@@ -34,7 +33,8 @@ public class CstFluentFailureRule implements CstLintRule {
         // Find Result.failure patterns (Primary doesn't include the parenthesis)
         return findAll(root, RuleId.Primary.class)
                .stream()
-               .filter(node -> text(node, source).equals("Result.failure"))
+               .filter(node -> text(node, source)
+                               .equals("Result.failure"))
                .map(node -> createDiagnostic(node, ctx));
     }
 

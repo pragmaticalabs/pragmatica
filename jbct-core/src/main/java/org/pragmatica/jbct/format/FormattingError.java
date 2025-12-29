@@ -7,7 +7,6 @@ import org.pragmatica.lang.Option;
  * Sealed interface for formatting errors.
  */
 public sealed interface FormattingError extends Cause {
-
     record ParseError(String file, int line, int column, String details) implements FormattingError {
         @Override
         public String message() {

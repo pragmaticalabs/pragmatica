@@ -1,8 +1,5 @@
 package org.pragmatica.jbct.maven;
 
-import org.apache.maven.plugin.AbstractMojo;
-import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.project.MavenProject;
 import org.pragmatica.jbct.config.ConfigLoader;
 import org.pragmatica.jbct.config.JbctConfig;
 import org.pragmatica.jbct.lint.LintContext;
@@ -13,11 +10,14 @@ import java.io.File;
 import java.nio.file.Path;
 import java.util.List;
 
+import org.apache.maven.plugin.AbstractMojo;
+import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.project.MavenProject;
+
 /**
  * Base class for JBCT Maven mojos with common configuration parameters.
  */
 public abstract class AbstractJbctMojo extends AbstractMojo {
-
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     protected MavenProject project;
 
@@ -37,7 +37,8 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
      * Load JBCT configuration from project directory.
      */
     protected JbctConfig loadConfig() {
-        var projectDir = project.getBasedir().toPath();
+        var projectDir = project.getBasedir()
+                                .toPath();
         return ConfigLoader.load(Option.none(), Option.option(projectDir));
     }
 
@@ -53,11 +54,13 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
      */
     protected List<Path> collectJavaFiles() {
         return FileCollector.collectFromDirectories(
-                Option.option(sourceDirectory).map(File::toPath),
-                Option.option(testSourceDirectory).map(File::toPath),
-                includeTests,
-                msg -> getLog().warn(msg)
-        );
+        Option.option(sourceDirectory)
+              .map(File::toPath),
+        Option.option(testSourceDirectory)
+              .map(File::toPath),
+        includeTests,
+        msg -> getLog()
+               .warn(msg));
     }
 
     /**
@@ -65,7 +68,8 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
      */
     protected boolean shouldSkip(String goalName) {
         if (skip) {
-            getLog().info("Skipping JBCT " + goalName);
+            getLog()
+            .info("Skipping JBCT " + goalName);
             return true;
         }
         return false;

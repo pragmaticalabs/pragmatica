@@ -51,69 +51,58 @@ public class CstSliceApiUsageRule implements CstLintRule {
         if (!ctx.hasSlicePackages()) {
             return Stream.empty();
         }
-
         var currentPackage = packageName(root, source);
-
         // Build import map: simple name -> full qualified name
         var imports = buildImportMap(root, source);
-
         // Find interface declarations with factory methods
         return findAll(root, RuleId.InterfaceDecl.class)
-            .stream()
-            .flatMap(iface -> checkFactoryMethodDependencies(iface, currentPackage, imports, source, ctx));
+               .stream()
+               .flatMap(iface -> checkFactoryMethodDependencies(iface, currentPackage, imports, source, ctx));
     }
 
     private Map<String, String> buildImportMap(CstNode root, String source) {
         var imports = new HashMap<String, String>();
-
         for (var importDecl : findAll(root, RuleId.ImportDecl.class)) {
-            var importText = text(importDecl, source).trim();
-
+            var importText = text(importDecl, source)
+                             .trim();
             // Skip static imports and wildcard imports
             if (importText.contains("static ") || importText.endsWith(".*;")) {
                 continue;
             }
-
             // Extract qualified name: import com.example.Foo;
             findFirst(importDecl, RuleId.QualifiedName.class)
-                .map(qn -> text(qn, source))
-                .onPresent(qualifiedName -> {
-                    var simpleName = extractSimpleName(qualifiedName);
-                    imports.put(simpleName, qualifiedName);
-                });
+            .map(qn -> text(qn, source))
+            .onPresent(qualifiedName -> {
+                           var simpleName = extractSimpleName(qualifiedName);
+                           imports.put(simpleName, qualifiedName);
+                       });
         }
-
         return imports;
     }
 
-    private Stream<Diagnostic> checkFactoryMethodDependencies(
-            CstNode interfaceDecl,
-            String currentPackage,
-            Map<String, String> imports,
-            String source,
-            LintContext ctx) {
-
+    private Stream<Diagnostic> checkFactoryMethodDependencies(CstNode interfaceDecl,
+                                                              String currentPackage,
+                                                              Map<String, String> imports,
+                                                              String source,
+                                                              LintContext ctx) {
         // Get interface name
         var interfaceName = childByRule(interfaceDecl, RuleId.Identifier.class)
-            .map(id -> text(id, source))
-            .or("");
-
+                            .map(id -> text(id, source))
+                            .or("");
         if (interfaceName.isEmpty()) {
             return Stream.empty();
         }
-
         // Find factory method (static method named after interface in camelCase)
         var expectedFactoryName = camelCase(interfaceName);
-
         return findFactoryMethod(interfaceDecl, expectedFactoryName, source)
-            .map(factoryMethod -> checkParameters(factoryMethod, currentPackage, imports, source, ctx))
-            .or(Stream.empty());
+               .map(factoryMethod -> checkParameters(factoryMethod, currentPackage, imports, source, ctx))
+               .or(Stream.empty());
     }
 
     private Option<CstNode> findFactoryMethod(CstNode interfaceDecl, String expectedName, String source) {
         // Look in ClassBody for static methods
         return findFirst(interfaceDecl, RuleId.ClassBody.class)
-            .flatMap(body -> findMatchingFactoryMethod(body, expectedName, source));
+               .flatMap(body -> findMatchingFactoryMethod(body, expectedName, source));
     }
 
     private Option<CstNode> findMatchingFactoryMethod(CstNode body, String expectedName, String source) {
@@ -122,15 +111,15 @@ public class CstSliceApiUsageRule implements CstLintRule {
             if (!memberText.contains("static ")) {
                 continue;
             }
-
             var match = findFirst(member, RuleId.MethodDecl.class)
-                .flatMap(method -> {
-                    var methodName = childByRule(method, RuleId.Identifier.class)
-                        .map(id -> text(id, source))
-                        .or("");
-                    return methodName.equals(expectedName) ? Option.some(method) : Option.none();
-                });
-
+                        .flatMap(method -> {
+                                     var methodName = childByRule(method, RuleId.Identifier.class)
+                                                      .map(id -> text(id, source))
+                                                      .or("");
+                                     return methodName.equals(expectedName)
+                                            ? Option.some(method)
+                                            : Option.none();
+                                 });
             if (!match.isEmpty()) {
                 return match;
             }
@@ -138,98 +127,87 @@ public class CstSliceApiUsageRule implements CstLintRule {
         return Option.none();
     }
 
-    private Stream<Diagnostic> checkParameters(
-            CstNode factoryMethod,
-            String currentPackage,
-            Map<String, String> imports,
-            String source,
-            LintContext ctx) {
-
+    private Stream<Diagnostic> checkParameters(CstNode factoryMethod,
+                                               String currentPackage,
+                                               Map<String, String> imports,
+                                               String source,
+                                               LintContext ctx) {
         return findFirst(factoryMethod, RuleId.Params.class)
-            .map(params -> findAll(params, RuleId.Param.class)
-                .stream()
-                .flatMap(param -> checkParameter(param, currentPackage, imports, source, ctx)))
-            .or(Stream.empty());
+               .map(params -> findAll(params, RuleId.Param.class)
+                              .stream()
+                              .flatMap(param -> checkParameter(param, currentPackage, imports, source, ctx)))
+               .or(Stream.empty());
     }
 
-    private Stream<Diagnostic> checkParameter(
-            CstNode param,
-            String currentPackage,
-            Map<String, String> imports,
-            String source,
-            LintContext ctx) {
-
+    private Stream<Diagnostic> checkParameter(CstNode param,
+                                              String currentPackage,
+                                              Map<String, String> imports,
+                                              String source,
+                                              LintContext ctx) {
         // Get the type from parameter
         return findFirst(param, RuleId.Type.class)
-            .map(type -> checkTypeForSliceViolation(type, param, currentPackage, imports, source, ctx))
-            .or(Stream.empty());
+               .map(type -> checkTypeForSliceViolation(type, param, currentPackage, imports, source, ctx))
+               .or(Stream.empty());
     }
 
-    private Stream<Diagnostic> checkTypeForSliceViolation(
-            CstNode type,
-            CstNode param,
-            String currentPackage,
-            Map<String, String> imports,
-            String source,
-            LintContext ctx) {
-
-        var typeText = text(type, source).trim();
-
+    private Stream<Diagnostic> checkTypeForSliceViolation(CstNode type,
+                                                          CstNode param,
+                                                          String currentPackage,
+                                                          Map<String, String> imports,
+                                                          String source,
+                                                          LintContext ctx) {
+        var typeText = text(type, source)
+                       .trim();
         // Extract simple type name (handle generics like List<Foo>)
         var simpleTypeName = extractBaseTypeName(typeText);
-
         // Skip primitive types and common JDK types
         if (isPrimitiveOrJdkType(simpleTypeName)) {
             return Stream.empty();
         }
-
         // Look up the full qualified name from imports
         var qualifiedName = imports.get(simpleTypeName);
         if (qualifiedName == null) {
             // Type might be in same package or not imported (fully qualified in code)
             return Stream.empty();
         }
-
         // Check if this looks like a slice interface from external package
         var typePackage = extractPackage(qualifiedName);
-
         // Skip if same slice (internal usage is OK)
         if (isSameSlice(currentPackage, typePackage, ctx)) {
             return Stream.empty();
         }
-
         // Check if importing from .api package
         if (typePackage.endsWith(".api")) {
-            return Stream.empty();  // Correct usage
+            return Stream.empty();
         }
-
         // Check if this is a slice package (based on configured patterns)
         if (!ctx.isSlicePackage(typePackage)) {
             return Stream.empty();
         }
-
         // Violation: external slice dependency not using .api package
         var suggestedImport = typePackage + ".api." + simpleTypeName;
-
         return Stream.of(Diagnostic.diagnostic(
-            RULE_ID,
-            ctx.severityFor(RULE_ID),
-            ctx.fileName(),
-            startLine(param),
-            startColumn(param),
-            "External slice dependency '" + simpleTypeName + "' should use API interface",
-            "Import from .api package: " + suggestedImport
-        ));
+        RULE_ID,
+        ctx.severityFor(RULE_ID),
+        ctx.fileName(),
+        startLine(param),
+        startColumn(param),
+        "External slice dependency '" + simpleTypeName + "' should use API interface",
+        "Import from .api package: " + suggestedImport));
     }
 
     private String extractSimpleName(String qualifiedName) {
         var lastDot = qualifiedName.lastIndexOf('.');
-        return lastDot >= 0 ? qualifiedName.substring(lastDot + 1) : qualifiedName;
+        return lastDot >= 0
+               ? qualifiedName.substring(lastDot + 1)
+               : qualifiedName;
     }
 
     private String extractPackage(String qualifiedName) {
         var lastDot = qualifiedName.lastIndexOf('.');
-        return lastDot >= 0 ? qualifiedName.substring(0, lastDot) : "";
+        return lastDot >= 0
+               ? qualifiedName.substring(0, lastDot)
+               : "";
     }
 
     private String extractBaseTypeName(String typeText) {
@@ -248,11 +226,11 @@ public class CstSliceApiUsageRule implements CstLintRule {
 
     private boolean isPrimitiveOrJdkType(String typeName) {
         return switch (typeName) {
-            case "int", "long", "short", "byte", "char", "boolean", "float", "double", "void",
-                 "String", "Integer", "Long", "Short", "Byte", "Character", "Boolean", "Float", "Double",
-                 "Object", "Class", "Void", "Number",
-                 "List", "Set", "Map", "Collection", "Optional", "Stream",
-                 "Result", "Option", "Promise", "Unit", "Cause" -> true;
+            case"int", "long", "short", "byte", "char", "boolean", "float", "double", "void",
+            "String", "Integer", "Long", "Short", "Byte", "Character", "Boolean", "Float", "Double",
+            "Object", "Class", "Void", "Number",
+            "List", "Set", "Map", "Collection", "Optional", "Stream",
+            "Result", "Option", "Promise", "Unit", "Cause" -> true;
             default -> false;
         };
     }
@@ -261,18 +239,15 @@ public class CstSliceApiUsageRule implements CstLintRule {
         // Extract slice base from each package
         var currentSlice = extractSliceBase(currentPkg, ctx);
         var typeSlice = extractSliceBase(typePkg, ctx);
-
         // If both are slice packages, compare their bases
         if (currentSlice != null && typeSlice != null) {
             return currentSlice.equals(typeSlice);
         }
-
         // If current is not a slice but type IS a slice, they're different
         // (non-slice code importing slice directly should be flagged)
         if (currentSlice == null && typeSlice != null) {
             return false;
         }
-
         // If type is not a slice, will be handled by isSlicePackage check later
         return true;
     }
@@ -281,22 +256,18 @@ public class CstSliceApiUsageRule implements CstLintRule {
         if (!ctx.isSlicePackage(packageName)) {
             return null;
         }
-
         // Remove .api suffix if present, then remove any subpackage after the slice name
         // For pattern **.usecase.**, the slice base is everything up to and including the slice name
         // e.g., com.example.usecase.order -> com.example.usecase.order
         //       com.example.usecase.order.internal -> com.example.usecase.order
         //       com.example.usecase.order.api -> com.example.usecase.order
-
         var parts = packageName.split("\\.");
         var result = new StringBuilder();
-
-        for (int i = 0; i < parts.length; i++) {
+        for (int i = 0; i < parts.length; i++ ) {
             if (i > 0) {
                 result.append(".");
             }
             result.append(parts[i]);
-
             // Check if we've matched a slice package at this level
             var partial = result.toString();
             if (ctx.isSlicePackage(partial)) {
@@ -309,12 +280,10 @@ public class CstSliceApiUsageRule implements CstLintRule {
                 }
             }
         }
-
         // Return the full package minus .api suffix if present
         if (packageName.endsWith(".api")) {
             return packageName.substring(0, packageName.length() - 4);
         }
-
         return packageName;
     }
 

@@ -3,6 +3,7 @@
 ## [0.4.0] - 2025-12-29
 
 ### Added
+- Enable jbct-maven-plugin for the project itself (dogfooding)
 
 ### Changed
 

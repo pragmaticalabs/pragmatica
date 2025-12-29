@@ -14,7 +14,6 @@ import java.util.List;
  * Initializes a new Aether slice project structure.
  */
 public final class SliceProjectInitializer {
-
     private static final String TEMPLATES_PATH = "/templates/slice/";
 
     private final Path projectDir;
@@ -34,12 +33,16 @@ public final class SliceProjectInitializer {
     /**
      * Create initializer with project parameters.
      */
-    public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir, String groupId, String artifactId) {
+    public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
+                                                                          String groupId,
+                                                                          String artifactId) {
         if (artifactId == null || artifactId.isBlank()) {
-            return Causes.cause("artifactId must not be null or empty").result();
+            return Causes.cause("artifactId must not be null or empty")
+                         .result();
         }
         if (groupId == null || groupId.isBlank()) {
-            return Causes.cause("groupId must not be null or empty").result();
+            return Causes.cause("groupId must not be null or empty")
+                         .result();
         }
         var basePackage = groupId + "." + artifactId.replace("-", "");
         return Result.success(new SliceProjectInitializer(projectDir, groupId, artifactId, basePackage));
@@ -48,7 +51,10 @@ public final class SliceProjectInitializer {
     /**
      * Create initializer with explicit base package.
      */
-    public static SliceProjectInitializer sliceProjectInitializer(Path projectDir, String groupId, String artifactId, String basePackage) {
+    public static SliceProjectInitializer sliceProjectInitializer(Path projectDir,
+                                                                  String groupId,
+                                                                  String artifactId,
+                                                                  String basePackage) {
         return new SliceProjectInitializer(projectDir, groupId, artifactId, basePackage);
     }
 
@@ -58,107 +64,100 @@ public final class SliceProjectInitializer {
      * @return List of created files
      */
     public Result<List<Path>> initialize() {
-        try {
+        try{
             // Create directories
             var srcMainJava = projectDir.resolve("src/main/java");
             var srcTestJava = projectDir.resolve("src/test/java");
             var resources = projectDir.resolve("src/main/resources/META-INF/dependencies");
-
             Files.createDirectories(srcMainJava);
             Files.createDirectories(srcTestJava);
             Files.createDirectories(resources);
-
             // Create package directories
             var packagePath = basePackage.replace(".", "/");
             Files.createDirectories(srcMainJava.resolve(packagePath));
             Files.createDirectories(srcTestJava.resolve(packagePath));
-
             var createdFiles = new ArrayList<Path>();
             var errors = new ArrayList<String>();
-
             // Create pom.xml
-            createFile("pom.xml.template", projectDir.resolve("pom.xml"))
-                .onSuccess(createdFiles::add)
-                .onFailure(cause -> errors.add(cause.message()));
-
+            createFile("pom.xml.template",
+                       projectDir.resolve("pom.xml"))
+            .onSuccess(createdFiles::add)
+            .onFailure(cause -> errors.add(cause.message()));
             // Create jbct.toml
-            createFile("jbct.toml.template", projectDir.resolve("jbct.toml"))
-                .onSuccess(createdFiles::add)
-                .onFailure(cause -> errors.add(cause.message()));
-
+            createFile("jbct.toml.template",
+                       projectDir.resolve("jbct.toml"))
+            .onSuccess(createdFiles::add)
+            .onFailure(cause -> errors.add(cause.message()));
             // Create .gitignore
-            createFile("gitignore.template", projectDir.resolve(".gitignore"))
-                .onSuccess(createdFiles::add)
-                .onFailure(cause -> errors.add(cause.message()));
-
+            createFile("gitignore.template",
+                       projectDir.resolve(".gitignore"))
+            .onSuccess(createdFiles::add)
+            .onFailure(cause -> errors.add(cause.message()));
             // Create slice interface
-            var slicePath = srcMainJava.resolve(packagePath).resolve(sliceName + ".java");
+            var slicePath = srcMainJava.resolve(packagePath)
+                                       .resolve(sliceName + ".java");
             createFile("Slice.java.template", slicePath)
-                .onSuccess(createdFiles::add)
-                .onFailure(cause -> errors.add(cause.message()));
-
+            .onSuccess(createdFiles::add)
+            .onFailure(cause -> errors.add(cause.message()));
             // Create slice implementation
-            var implPath = srcMainJava.resolve(packagePath).resolve(sliceName + "Impl.java");
+            var implPath = srcMainJava.resolve(packagePath)
+                                      .resolve(sliceName + "Impl.java");
             createFile("SliceImpl.java.template", implPath)
-                .onSuccess(createdFiles::add)
-                .onFailure(cause -> errors.add(cause.message()));
-
+            .onSuccess(createdFiles::add)
+            .onFailure(cause -> errors.add(cause.message()));
             // Create sample request
-            var requestPath = srcMainJava.resolve(packagePath).resolve("SampleRequest.java");
+            var requestPath = srcMainJava.resolve(packagePath)
+                                         .resolve("SampleRequest.java");
             createFile("SampleRequest.java.template", requestPath)
-                .onSuccess(createdFiles::add)
-                .onFailure(cause -> errors.add(cause.message()));
-
+            .onSuccess(createdFiles::add)
+            .onFailure(cause -> errors.add(cause.message()));
             // Create sample response
-            var responsePath = srcMainJava.resolve(packagePath).resolve("SampleResponse.java");
+            var responsePath = srcMainJava.resolve(packagePath)
+                                          .resolve("SampleResponse.java");
             createFile("SampleResponse.java.template", responsePath)
-                .onSuccess(createdFiles::add)
-                .onFailure(cause -> errors.add(cause.message()));
-
+            .onSuccess(createdFiles::add)
+            .onFailure(cause -> errors.add(cause.message()));
             // Create test
-            var testPath = srcTestJava.resolve(packagePath).resolve(sliceName + "Test.java");
+            var testPath = srcTestJava.resolve(packagePath)
+                                      .resolve(sliceName + "Test.java");
             createFile("SliceTest.java.template", testPath)
-                .onSuccess(createdFiles::add)
-                .onFailure(cause -> errors.add(cause.message()));
-
+            .onSuccess(createdFiles::add)
+            .onFailure(cause -> errors.add(cause.message()));
             // Create deploy scripts
             var deployForgePath = projectDir.resolve("deploy-forge.sh");
             createFile("deploy-forge.sh.template", deployForgePath)
-                .onSuccess(path -> {
-                    makeExecutable(path);
-                    createdFiles.add(path);
-                })
-                .onFailure(cause -> errors.add(cause.message()));
-
+            .onSuccess(path -> {
+                makeExecutable(path);
+                createdFiles.add(path);
+            })
+            .onFailure(cause -> errors.add(cause.message()));
             var deployTestPath = projectDir.resolve("deploy-test.sh");
             createFile("deploy-test.sh.template", deployTestPath)
-                .onSuccess(path -> {
-                    makeExecutable(path);
-                    createdFiles.add(path);
-                })
-                .onFailure(cause -> errors.add(cause.message()));
-
+            .onSuccess(path -> {
+                makeExecutable(path);
+                createdFiles.add(path);
+            })
+            .onFailure(cause -> errors.add(cause.message()));
             var deployProdPath = projectDir.resolve("deploy-prod.sh");
             createFile("deploy-prod.sh.template", deployProdPath)
-                .onSuccess(path -> {
-                    makeExecutable(path);
-                    createdFiles.add(path);
-                })
-                .onFailure(cause -> errors.add(cause.message()));
-
+            .onSuccess(path -> {
+                makeExecutable(path);
+                createdFiles.add(path);
+            })
+            .onFailure(cause -> errors.add(cause.message()));
             // Check for accumulated errors
             if (!errors.isEmpty()) {
-                return Causes.cause("File creation errors: " + String.join("; ", errors)).result();
+                return Causes.cause("File creation errors: " + String.join("; ", errors))
+                             .result();
             }
-
             // Create dependency manifest placeholder
             var dependencyFile = resources.resolve(basePackage + "." + sliceName);
             Files.writeString(dependencyFile, "# Slice dependencies (one artifact per line)\n");
             createdFiles.add(dependencyFile);
-
             return Result.success(createdFiles);
         } catch (Exception e) {
-            return Causes.cause("Failed to initialize slice project: " + e.getMessage()).result();
+            return Causes.cause("Failed to initialize slice project: " + e.getMessage())
+                         .result();
         }
     }
 
@@ -166,62 +165,62 @@ public final class SliceProjectInitializer {
         if (Files.exists(targetPath)) {
             return Result.success(targetPath);
         }
-
-        try (var in = getClass().getResourceAsStream(TEMPLATES_PATH + templateName)) {
+        try (var in = getClass()
+                      .getResourceAsStream(TEMPLATES_PATH + templateName)) {
             if (in == null) {
                 // Fall back to inline templates if resource not found
                 return createFromInlineTemplate(templateName, targetPath);
             }
-
             var content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
             content = substituteVariables(content);
-
             Files.writeString(targetPath, content);
             return Result.success(targetPath);
         } catch (IOException e) {
-            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()).result();
+            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage())
+                         .result();
         }
     }
 
     private Result<Path> createFromInlineTemplate(String templateName, Path targetPath) {
-        try {
+        try{
             var content = getInlineTemplate(templateName);
             if (content == null) {
-                return Causes.cause("Template not found: " + templateName).result();
+                return Causes.cause("Template not found: " + templateName)
+                             .result();
             }
-
             content = substituteVariables(content);
             Files.writeString(targetPath, content);
             return Result.success(targetPath);
         } catch (IOException e) {
-            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()).result();
+            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage())
+                         .result();
         }
     }
 
     private String getInlineTemplate(String templateName) {
         return switch (templateName) {
-            case "pom.xml.template" -> SLICE_POM_TEMPLATE;
-            case "jbct.toml.template" -> JBCT_TOML_TEMPLATE;
-            case "gitignore.template" -> GITIGNORE_TEMPLATE;
-            case "Slice.java.template" -> SLICE_INTERFACE_TEMPLATE;
-            case "SliceImpl.java.template" -> SLICE_IMPL_TEMPLATE;
-            case "SampleRequest.java.template" -> SAMPLE_REQUEST_TEMPLATE;
-            case "SampleResponse.java.template" -> SAMPLE_RESPONSE_TEMPLATE;
-            case "SliceTest.java.template" -> SLICE_TEST_TEMPLATE;
-            case "deploy-forge.sh.template" -> DEPLOY_FORGE_TEMPLATE;
-            case "deploy-test.sh.template" -> DEPLOY_TEST_TEMPLATE;
-            case "deploy-prod.sh.template" -> DEPLOY_PROD_TEMPLATE;
+            case"pom.xml.template" -> SLICE_POM_TEMPLATE;
+            case"jbct.toml.template" -> JBCT_TOML_TEMPLATE;
+            case"gitignore.template" -> GITIGNORE_TEMPLATE;
+            case"Slice.java.template" -> SLICE_INTERFACE_TEMPLATE;
+            case"SliceImpl.java.template" -> SLICE_IMPL_TEMPLATE;
+            case"SampleRequest.java.template" -> SAMPLE_REQUEST_TEMPLATE;
+            case"SampleResponse.java.template" -> SAMPLE_RESPONSE_TEMPLATE;
+            case"SliceTest.java.template" -> SLICE_TEST_TEMPLATE;
+            case"deploy-forge.sh.template" -> DEPLOY_FORGE_TEMPLATE;
+            case"deploy-test.sh.template" -> DEPLOY_TEST_TEMPLATE;
+            case"deploy-prod.sh.template" -> DEPLOY_PROD_TEMPLATE;
             default -> null;
         };
     }
 
     private String substituteVariables(String content) {
-        return content
-            .replace("{{groupId}}", groupId)
-            .replace("{{artifactId}}", artifactId)
-            .replace("{{sliceName}}", sliceName)
-            .replace("{{basePackage}}", basePackage)
-            .replace("{{factoryMethodName}}", Character.toLowerCase(sliceName.charAt(0)) + sliceName.substring(1));
+        return content.replace("{{groupId}}", groupId)
+                      .replace("{{artifactId}}", artifactId)
+                      .replace("{{sliceName}}", sliceName)
+                      .replace("{{basePackage}}", basePackage)
+                      .replace("{{factoryMethodName}}",
+                               Character.toLowerCase(sliceName.charAt(0)) + sliceName.substring(1));
     }
 
     private static String toCamelCase(String s) {
@@ -237,14 +236,12 @@ public final class SliceProjectInitializer {
     }
 
     private static void makeExecutable(Path path) {
-        try {
+        try{
             var perms = Files.getPosixFilePermissions(path);
             perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
             perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
             Files.setPosixFilePermissions(path, perms);
-        } catch (UnsupportedOperationException | IOException e) {
-            // Ignore on Windows or if permissions cannot be set
-        }
+        } catch (UnsupportedOperationException | IOException e) {}
     }
 
     // Inline templates

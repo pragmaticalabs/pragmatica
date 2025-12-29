@@ -16,7 +16,6 @@ import org.pragmatica.lang.Result;
  * Uses CST-based formatter for trivia (whitespace/comments) preservation.
  */
 public class JbctFormatter {
-
     private final CstFormatter delegate;
 
     private JbctFormatter(FormatterConfig config) {

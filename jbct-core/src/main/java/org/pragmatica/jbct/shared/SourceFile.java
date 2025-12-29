@@ -12,13 +12,13 @@ import static org.pragmatica.lang.Result.lift;
  * Value object representing a Java source file with its content.
  */
 public record SourceFile(Path path, String content) {
-
     /**
      * Factory method to create a SourceFile from a path by reading its content.
      */
     public static Result<SourceFile> sourceFile(Path path) {
-        return lift(Causes::fromThrowable, () -> Files.readString(path))
-                .map(content -> new SourceFile(path, content));
+        return lift(Causes::fromThrowable,
+                    () -> Files.readString(path))
+               .map(content -> new SourceFile(path, content));
     }
 
     /**
@@ -32,10 +32,11 @@ public record SourceFile(Path path, String content) {
      * Write the content back to the file.
      */
     public Result<SourceFile> write() {
-        return lift(Causes::fromThrowable, () -> {
-            Files.writeString(path, content);
-            return this;
-        });
+        return lift(Causes::fromThrowable,
+                    () -> {
+                        Files.writeString(path, content);
+                        return this;
+                    });
     }
 
     /**
@@ -49,6 +50,7 @@ public record SourceFile(Path path, String content) {
      * Get the file name without path.
      */
     public String fileName() {
-        return path.getFileName().toString();
+        return path.getFileName()
+                   .toString();
     }
 }

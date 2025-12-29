@@ -14,7 +14,6 @@ import java.util.List;
  * Uses CST-based linter for accurate trivia-preserving analysis.
  */
 public class JbctLinter {
-
     private final CstLinter delegate;
 
     private JbctLinter(LintContext context) {

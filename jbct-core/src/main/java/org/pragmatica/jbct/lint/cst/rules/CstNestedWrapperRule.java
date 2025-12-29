@@ -32,7 +32,6 @@ public class CstNestedWrapperRule implements CstLintRule {
         return RULE_ID;
     }
 
-
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
@@ -105,24 +104,24 @@ public class CstNestedWrapperRule implements CstLintRule {
 
     private String getSuggestion(String pattern) {
         return switch (pattern) {
-            case "Promise<Result<T>>" -> "Promise already carries failures via Cause. Use Promise<T> directly.";
-            case "Option<Option<T>>" -> "Double-wrapping Options is confusing. Flatten to Option<T>.";
-            case "Result<Result<T>>" -> "Double-wrapping Results is confusing. Flatten to Result<T> or use flatMap.";
-            case "Promise<Promise<T>>" -> "Double-wrapping Promises is confusing. Use flatMap to chain.";
+            case"Promise<Result<T>>" -> "Promise already carries failures via Cause. Use Promise<T> directly.";
+            case"Option<Option<T>>" -> "Double-wrapping Options is confusing. Flatten to Option<T>.";
+            case"Result<Result<T>>" -> "Double-wrapping Results is confusing. Flatten to Result<T> or use flatMap.";
+            case"Promise<Promise<T>>" -> "Double-wrapping Promises is confusing. Use flatMap to chain.";
             default -> "Avoid redundant nesting of monadic types.";
         };
     }
 
     private String getExample(String pattern) {
         return switch (pattern) {
-            case "Promise<Result<T>>" -> """
+            case"Promise<Result<T>>" -> """
                 // Before (forbidden)
                 public Promise<Result<User>> loadUser(UserId id) { ... }
 
                 // After
                 public Promise<User> loadUser(UserId id) { ... }
                 """;
-            case "Option<Option<T>>" -> """
+            case"Option<Option<T>>" -> """
                 // Before (forbidden)
                 public Option<Option<String>> findValue() { ... }
 

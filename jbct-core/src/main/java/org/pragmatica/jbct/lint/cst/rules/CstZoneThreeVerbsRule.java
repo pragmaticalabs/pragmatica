@@ -26,25 +26,58 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ZONE-02";
 
     // Zone 3 implementation-level verbs
-    private static final Set<String> ZONE_3_VERBS = Set.of(
-        "get", "set", "fetch", "parse", "calculate", "convert", "hash",
-        "format", "encode", "decode", "extract", "split", "join", "log",
-        "send", "receive", "read", "write", "add", "remove", "find",
-        "query", "insert", "update", "delete", "create", "build"
-    );
+    private static final Set<String>ZONE_3_VERBS = Set.of(
+    "get",
+    "set",
+    "fetch",
+    "parse",
+    "calculate",
+    "convert",
+    "hash",
+    "format",
+    "encode",
+    "decode",
+    "extract",
+    "split",
+    "join",
+    "log",
+    "send",
+    "receive",
+    "read",
+    "write",
+    "add",
+    "remove",
+    "find",
+    "query",
+    "insert",
+    "update",
+    "delete",
+    "create",
+    "build");
 
     // Zone 2 orchestration-level verbs (too abstract for leaf functions)
-    private static final Set<String> ZONE_2_VERBS = Set.of(
-        "validate", "process", "handle", "transform", "apply", "check",
-        "load", "save", "manage", "configure", "initialize", "execute",
-        "prepare", "complete", "resolve", "verify"
-    );
+    private static final Set<String>ZONE_2_VERBS = Set.of(
+    "validate",
+    "process",
+    "handle",
+    "transform",
+    "apply",
+    "check",
+    "load",
+    "save",
+    "manage",
+    "configure",
+    "initialize",
+    "execute",
+    "prepare",
+    "complete",
+    "resolve",
+    "verify");
 
     @Override
     public String ruleId() {
         return RULE_ID;
     }
-
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
@@ -55,7 +88,6 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
-
         // Find private methods that look like leaf functions
         return findAll(root, RuleId.MethodDecl.class)
                .stream()
@@ -69,20 +101,16 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         if (classMember.isEmpty()) {
             return false;
         }
-
         var memberText = text(classMember.getOrThrow("ClassMember expected"), source);
-
         // Check if private
         if (!memberText.contains("private ")) {
             return false;
         }
-
         // Check if it's a simple method (no monadic chains = leaf)
         var methodText = text(method, source);
         var hasMonadicChain = methodText.contains(".map(") ||
-                              methodText.contains(".flatMap(") ||
-                              methodText.contains(".fold(");
-
+        methodText.contains(".flatMap(") ||
+        methodText.contains(".fold(");
         // Leaf functions typically don't have monadic chains (they're at the bottom)
         return !hasMonadicChain;
     }
@@ -91,19 +119,15 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         var methodName = childByRule(method, RuleId.Identifier.class)
                          .map(id -> text(id, source))
                          .or("");
-
         if (methodName.isEmpty()) {
             return Stream.empty();
         }
-
         // Extract the verb from method name
         var verb = extractVerb(methodName);
-
         if (verb != null && ZONE_2_VERBS.contains(verb.toLowerCase())) {
             var suggestedVerb = suggestZone3Verb(verb.toLowerCase());
             return Stream.of(createDiagnostic(method, methodName, verb, suggestedVerb, ctx));
         }
-
         return Stream.empty();
     }
 
@@ -116,31 +140,36 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
             }
             sb.append(c);
         }
-        return sb.isEmpty() ? null : sb.toString();
+        return sb.isEmpty()
+               ? null
+               : sb.toString();
     }
 
     private String suggestZone3Verb(String zone2Verb) {
         return switch (zone2Verb) {
-            case "load" -> "fetch/read/query";
-            case "save" -> "write/insert/update";
-            case "process", "transform" -> "parse/convert/calculate";
-            case "handle" -> "send/receive";
-            case "manage" -> "add/remove";
-            case "validate", "verify", "check" -> "check";
+            case"load" -> "fetch/read/query";
+            case"save" -> "write/insert/update";
+            case"process", "transform" -> "parse/convert/calculate";
+            case"handle" -> "send/receive";
+            case"manage" -> "add/remove";
+            case"validate", "verify", "check" -> "check";
             default -> "get/set/fetch";
         };
     }
 
-    private Diagnostic createDiagnostic(CstNode node, String methodName, String verb,
-                                         String suggestedVerb, LintContext ctx) {
+    private Diagnostic createDiagnostic(CstNode node,
+                                        String methodName,
+                                        String verb,
+                                        String suggestedVerb,
+                                        LintContext ctx) {
         return Diagnostic.diagnostic(
-            RULE_ID,
-            ctx.severityFor(RULE_ID),
-            ctx.fileName(),
-            startLine(node),
-            startColumn(node),
-            "Leaf function '" + methodName + "' uses Zone 2 verb '" + verb + "'",
-            "Leaf functions should use Zone 3 implementation verbs. " +
-            "Consider using a more specific verb like: " + suggestedVerb + ".");
+        RULE_ID,
+        ctx.severityFor(RULE_ID),
+        ctx.fileName(),
+        startLine(node),
+        startColumn(node),
+        "Leaf function '" + methodName + "' uses Zone 2 verb '" + verb + "'",
+        "Leaf functions should use Zone 3 implementation verbs. " + "Consider using a more specific verb like: " + suggestedVerb
+        + ".");
     }
 }

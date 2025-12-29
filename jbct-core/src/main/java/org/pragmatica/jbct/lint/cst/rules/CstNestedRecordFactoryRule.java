@@ -21,7 +21,6 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
         return RULE_ID;
     }
 
-
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
@@ -35,7 +34,8 @@ public class CstNestedRecordFactoryRule implements CstLintRule {
         return findAll(root, RuleId.ClassMember.class)
                .stream()
                .filter(member -> isStaticMember(member, source))
-               .flatMap(member -> findFirst(member, RuleId.MethodDecl.class).stream())
+               .flatMap(member -> findFirst(member, RuleId.MethodDecl.class)
+                                  .stream())
                .filter(method -> containsLocalRecord(method, source))
                .map(method -> createDiagnostic(method, source, ctx));
     }

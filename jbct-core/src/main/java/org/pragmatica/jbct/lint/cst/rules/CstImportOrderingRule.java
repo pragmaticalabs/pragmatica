@@ -32,7 +32,6 @@ public class CstImportOrderingRule implements CstLintRule {
         return RULE_ID;
     }
 
-
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
@@ -42,46 +41,37 @@ public class CstImportOrderingRule implements CstLintRule {
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
-
         // Get project root package (first segment of package name)
         var projectPackage = getProjectPackage(packageName);
-
         // Collect all imports
         var imports = findAll(root, RuleId.ImportDecl.class);
         if (imports.isEmpty()) {
             return Stream.empty();
         }
-
         var diagnostics = new ArrayList<Diagnostic>();
-
         // Check import ordering
-        int lastGroup = -1;
+        int lastGroup = - 1;
         CstNode lastImportInGroup = null;
         boolean inStaticSection = false;
-
         for (var importNode : imports) {
-            var importText = text(importNode, source).trim();
+            var importText = text(importNode, source)
+                             .trim();
             var isStatic = importText.startsWith("import static ");
             var importPath = extractImportPath(importText);
-
             if (isStatic && !inStaticSection) {
                 // Transitioning to static imports - reset group
                 inStaticSection = true;
-                lastGroup = -1;
+                lastGroup = - 1;
                 lastImportInGroup = null;
             }
-
             var currentGroup = getImportGroup(importPath, projectPackage);
-
             if (currentGroup < lastGroup) {
                 // Import is out of order
                 diagnostics.add(createDiagnostic(importNode, importPath, lastImportInGroup, source, ctx, inStaticSection));
             }
-
             lastGroup = currentGroup;
             lastImportInGroup = importNode;
         }
-
         return diagnostics.stream();
     }
 
@@ -91,7 +81,9 @@ public class CstImportOrderingRule implements CstLintRule {
         if (parts.length >= 2) {
             return parts[0] + "." + parts[1];
         }
-        return parts.length > 0 ? parts[0] : "";
+        return parts.length > 0
+               ? parts[0]
+               : "";
     }
 
     private String extractImportPath(String importText) {
@@ -99,7 +91,7 @@ public class CstImportOrderingRule implements CstLintRule {
         var path = importText;
         if (path.startsWith("import static ")) {
             path = path.substring(14);
-        } else if (path.startsWith("import ")) {
+        }else if (path.startsWith("import ")) {
             path = path.substring(7);
         }
         // Handle module imports (import module java.base)
@@ -127,31 +119,36 @@ public class CstImportOrderingRule implements CstLintRule {
         }
         // Group 3: Third-party (org.*, com.*, etc. but not project)
         if (!importPath.startsWith(projectPackage) &&
-            (importPath.startsWith("org.") ||
-             importPath.startsWith("com.") ||
-             importPath.startsWith("io.") ||
-             importPath.startsWith("net."))) {
+        (importPath.startsWith("org.") ||
+        importPath.startsWith("com.") ||
+        importPath.startsWith("io.") ||
+        importPath.startsWith("net."))) {
             return 3;
         }
         // Group 4: Project imports
         return 4;
     }
 
-    private Diagnostic createDiagnostic(CstNode importNode, String importPath,
-                                         CstNode lastImport, String source,
-                                         LintContext ctx, boolean isStatic) {
-        var lastPath = lastImport != null ? extractImportPath(text(lastImport, source)) : "(none)";
-        var prefix = isStatic ? "Static import" : "Import";
-
-        return Diagnostic.diagnostic(
-            RULE_ID,
-            ctx.severityFor(RULE_ID),
-            ctx.fileName(),
-            startLine(importNode),
-            startColumn(importNode),
-            prefix + " '" + importPath + "' should come before '" + lastPath + "'",
-            "Follow import ordering: java → javax → org.pragmatica → third-party → project → static")
-            .withExample("""
+    private Diagnostic createDiagnostic(CstNode importNode,
+                                        String importPath,
+                                        CstNode lastImport,
+                                        String source,
+                                        LintContext ctx,
+                                        boolean isStatic) {
+        var lastPath = lastImport != null
+                       ? extractImportPath(text(lastImport, source))
+                       : "(none)";
+        var prefix = isStatic
+                     ? "Static import"
+                     : "Import";
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(importNode),
+                                     startColumn(importNode),
+                                     prefix + " '" + importPath + "' should come before '" + lastPath + "'",
+                                     "Follow import ordering: java → javax → org.pragmatica → third-party → project → static")
+                         .withExample("""
                 // Correct import order:
                 import java.util.List;
                 import java.util.Map;

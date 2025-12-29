@@ -19,7 +19,6 @@ import java.time.Duration;
  * Downloads and installs JBCT JAR files.
  */
 public final class JarInstaller {
-
     private static final String DEFAULT_INSTALL_DIR = ".jbct";
     private static final String LIB_DIR = "lib";
     private static final String JAR_NAME = "jbct.jar";
@@ -50,30 +49,29 @@ public final class JarInstaller {
      * Returns the path to the running JAR, or default install path if detection fails.
      */
     public static Path detectCurrentJar() {
-        try {
+        try{
             // Try to get the JAR from class path
             var classPath = System.getProperty("java.class.path");
             if (classPath != null && classPath.endsWith(".jar")) {
-                var jarPath = Path.of(classPath).toAbsolutePath();
+                var jarPath = Path.of(classPath)
+                                  .toAbsolutePath();
                 if (Files.exists(jarPath)) {
                     return jarPath;
                 }
             }
-
             // Try to get from protection domain
             var location = JarInstaller.class.getProtectionDomain()
-                    .getCodeSource()
-                    .getLocation();
+                                       .getCodeSource()
+                                       .getLocation();
             if (location != null) {
-                var jarPath = Path.of(location.toURI()).toAbsolutePath();
-                if (Files.isRegularFile(jarPath) && jarPath.toString().endsWith(".jar")) {
+                var jarPath = Path.of(location.toURI())
+                                  .toAbsolutePath();
+                if (Files.isRegularFile(jarPath) && jarPath.toString()
+                                                           .endsWith(".jar")) {
                     return jarPath;
                 }
             }
-        } catch (Exception e) {
-            // Fall through to default
-        }
-
+        } catch (Exception e) {}
         return defaultInstallPath();
     }
 
@@ -86,38 +84,37 @@ public final class JarInstaller {
      */
     public Result<Path> install(String downloadUrl, Path targetPath) {
         return download(downloadUrl)
-                .flatMap(tempFile -> installFromTemp(tempFile, targetPath));
+               .flatMap(tempFile -> installFromTemp(tempFile, targetPath));
     }
 
     /**
      * Download JAR to a temporary file.
      */
     public Result<Path> download(String downloadUrl) {
-        try {
+        try{
             var tempFile = Files.createTempFile("jbct-download-", ".jar");
-
             var request = HttpRequest.newBuilder()
-                    .uri(URI.create(downloadUrl))
-                    .header("User-Agent", "jbct-cli")
-                    .timeout(Duration.ofMinutes(5))
-                    .GET()
-                    .build();
-
-            return http.send(request, HttpResponse.BodyHandlers.ofFile(tempFile))
-                    .await()
-                    .flatMap(response -> {
-                        if (response.isSuccess()) {
-                            return Result.success(response.body());
-                        } else {
-                            try {
-                                Files.deleteIfExists(tempFile);
-                            } catch (IOException ignored) {
-                            }
-                            return response.toResult();
-                        }
-                    });
+                                     .uri(URI.create(downloadUrl))
+                                     .header("User-Agent", "jbct-cli")
+                                     .timeout(Duration.ofMinutes(5))
+                                     .GET()
+                                     .build();
+            return http.send(request,
+                             HttpResponse.BodyHandlers.ofFile(tempFile))
+                       .await()
+                       .flatMap(response -> {
+                                    if (response.isSuccess()) {
+                                    return Result.success(response.body());
+                                }else {
+                                    try{
+                                    Files.deleteIfExists(tempFile);
+                                } catch (IOException ignored) {}
+                                    return response.toResult();
+                                }
+                                });
         } catch (Exception e) {
-            return Causes.cause("Download failed: " + e.getMessage()).result();
+            return Causes.cause("Download failed: " + e.getMessage())
+                         .result();
         }
     }
 
@@ -127,17 +124,15 @@ public final class JarInstaller {
      * Uses atomic move when possible.
      */
     public Result<Path> installFromTemp(Path tempFile, Path targetPath) {
-        try {
+        try{
             // Create parent directories
             var parent = targetPath.getParent();
             if (parent != null && !Files.exists(parent)) {
                 Files.createDirectories(parent);
             }
-
             // Backup existing file
             var backup = backupExisting(targetPath);
-
-            try {
+            try{
                 // Try atomic move first
                 Files.move(tempFile, targetPath, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
             } catch (IOException e) {
@@ -145,18 +140,16 @@ public final class JarInstaller {
                 Files.copy(tempFile, targetPath, StandardCopyOption.REPLACE_EXISTING);
                 Files.deleteIfExists(tempFile);
             }
-
             // Remove backup on success
             backup.onPresent(backupPath -> {
-                try {
+                try{
                     Files.deleteIfExists(backupPath);
-                } catch (IOException ignored) {
-                }
+                } catch (IOException ignored) {}
             });
-
             return Result.success(targetPath);
         } catch (Exception e) {
-            return Causes.cause("Installation failed: " + e.getMessage()).result();
+            return Causes.cause("Installation failed: " + e.getMessage())
+                         .result();
         }
     }
 
@@ -164,8 +157,7 @@ public final class JarInstaller {
         if (!Files.exists(targetPath)) {
             return Option.none();
         }
-
-        try {
+        try{
             var backupPath = targetPath.resolveSibling(targetPath.getFileName() + ".bak");
             Files.copy(targetPath, backupPath, StandardCopyOption.REPLACE_EXISTING);
             return Option.option(backupPath);
@@ -180,17 +172,19 @@ public final class JarInstaller {
      * @return Path to the installation directory
      */
     public static Result<Path> createInstallDir() {
-        try {
-            var installDir = defaultInstallPath().getParent().getParent(); // ~/.jbct
+        try{
+            var installDir = defaultInstallPath()
+                             .getParent()
+                             .getParent();
+            // ~/.jbct
             var binDir = installDir.resolve("bin");
             var libDir = installDir.resolve("lib");
-
             Files.createDirectories(binDir);
             Files.createDirectories(libDir);
-
             return Result.success(installDir);
         } catch (Exception e) {
-            return Causes.cause("Failed to create install directory: " + e.getMessage()).result();
+            return Causes.cause("Failed to create install directory: " + e.getMessage())
+                         .result();
         }
     }
 
@@ -200,27 +194,30 @@ public final class JarInstaller {
      */
     public static Result<Path> installWrapperScripts(Path installDir) {
         var binDir = installDir.resolve("bin");
-
-        return copyResource("/dist/bin/jbct", binDir.resolve("jbct"), true)
-                .flatMap(_ -> copyResource("/dist/bin/jbct.bat", binDir.resolve("jbct.bat"), false))
-                .map(_ -> installDir);
+        return copyResource("/dist/bin/jbct",
+                            binDir.resolve("jbct"),
+                            true)
+               .flatMap(_ -> copyResource("/dist/bin/jbct.bat",
+                                          binDir.resolve("jbct.bat"),
+                                          false))
+               .map(_ -> installDir);
     }
 
     private static Result<Path> copyResource(String resourcePath, Path targetPath, boolean executable) {
         try (var in = JarInstaller.class.getResourceAsStream(resourcePath)) {
             if (in == null) {
-                return Causes.cause("Resource not found: " + resourcePath).result();
+                return Causes.cause("Resource not found: " + resourcePath)
+                             .result();
             }
-
             Files.copy(in, targetPath, StandardCopyOption.REPLACE_EXISTING);
-
             if (executable) {
-                targetPath.toFile().setExecutable(true);
+                targetPath.toFile()
+                          .setExecutable(true);
             }
-
             return Result.success(targetPath);
         } catch (Exception e) {
-            return Causes.cause("Failed to copy " + resourcePath + ": " + e.getMessage()).result();
+            return Causes.cause("Failed to copy " + resourcePath + ": " + e.getMessage())
+                         .result();
         }
     }
 }

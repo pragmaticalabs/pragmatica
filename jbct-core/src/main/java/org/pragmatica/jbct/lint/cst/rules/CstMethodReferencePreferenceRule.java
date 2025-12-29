@@ -25,25 +25,24 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
 
     // Pattern: x -> new Type(x) or (x) -> new Type(x)
     private static final Pattern CONSTRUCTOR_LAMBDA = Pattern.compile(
-        "\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*new\\s+(\\w+)\\s*\\(\\s*\\1\\s*\\)");
+    "\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*new\\s+(\\w+)\\s*\\(\\s*\\1\\s*\\)");
 
     // Pattern: x -> x.method() or (x) -> x.method()
     private static final Pattern INSTANCE_METHOD_LAMBDA = Pattern.compile(
-        "\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*\\1\\s*\\.\\s*(\\w+)\\s*\\(\\s*\\)");
+    "\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*\\1\\s*\\.\\s*(\\w+)\\s*\\(\\s*\\)");
 
     // Pattern: x -> Type.method(x) or (x) -> Type.method(x)
     private static final Pattern STATIC_METHOD_LAMBDA = Pattern.compile(
-        "\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*([A-Z]\\w*)\\s*\\.\\s*(\\w+)\\s*\\(\\s*\\1\\s*\\)");
+    "\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*([A-Z]\\w*)\\s*\\.\\s*(\\w+)\\s*\\(\\s*\\1\\s*\\)");
 
     // Pattern: (a, b) -> new Type(a, b)
     private static final Pattern MULTI_ARG_CONSTRUCTOR = Pattern.compile(
-        "\\(\\s*(\\w+)\\s*,\\s*(\\w+)\\s*\\)\\s*->\\s*new\\s+(\\w+)\\s*\\(\\s*\\1\\s*,\\s*\\2\\s*\\)");
+    "\\(\\s*(\\w+)\\s*,\\s*(\\w+)\\s*\\)\\s*->\\s*new\\s+(\\w+)\\s*\\(\\s*\\1\\s*,\\s*\\2\\s*\\)");
 
     @Override
     public String ruleId() {
         return RULE_ID;
     }
-
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
@@ -54,7 +53,6 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
-
         return findAll(root, RuleId.Lambda.class)
                .stream()
                .map(lambda -> checkLambda(lambda, source, ctx))
@@ -62,22 +60,20 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
     }
 
     private Diagnostic checkLambda(CstNode lambda, String source, LintContext ctx) {
-        var lambdaText = text(lambda, source).trim();
-
+        var lambdaText = text(lambda, source)
+                         .trim();
         // Check for constructor lambda: x -> new Type(x)
         var constructorMatch = CONSTRUCTOR_LAMBDA.matcher(lambdaText);
         if (constructorMatch.matches()) {
             var typeName = constructorMatch.group(2);
             return createDiagnostic(lambda, lambdaText, typeName + "::new", ctx);
         }
-
         // Check for multi-arg constructor: (a, b) -> new Type(a, b)
         var multiArgMatch = MULTI_ARG_CONSTRUCTOR.matcher(lambdaText);
         if (multiArgMatch.matches()) {
             var typeName = multiArgMatch.group(3);
             return createDiagnostic(lambda, lambdaText, typeName + "::new", ctx);
         }
-
         // Check for instance method: x -> x.method()
         var instanceMatch = INSTANCE_METHOD_LAMBDA.matcher(lambdaText);
         if (instanceMatch.matches()) {
@@ -85,7 +81,6 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
             // For instance methods, we need the type, but we can suggest the pattern
             return createDiagnostic(lambda, lambdaText, "Type::" + methodName, ctx);
         }
-
         // Check for static method: x -> Type.method(x)
         var staticMatch = STATIC_METHOD_LAMBDA.matcher(lambdaText);
         if (staticMatch.matches()) {
@@ -93,20 +88,18 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
             var methodName = staticMatch.group(3);
             return createDiagnostic(lambda, lambdaText, typeName + "::" + methodName, ctx);
         }
-
         return null;
     }
 
     private Diagnostic createDiagnostic(CstNode lambda, String lambdaText, String suggestion, LintContext ctx) {
-        return Diagnostic.diagnostic(
-            RULE_ID,
-            ctx.severityFor(RULE_ID),
-            ctx.fileName(),
-            startLine(lambda),
-            startColumn(lambda),
-            "Lambda can be simplified to method reference: " + suggestion,
-            "Method references are more concise and readable.")
-            .withExample("""
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(lambda),
+                                     startColumn(lambda),
+                                     "Lambda can be simplified to method reference: " + suggestion,
+                                     "Method references are more concise and readable.")
+                         .withExample("""
                 // Before: lambda
                 .map(%s)
 

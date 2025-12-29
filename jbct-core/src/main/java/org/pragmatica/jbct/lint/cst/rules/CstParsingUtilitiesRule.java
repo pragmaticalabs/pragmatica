@@ -24,62 +24,58 @@ public class CstParsingUtilitiesRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-UTIL-01";
 
     // Map of JDK parsing patterns to Pragmatica alternatives
-    private static final List<ParsingPattern> PATTERNS = List.of(
-        // Number parsing
-        new ParsingPattern("Integer\\.parseInt", "Number.parseInt", "org.pragmatica.lang.utils.Number"),
-        new ParsingPattern("Integer\\.parseUnsignedInt", "Number.parseInt", "org.pragmatica.lang.utils.Number"),
-        new ParsingPattern("Long\\.parseLong", "Number.parseLong", "org.pragmatica.lang.utils.Number"),
-        new ParsingPattern("Long\\.parseUnsignedLong", "Number.parseLong", "org.pragmatica.lang.utils.Number"),
-        new ParsingPattern("Short\\.parseShort", "Number.parseShort", "org.pragmatica.lang.utils.Number"),
-        new ParsingPattern("Byte\\.parseByte", "Number.parseByte", "org.pragmatica.lang.utils.Number"),
-        new ParsingPattern("Float\\.parseFloat", "Number.parseFloat", "org.pragmatica.lang.utils.Number"),
-        new ParsingPattern("Double\\.parseDouble", "Number.parseDouble", "org.pragmatica.lang.utils.Number"),
-        new ParsingPattern("new BigInteger\\s*\\(", "Number.parseBigInteger", "org.pragmatica.lang.utils.Number"),
-        new ParsingPattern("new BigDecimal\\s*\\(", "Number.parseBigDecimal", "org.pragmatica.lang.utils.Number"),
-
-        // Text/Pattern parsing
-        new ParsingPattern("Enum\\.valueOf", "Text.parseEnum", "org.pragmatica.lang.utils.Text"),
-        new ParsingPattern("Pattern\\.compile", "Text.compilePattern", "org.pragmatica.lang.utils.Text"),
-        new ParsingPattern("Base64\\.getDecoder\\(\\)\\.decode", "Text.decodeBase64", "org.pragmatica.lang.utils.Text"),
-        new ParsingPattern("Base64\\.getUrlDecoder\\(\\)\\.decode", "Text.decodeBase64URL", "org.pragmatica.lang.utils.Text"),
-        new ParsingPattern("Base64\\.getMimeDecoder\\(\\)\\.decode", "Text.decodeBase64MIME", "org.pragmatica.lang.utils.Text"),
-
-        // DateTime parsing
-        new ParsingPattern("LocalDate\\.parse", "DateTime.parseLocalDate", "org.pragmatica.lang.utils.DateTime"),
-        new ParsingPattern("LocalTime\\.parse", "DateTime.parseLocalTime", "org.pragmatica.lang.utils.DateTime"),
-        new ParsingPattern("LocalDateTime\\.parse", "DateTime.parseLocalDateTime", "org.pragmatica.lang.utils.DateTime"),
-        new ParsingPattern("ZonedDateTime\\.parse", "DateTime.parseZonedDateTime", "org.pragmatica.lang.utils.DateTime"),
-        new ParsingPattern("OffsetDateTime\\.parse", "DateTime.parseOffsetDateTime", "org.pragmatica.lang.utils.DateTime"),
-        new ParsingPattern("OffsetTime\\.parse", "DateTime.parseOffsetTime", "org.pragmatica.lang.utils.DateTime"),
-        new ParsingPattern("Instant\\.parse", "DateTime.parseInstant", "org.pragmatica.lang.utils.DateTime"),
-        new ParsingPattern("Duration\\.parse", "DateTime.parseDuration", "org.pragmatica.lang.utils.DateTime"),
-        new ParsingPattern("Period\\.parse", "DateTime.parsePeriod", "org.pragmatica.lang.utils.DateTime"),
-
-        // Network/Identifier parsing
-        new ParsingPattern("new URL\\s*\\(", "Network.parseURL", "org.pragmatica.lang.utils.Network"),
-        new ParsingPattern("URI\\.create", "Network.parseURI", "org.pragmatica.lang.utils.Network"),
-        new ParsingPattern("new URI\\s*\\(", "Network.parseURI", "org.pragmatica.lang.utils.Network"),
-        new ParsingPattern("UUID\\.fromString", "Network.parseUUID", "org.pragmatica.lang.utils.Network"),
-        new ParsingPattern("InetAddress\\.getByName", "Network.parseInetAddress", "org.pragmatica.lang.utils.Network"),
-
-        // I18n parsing
-        new ParsingPattern("Currency\\.getInstance", "I18n.parseCurrency", "org.pragmatica.lang.utils.I18n"),
-        new ParsingPattern("Locale\\.forLanguageTag", "I18n.parseLocale", "org.pragmatica.lang.utils.I18n"),
-        new ParsingPattern("Charset\\.forName", "I18n.parseCharset", "org.pragmatica.lang.utils.I18n"),
-        new ParsingPattern("ZoneId\\.of\\s*\\(", "I18n.parseZoneId", "org.pragmatica.lang.utils.I18n"),
-        new ParsingPattern("ZoneOffset\\.of\\s*\\(", "I18n.parseZoneOffset", "org.pragmatica.lang.utils.I18n")
-    );
+    private static final List<ParsingPattern>PATTERNS = List.of(
+    // Number parsing
+    new ParsingPattern("Integer\\.parseInt", "Number.parseInt", "org.pragmatica.lang.utils.Number"),
+    new ParsingPattern("Integer\\.parseUnsignedInt", "Number.parseInt", "org.pragmatica.lang.utils.Number"),
+    new ParsingPattern("Long\\.parseLong", "Number.parseLong", "org.pragmatica.lang.utils.Number"),
+    new ParsingPattern("Long\\.parseUnsignedLong", "Number.parseLong", "org.pragmatica.lang.utils.Number"),
+    new ParsingPattern("Short\\.parseShort", "Number.parseShort", "org.pragmatica.lang.utils.Number"),
+    new ParsingPattern("Byte\\.parseByte", "Number.parseByte", "org.pragmatica.lang.utils.Number"),
+    new ParsingPattern("Float\\.parseFloat", "Number.parseFloat", "org.pragmatica.lang.utils.Number"),
+    new ParsingPattern("Double\\.parseDouble", "Number.parseDouble", "org.pragmatica.lang.utils.Number"),
+    new ParsingPattern("new BigInteger\\s*\\(", "Number.parseBigInteger", "org.pragmatica.lang.utils.Number"),
+    new ParsingPattern("new BigDecimal\\s*\\(", "Number.parseBigDecimal", "org.pragmatica.lang.utils.Number"),
+    // Text/Pattern parsing
+    new ParsingPattern("Enum\\.valueOf", "Text.parseEnum", "org.pragmatica.lang.utils.Text"),
+    new ParsingPattern("Pattern\\.compile", "Text.compilePattern", "org.pragmatica.lang.utils.Text"),
+    new ParsingPattern("Base64\\.getDecoder\\(\\)\\.decode", "Text.decodeBase64", "org.pragmatica.lang.utils.Text"),
+    new ParsingPattern("Base64\\.getUrlDecoder\\(\\)\\.decode", "Text.decodeBase64URL", "org.pragmatica.lang.utils.Text"),
+    new ParsingPattern("Base64\\.getMimeDecoder\\(\\)\\.decode",
+                       "Text.decodeBase64MIME",
+                       "org.pragmatica.lang.utils.Text"),
+    // DateTime parsing
+    new ParsingPattern("LocalDate\\.parse", "DateTime.parseLocalDate", "org.pragmatica.lang.utils.DateTime"),
+    new ParsingPattern("LocalTime\\.parse", "DateTime.parseLocalTime", "org.pragmatica.lang.utils.DateTime"),
+    new ParsingPattern("LocalDateTime\\.parse", "DateTime.parseLocalDateTime", "org.pragmatica.lang.utils.DateTime"),
+    new ParsingPattern("ZonedDateTime\\.parse", "DateTime.parseZonedDateTime", "org.pragmatica.lang.utils.DateTime"),
+    new ParsingPattern("OffsetDateTime\\.parse", "DateTime.parseOffsetDateTime", "org.pragmatica.lang.utils.DateTime"),
+    new ParsingPattern("OffsetTime\\.parse", "DateTime.parseOffsetTime", "org.pragmatica.lang.utils.DateTime"),
+    new ParsingPattern("Instant\\.parse", "DateTime.parseInstant", "org.pragmatica.lang.utils.DateTime"),
+    new ParsingPattern("Duration\\.parse", "DateTime.parseDuration", "org.pragmatica.lang.utils.DateTime"),
+    new ParsingPattern("Period\\.parse", "DateTime.parsePeriod", "org.pragmatica.lang.utils.DateTime"),
+    // Network/Identifier parsing
+    new ParsingPattern("new URL\\s*\\(", "Network.parseURL", "org.pragmatica.lang.utils.Network"),
+    new ParsingPattern("URI\\.create", "Network.parseURI", "org.pragmatica.lang.utils.Network"),
+    new ParsingPattern("new URI\\s*\\(", "Network.parseURI", "org.pragmatica.lang.utils.Network"),
+    new ParsingPattern("UUID\\.fromString", "Network.parseUUID", "org.pragmatica.lang.utils.Network"),
+    new ParsingPattern("InetAddress\\.getByName", "Network.parseInetAddress", "org.pragmatica.lang.utils.Network"),
+    // I18n parsing
+    new ParsingPattern("Currency\\.getInstance", "I18n.parseCurrency", "org.pragmatica.lang.utils.I18n"),
+    new ParsingPattern("Locale\\.forLanguageTag", "I18n.parseLocale", "org.pragmatica.lang.utils.I18n"),
+    new ParsingPattern("Charset\\.forName", "I18n.parseCharset", "org.pragmatica.lang.utils.I18n"),
+    new ParsingPattern("ZoneId\\.of\\s*\\(", "I18n.parseZoneId", "org.pragmatica.lang.utils.I18n"),
+    new ParsingPattern("ZoneOffset\\.of\\s*\\(", "I18n.parseZoneOffset", "org.pragmatica.lang.utils.I18n"));
 
     // Combined regex for all patterns
     private static final Pattern COMBINED_PATTERN;
-    private static final Map<String, ParsingPattern> PATTERN_MAP;
+    private static final Map<String, ParsingPattern>PATTERN_MAP;
 
     static {
         var patternStrings = PATTERNS.stream()
                                      .map(p -> "(" + p.jdkPattern() + ")")
                                      .toList();
         COMBINED_PATTERN = Pattern.compile(String.join("|", patternStrings));
-
         var mapBuilder = new java.util.HashMap<String, ParsingPattern>();
         for (var p : PATTERNS) {
             mapBuilder.put(p.jdkPattern(), p);
@@ -92,7 +88,6 @@ public class CstParsingUtilitiesRule implements CstLintRule {
         return RULE_ID;
     }
 
-
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
@@ -102,7 +97,6 @@ public class CstParsingUtilitiesRule implements CstLintRule {
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
-
         return findAll(root, RuleId.MethodDecl.class)
                .stream()
                .flatMap(method -> findJdkParsing(method, source, ctx));
@@ -111,7 +105,6 @@ public class CstParsingUtilitiesRule implements CstLintRule {
     private Stream<Diagnostic> findJdkParsing(CstNode method, String source, LintContext ctx) {
         var methodText = text(method, source);
         var matcher = COMBINED_PATTERN.matcher(methodText);
-
         return Stream.iterate(matcher.find(),
                               found -> found,
                               found -> matcher.find())
@@ -130,7 +123,10 @@ public class CstParsingUtilitiesRule implements CstLintRule {
         }
         // Direct lookup for exact matches
         for (var pattern : PATTERNS) {
-            if (match.contains(pattern.jdkPattern().replace("\\s*", "").replace("\\(", "("))) {
+            if (match.contains(pattern.jdkPattern()
+                                      .replace("\\s*", "")
+                                      .replace("\\(",
+                                               "("))) {
                 return pattern;
             }
         }
@@ -142,14 +138,14 @@ public class CstParsingUtilitiesRule implements CstLintRule {
 
     private Diagnostic createDiagnostic(CstNode node, ParsingPattern pattern, LintContext ctx) {
         return Diagnostic.diagnostic(
-            RULE_ID,
-            ctx.severityFor(RULE_ID),
-            ctx.fileName(),
-            startLine(node),
-            startColumn(node),
-            "Use " + pattern.pragmaticaMethod() + "() instead of JDK parsing",
-            "Pragmatica parsing utilities return Result<T> for composable error handling. " +
-            "Import from " + pattern.importPath() + ".");
+        RULE_ID,
+        ctx.severityFor(RULE_ID),
+        ctx.fileName(),
+        startLine(node),
+        startColumn(node),
+        "Use " + pattern.pragmaticaMethod() + "() instead of JDK parsing",
+        "Pragmatica parsing utilities return Result<T> for composable error handling. " + "Import from " + pattern.importPath()
+        + ".");
     }
 
     private record ParsingPattern(String jdkPattern, String pragmaticaMethod, String importPath) {}

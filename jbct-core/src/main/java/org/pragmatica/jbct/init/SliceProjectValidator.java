@@ -13,7 +13,6 @@ import java.util.jar.Manifest;
  * Validates slice project configuration.
  */
 public final class SliceProjectValidator {
-
     private final Path projectDir;
     private final List<String> errors = new ArrayList<>();
     private final List<String> warnings = new ArrayList<>();
@@ -34,11 +33,9 @@ public final class SliceProjectValidator {
     public ValidationResult validate() {
         errors.clear();
         warnings.clear();
-
         checkPomFile();
         checkSliceApiProperties();
         checkManifestEntries();
-
         return new ValidationResult(List.copyOf(errors), List.copyOf(warnings));
     }
 
@@ -48,14 +45,11 @@ public final class SliceProjectValidator {
             errors.add("pom.xml not found in project directory");
             return;
         }
-
-        try {
+        try{
             var content = Files.readString(pomFile);
-
             if (!content.contains("slice.class")) {
                 warnings.add("Missing slice.class property in pom.xml");
             }
-
             if (!content.contains("collect-slice-deps")) {
                 warnings.add("Missing collect-slice-deps goal configuration");
             }
@@ -70,17 +64,14 @@ public final class SliceProjectValidator {
             warnings.add("target/classes not found - run 'mvn compile' first");
             return;
         }
-
         var propsFile = targetDir.resolve("META-INF/slice-api.properties");
         if (!Files.exists(propsFile)) {
             errors.add("slice-api.properties not found - ensure annotation processor is configured");
             return;
         }
-
         try (var input = new FileInputStream(propsFile.toFile())) {
             var props = new Properties();
             props.load(input);
-
             checkRequired(props, "api.artifact");
             checkRequired(props, "slice.artifact");
             checkRequired(props, "api.interface");
@@ -101,17 +92,14 @@ public final class SliceProjectValidator {
         if (!Files.exists(targetDir)) {
             return;
         }
-
         var manifestFile = targetDir.resolve("META-INF/MANIFEST.MF");
         if (!Files.exists(manifestFile)) {
             warnings.add("MANIFEST.MF not found - will be created during packaging");
             return;
         }
-
         try (var input = new FileInputStream(manifestFile.toFile())) {
             var manifest = new Manifest(input);
             var attrs = manifest.getMainAttributes();
-
             if (attrs.getValue("Slice-Artifact") == null) {
                 warnings.add("Missing Slice-Artifact manifest entry");
             }
@@ -127,7 +115,6 @@ public final class SliceProjectValidator {
      * Validation result containing errors and warnings.
      */
     public record ValidationResult(List<String> errors, List<String> warnings) {
-
         public boolean hasErrors() {
             return !errors.isEmpty();
         }

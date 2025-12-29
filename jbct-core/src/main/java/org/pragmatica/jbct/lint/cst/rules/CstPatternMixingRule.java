@@ -20,62 +20,58 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstPatternMixingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-PAT-02";
 
-    private static final Set<String> FORK_JOIN_CALLS = Set.of(
-        "Result.all(", "Promise.all(", "Option.all(",
-        "Result.allOf(", "Promise.allOf(", "Option.allOf("
-    );
+    private static final Set<String>FORK_JOIN_CALLS = Set.of(
+    "Result.all(", "Promise.all(", "Option.all(", "Result.allOf(", "Promise.allOf(", "Option.allOf(");
 
     @Override
     public String ruleId() {
         return RULE_ID;
     }
 
-
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         // Find all Lambda expressions
         return findAll(root, RuleId.Lambda.class)
-            .stream()
-            .filter(lambda -> isInsideFlatMap(lambda, root, source))
-            .filter(lambda -> containsForkJoin(lambda, source))
-            .map(lambda -> createDiagnostic(lambda, source, ctx));
+               .stream()
+               .filter(lambda -> isInsideFlatMap(lambda, root, source))
+               .filter(lambda -> containsForkJoin(lambda, source))
+               .map(lambda -> createDiagnostic(lambda, source, ctx));
     }
 
     private boolean isInsideFlatMap(CstNode lambda, CstNode root, String source) {
         // Check if this lambda is an argument to flatMap
         // We look at the text before the lambda to see if it contains .flatMap(
         var lambdaText = text(lambda, source);
-
         // Find the expression containing this lambda
         return findAncestor(root, lambda, RuleId.Expr.class)
-            .map(expr -> text(expr, source))
-            .filter(exprText -> {
-                var lambdaStart = exprText.indexOf(lambdaText);
-                if (lambdaStart > 0) {
-                    var before = exprText.substring(0, lambdaStart);
-                    return before.contains(".flatMap(") || before.contains(".andThen(");
-                }
-                return false;
-            })
-            .isPresent();
+               .map(expr -> text(expr, source))
+               .filter(exprText -> {
+                           var lambdaStart = exprText.indexOf(lambdaText);
+                           if (lambdaStart > 0) {
+                           var before = exprText.substring(0, lambdaStart);
+                           return before.contains(".flatMap(") || before.contains(".andThen(");
+                       }
+                           return false;
+                       })
+               .isPresent();
     }
 
     private boolean containsForkJoin(CstNode lambda, String source) {
         var lambdaText = text(lambda, source);
-        return FORK_JOIN_CALLS.stream().anyMatch(lambdaText::contains);
+        return FORK_JOIN_CALLS.stream()
+                              .anyMatch(lambdaText::contains);
     }
 
     private Diagnostic createDiagnostic(CstNode node, String source, LintContext ctx) {
-        return Diagnostic.diagnostic(
-            RULE_ID,
-            ctx.severityFor(RULE_ID),
-            ctx.fileName(),
-            startLine(node),
-            startColumn(node),
-            "Fork-Join pattern nested inside Sequencer chain",
-            "Mixing Result.all() (Fork-Join) inside flatMap() (Sequencer) creates confusing control flow. "
-            + "Restructure to use Fork-Join at the same level, or extract to a separate method."
-        ).withExample("""
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(node),
+                                     startColumn(node),
+                                     "Fork-Join pattern nested inside Sequencer chain",
+                                     "Mixing Result.all() (Fork-Join) inside flatMap() (Sequencer) creates confusing control flow. "
+                                     + "Restructure to use Fork-Join at the same level, or extract to a separate method.")
+                         .withExample("""
             // Before (mixed patterns)
             return validateEmail(request)
                 .flatMap(email -> Result.all(

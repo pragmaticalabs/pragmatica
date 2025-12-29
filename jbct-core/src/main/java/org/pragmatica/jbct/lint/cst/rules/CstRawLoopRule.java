@@ -23,7 +23,6 @@ public class CstRawLoopRule implements CstLintRule {
         return RULE_ID;
     }
 
-
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
@@ -50,10 +49,10 @@ public class CstRawLoopRule implements CstLintRule {
             if (parenClose > 0) {
                 var header = stmtText.substring(0, parenClose);
                 if (header.contains(":")) {
-                    return false; // This is enhanced for-each, allow it
+                    return false;
                 }
             }
-            return true; // Traditional for loop
+            return true;
         }
         return stmtText.startsWith("while ") || stmtText.startsWith("while(") ||
         stmtText.startsWith("do ");

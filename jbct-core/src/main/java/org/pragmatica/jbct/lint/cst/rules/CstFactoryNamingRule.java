@@ -23,7 +23,6 @@ public class CstFactoryNamingRule implements CstLintRule {
         return RULE_ID;
     }
 
-
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
@@ -49,7 +48,8 @@ public class CstFactoryNamingRule implements CstLintRule {
         return findAll(record, RuleId.ClassMember.class)
                .stream()
                .filter(member -> isStaticFactoryMember(member, typeName, source))
-               .flatMap(member -> findFirst(member, RuleId.MethodDecl.class).stream())
+               .flatMap(member -> findFirst(member, RuleId.MethodDecl.class)
+                                  .stream())
                .filter(method -> !isCorrectlyNamed(method, expectedName, source))
                .map(method -> createDiagnostic(method, typeName, expectedName, source, ctx));
     }

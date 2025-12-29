@@ -15,12 +15,10 @@ import java.util.regex.Pattern;
  * Checks GitHub Releases for the latest JBCT version.
  */
 public final class GitHubReleaseChecker {
-
     private static final String GITHUB_API_URL = "https://api.github.com/repos/siy/jbct-cli/releases/latest";
     private static final Pattern VERSION_PATTERN = Pattern.compile("\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
     private static final Pattern ASSET_URL_PATTERN = Pattern.compile(
-            "\"browser_download_url\"\\s*:\\s*\"([^\"]+jbct[^\"]*\\.jar)\""
-    );
+    "\"browser_download_url\"\\s*:\\s*\"([^\"]+jbct[^\"]*\\.jar)\"");
 
     private final HttpOperations http;
     private final String apiUrl;
@@ -51,16 +49,15 @@ public final class GitHubReleaseChecker {
      */
     public Result<ReleaseInfo> checkLatestRelease() {
         var request = HttpRequest.newBuilder()
-                .uri(URI.create(apiUrl))
-                .header("Accept", "application/vnd.github.v3+json")
-                .header("User-Agent", "jbct-cli")
-                .timeout(Duration.ofSeconds(30))
-                .GET()
-                .build();
-
+                                 .uri(URI.create(apiUrl))
+                                 .header("Accept", "application/vnd.github.v3+json")
+                                 .header("User-Agent", "jbct-cli")
+                                 .timeout(Duration.ofSeconds(30))
+                                 .GET()
+                                 .build();
         return http.sendString(request)
-                .await()
-                .flatMap(this::handleResponse);
+                   .await()
+                   .flatMap(this::handleResponse);
     }
 
     /**
@@ -71,35 +68,34 @@ public final class GitHubReleaseChecker {
      */
     public Result<Option<ReleaseInfo>> checkForUpdate(String currentVersion) {
         return checkLatestRelease()
-                .map(release -> {
-                    if (isNewerVersion(currentVersion, release.version())) {
+               .map(release -> {
+                        if (isNewerVersion(currentVersion,
+                                           release.version())) {
                         return Option.option(release);
                     }
-                    return Option.none();
-                });
+                        return Option.none();
+                    });
     }
 
     private Result<ReleaseInfo> handleResponse(HttpResult<String> response) {
         if (response.statusCode() == 404) {
             return new org.pragmatica.http.HttpError.RequestFailed(404, "No releases found").result();
         }
-
         return response.toResult()
-                .flatMap(this::parseReleaseInfo);
+                       .flatMap(this::parseReleaseInfo);
     }
 
     private Result<ReleaseInfo> parseReleaseInfo(String json) {
         var versionMatcher = VERSION_PATTERN.matcher(json);
         if (!versionMatcher.find()) {
-            return new org.pragmatica.http.HttpError.InvalidResponse("Could not parse version from release", Option.none()).result();
+            return new org.pragmatica.http.HttpError.InvalidResponse("Could not parse version from release",
+                                                                     Option.none()).result();
         }
         var version = versionMatcher.group(1);
-
         var assetMatcher = ASSET_URL_PATTERN.matcher(json);
         var downloadUrl = assetMatcher.find()
-                ? Option.some(assetMatcher.group(1))
-                : Option.<String>none();
-
+                          ? Option.some(assetMatcher.group(1))
+                          : Option.<String>none();
         return Result.success(new ReleaseInfo(version, downloadUrl));
     }
 
@@ -110,21 +106,21 @@ public final class GitHubReleaseChecker {
     public static boolean isNewerVersion(String currentVersion, String newVersion) {
         var current = normalizeVersion(currentVersion);
         var newer = normalizeVersion(newVersion);
-
         var currentParts = current.split("\\.");
         var newerParts = newer.split("\\.");
-
-        for (int i = 0; i < Math.max(currentParts.length, newerParts.length); i++) {
-            int currentPart = i < currentParts.length ? parseVersionPart(currentParts[i]) : 0;
-            int newerPart = i < newerParts.length ? parseVersionPart(newerParts[i]) : 0;
-
+        for (int i = 0; i < Math.max(currentParts.length, newerParts.length); i++ ) {
+            int currentPart = i < currentParts.length
+                              ? parseVersionPart(currentParts[i])
+                              : 0;
+            int newerPart = i < newerParts.length
+                            ? parseVersionPart(newerParts[i])
+                            : 0;
             if (newerPart > currentPart) {
                 return true;
-            } else if (newerPart < currentPart) {
+            }else if (newerPart < currentPart) {
                 return false;
             }
         }
-
         // If versions are equal, SNAPSHOT is older than release
         boolean currentIsSnapshot = currentVersion.contains("SNAPSHOT");
         boolean newerIsSnapshot = newVersion.contains("SNAPSHOT");
@@ -133,17 +129,18 @@ public final class GitHubReleaseChecker {
 
     private static String normalizeVersion(String version) {
         // Remove 'v' prefix and '-SNAPSHOT' suffix for comparison
-        return version
-                .replaceFirst("^v", "")
-                .replaceFirst("-SNAPSHOT$", "")
-                .replaceFirst("-.*$", ""); // Remove other suffixes like -RC1
+        return version.replaceFirst("^v", "")
+                      .replaceFirst("-SNAPSHOT$", "")
+                      .replaceFirst("-.*$", "");
     }
 
     private static int parseVersionPart(String part) {
-        try {
+        try{
             // Extract numeric prefix
             var numericPart = part.replaceAll("[^0-9].*$", "");
-            return numericPart.isEmpty() ? 0 : Integer.parseInt(numericPart);
+            return numericPart.isEmpty()
+                   ? 0
+                   : Integer.parseInt(numericPart);
         } catch (NumberFormatException e) {
             return 0;
         }
@@ -153,9 +150,8 @@ public final class GitHubReleaseChecker {
      * Information about a GitHub release.
      */
     public record ReleaseInfo(
-            String version,
-            Option<String> downloadUrl
-    ) {
+    String version,
+    Option<String> downloadUrl) {
         /**
          * Check if this release has a downloadable JAR.
          */

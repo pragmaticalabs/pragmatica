@@ -74,11 +74,13 @@ public class InitCommand implements Callable<Integer> {
         var aiToolsInstalled = false;
         // Create project structure unless --ai-only
         if (!aiOnly) {
-            var projectType = slice ? "slice" : "JBCT";
+            var projectType = slice
+                              ? "slice"
+                              : "JBCT";
             System.out.println("Initializing " + projectType + " project in: " + projectDir);
             // Create directory if it's a new project
             if (!Files.exists(projectDir)) {
-                try {
+                try{
                     Files.createDirectories(projectDir);
                 } catch (Exception e) {
                     System.err.println("Error: Failed to create directory: " + e.getMessage());
@@ -86,8 +88,8 @@ public class InitCommand implements Callable<Integer> {
                 }
             }
             var projectResult = slice
-                ? initSliceProject()
-                : initRegularProject();
+                                ? initSliceProject()
+                                : initRegularProject();
             if (!projectResult) {
                 return 1;
             }
@@ -136,39 +138,39 @@ public class InitCommand implements Callable<Integer> {
     private boolean initRegularProject() {
         var initializer = ProjectInitializer.projectInitializer(projectDir, groupId, artifactId);
         return initializer.initialize()
-            .fold(cause -> {
-                      System.err.println("Error: " + cause.message());
-                      return false;
-                  },
-                  createdFiles -> {
-                      System.out.println();
-                      System.out.println("Created project files:");
-                      for (var file : createdFiles) {
-                          var relativePath = projectDir.relativize(file);
-                          System.out.println("  " + relativePath);
-                      }
-                      return true;
-                  });
+                          .fold(cause -> {
+                                    System.err.println("Error: " + cause.message());
+                                    return false;
+                                },
+                                createdFiles -> {
+                                    System.out.println();
+                                    System.out.println("Created project files:");
+                                    for (var file : createdFiles) {
+                                    var relativePath = projectDir.relativize(file);
+                                    System.out.println("  " + relativePath);
+                                }
+                                    return true;
+                                });
     }
 
     private boolean initSliceProject() {
         return SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId)
-            .flatMap(initializer -> initializer.initialize()
-                .map(createdFiles -> {
-                    System.out.println();
-                    System.out.println("Created slice project files:");
-                    for (var file : createdFiles) {
-                        var relativePath = projectDir.relativize(file);
-                        System.out.println("  " + relativePath);
-                    }
-                    System.out.println();
-                    System.out.println("Slice: " + initializer.sliceName());
-                    return true;
-                }))
-            .fold(cause -> {
-                      System.err.println("Error: " + cause.message());
-                      return false;
-                  },
-                  success -> success);
+                                      .flatMap(initializer -> initializer.initialize()
+                                                                         .map(createdFiles -> {
+                                                                                  System.out.println();
+                                                                                  System.out.println("Created slice project files:");
+                                                                                  for (var file : createdFiles) {
+                                                                                  var relativePath = projectDir.relativize(file);
+                                                                                  System.out.println("  " + relativePath);
+                                                                              }
+                                                                                  System.out.println();
+                                                                                  System.out.println("Slice: " + initializer.sliceName());
+                                                                                  return true;
+                                                                              }))
+                                      .fold(cause -> {
+                                                System.err.println("Error: " + cause.message());
+                                                return false;
+                                            },
+                                            success -> success);
     }
 }

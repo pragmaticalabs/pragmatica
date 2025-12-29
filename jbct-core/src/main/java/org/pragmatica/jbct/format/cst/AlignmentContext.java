@@ -8,9 +8,8 @@ import java.util.Deque;
  * Tracks chain alignment and lambda body alignment columns.
  */
 final class AlignmentContext {
-
     private final Deque<Integer> lambdaAlignStack = new ArrayDeque<>();
-    private int chainColumn = -1;
+    private int chainColumn = - 1;
     private boolean inBreakingChain = false;
 
     /**
@@ -59,7 +58,9 @@ final class AlignmentContext {
      * Get the current lambda alignment column, or -1 if none.
      */
     int lambdaColumn() {
-        return lambdaAlignStack.isEmpty() ? -1 : lambdaAlignStack.peek();
+        return lambdaAlignStack.isEmpty()
+               ? - 1
+               : lambdaAlignStack.peek();
     }
 
     /**

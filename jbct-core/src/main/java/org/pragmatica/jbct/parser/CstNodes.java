@@ -14,7 +14,6 @@ import java.util.stream.Stream;
  * Utility methods for working with CST nodes.
  */
 public final class CstNodes {
-
     private CstNodes() {}
 
     /**
@@ -33,26 +32,28 @@ public final class CstNodes {
      * Get the text content of a node.
      */
     public static String text(CstNode node, String source) {
-        return node.span().extract(source);
+        return node.span()
+                   .extract(source);
     }
 
     /**
      * Check if node matches a rule type.
      */
-    public static boolean isRule(CstNode node, Class<? extends RuleId> ruleClass) {
+    public static boolean isRule(CstNode node, Class< ? extends RuleId> ruleClass) {
         return ruleClass.isInstance(node.rule());
     }
 
     /**
      * Find all descendants matching a rule type.
      */
-    public static List<CstNode> findAll(CstNode root, Class<? extends RuleId> ruleClass) {
+    public static List<CstNode> findAll(CstNode root, Class< ? extends RuleId> ruleClass) {
         var results = new ArrayList<CstNode>();
-        walk(root, node -> {
-            if (isRule(node, ruleClass)) {
-                results.add(node);
-            }
-        });
+        walk(root,
+             node -> {
+                 if (isRule(node, ruleClass)) {
+                 results.add(node);
+             }
+             });
         return results;
     }
 
@@ -61,18 +62,19 @@ public final class CstNodes {
      */
     public static List<CstNode> findAll(CstNode root, Predicate<CstNode> predicate) {
         var results = new ArrayList<CstNode>();
-        walk(root, node -> {
-            if (predicate.test(node)) {
-                results.add(node);
-            }
-        });
+        walk(root,
+             node -> {
+                 if (predicate.test(node)) {
+                 results.add(node);
+             }
+             });
         return results;
     }
 
     /**
      * Find first descendant matching a rule type.
      */
-    public static Option<CstNode> findFirst(CstNode root, Class<? extends RuleId> ruleClass) {
+    public static Option<CstNode> findFirst(CstNode root, Class< ? extends RuleId> ruleClass) {
         return findFirst(root, node -> isRule(node, ruleClass));
     }
 
@@ -95,16 +97,17 @@ public final class CstNodes {
     /**
      * Find ancestor matching a rule type.
      */
-    public static Option<CstNode> findAncestor(CstNode root, CstNode target, Class<? extends RuleId> ruleClass) {
+    public static Option<CstNode> findAncestor(CstNode root, CstNode target, Class< ? extends RuleId> ruleClass) {
         return findAncestorPath(root, target)
-            .flatMap(path -> {
-                for (int i = path.size() - 2; i >= 0; i--) {
-                    if (isRule(path.get(i), ruleClass)) {
-                        return Option.some(path.get(i));
-                    }
-                }
-                return Option.none();
-            });
+               .flatMap(path -> {
+                            for (int i = path.size() - 2; i >= 0; i-- ) {
+                            if (isRule(path.get(i),
+                                       ruleClass)) {
+                            return Option.some(path.get(i));
+                        }
+                        }
+                            return Option.none();
+                        });
     }
 
     /**
@@ -120,7 +123,8 @@ public final class CstNodes {
 
     private static boolean findPath(CstNode current, CstNode target, List<CstNode> path) {
         path.add(current);
-        if (current == target || current.span().equals(target.span())) {
+        if (current == target || current.span()
+                                        .equals(target.span())) {
             return true;
         }
         for (var child : children(current)) {
@@ -147,9 +151,10 @@ public final class CstNodes {
      */
     public static Stream<CstNode> stream(CstNode root) {
         return Stream.concat(
-            Stream.of(root),
-            children(root).stream().flatMap(CstNodes::stream)
-        );
+        Stream.of(root),
+        children(root)
+        .stream()
+        .flatMap(CstNodes::stream));
     }
 
     /**
@@ -166,7 +171,7 @@ public final class CstNodes {
     /**
      * Get first child matching a rule type.
      */
-    public static Option<CstNode> childByRule(CstNode node, Class<? extends RuleId> ruleClass) {
+    public static Option<CstNode> childByRule(CstNode node, Class< ? extends RuleId> ruleClass) {
         for (var child : children(node)) {
             if (isRule(child, ruleClass)) {
                 return Option.some(child);
@@ -178,7 +183,7 @@ public final class CstNodes {
     /**
      * Get all direct children matching a rule type.
      */
-    public static List<CstNode> childrenByRule(CstNode node, Class<? extends RuleId> ruleClass) {
+    public static List<CstNode> childrenByRule(CstNode node, Class< ? extends RuleId> ruleClass) {
         var results = new ArrayList<CstNode>();
         for (var child : children(node)) {
             if (isRule(child, ruleClass)) {
@@ -191,8 +196,9 @@ public final class CstNodes {
     /**
      * Check if node contains a descendant matching rule type.
      */
-    public static boolean contains(CstNode root, Class<? extends RuleId> ruleClass) {
-        return findFirst(root, ruleClass).isPresent();
+    public static boolean contains(CstNode root, Class< ? extends RuleId> ruleClass) {
+        return findFirst(root, ruleClass)
+               .isPresent();
     }
 
     /**
@@ -222,22 +228,27 @@ public final class CstNodes {
     /**
      * Count descendants matching a rule type.
      */
-    public static int count(CstNode root, Class<? extends RuleId> ruleClass) {
-        return findAll(root, ruleClass).size();
+    public static int count(CstNode root, Class< ? extends RuleId> ruleClass) {
+        return findAll(root, ruleClass)
+               .size();
     }
 
     /**
      * Get start line of a node.
      */
     public static int startLine(CstNode node) {
-        return node.span().start().line();
+        return node.span()
+                   .start()
+                   .line();
     }
 
     /**
      * Get start column of a node.
      */
     public static int startColumn(CstNode node) {
-        return node.span().start().column();
+        return node.span()
+                   .start()
+                   .column();
     }
 
     /**

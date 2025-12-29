@@ -25,7 +25,6 @@ public class CstUtilityClassRule implements CstLintRule {
         return RULE_ID;
     }
 
-
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
@@ -35,38 +34,32 @@ public class CstUtilityClassRule implements CstLintRule {
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
-
         // TypeDecl contains: Annotation* Modifier* TypeKind (where TypeKind is ClassDecl/InterfaceDecl/etc.)
         // So we need to look at TypeDecl to get modifiers like 'final' or 'sealed'
         var utilityClassDiagnostics = findAll(root, RuleId.TypeDecl.class)
-               .stream()
-               .filter(td -> contains(td, RuleId.ClassDecl.class))
-               .filter(td -> isUtilityClass(td, source))
-               .map(td -> createUtilityClassDiagnostic(td, source, ctx));
-
+                                      .stream()
+                                      .filter(td -> contains(td, RuleId.ClassDecl.class))
+                                      .filter(td -> isUtilityClass(td, source))
+                                      .map(td -> createUtilityClassDiagnostic(td, source, ctx));
         var missingUnusedDiagnostics = findAll(root, RuleId.TypeDecl.class)
-               .stream()
-               .filter(td -> contains(td, RuleId.InterfaceDecl.class))
-               .filter(td -> isSealedUtilityInterface(td, source))
-               .filter(td -> !hasUnusedRecord(td, source))
-               .map(td -> createMissingUnusedDiagnostic(td, source, ctx));
-
+                                       .stream()
+                                       .filter(td -> contains(td, RuleId.InterfaceDecl.class))
+                                       .filter(td -> isSealedUtilityInterface(td, source))
+                                       .filter(td -> !hasUnusedRecord(td, source))
+                                       .map(td -> createMissingUnusedDiagnostic(td, source, ctx));
         return Stream.concat(utilityClassDiagnostics, missingUnusedDiagnostics);
     }
 
     private boolean isUtilityClass(CstNode cls, String source) {
         var classText = text(cls, source);
-
         // Check for final class
         if (!classText.contains("final ") || !classText.contains("class ")) {
             return false;
         }
-
         // Check for private constructor
         if (!classText.contains("private ") || !hasPrivateConstructor(classText)) {
             return false;
         }
-
         // Check that all methods are static (excluding constructor)
         return hasOnlyStaticMethods(classText);
     }
@@ -75,13 +68,13 @@ public class CstUtilityClassRule implements CstLintRule {
         // Look for private constructor pattern: private ClassName(
         var classNameMatch = classText.indexOf("class ");
         if (classNameMatch < 0) return false;
-
-        var afterClass = classText.substring(classNameMatch + 6).trim();
+        var afterClass = classText.substring(classNameMatch + 6)
+                                  .trim();
         var nameEnd = afterClass.indexOf(' ');
         if (nameEnd < 0) nameEnd = afterClass.indexOf('{');
         if (nameEnd < 0) return false;
-
-        var className = afterClass.substring(0, nameEnd).trim();
+        var className = afterClass.substring(0, nameEnd)
+                                  .trim();
         return classText.contains("private " + className + "(");
     }
 
@@ -89,13 +82,10 @@ public class CstUtilityClassRule implements CstLintRule {
         // Find method declarations that are not static and not constructor
         var bodyStart = classText.indexOf('{');
         if (bodyStart < 0) return false;
-
         var body = classText.substring(bodyStart);
-
         // Look for non-static method patterns (excluding constructors)
         // A non-static method would be: public/protected/private <return-type> methodName(
         // without static keyword before it
-
         // Simple heuristic: if body contains methods and all contain "static ", it's utility
         var lines = body.split("\n");
         for (var line : lines) {
@@ -105,9 +95,7 @@ public class CstUtilityClassRule implements CstLintRule {
                 continue;
             }
             // Check for method signature without static
-            if ((trimmed.startsWith("public ") || trimmed.startsWith("protected "))
-                && trimmed.contains("(")
-                && !trimmed.contains("static ")) {
+            if ((trimmed.startsWith("public ") || trimmed.startsWith("protected ")) && trimmed.contains("(") && !trimmed.contains("static ")) {
                 return false;
             }
         }
@@ -116,12 +104,10 @@ public class CstUtilityClassRule implements CstLintRule {
 
     private boolean isSealedUtilityInterface(CstNode iface, String source) {
         var ifaceText = text(iface, source);
-
         // Check for sealed interface with static methods
         if (!ifaceText.contains("sealed ") || !ifaceText.contains("interface ")) {
             return false;
         }
-
         // Check if it has static methods (utility interface pattern)
         return ifaceText.contains("static ") && ifaceText.contains("(");
     }
@@ -137,16 +123,14 @@ public class CstUtilityClassRule implements CstLintRule {
                         .flatMap(cls -> childByRule(cls, RuleId.Identifier.class))
                         .map(id -> text(id, source))
                         .or("UtilityClass");
-
-        return Diagnostic.diagnostic(
-            RULE_ID,
-            ctx.severityFor(RULE_ID),
-            ctx.fileName(),
-            startLine(typeDecl),
-            startColumn(typeDecl),
-            "Utility class '" + className + "' should be a sealed interface",
-            "Convert final class with private constructor to sealed interface with 'unused' record.")
-            .withExample("""
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(typeDecl),
+                                     startColumn(typeDecl),
+                                     "Utility class '" + className + "' should be a sealed interface",
+                                     "Convert final class with private constructor to sealed interface with 'unused' record.")
+                         .withExample("""
                 // Before: utility class
                 public final class %s {
                     private %s() {}
@@ -166,16 +150,15 @@ public class CstUtilityClassRule implements CstLintRule {
                         .flatMap(iface -> childByRule(iface, RuleId.Identifier.class))
                         .map(id -> text(id, source))
                         .or("UtilityInterface");
-
-        return Diagnostic.diagnostic(
-            RULE_ID,
-            ctx.severityFor(RULE_ID),
-            ctx.fileName(),
-            startLine(typeDecl),
-            startColumn(typeDecl),
-            "Sealed utility interface '" + ifaceName + "' missing 'unused' record",
-            "Add 'record unused() implements " + ifaceName + " {}' to satisfy sealed permit requirement.")
-            .withExample("""
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(typeDecl),
+                                     startColumn(typeDecl),
+                                     "Sealed utility interface '" + ifaceName + "' missing 'unused' record",
+                                     "Add 'record unused() implements " + ifaceName
+                                     + " {}' to satisfy sealed permit requirement.")
+                         .withExample("""
                 public sealed interface %s {
                     static Result<String> process(...) { ... }
 

@@ -15,9 +15,7 @@ public final class Version {
             if (is != null) {
                 props.load(is);
             }
-        } catch (IOException _) {
-            // Ignore, fall back to default
-        }
+        } catch (IOException _) {}
         VERSION = props.getProperty("version", "unknown");
     }
 

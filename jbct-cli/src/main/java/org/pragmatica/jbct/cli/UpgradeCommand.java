@@ -14,11 +14,10 @@ import picocli.CommandLine.Option;
  * Upgrade command - update JBCT to latest version.
  */
 @Command(
-        name = "upgrade",
-        description = "Upgrade JBCT to the latest version",
-        mixinStandardHelpOptions = true)
+ name = "upgrade",
+ description = "Upgrade JBCT to the latest version",
+ mixinStandardHelpOptions = true)
 public class UpgradeCommand implements Callable<Integer> {
-
     @Option(names = {"--version", "-V"}, description = "Install specific version")
     String targetVersion;
 
@@ -36,13 +35,10 @@ public class UpgradeCommand implements Callable<Integer> {
         if (firstInstall) {
             return performFirstInstall();
         }
-
         var checker = GitHubReleaseChecker.releaseChecker();
         var currentVersion = getCurrentVersion();
-
         System.out.println("Current version: " + currentVersion);
         System.out.println("Checking for updates...");
-
         return checker.checkLatestRelease()
                       .fold(cause -> {
                                 System.err.println("Error: " + cause.message());
@@ -50,41 +46,38 @@ public class UpgradeCommand implements Callable<Integer> {
                             },
                             release -> {
                                 System.out.println("Latest version: " + release.version());
-
                                 if (checkOnly) {
-                                    if (GitHubReleaseChecker.isNewerVersion(currentVersion, release.version())) {
-                                        System.out.println("Update available: " + release.version());
-                                    } else {
-                                        System.out.println("Already at latest version.");
-                                    }
-                                    return 0;
-                                }
-
+                                if (GitHubReleaseChecker.isNewerVersion(currentVersion,
+                                                                        release.version())) {
+                                System.out.println("Update available: " + release.version());
+                            }else {
+                                System.out.println("Already at latest version.");
+                            }
+                                return 0;
+                            }
                                 // Check if upgrade is needed
-                                if (!force && !GitHubReleaseChecker.isNewerVersion(currentVersion, release.version())) {
-                                    System.out.println("Already at latest version. Use --force to reinstall.");
-                                    return 0;
-                                }
-
+        if (!force && !GitHubReleaseChecker.isNewerVersion(currentVersion,
+                                                           release.version())) {
+                                System.out.println("Already at latest version. Use --force to reinstall.");
+                                return 0;
+                            }
                                 // Check for download URL
-                                if (!release.hasDownloadUrl()) {
-                                    System.err.println("Error: No downloadable JAR found in release.");
-                                    System.err.println("Please download manually from GitHub.");
-                                    return 1;
-                                }
-
-                                return performUpgrade(release.downloadUrl().getOrThrow("Download URL expected"), release.version());
+        if (!release.hasDownloadUrl()) {
+                                System.err.println("Error: No downloadable JAR found in release.");
+                                System.err.println("Please download manually from GitHub.");
+                                return 1;
+                            }
+                                return performUpgrade(release.downloadUrl()
+                                                             .getOrThrow("Download URL expected"),
+                                                      release.version());
                             });
     }
 
     private int performUpgrade(String downloadUrl, String version) {
         System.out.println("Downloading version " + version + "...");
-
         var installer = JarInstaller.jarInstaller();
         var targetPath = JarInstaller.detectCurrentJar();
-
         System.out.println("Installing to: " + targetPath);
-
         return installer.install(downloadUrl, targetPath)
                         .fold(cause -> {
                                   System.err.println("Error: " + cause.message());
@@ -98,28 +91,30 @@ public class UpgradeCommand implements Callable<Integer> {
 
     private int performFirstInstall() {
         System.out.println("Performing first-time installation...");
-
         return JarInstaller.createInstallDir()
                            .flatMap(installDir -> {
-                               System.out.println("Created installation directory: " + installDir);
-                               return JarInstaller.installWrapperScripts(installDir)
-                                                  .map(_ -> installDir);
-                           })
+                                        System.out.println("Created installation directory: " + installDir);
+                                        return JarInstaller.installWrapperScripts(installDir)
+                                                           .map(_ -> installDir);
+                                    })
                            .flatMap(installDir -> {
-                               System.out.println("Installed wrapper scripts.");
-                               var checker = GitHubReleaseChecker.releaseChecker();
-                               return checker.checkLatestRelease()
-                                             .flatMap(release -> {
-                                                 if (!release.hasDownloadUrl()) {
-                                                     return Result.failure(Causes.cause("No downloadable JAR found in release"));
-                                                 }
-                                                 System.out.println("Downloading version " + release.version() + "...");
-                                                 var installer = JarInstaller.jarInstaller();
-                                                 var targetPath = JarInstaller.defaultInstallPath();
-                                                 return installer.install(release.downloadUrl().getOrThrow("Download URL expected"), targetPath)
-                                                                 .map(_ -> release.version());
-                                             });
-                           })
+                                        System.out.println("Installed wrapper scripts.");
+                                        var checker = GitHubReleaseChecker.releaseChecker();
+                                        return checker.checkLatestRelease()
+                                                      .flatMap(release -> {
+                                                                   if (!release.hasDownloadUrl()) {
+                                                                   return Result.failure(Causes.cause("No downloadable JAR found in release"));
+                                                               }
+                                                                   System.out.println("Downloading version " + release.version()
+                                                                                      + "...");
+                                                                   var installer = JarInstaller.jarInstaller();
+                                                                   var targetPath = JarInstaller.defaultInstallPath();
+                                                                   return installer.install(release.downloadUrl()
+                                                                                                   .getOrThrow("Download URL expected"),
+                                                                                            targetPath)
+                                                                                   .map(_ -> release.version());
+                                                               });
+                                    })
                            .fold(cause -> {
                                      System.err.println("Error: " + cause.message());
                                      return 1;

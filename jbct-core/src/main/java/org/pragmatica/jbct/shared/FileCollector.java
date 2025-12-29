@@ -24,18 +24,17 @@ public sealed interface FileCollector permits FileCollector.unused {
      */
     static List<Path> collectJavaFiles(List<Path> paths, Consumer<String> errorHandler) {
         var files = new ArrayList<Path>();
-
         for (var path : paths) {
             if (Files.isDirectory(path)) {
                 SourceRoot.sourceRoot(path)
                           .flatMap(SourceRoot::findJavaFiles)
                           .onSuccess(files::addAll)
                           .onFailure(cause -> errorHandler.accept("Error scanning " + path + ": " + cause.message()));
-            } else if (path.toString().endsWith(".java")) {
+            }else if (path.toString()
+                          .endsWith(".java")) {
                 files.add(path);
             }
         }
-
         return files;
     }
 
@@ -53,15 +52,12 @@ public sealed interface FileCollector permits FileCollector.unused {
                                              boolean includeTests,
                                              Consumer<String> errorHandler) {
         var files = new ArrayList<Path>();
-
         sourceDirectory.filter(Files::exists)
                        .onPresent(dir -> collectFromDirectory(dir, files, errorHandler));
-
         if (includeTests) {
             testSourceDirectory.filter(Files::exists)
                                .onPresent(dir -> collectFromDirectory(dir, files, errorHandler));
         }
-
         return files;
     }
 

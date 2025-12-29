@@ -8,29 +8,24 @@ import picocli.CommandLine.Option;
  * Main entry point for the JBCT CLI tool.
  */
 @Command(
-        name = "jbct",
-        description = "JBCT code formatting and linting tool",
-        mixinStandardHelpOptions = true,
-        versionProvider = JbctCommand.VersionProvider.class,
-        subcommands = {
-                FormatCommand.class,
-                LintCommand.class,
-                CheckCommand.class,
-                UpgradeCommand.class,
-                InitCommand.class,
-                UpdateCommand.class,
-                VerifySliceCommand.class
-        }
-)
+ name = "jbct",
+ description = "JBCT code formatting and linting tool",
+ mixinStandardHelpOptions = true,
+ versionProvider = JbctCommand.VersionProvider.class,
+ subcommands = {FormatCommand.class,
+ LintCommand.class,
+ CheckCommand.class,
+ UpgradeCommand.class,
+ InitCommand.class,
+ UpdateCommand.class,
+ VerifySliceCommand.class})
 public class JbctCommand implements Runnable {
-
     @Option(names = {"-v", "--verbose"}, description = "Enable verbose output")
     boolean verbose;
 
     public static void main(String[] args) {
-        int exitCode = new CommandLine(new JbctCommand())
-                .setCaseInsensitiveEnumValuesAllowed(true)
-                .execute(args);
+        int exitCode = new CommandLine(new JbctCommand()).setCaseInsensitiveEnumValuesAllowed(true)
+                       .execute(args);
         System.exit(exitCode);
     }
 
@@ -46,7 +41,7 @@ public class JbctCommand implements Runnable {
     public static class VersionProvider implements CommandLine.IVersionProvider {
         @Override
         public String[] getVersion() {
-            return new String[] { Version.get() };
+            return new String[] {Version.get()};
         }
     }
 }

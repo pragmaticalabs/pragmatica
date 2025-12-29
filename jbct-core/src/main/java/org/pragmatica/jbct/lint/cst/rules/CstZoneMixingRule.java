@@ -26,30 +26,49 @@ public class CstZoneMixingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ZONE-03";
 
     // Zone 3 verbs that shouldn't appear directly in chains
-    private static final Set<String> ZONE_3_VERBS = Set.of(
-        "get", "set", "fetch", "parse", "calculate", "convert", "hash",
-        "format", "encode", "decode", "extract", "split", "join", "log",
-        "send", "receive", "read", "write", "add", "remove", "find",
-        "query", "insert", "update", "delete"
-    );
+    private static final Set<String>ZONE_3_VERBS = Set.of(
+    "get",
+    "set",
+    "fetch",
+    "parse",
+    "calculate",
+    "convert",
+    "hash",
+    "format",
+    "encode",
+    "decode",
+    "extract",
+    "split",
+    "join",
+    "log",
+    "send",
+    "receive",
+    "read",
+    "write",
+    "add",
+    "remove",
+    "find",
+    "query",
+    "insert",
+    "update",
+    "delete");
 
     // Pattern to find method calls in chains: .flatMap(x -> something.verb(...))
     private static final Pattern CHAIN_CALL_PATTERN = Pattern.compile(
-        "\\.(map|flatMap)\\s*\\([^)]*->\\s*[^)]*\\.([a-z][a-zA-Z]*)\\s*\\(");
+    "\\.(map|flatMap)\\s*\\([^)]*->\\s*[^)]*\\.([a-z][a-zA-Z]*)\\s*\\(");
 
     // Pattern for method reference in chains: .flatMap(Something::verb)
     private static final Pattern METHOD_REF_PATTERN = Pattern.compile(
-        "\\.(map|flatMap)\\s*\\([^:]*::([a-z][a-zA-Z]*)\\s*\\)");
+    "\\.(map|flatMap)\\s*\\([^:]*::([a-z][a-zA-Z]*)\\s*\\)");
 
     // Pattern for direct call in chains: .flatMap(this::verb) or .map(obj.verb())
     private static final Pattern DIRECT_CALL_PATTERN = Pattern.compile(
-        "\\.(map|flatMap)\\s*\\([^)]*([a-z][a-zA-Z]*)\\s*\\(");
+    "\\.(map|flatMap)\\s*\\([^)]*([a-z][a-zA-Z]*)\\s*\\(");
 
     @Override
     public String ruleId() {
         return RULE_ID;
     }
-
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
@@ -60,7 +79,6 @@ public class CstZoneMixingRule implements CstLintRule {
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
-
         // Find methods with monadic chains
         return findAll(root, RuleId.MethodDecl.class)
                .stream()
@@ -73,27 +91,26 @@ public class CstZoneMixingRule implements CstLintRule {
         return methodText.contains(".flatMap(") || methodText.contains(".map(");
     }
 
-    private Stream<Diagnostic> checkChainForZoneMixing(CstNode method, String source,
-                                                        LintContext ctx) {
+    private Stream<Diagnostic> checkChainForZoneMixing(CstNode method,
+                                                       String source,
+                                                       LintContext ctx) {
         var methodText = text(method, source);
         var violations = new ArrayList<String>();
-
         // Check lambda calls in chains
         findZone3VerbsInPattern(methodText, CHAIN_CALL_PATTERN, 2, violations);
-
         // Check method references in chains
         findZone3VerbsInPattern(methodText, METHOD_REF_PATTERN, 2, violations);
-
         if (violations.isEmpty()) {
             return Stream.empty();
         }
-
         // Return one diagnostic per method with all violations
         return Stream.of(createDiagnostic(method, violations, ctx));
     }
 
-    private void findZone3VerbsInPattern(String text, Pattern pattern, int verbGroup,
-                                          List<String> violations) {
+    private void findZone3VerbsInPattern(String text,
+                                         Pattern pattern,
+                                         int verbGroup,
+                                         List<String> violations) {
         Matcher matcher = pattern.matcher(text);
         while (matcher.find()) {
             var verb = extractVerb(matcher.group(verbGroup));
@@ -117,21 +134,22 @@ public class CstZoneMixingRule implements CstLintRule {
             }
             sb.append(c);
         }
-        return sb.isEmpty() ? null : sb.toString();
+        return sb.isEmpty()
+               ? null
+               : sb.toString();
     }
 
     private Diagnostic createDiagnostic(CstNode node, List<String> violations, LintContext ctx) {
         var verbList = String.join(", ", violations);
         return Diagnostic.diagnostic(
-            RULE_ID,
-            ctx.severityFor(RULE_ID),
-            ctx.fileName(),
-            startLine(node),
-            startColumn(node),
-            "Zone mixing in chain - Zone 3 verbs found: " + verbList,
-            "Sequencer chains should use Zone 2 methods. " +
-            "Wrap Zone 3 operations ('" + verbList + "') in step interfaces. " +
-            "Example: Instead of .flatMap(x -> x.parseData()), " +
-            "use .flatMap(processData::apply) where ProcessData is a step interface.");
+        RULE_ID,
+        ctx.severityFor(RULE_ID),
+        ctx.fileName(),
+        startLine(node),
+        startColumn(node),
+        "Zone mixing in chain - Zone 3 verbs found: " + verbList,
+        "Sequencer chains should use Zone 2 methods. " + "Wrap Zone 3 operations ('" + verbList
+        + "') in step interfaces. " + "Example: Instead of .flatMap(x -> x.parseData()), "
+        + "use .flatMap(processData::apply) where ProcessData is a step interface.");
     }
 }
