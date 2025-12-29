@@ -279,7 +279,7 @@ public final class SliceProjectInitializer {
                     <plugin>
                         <groupId>org.pragmatica-lite</groupId>
                         <artifactId>jbct-maven-plugin</artifactId>
-                        <version>0.4.0</version>
+                        <version>0.4.1</version>
                         <executions>
                             <execution>
                                 <id>collect-deps</id>
