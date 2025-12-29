@@ -373,8 +373,23 @@ public class CstPrinter {
 
     private void printEnumConsts(CstNode.NonTerminal enumConsts) {
         // EnumConsts <- EnumConst (',' EnumConst)* ','?
-        for (var child : children(enumConsts)) {
+        var childList = children(enumConsts);
+        for (int i = 0; i < childList.size(); i++ ) {
+            var child = childList.get(i);
             if (isTerminalWithText(child, ",")) {
+                // Check if this is a trailing comma (no EnumConst follows)
+                boolean isTrailingComma = true;
+                for (int j = i + 1; j < childList.size(); j++ ) {
+                    if (childList.get(j)
+                                 .rule() instanceof RuleId.EnumConst) {
+                        isTrailingComma = false;
+                        break;
+                    }
+                }
+                if (isTrailingComma) {
+                    // Skip trailing comma - it's optional and causes formatting issues
+                    continue;
+                }
                 print(",");
                 println();
                 printIndent();

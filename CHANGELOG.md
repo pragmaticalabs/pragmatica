@@ -8,6 +8,7 @@
 ### Changed
 
 ### Fixed
+- Formatter: remove trailing comma corruption in enums (was adding extra comma line)
 
 ## [0.3.12] - 2025-12-29
 
