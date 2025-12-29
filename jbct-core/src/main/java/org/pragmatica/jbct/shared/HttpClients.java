@@ -9,28 +9,27 @@ import java.time.Duration;
 /**
  * Shared HttpClient instances for JBCT operations.
  */
-public final class HttpClients {
+public sealed interface HttpClients permits HttpClients.unused {
+    record unused() implements HttpClients {}
 
-    private static final HttpClient SHARED_CLIENT = HttpClient.newBuilder()
+    HttpClient SHARED_CLIENT = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
 
-    private static final HttpOperations SHARED_HTTP_OPS = JdkHttpOperations.jdkHttpOperations(SHARED_CLIENT);
-
-    private HttpClients() {}
+    HttpOperations SHARED_HTTP_OPS = JdkHttpOperations.jdkHttpOperations(SHARED_CLIENT);
 
     /**
      * Get the shared HttpClient instance.
      */
-    public static HttpClient client() {
+    static HttpClient client() {
         return SHARED_CLIENT;
     }
 
     /**
      * Get shared HttpOperations instance.
      */
-    public static HttpOperations httpOperations() {
+    static HttpOperations httpOperations() {
         return SHARED_HTTP_OPS;
     }
 }

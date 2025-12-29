@@ -53,8 +53,8 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
      */
     protected List<Path> collectJavaFiles() {
         return FileCollector.collectFromDirectories(
-                sourceDirectory != null ? sourceDirectory.toPath() : null,
-                testSourceDirectory != null ? testSourceDirectory.toPath() : null,
+                Option.option(sourceDirectory).map(File::toPath),
+                Option.option(testSourceDirectory).map(File::toPath),
                 includeTests,
                 msg -> getLog().warn(msg)
         );

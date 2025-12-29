@@ -117,7 +117,7 @@ public final class JarInstaller {
                         }
                     });
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Download failed: " + e.getMessage()));
+            return Causes.cause("Download failed: " + e.getMessage()).result();
         }
     }
 
@@ -156,7 +156,7 @@ public final class JarInstaller {
 
             return Result.success(targetPath);
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Installation failed: " + e.getMessage()));
+            return Causes.cause("Installation failed: " + e.getMessage()).result();
         }
     }
 
@@ -190,7 +190,7 @@ public final class JarInstaller {
 
             return Result.success(installDir);
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Failed to create install directory: " + e.getMessage()));
+            return Causes.cause("Failed to create install directory: " + e.getMessage()).result();
         }
     }
 
@@ -209,7 +209,7 @@ public final class JarInstaller {
     private static Result<Path> copyResource(String resourcePath, Path targetPath, boolean executable) {
         try (var in = JarInstaller.class.getResourceAsStream(resourcePath)) {
             if (in == null) {
-                return Result.failure(Causes.cause("Resource not found: " + resourcePath));
+                return Causes.cause("Resource not found: " + resourcePath).result();
             }
 
             Files.copy(in, targetPath, StandardCopyOption.REPLACE_EXISTING);
@@ -220,7 +220,7 @@ public final class JarInstaller {
 
             return Result.success(targetPath);
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Failed to copy " + resourcePath + ": " + e.getMessage()));
+            return Causes.cause("Failed to copy " + resourcePath + ": " + e.getMessage()).result();
         }
     }
 }

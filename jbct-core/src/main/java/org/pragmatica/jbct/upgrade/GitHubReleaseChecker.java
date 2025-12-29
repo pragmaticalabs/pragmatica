@@ -96,12 +96,11 @@ public final class GitHubReleaseChecker {
         var version = versionMatcher.group(1);
 
         var assetMatcher = ASSET_URL_PATTERN.matcher(json);
-        String downloadUrl = null;
-        if (assetMatcher.find()) {
-            downloadUrl = assetMatcher.group(1);
-        }
+        var downloadUrl = assetMatcher.find()
+                ? Option.some(assetMatcher.group(1))
+                : Option.<String>none();
 
-        return Result.success(new ReleaseInfo(version, Option.option(downloadUrl)));
+        return Result.success(new ReleaseInfo(version, downloadUrl));
     }
 
     /**

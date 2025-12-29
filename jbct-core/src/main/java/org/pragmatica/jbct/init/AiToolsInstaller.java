@@ -72,7 +72,7 @@ public final class AiToolsInstaller {
 
             return Result.success(installedFiles);
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Failed to install AI tools: " + e.getMessage()));
+            return Causes.cause("Failed to install AI tools: " + e.getMessage()).result();
         }
     }
 
@@ -93,7 +93,7 @@ public final class AiToolsInstaller {
                 return installFromFilesystem(Path.of(resource.toURI()), targetDir);
             }
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Failed to install from " + resourcePath + ": " + e.getMessage()));
+            return Causes.cause("Failed to install from " + resourcePath + ": " + e.getMessage()).result();
         }
     }
 
@@ -132,7 +132,7 @@ public final class AiToolsInstaller {
 
             return Result.success(installedFiles);
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Failed to extract from JAR: " + e.getMessage()));
+            return Causes.cause("Failed to extract from JAR: " + e.getMessage()).result();
         }
     }
 
@@ -160,7 +160,7 @@ public final class AiToolsInstaller {
 
             return Result.success(installedFiles);
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Failed to copy files: " + e.getMessage()));
+            return Causes.cause("Failed to copy files: " + e.getMessage()).result();
         }
     }
 

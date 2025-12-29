@@ -175,7 +175,7 @@ public final class AiToolsUpdater {
 
             return Result.success(downloadedFiles);
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Failed to download files: " + e.getMessage()));
+            return Causes.cause("Failed to download files: " + e.getMessage()).result();
         }
     }
 
@@ -197,7 +197,7 @@ public final class AiToolsUpdater {
                         Files.writeString(targetPath, content);
                         return Result.success(targetPath);
                     } catch (IOException e) {
-                        return Result.failure(Causes.cause("Failed to write " + targetPath + ": " + e.getMessage()));
+                        return Causes.cause("Failed to write " + targetPath + ": " + e.getMessage()).result();
                     }
                 });
     }

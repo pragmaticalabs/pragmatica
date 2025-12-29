@@ -33,18 +33,16 @@ public final class SliceProjectInitializer {
 
     /**
      * Create initializer with project parameters.
-     *
-     * @throws IllegalArgumentException if artifactId is null or empty
      */
-    public static SliceProjectInitializer sliceProjectInitializer(Path projectDir, String groupId, String artifactId) {
+    public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir, String groupId, String artifactId) {
         if (artifactId == null || artifactId.isBlank()) {
-            throw new IllegalArgumentException("artifactId must not be null or empty");
+            return Causes.cause("artifactId must not be null or empty").result();
         }
         if (groupId == null || groupId.isBlank()) {
-            throw new IllegalArgumentException("groupId must not be null or empty");
+            return Causes.cause("groupId must not be null or empty").result();
         }
         var basePackage = groupId + "." + artifactId.replace("-", "");
-        return new SliceProjectInitializer(projectDir, groupId, artifactId, basePackage);
+        return Result.success(new SliceProjectInitializer(projectDir, groupId, artifactId, basePackage));
     }
 
     /**
@@ -125,7 +123,7 @@ public final class SliceProjectInitializer {
 
             // Check for accumulated errors
             if (!errors.isEmpty()) {
-                return Result.failure(Causes.cause("File creation errors: " + String.join("; ", errors)));
+                return Causes.cause("File creation errors: " + String.join("; ", errors)).result();
             }
 
             // Create dependency manifest placeholder
@@ -135,7 +133,7 @@ public final class SliceProjectInitializer {
 
             return Result.success(createdFiles);
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Failed to initialize slice project: " + e.getMessage()));
+            return Causes.cause("Failed to initialize slice project: " + e.getMessage()).result();
         }
     }
 
@@ -156,7 +154,7 @@ public final class SliceProjectInitializer {
             Files.writeString(targetPath, content);
             return Result.success(targetPath);
         } catch (IOException e) {
-            return Result.failure(Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()));
+            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()).result();
         }
     }
 
@@ -164,14 +162,14 @@ public final class SliceProjectInitializer {
         try {
             var content = getInlineTemplate(templateName);
             if (content == null) {
-                return Result.failure(Causes.cause("Template not found: " + templateName));
+                return Causes.cause("Template not found: " + templateName).result();
             }
 
             content = substituteVariables(content);
             Files.writeString(targetPath, content);
             return Result.success(targetPath);
         } catch (IOException e) {
-            return Result.failure(Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()));
+            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()).result();
         }
     }
 

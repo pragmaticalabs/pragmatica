@@ -1,5 +1,7 @@
 package org.pragmatica.jbct.shared;
 
+import org.pragmatica.lang.Option;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -9,9 +11,8 @@ import java.util.function.Consumer;
 /**
  * Utility for collecting Java source files from paths.
  */
-public final class FileCollector {
-
-    private FileCollector() {}
+public sealed interface FileCollector permits FileCollector.unused {
+    record unused() implements FileCollector {}
 
     /**
      * Collect Java files from a list of paths (files or directories).
@@ -21,7 +22,7 @@ public final class FileCollector {
      * @param errorHandler Handler for errors during collection
      * @return List of Java file paths
      */
-    public static List<Path> collectJavaFiles(List<Path> paths, Consumer<String> errorHandler) {
+    static List<Path> collectJavaFiles(List<Path> paths, Consumer<String> errorHandler) {
         var files = new ArrayList<Path>();
 
         for (var path : paths) {
@@ -41,24 +42,24 @@ public final class FileCollector {
     /**
      * Collect Java files from source directories (for Maven plugin).
      *
-     * @param sourceDirectory     Main source directory (may be null)
-     * @param testSourceDirectory Test source directory (may be null)
+     * @param sourceDirectory     Main source directory (may be empty)
+     * @param testSourceDirectory Test source directory (may be empty)
      * @param includeTests        Whether to include test sources
      * @param errorHandler        Handler for errors during collection
      * @return List of Java file paths
      */
-    public static List<Path> collectFromDirectories(Path sourceDirectory,
-                                                     Path testSourceDirectory,
-                                                     boolean includeTests,
-                                                     Consumer<String> errorHandler) {
+    static List<Path> collectFromDirectories(Option<Path> sourceDirectory,
+                                             Option<Path> testSourceDirectory,
+                                             boolean includeTests,
+                                             Consumer<String> errorHandler) {
         var files = new ArrayList<Path>();
 
-        if (sourceDirectory != null && Files.exists(sourceDirectory)) {
-            collectFromDirectory(sourceDirectory, files, errorHandler);
-        }
+        sourceDirectory.filter(Files::exists)
+                       .onPresent(dir -> collectFromDirectory(dir, files, errorHandler));
 
-        if (includeTests && testSourceDirectory != null && Files.exists(testSourceDirectory)) {
-            collectFromDirectory(testSourceDirectory, files, errorHandler);
+        if (includeTests) {
+            testSourceDirectory.filter(Files::exists)
+                               .onPresent(dir -> collectFromDirectory(dir, files, errorHandler));
         }
 
         return files;

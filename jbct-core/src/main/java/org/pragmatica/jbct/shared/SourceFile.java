@@ -24,8 +24,8 @@ public record SourceFile(Path path, String content) {
     /**
      * Factory method to create a SourceFile with provided content.
      */
-    public static Result<SourceFile> sourceFile(Path path, String content) {
-        return Result.success(new SourceFile(path, content));
+    public static SourceFile sourceFile(Path path, String content) {
+        return new SourceFile(path, content);
     }
 
     /**

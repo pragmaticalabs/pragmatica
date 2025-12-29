@@ -31,8 +31,7 @@ class CstLinterTest {
 
     private List<Diagnostic> lint(String source) {
         var sourceFile = SourceFile.sourceFile(Path.of("Test.java"), source);
-        assertTrue(sourceFile.isSuccess(), () -> "SourceFile creation failed: " + sourceFile);
-        var result = linter.lint(sourceFile.unwrap());
+        var result = linter.lint(sourceFile);
         assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
         return result.unwrap();
     }
@@ -1973,8 +1972,7 @@ class CstLinterTest {
 
         private List<Diagnostic> lintWithSlices(String source) {
             var sourceFile = SourceFile.sourceFile(Path.of("Test.java"), source);
-            assertTrue(sourceFile.isSuccess(), () -> "SourceFile creation failed: " + sourceFile);
-            var result = sliceLinter.lint(sourceFile.unwrap());
+            var result = sliceLinter.lint(sourceFile);
             assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
             return result.unwrap();
         }
@@ -2198,8 +2196,7 @@ class CstLinterTest {
                     }
                 }
                 """);
-            assertTrue(sourceFile.isSuccess());
-            var result = nonSliceLinter.lint(sourceFile.unwrap());
+            var result = nonSliceLinter.lint(sourceFile);
             assertTrue(result.isSuccess());
             assertHasRule(result.unwrap(), "JBCT-SLICE-01");
         }

@@ -152,22 +152,23 @@ public class InitCommand implements Callable<Integer> {
     }
 
     private boolean initSliceProject() {
-        var initializer = SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId);
-        return initializer.initialize()
+        return SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId)
+            .flatMap(initializer -> initializer.initialize()
+                .map(createdFiles -> {
+                    System.out.println();
+                    System.out.println("Created slice project files:");
+                    for (var file : createdFiles) {
+                        var relativePath = projectDir.relativize(file);
+                        System.out.println("  " + relativePath);
+                    }
+                    System.out.println();
+                    System.out.println("Slice: " + initializer.sliceName());
+                    return true;
+                }))
             .fold(cause -> {
                       System.err.println("Error: " + cause.message());
                       return false;
                   },
-                  createdFiles -> {
-                      System.out.println();
-                      System.out.println("Created slice project files:");
-                      for (var file : createdFiles) {
-                          var relativePath = projectDir.relativize(file);
-                          System.out.println("  " + relativePath);
-                      }
-                      System.out.println();
-                      System.out.println("Slice: " + initializer.sliceName());
-                      return true;
-                  });
+                  success -> success);
     }
 }

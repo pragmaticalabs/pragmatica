@@ -57,20 +57,18 @@ public class CstLinter {
      */
     public Result<Boolean> check(SourceFile source) {
         return lint(source)
-            .map(diagnostics -> {
-                var hasErrors = diagnostics.stream()
-                    .anyMatch(d -> d.severity() == DiagnosticSeverity.ERROR);
-                var hasWarnings = diagnostics.stream()
-                    .anyMatch(d -> d.severity() == DiagnosticSeverity.WARNING);
+            .map(this::passesLintRules);
+    }
 
-                if (hasErrors) {
-                    return false;
-                }
-                if (context.config().failOnWarning() && hasWarnings) {
-                    return false;
-                }
-                return true;
-            });
+    private boolean passesLintRules(List<Diagnostic> diagnostics) {
+        var hasErrors = diagnostics.stream()
+            .anyMatch(d -> d.severity() == DiagnosticSeverity.ERROR);
+        if (hasErrors) {
+            return false;
+        }
+        var hasWarnings = diagnostics.stream()
+            .anyMatch(d -> d.severity() == DiagnosticSeverity.WARNING);
+        return !(context.config().failOnWarning() && hasWarnings);
     }
 
     private Result<CstNode> parse(SourceFile source) {

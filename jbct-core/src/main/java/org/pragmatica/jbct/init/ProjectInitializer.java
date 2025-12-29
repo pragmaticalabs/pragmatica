@@ -87,7 +87,7 @@ public final class ProjectInitializer {
 
             return Result.success(createdFiles);
         } catch (Exception e) {
-            return Result.failure(Causes.cause("Failed to initialize project: " + e.getMessage()));
+            return Causes.cause("Failed to initialize project: " + e.getMessage()).result();
         }
     }
 
@@ -99,7 +99,7 @@ public final class ProjectInitializer {
 
         try (var in = getClass().getResourceAsStream(TEMPLATES_PATH + templateName)) {
             if (in == null) {
-                return Result.failure(Causes.cause("Template not found: " + templateName));
+                return Causes.cause("Template not found: " + templateName).result();
             }
 
             var content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
@@ -108,7 +108,7 @@ public final class ProjectInitializer {
             Files.writeString(targetPath, content);
             return Result.success(targetPath);
         } catch (IOException e) {
-            return Result.failure(Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()));
+            return Causes.cause("Failed to create " + targetPath + ": " + e.getMessage()).result();
         }
     }
 
