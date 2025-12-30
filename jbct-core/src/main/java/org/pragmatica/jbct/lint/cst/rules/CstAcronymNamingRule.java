@@ -20,8 +20,9 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstAcronymNamingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ACR-01";
 
-    // Pattern to detect consecutive uppercase letters (3+ caps or 2 caps not at end)
-    private static final Pattern ACRONYM_PATTERN = Pattern.compile("[A-Z]{3,}|[A-Z]{2}(?=[a-z])");
+    // Pattern to detect consecutive uppercase letters (3+ caps indicates an acronym like HTTP, XML, URL)
+    // Excludes 2-letter sequences like LParen (Left Paren) which are just prefixes, not acronyms
+    private static final Pattern ACRONYM_PATTERN = Pattern.compile("[A-Z]{3,}");
 
     @Override
     public String ruleId() {

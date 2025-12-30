@@ -3,11 +3,13 @@
 ## [0.4.1] - 2025-12-30
 
 ### Added
+- Linter: @SuppressWarnings support for JBCT rules (`@SuppressWarnings("JBCT-RET-01")`, `@SuppressWarnings("all")`)
 
 ### Changed
 
 ### Fixed
 - Parser: add support for array type method references (`String[]::new`, `int[]::new`, `int[]::clone`)
+- Linter: JBCT-ACR-01 false positives for 2-letter prefixes (LParen, RParen, etc.)
 
 ## [0.4.0] - 2025-12-29
 

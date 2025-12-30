@@ -1,15 +1,16 @@
 package org.pragmatica.jbct.lint.cst;
 
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
 import org.pragmatica.jbct.lint.Diagnostic;
 import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.shared.SourceFile;
 
 import java.nio.file.Path;
 import java.util.List;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -18,7 +19,6 @@ import static org.junit.jupiter.api.Assertions.*;
  * Each test verifies that violations are properly detected.
  */
 class CstLinterTest {
-
     private CstLinter linter;
     private LintContext context;
 
@@ -38,25 +38,26 @@ class CstLinterTest {
 
     private void assertHasRule(List<Diagnostic> diagnostics, String ruleId) {
         assertTrue(
-            diagnostics.stream().anyMatch(d -> d.ruleId().equals(ruleId)),
-            () -> "Expected rule " + ruleId + " but found: " +
-                  diagnostics.stream().map(Diagnostic::ruleId).toList()
-        );
+        diagnostics.stream()
+                   .anyMatch(d -> d.ruleId()
+                                   .equals(ruleId)),
+        () -> "Expected rule " + ruleId + " but found: " + diagnostics.stream()
+                                                                     .map(Diagnostic::ruleId)
+                                                                     .toList());
     }
 
     private void assertNoRule(List<Diagnostic> diagnostics, String ruleId) {
         assertFalse(
-            diagnostics.stream().anyMatch(d -> d.ruleId().equals(ruleId)),
-            () -> "Did not expect rule " + ruleId + " but it was triggered"
-        );
+        diagnostics.stream()
+                   .anyMatch(d -> d.ruleId()
+                                   .equals(ruleId)),
+        () -> "Did not expect rule " + ruleId + " but it was triggered");
     }
 
     // ========== JBCT-RET-* Return Kind Rules ==========
-
     @Nested
     @DisplayName("JBCT-RET-01: Business methods must use T, Option, Result, or Promise")
     class ReturnKindTests {
-
         @Test
         void detectsVoidReturnType() {
             var diagnostics = lint("""
@@ -143,7 +144,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-RET-02: No nested wrappers")
     class NestedWrapperTests {
-
         @Test
         void detectsNestedResultInResult() {
             var diagnostics = lint("""
@@ -211,7 +211,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-RET-03: Never return null")
     class NullReturnTests {
-
         @Test
         void detectsReturnNull() {
             var diagnostics = lint("""
@@ -242,7 +241,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-RET-04: Use Unit instead of Void")
     class VoidTypeTests {
-
         @Test
         void detectsVoidGenericParameter() {
             var diagnostics = lint("""
@@ -272,7 +270,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-RET-05: Avoid always-succeeding Result")
     class AlwaysSuccessResultTests {
-
         @Test
         void detectsResultSuccessOnly() {
             var diagnostics = lint("""
@@ -305,11 +302,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-VO-* Value Object Rules ==========
-
     @Nested
     @DisplayName("JBCT-VO-01: Value objects should have factory returning Result")
     class ValueObjectFactoryTests {
-
         @Test
         void detectsRecordWithoutResultFactory() {
             var diagnostics = lint("""
@@ -342,7 +337,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-VO-02: Don't bypass factory with direct constructor calls")
     class ConstructorBypassTests {
-
         @Test
         void detectsDirectRecordConstruction() {
             var diagnostics = lint("""
@@ -354,8 +348,6 @@ class CstLinterTest {
                 }
                 record Email(String value) {}
                 """);
-            // Note: This rule may need specific record detection
-            // The test documents expected behavior
         }
 
         @Test
@@ -377,11 +369,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-EX-* Exception Rules ==========
-
     @Nested
     @DisplayName("JBCT-EX-01: No business exceptions")
     class NoBusinessExceptionsTests {
-
         @Test
         void detectsExceptionClass() {
             var diagnostics = lint("""
@@ -442,7 +432,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-EX-02: Don't use orElseThrow")
     class OrElseThrowTests {
-
         @Test
         void detectsOrElseThrow() {
             var diagnostics = lint("""
@@ -487,11 +476,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-NAM-* Naming Rules ==========
-
     @Nested
     @DisplayName("JBCT-NAM-01: Factory method naming conventions")
     class FactoryNamingTests {
-
         @Test
         void detectsOfFactory() {
             var diagnostics = lint("""
@@ -538,7 +525,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-NAM-02: Use Valid prefix, not Validated")
     class ValidatedNamingTests {
-
         @Test
         void detectsValidatedPrefix() {
             var diagnostics = lint("""
@@ -559,11 +545,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-LAM-* Lambda Rules ==========
-
     @Nested
     @DisplayName("JBCT-LAM-01: No complex logic in lambdas")
     class LambdaComplexityTests {
-
         @Test
         void detectsIfInLambda() {
             var diagnostics = lint("""
@@ -621,7 +605,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-LAM-02: No braces in lambdas")
     class LambdaBracesTests {
-
         @Test
         void detectsBracesInLambda() {
             var diagnostics = lint("""
@@ -656,7 +639,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-LAM-03: No ternary in lambdas")
     class LambdaTernaryTests {
-
         @Test
         void detectsTernaryInLambda() {
             var diagnostics = lint("""
@@ -693,7 +675,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-UC-01: Use case factories should return lambdas")
     class UseCaseFactoryTests {
-
         @Test
         void detectsNestedRecordInFactory() {
             var diagnostics = lint("""
@@ -739,11 +720,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-PAT-* Pattern Rules ==========
-
     @Nested
     @DisplayName("JBCT-PAT-01: Use functional iteration")
     class RawLoopTests {
-
         @Test
         void detectsForLoop() {
             var diagnostics = lint("""
@@ -813,7 +792,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-SEQ-01: Chain length limit")
     class ChainLengthTests {
-
         @Test
         void detectsLongChain() {
             var diagnostics = lint("""
@@ -852,11 +830,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-STY-* Style Rules ==========
-
     @Nested
     @DisplayName("JBCT-STY-01: Prefer fluent failure style")
     class FluentFailureTests {
-
         @Test
         void detectsResultFailure() {
             var diagnostics = lint("""
@@ -891,7 +867,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-STY-02: Prefer constructor references")
     class ConstructorReferenceTests {
-
         @Test
         void detectsLambdaInsteadOfConstructorRef() {
             var diagnostics = lint("""
@@ -928,7 +903,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-STY-03: No fully qualified class names")
     class FullyQualifiedNameTests {
-
         @Test
         void detectsFqcn() {
             var diagnostics = lint("""
@@ -959,11 +933,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-LOG-* Logging Rules ==========
-
     @Nested
     @DisplayName("JBCT-LOG-01: No conditional logging")
     class ConditionalLoggingTests {
-
         @Test
         void detectsLogLevelCheck() {
             var diagnostics = lint("""
@@ -1000,7 +972,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-LOG-02: No logger as method parameter")
     class LoggerParameterTests {
-
         @Test
         void detectsLoggerParameter() {
             var diagnostics = lint("""
@@ -1033,11 +1004,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-MIX-* Architecture Rules ==========
-
     @Nested
     @DisplayName("JBCT-MIX-01: No I/O operations in domain packages")
     class DomainIoTests {
-
         @Test
         void detectsFileOperationsInDomain() {
             var diagnostics = lint("""
@@ -1098,11 +1067,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-STATIC-* Static Import Rules ==========
-
     @Nested
     @DisplayName("JBCT-STATIC-01: Prefer static imports for factories")
     class StaticImportTests {
-
         @Test
         void detectsQualifiedResultSuccess() {
             var diagnostics = lint("""
@@ -1162,11 +1129,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-UTIL-* Utility Rules ==========
-
     @Nested
     @DisplayName("JBCT-UTIL-01: Use Pragmatica parsing utilities")
     class ParsingUtilitiesTests {
-
         @Test
         void detectsIntegerParseInt() {
             var diagnostics = lint("""
@@ -1253,7 +1218,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-UTIL-02: Use Verify.Is predicates")
     class VerifyPredicatesTests {
-
         @Test
         void detectsManualPositiveCheck() {
             var diagnostics = lint("""
@@ -1317,11 +1281,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-NEST-* Nesting Rules ==========
-
     @Nested
     @DisplayName("JBCT-NEST-01: No nested monadic operations in lambdas")
     class NestedOperationsTests {
-
         @Test
         void detectsNestedMapInLambda() {
             var diagnostics = lint("""
@@ -1372,11 +1334,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-ZONE-* Zone Rules ==========
-
     @Nested
     @DisplayName("JBCT-ZONE-01: Step interfaces should use Zone 2 verbs")
     class ZoneTwoVerbsTests {
-
         @Test
         void detectsZone3VerbInStepInterface() {
             var diagnostics = lint("""
@@ -1429,7 +1389,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-ZONE-02: Leaf functions should use Zone 3 verbs")
     class ZoneThreeVerbsTests {
-
         @Test
         void detectsZone2VerbInLeafFunction() {
             var diagnostics = lint("""
@@ -1460,7 +1419,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-ZONE-03: No zone mixing in sequencer chains")
     class ZoneMixingTests {
-
         @Test
         void detectsZone3VerbInChain() {
             var diagnostics = lint("""
@@ -1519,11 +1477,9 @@ class CstLinterTest {
     }
 
     // ========== JBCT-STY-04 to JBCT-STY-06 Style Rules ==========
-
     @Nested
     @DisplayName("JBCT-STY-04: Utility class pattern")
     class UtilityClassTests {
-
         @Test
         void detectsUtilityClass() {
             var diagnostics = lint("""
@@ -1619,7 +1575,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-STY-05: Method reference preference")
     class MethodReferencePreferenceTests {
-
         @Test
         void detectsConstructorLambda() {
             var diagnostics = lint("""
@@ -1765,7 +1720,6 @@ class CstLinterTest {
     @Nested
     @DisplayName("JBCT-STY-06: Import ordering")
     class ImportOrderingTests {
-
         @Test
         void detectsJavaImportAfterJavax() {
             var diagnostics = lint("""
@@ -1913,11 +1867,9 @@ class CstLinterTest {
     }
 
     // ========== Non-business package tests ==========
-
     @Nested
     @DisplayName("Rules should not trigger for non-business packages")
     class NonBusinessPackageTests {
-
         @Test
         void noRulesForInfrastructurePackage() {
             var diagnostics = lint("""
@@ -1930,7 +1882,9 @@ class CstLinterTest {
                 """);
             // Should have no diagnostics since infrastructure is not a business package
             assertTrue(diagnostics.isEmpty() ||
-                       diagnostics.stream().noneMatch(d -> d.ruleId().startsWith("JBCT-")),
+            diagnostics.stream()
+                       .noneMatch(d -> d.ruleId()
+                                        .startsWith("JBCT-")),
                        "No JBCT rules should trigger for non-business packages");
         }
 
@@ -1946,27 +1900,26 @@ class CstLinterTest {
                 }
                 """);
             assertTrue(diagnostics.isEmpty() ||
-                       diagnostics.stream().noneMatch(d -> d.ruleId().startsWith("JBCT-")),
+            diagnostics.stream()
+                       .noneMatch(d -> d.ruleId()
+                                        .startsWith("JBCT-")),
                        "No JBCT rules should trigger for adapter packages");
         }
     }
 
     // ========== JBCT-SLICE-* Slice Rules ==========
-
     @Nested
     @DisplayName("JBCT-SLICE-01: External slice dependencies must use API interface")
     class SliceApiUsageTests {
-
         // Slice package convention configured via slicePackages in jbct.toml
         // API package convention: <slicePackage>.api
-
         private CstLinter sliceLinter;
 
         @BeforeEach
         void setUpSliceLinter() {
             // Configure slice packages for these tests
             var sliceContext = LintContext.lintContext(List.of("**.usecase.**", "**.domain.**"))
-                .withSlicePackages(List.of("**.usecase.**"));
+                                          .withSlicePackages(List.of("**.usecase.**"));
             sliceLinter = CstLinter.cstLinter(sliceContext);
         }
 
@@ -2092,8 +2045,9 @@ class CstLinterTest {
                 """);
             // Should detect both violations
             var sliceViolations = diagnostics.stream()
-                .filter(d -> d.ruleId().equals("JBCT-SLICE-01"))
-                .count();
+                                             .filter(d -> d.ruleId()
+                                                           .equals("JBCT-SLICE-01"))
+                                             .count();
             assertEquals(2, sliceViolations, "Expected 2 JBCT-SLICE-01 violations");
         }
 
@@ -2181,10 +2135,10 @@ class CstLinterTest {
         void detectsSliceImportFromNonSliceCode() {
             // Non-slice code importing slice directly should be flagged
             var nonSliceContext = LintContext.lintContext(List.of("**.usecase.**", "**.domain.**"))
-                .withSlicePackages(List.of("**.usecase.**"));
+                                             .withSlicePackages(List.of("**.usecase.**"));
             var nonSliceLinter = CstLinter.cstLinter(nonSliceContext);
-
-            var sourceFile = SourceFile.sourceFile(Path.of("Test.java"), """
+            var sourceFile = SourceFile.sourceFile(Path.of("Test.java"),
+                                                   """
                 package com.example.adapter.http;
                 import org.pragmatica.lang.Result;
                 import com.example.usecase.order.OrderService;
@@ -2199,6 +2153,79 @@ class CstLinterTest {
             var result = nonSliceLinter.lint(sourceFile);
             assertTrue(result.isSuccess());
             assertHasRule(result.unwrap(), "JBCT-SLICE-01");
+        }
+    }
+
+    // ========== @SuppressWarnings Support ==========
+    @Nested
+    @DisplayName("@SuppressWarnings support")
+    class SuppressionTests {
+        @Test
+        void suppressesSingleRule() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @SuppressWarnings("JBCT-RET-01")
+                    public void doSomething() {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+        }
+
+        @Test
+        void suppressesMultipleRules() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @SuppressWarnings({"JBCT-RET-01", "JBCT-LAM-02"})
+                    public void doSomething() {
+                        Runnable r = () -> { System.out.println("hello"); };
+                    }
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+            assertNoRule(diagnostics, "JBCT-LAM-02");
+        }
+
+        @Test
+        void suppressesAllRules() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                @SuppressWarnings("all")
+                public class Test {
+                    public void doSomething() {}
+                    public void doSomethingElse() {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
+        }
+
+        @Test
+        void suppressionScopeIsLimited() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                public class Test {
+                    @SuppressWarnings("JBCT-RET-01")
+                    public void suppressedMethod() {}
+
+                    public void notSuppressedMethod() {}
+                }
+                """);
+            // The suppression should only apply to suppressedMethod
+            assertHasRule(diagnostics, "JBCT-RET-01");
+        }
+
+        @Test
+        void classScopedSuppressionCoversAllMethods() {
+            var diagnostics = lint("""
+                package com.example.usecase.test;
+                @SuppressWarnings("JBCT-RET-01")
+                public class Test {
+                    public void methodOne() {}
+                    public void methodTwo() {}
+                }
+                """);
+            assertNoRule(diagnostics, "JBCT-RET-01");
         }
     }
 }
