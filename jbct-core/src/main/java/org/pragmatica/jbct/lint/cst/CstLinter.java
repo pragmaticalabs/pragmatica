@@ -82,10 +82,8 @@ public class CstLinter {
 
     private List<Diagnostic> analyzeWithRules(CstNode cst, SourceFile source) {
         var contextWithFile = context.withFileName(source.fileName());
-
         // Extract @SuppressWarnings suppressions
         var suppressions = SuppressionExtractor.extractSuppressions(cst, source.content());
-
         return rules.stream()
                     .filter(rule -> contextWithFile.isRuleEnabled(rule.ruleId()))
                     .flatMap(rule -> rule.analyze(cst,
