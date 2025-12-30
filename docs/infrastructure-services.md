@@ -137,6 +137,72 @@ public record CacheConfig(
 ) {}
 ```
 
+### Aspect Provider Slice (Future)
+
+Infrastructure slice exposing factories for cross-cutting concerns. Provides runtime-injectable aspects following JBCT patterns.
+
+**Aspects:**
+
+| Aspect | Purpose |
+|--------|---------|
+| Logging | Structured logging with correlation IDs, entry/exit tracing |
+| Retry | Configurable retry policies with backoff strategies |
+| Circuit Breaker | Fail-fast with configurable thresholds and recovery |
+
+**API Design:**
+
+```java
+public interface AspectProvider {
+    // Logging aspect factory
+    <I, O> Fn1<Promise<O>, I> withLogging(Fn1<Promise<O>, I> fn, LogConfig config);
+
+    // Retry aspect factory
+    <I, O> Fn1<Promise<O>, I> withRetry(Fn1<Promise<O>, I> fn, RetryConfig config);
+
+    // Circuit breaker aspect factory
+    <I, O> Fn1<Promise<O>, I> withCircuitBreaker(Fn1<Promise<O>, I> fn, CircuitBreakerConfig config);
+}
+
+public record RetryConfig(
+    int maxAttempts,
+    Duration initialDelay,
+    double backoffMultiplier,
+    Set<Class<? extends Cause>> retryableErrors
+) {}
+
+public record CircuitBreakerConfig(
+    int failureThreshold,      // Failures before opening
+    Duration openDuration,      // Time to stay open
+    int halfOpenPermits,        // Requests allowed in half-open
+    double successThreshold     // Success rate to close
+) {}
+```
+
+**Usage in Slice:**
+
+```java
+// Inject via SliceBridge
+var aspectProvider = bridge.resolve(AspectProvider.class);
+
+// Wrap adapter leaf with retry
+var saveUser = aspectProvider.withRetry(
+    userRepository::save,
+    new RetryConfig(3, Duration.ofMillis(100), 2.0, Set.of(TransientError.class))
+);
+
+// Wrap external call with circuit breaker
+var callPayment = aspectProvider.withCircuitBreaker(
+    paymentGateway::charge,
+    new CircuitBreakerConfig(5, Duration.ofSeconds(30), 3, 0.5)
+);
+```
+
+**Benefits:**
+- Consistent cross-cutting behavior across slices
+- Runtime-configurable without slice redeployment
+- Cluster-wide circuit breaker state (via DHT)
+- Metrics integration for observability
+
 ## Foundation: Distributed Hash Table
 
 All infrastructure services share a common DHT foundation with consistent hashing.
