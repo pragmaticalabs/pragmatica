@@ -14,6 +14,11 @@ import java.nio.charset.StandardCharsets;
  */
 public interface ResponseWriter {
     /**
+     * Standard header name for request ID tracing.
+     */
+    String X_REQUEST_ID = "X-Request-Id";
+
+    /**
      * Write response with status, body, and content type.
      */
     void write(HttpStatus status, byte[] body, ContentType contentType);

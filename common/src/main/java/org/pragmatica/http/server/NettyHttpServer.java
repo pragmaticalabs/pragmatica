@@ -9,17 +9,14 @@ import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.http.websocket.WebSocketHandler;
 import org.pragmatica.http.websocket.WebSocketMessage;
 import org.pragmatica.http.websocket.WebSocketSession;
-import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.net.SocketOptions;
 import org.pragmatica.net.TlsContextFactory;
+import org.pragmatica.utility.IdGenerator;
 
-import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.UUID;
 import java.util.function.BiConsumer;
 
 import io.netty.bootstrap.ServerBootstrap;
@@ -32,6 +29,7 @@ import io.netty.handler.codec.http.*;
 import io.netty.handler.codec.http.websocketx.*;
 import io.netty.handler.ssl.SslContext;
 import io.netty.handler.stream.ChunkedWriteHandler;
+import io.netty.util.AttributeKey;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -138,6 +136,7 @@ final class NettyHttpServer implements HttpServer {
         private final HttpServerConfig config;
         private final BiConsumer<RequestContext, ResponseWriter> handler;
         private final SslContext sslContext;
+        private final Map<String, WebSocketEndpoint> wsEndpoints;
 
         HttpServerInitializer(HttpServerConfig config,
                               BiConsumer<RequestContext, ResponseWriter> handler,
@@ -145,6 +144,10 @@ final class NettyHttpServer implements HttpServer {
             this.config = config;
             this.handler = handler;
             this.sslContext = sslContext;
+            this.wsEndpoints = new HashMap<>();
+            for (var endpoint : config.webSocketEndpoints()) {
+                wsEndpoints.put(endpoint.path(), endpoint);
+            }
         }
 
         @Override
@@ -162,25 +165,26 @@ final class NettyHttpServer implements HttpServer {
             for (var endpoint : config.webSocketEndpoints()) {
                 pipeline.addLast(new WebSocketServerProtocolHandler(endpoint.path(), null, true));
             }
-            pipeline.addLast(new HttpRequestHandler(handler, config.webSocketEndpoints()));
+            // Create new handler instance per channel (not @Sharable)
+            pipeline.addLast(new HttpRequestHandler(handler, wsEndpoints));
         }
     }
 
-    @ChannelHandler.Sharable
+    /**
+     * Per-channel HTTP request handler.
+     * NOT @Sharable - each channel gets its own instance to maintain WebSocket state safely.
+     */
     private static class HttpRequestHandler extends SimpleChannelInboundHandler<Object> {
         private static final Logger LOG = LoggerFactory.getLogger(HttpRequestHandler.class);
+        private static final AttributeKey<WebSocketState>WS_STATE = AttributeKey.valueOf("wsState");
 
         private final BiConsumer<RequestContext, ResponseWriter> handler;
         private final Map<String, WebSocketEndpoint> wsEndpoints;
-        private WebSocketHandler currentWsHandler;
-        private NettyWebSocketSession currentWsSession;
 
-        HttpRequestHandler(BiConsumer<RequestContext, ResponseWriter> handler, List<WebSocketEndpoint> endpoints) {
+        HttpRequestHandler(BiConsumer<RequestContext, ResponseWriter> handler,
+                           Map<String, WebSocketEndpoint> wsEndpoints) {
             this.handler = handler;
-            this.wsEndpoints = new HashMap<>();
-            for (var endpoint : endpoints) {
-                wsEndpoints.put(endpoint.path(), endpoint);
-            }
+            this.wsEndpoints = wsEndpoints;
         }
 
         @Override
@@ -198,20 +202,24 @@ final class NettyHttpServer implements HttpServer {
             var wsEndpoint = wsEndpoints.get(path);
             if (wsEndpoint != null && isWebSocketUpgrade(request)) {
                 // WebSocket upgrade will be handled by WebSocketServerProtocolHandler
-                // Just set up the handler for later
-                currentWsHandler = wsEndpoint.handler()
-                                             .get();
-                currentWsSession = new NettyWebSocketSession(ctx.channel());
+                // Store handler and session in channel attribute for later use
+                var wsHandler = wsEndpoint.handler()
+                                          .get();
+                var wsSession = new NettyWebSocketSession(ctx.channel());
+                ctx.channel()
+                   .attr(WS_STATE)
+                   .set(new WebSocketState(wsHandler, wsSession));
                 ctx.fireChannelRead(request.retain());
                 return;
             }
-            // Regular HTTP request
-            var requestContext = createRequestContext(request);
-            var responseWriter = new NettyResponseWriter(ctx);
+            // Regular HTTP request - generate request ID
+            var requestId = IdGenerator.generate("req");
+            var requestContext = createRequestContext(requestId, request);
+            var responseWriter = new NettyResponseWriter(ctx, requestId);
             try{
                 handler.accept(requestContext, responseWriter);
             } catch (Exception e) {
-                LOG.error("Error handling request", e);
+                LOG.error("Error handling request {}", requestId, e);
                 responseWriter.error(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error");
             }
         }
@@ -222,33 +230,37 @@ final class NettyHttpServer implements HttpServer {
         }
 
         private void handleWebSocketFrame(ChannelHandlerContext ctx, WebSocketFrame frame) {
-            if (currentWsHandler == null) {
+            var state = ctx.channel()
+                           .attr(WS_STATE)
+                           .get();
+            if (state == null) {
                 return;
             }
-            if (currentWsSession == null) {
-                currentWsSession = new NettyWebSocketSession(ctx.channel());
-            }
             if (frame instanceof TextWebSocketFrame textFrame) {
-                currentWsHandler.handle(currentWsSession,
-                                        new WebSocketMessage.Text(textFrame.text()));
+                state.handler.handle(state.session,
+                                     new WebSocketMessage.Text(textFrame.text()));
             }else if (frame instanceof BinaryWebSocketFrame binaryFrame) {
                 var bytes = new byte[binaryFrame.content()
                                                 .readableBytes()];
                 binaryFrame.content()
                            .readBytes(bytes);
-                currentWsHandler.handle(currentWsSession, new WebSocketMessage.Binary(bytes));
+                state.handler.handle(state.session, new WebSocketMessage.Binary(bytes));
             }else if (frame instanceof CloseWebSocketFrame) {
-                currentWsHandler.handle(currentWsSession, new WebSocketMessage.Close());
-                currentWsHandler = null;
-                currentWsSession = null;
+                state.handler.handle(state.session, new WebSocketMessage.Close());
+                ctx.channel()
+                   .attr(WS_STATE)
+                   .set(null);
             }
         }
 
         @Override
         public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
             if (evt instanceof WebSocketServerProtocolHandler.HandshakeComplete) {
-                if (currentWsHandler != null && currentWsSession != null) {
-                    currentWsHandler.handle(currentWsSession, new WebSocketMessage.Open());
+                var state = ctx.channel()
+                               .attr(WS_STATE)
+                               .get();
+                if (state != null) {
+                    state.handler.handle(state.session, new WebSocketMessage.Open());
                 }
             }
             super.userEventTriggered(ctx, evt);
@@ -260,7 +272,7 @@ final class NettyHttpServer implements HttpServer {
             ctx.close();
         }
 
-        private RequestContext createRequestContext(FullHttpRequest request) {
+        private RequestContext createRequestContext(String requestId, FullHttpRequest request) {
             var decoder = new QueryStringDecoder(request.uri());
             var path = decoder.path();
             var method = HttpMethod.from(request.method()
@@ -280,11 +292,17 @@ final class NettyHttpServer implements HttpServer {
             var content = request.content();
             var body = new byte[content.readableBytes()];
             content.readBytes(body);
-            return new NettyRequestContext(method, path, headers, queryParams, body);
+            return new NettyRequestContext(requestId, method, path, headers, queryParams, body);
         }
     }
 
+    /**
+     * WebSocket state stored per channel.
+     */
+    private record WebSocketState(WebSocketHandler handler, NettyWebSocketSession session) {}
+
     private record NettyRequestContext(
+    String requestId,
     HttpMethod method,
     String path,
     Headers headers,
@@ -293,11 +311,13 @@ final class NettyHttpServer implements HttpServer {
 
     private static class NettyResponseWriter implements ResponseWriter {
         private final ChannelHandlerContext ctx;
+        private final String requestId;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders;
         private boolean written = false;
 
-        NettyResponseWriter(ChannelHandlerContext ctx) {
+        NettyResponseWriter(ChannelHandlerContext ctx, String requestId) {
             this.ctx = ctx;
+            this.requestId = requestId;
             this.responseHeaders = new DefaultHttpHeaders();
         }
 
@@ -322,6 +342,8 @@ final class NettyHttpServer implements HttpServer {
             response.headers()
                     .set(HttpHeaderNames.CONTENT_LENGTH, body.length);
             response.headers()
+                    .set(X_REQUEST_ID, requestId);
+            response.headers()
                     .add(responseHeaders);
             ctx.writeAndFlush(response)
                .addListener(ChannelFutureListener.CLOSE);
@@ -334,8 +356,7 @@ final class NettyHttpServer implements HttpServer {
 
         NettyWebSocketSession(Channel channel) {
             this.channel = channel;
-            this.id = UUID.randomUUID()
-                          .toString();
+            this.id = IdGenerator.generate("ws");
         }
 
         @Override

@@ -9,6 +9,12 @@ import org.pragmatica.http.QueryParams;
  */
 public interface RequestContext {
     /**
+     * Unique request ID for tracing and logging.
+     * Format: req_[ulid] (e.g., req_01hq4x2abc...)
+     */
+    String requestId();
+
+    /**
      * HTTP method.
      */
     HttpMethod method();
