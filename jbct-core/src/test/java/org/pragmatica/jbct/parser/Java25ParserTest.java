@@ -312,4 +312,18 @@ class Java25ParserTest {
             """);
         assertTrue(result.isSuccess(), () -> "Failed: " + result);
     }
+
+    @Test
+    void parseArrayTypeMethodReferenceWithMethod() {
+        // Test int[]::clone - array type method reference (not constructor)
+        var result = parser.parse("""
+            class C {
+                void test() {
+                    var clone = int[]::clone;
+                    var objClone = String[]::clone;
+                }
+            }
+            """);
+        assertTrue(result.isSuccess(), () -> "Failed: " + result);
+    }
 }
