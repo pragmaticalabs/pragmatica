@@ -273,4 +273,43 @@ class Java25ParserTest {
             """);
         assertTrue(result.isSuccess(), () -> "Failed: " + result);
     }
+
+    @Test
+    void parseArrayTypeMethodReference() {
+        // Test String[]::new - array type constructor reference
+        var result = parser.parse("""
+            class C {
+                void test() {
+                    var arr = list.stream().toArray(String[]::new);
+                }
+            }
+            """);
+        assertTrue(result.isSuccess(), () -> "Failed: " + result);
+    }
+
+    @Test
+    void parsePrimitiveArrayTypeMethodReference() {
+        // Test int[]::new - primitive array type constructor reference
+        var result = parser.parse("""
+            class C {
+                void test() {
+                    var arr = stream.toArray(int[]::new);
+                }
+            }
+            """);
+        assertTrue(result.isSuccess(), () -> "Failed: " + result);
+    }
+
+    @Test
+    void parseMultiDimArrayTypeMethodReference() {
+        // Test String[][]::new - multi-dimensional array type constructor reference
+        var result = parser.parse("""
+            class C {
+                void test() {
+                    var arr = stream.toArray(String[][]::new);
+                }
+            }
+            """);
+        assertTrue(result.isSuccess(), () -> "Failed: " + result);
+    }
 }

@@ -18565,10 +18565,156 @@ public final class Java25Parser {
             }
         }
         if (result.isSuccess()) {
-            if (!inTokenBoundary) skipWhitespace();
-            var elem0_1 = matchLiteralCst(".", false);
-            if (elem0_1.isSuccess() && elem0_1.node != null) {
-                children.add(elem0_1.node);
+            CstParseResult elem0_1 = null;
+            var choiceStart3 = location();
+            var savedChildren3 = new ArrayList<>(children);
+            children.clear();
+            children.addAll(savedChildren3);
+            CstParseResult alt3_0 = CstParseResult.success(null, "", location());
+            var seqStart4 = location();
+            boolean cut4 = false;
+            if (alt3_0.isSuccess()) {
+                var elem4_0 = matchLiteralCst(".", false);
+                if (elem4_0.isSuccess() && elem4_0.node != null) {
+                    children.add(elem4_0.node);
+                }
+                if (elem4_0.isCutFailure()) {
+                    restoreLocation(seqStart4);
+                    alt3_0 = elem4_0;
+                }else if (elem4_0.isFailure()) {
+                    restoreLocation(seqStart4);
+                    alt3_0 = cut4
+                             ? elem4_0.asCutFailure()
+                             : elem4_0;
+                }
+            }
+            if (alt3_0.isSuccess()) {
+                if (!inTokenBoundary) skipWhitespace();
+                var tbStart6 = location();
+                inTokenBoundary = true;
+                var savedChildrenTb6 = new ArrayList<>(children);
+                var tbElem6 = matchLiteralCst("class", false);
+                inTokenBoundary = false;
+                children.clear();
+                children.addAll(savedChildrenTb6);
+                CstParseResult elem4_1;
+                if (tbElem6.isSuccess()) {
+                    var tbText6 = substring(tbStart6.offset(), pos);
+                    var tbSpan6 = SourceSpan.of(tbStart6, location());
+                    var tbNode6 = new CstNode.Token(tbSpan6, RULE_PEG_TOKEN, tbText6, List.of(), List.of());
+                    children.add(tbNode6);
+                    elem4_1 = CstParseResult.success(tbNode6, tbText6, location());
+                }else {
+                    elem4_1 = tbElem6;
+                }
+                if (elem4_1.isCutFailure()) {
+                    restoreLocation(seqStart4);
+                    alt3_0 = elem4_1;
+                }else if (elem4_1.isFailure()) {
+                    restoreLocation(seqStart4);
+                    alt3_0 = cut4
+                             ? elem4_1.asCutFailure()
+                             : elem4_1;
+                }
+            }
+            if (alt3_0.isSuccess()) {
+                alt3_0 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
+            }
+            if (alt3_0.isSuccess()) {
+                elem0_1 = alt3_0;
+            }else if (alt3_0.isCutFailure()) {
+                elem0_1 = alt3_0;
+            }else {
+                restoreLocation(choiceStart3);
+                children.clear();
+                children.addAll(savedChildren3);
+                CstParseResult alt3_1 = CstParseResult.success(null, "", location());
+                var seqStart8 = location();
+                boolean cut8 = false;
+                if (alt3_1.isSuccess()) {
+                    var elem8_0 = matchLiteralCst("::", false);
+                    if (elem8_0.isSuccess() && elem8_0.node != null) {
+                        children.add(elem8_0.node);
+                    }
+                    if (elem8_0.isCutFailure()) {
+                        restoreLocation(seqStart8);
+                        alt3_1 = elem8_0;
+                    }else if (elem8_0.isFailure()) {
+                        restoreLocation(seqStart8);
+                        alt3_1 = cut8
+                                 ? elem8_0.asCutFailure()
+                                 : elem8_0;
+                    }
+                }
+                if (alt3_1.isSuccess()) {
+                    var optStart10 = location();
+                    var trivia11 = inTokenBoundary
+                                   ? List.<Trivia>of()
+                                   : skipWhitespace();
+                    var optElem10 = parse_TypeArgs(trivia11);
+                    if (optElem10.isSuccess() && optElem10.node != null) {
+                        children.add(optElem10.node);
+                    }
+                    var elem8_1 = optElem10.isSuccess()
+                                  ? optElem10
+                                  : CstParseResult.success(null, "", location());
+                    if (optElem10.isFailure()) {
+                        restoreLocation(optStart10);
+                    }
+                    if (elem8_1.isCutFailure()) {
+                        restoreLocation(seqStart8);
+                        alt3_1 = elem8_1;
+                    }else if (elem8_1.isFailure()) {
+                        restoreLocation(seqStart8);
+                        alt3_1 = cut8
+                                 ? elem8_1.asCutFailure()
+                                 : elem8_1;
+                    }
+                }
+                if (alt3_1.isSuccess()) {
+                    if (!inTokenBoundary) skipWhitespace();
+                    var tbStart12 = location();
+                    inTokenBoundary = true;
+                    var savedChildrenTb12 = new ArrayList<>(children);
+                    var tbElem12 = matchLiteralCst("new", false);
+                    inTokenBoundary = false;
+                    children.clear();
+                    children.addAll(savedChildrenTb12);
+                    CstParseResult elem8_2;
+                    if (tbElem12.isSuccess()) {
+                        var tbText12 = substring(tbStart12.offset(), pos);
+                        var tbSpan12 = SourceSpan.of(tbStart12, location());
+                        var tbNode12 = new CstNode.Token(tbSpan12, RULE_PEG_TOKEN, tbText12, List.of(), List.of());
+                        children.add(tbNode12);
+                        elem8_2 = CstParseResult.success(tbNode12, tbText12, location());
+                    }else {
+                        elem8_2 = tbElem12;
+                    }
+                    if (elem8_2.isCutFailure()) {
+                        restoreLocation(seqStart8);
+                        alt3_1 = elem8_2;
+                    }else if (elem8_2.isFailure()) {
+                        restoreLocation(seqStart8);
+                        alt3_1 = cut8
+                                 ? elem8_2.asCutFailure()
+                                 : elem8_2;
+                    }
+                }
+                if (alt3_1.isSuccess()) {
+                    alt3_1 = CstParseResult.success(null, substring(seqStart8.offset(), pos), location());
+                }
+                if (alt3_1.isSuccess()) {
+                    elem0_1 = alt3_1;
+                }else if (alt3_1.isCutFailure()) {
+                    elem0_1 = alt3_1;
+                }else {
+                    restoreLocation(choiceStart3);
+                }
+            }
+            if (elem0_1 == null) {
+                children.clear();
+                children.addAll(savedChildren3);
+                elem0_1 = CstParseResult.failure("one of alternatives");
             }
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
@@ -18578,35 +18724,6 @@ public final class Java25Parser {
                 result = cut0
                          ? elem0_1.asCutFailure()
                          : elem0_1;
-            }
-        }
-        if (result.isSuccess()) {
-            if (!inTokenBoundary) skipWhitespace();
-            var tbStart3 = location();
-            inTokenBoundary = true;
-            var savedChildrenTb3 = new ArrayList<>(children);
-            var tbElem3 = matchLiteralCst("class", false);
-            inTokenBoundary = false;
-            children.clear();
-            children.addAll(savedChildrenTb3);
-            CstParseResult elem0_2;
-            if (tbElem3.isSuccess()) {
-                var tbText3 = substring(tbStart3.offset(), pos);
-                var tbSpan3 = SourceSpan.of(tbStart3, location());
-                var tbNode3 = new CstNode.Token(tbSpan3, RULE_PEG_TOKEN, tbText3, List.of(), List.of());
-                children.add(tbNode3);
-                elem0_2 = CstParseResult.success(tbNode3, tbText3, location());
-            }else {
-                elem0_2 = tbElem3;
-            }
-            if (elem0_2.isCutFailure()) {
-                restoreLocation(seqStart0);
-                result = elem0_2;
-            }else if (elem0_2.isFailure()) {
-                restoreLocation(seqStart0);
-                result = cut0
-                         ? elem0_2.asCutFailure()
-                         : elem0_2;
             }
         }
         if (result.isSuccess()) {

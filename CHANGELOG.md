@@ -7,6 +7,7 @@
 ### Changed
 
 ### Fixed
+- Parser: add support for array type method references (`String[]::new`, `int[]::new`)
 
 ## [0.4.0] - 2025-12-29
 
