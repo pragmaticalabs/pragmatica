@@ -11,7 +11,8 @@ import java.util.regex.Pattern;
 
 public record OrderId(String value) {
     private static final Pattern ORDER_ID_PATTERN = Pattern.compile("^ORD-[a-f0-9]{8}$");
-    private static final Fn1<Cause, String> INVALID_ORDER_ID = Causes.forOneValue("Invalid order ID: {}");
+
+    private static final Fn1<Cause, String>INVALID_ORDER_ID = Causes.forOneValue("Invalid order ID: {}");
 
     public static Result<OrderId> orderId(String raw) {
         return Verify.ensure(raw, Verify.Is::notBlank)
@@ -20,6 +21,8 @@ public record OrderId(String value) {
     }
 
     public static OrderId generate() {
-        return new OrderId("ORD-" + UUID.randomUUID().toString().substring(0, 8));
+        return new OrderId("ORD-" + UUID.randomUUID()
+                                       .toString()
+                                       .substring(0, 8));
     }
 }

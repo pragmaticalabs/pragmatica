@@ -3,7 +3,6 @@ package org.pragmatica.aether.demo.order.domain;
 import java.math.BigDecimal;
 
 public record Money(BigDecimal amount, Currency currency) {
-
     public static Money usd(BigDecimal amount) {
         return new Money(amount, Currency.USD);
     }
@@ -20,7 +19,8 @@ public record Money(BigDecimal amount, Currency currency) {
     }
 
     public Money multiply(int quantity) {
-        return new Money(this.amount.multiply(BigDecimal.valueOf(quantity)), this.currency);
+        return new Money(this.amount.multiply(BigDecimal.valueOf(quantity)),
+                         this.currency);
     }
 
     public Money subtract(Money other) {

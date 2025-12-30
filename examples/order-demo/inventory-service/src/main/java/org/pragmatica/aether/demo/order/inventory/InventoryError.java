@@ -3,7 +3,6 @@ package org.pragmatica.aether.demo.order.inventory;
 import org.pragmatica.lang.Cause;
 
 public sealed interface InventoryError extends Cause {
-
     record ProductNotFound(String productId) implements InventoryError {
         @Override
         public String message() {

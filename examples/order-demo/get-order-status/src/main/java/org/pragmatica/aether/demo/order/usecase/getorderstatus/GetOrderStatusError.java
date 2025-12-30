@@ -3,7 +3,6 @@ package org.pragmatica.aether.demo.order.usecase.getorderstatus;
 import org.pragmatica.lang.Cause;
 
 public sealed interface GetOrderStatusError extends Cause {
-
     record InvalidRequest(String details) implements GetOrderStatusError {
         @Override
         public String message() {

@@ -26,7 +26,6 @@ import java.util.concurrent.atomic.AtomicLong;
  * - Realistic mode: Stock depletes and refills at configured rate
  */
 public record InventoryServiceSlice() implements Slice {
-
     // Stock mode: true = infinite supply, false = realistic mode
     private static final AtomicBoolean INFINITE_MODE = new AtomicBoolean(true);
 
@@ -34,12 +33,15 @@ public record InventoryServiceSlice() implements Slice {
     private static final int INITIAL_STOCK = 1_000_000;
 
     // Refill configuration
-    private static final AtomicInteger REFILL_RATE = new AtomicInteger(1000); // units per refill
-    private static final AtomicInteger REFILL_INTERVAL_MS = new AtomicInteger(100); // milliseconds
+    private static final AtomicInteger REFILL_RATE = new AtomicInteger(1000);
 
+    // units per refill
+    private static final AtomicInteger REFILL_INTERVAL_MS = new AtomicInteger(100);
+
+    // milliseconds
     // Stock data
-    private static final Map<String, AtomicInteger> STOCK = new ConcurrentHashMap<>();
-    private static final Map<String, ReservedStock> RESERVATIONS = new ConcurrentHashMap<>();
+    private static final Map<String, AtomicInteger>STOCK = new ConcurrentHashMap<>();
+    private static final Map<String, ReservedStock>RESERVATIONS = new ConcurrentHashMap<>();
 
     // Metrics
     private static final AtomicLong TOTAL_RESERVATIONS = new AtomicLong();
@@ -48,20 +50,19 @@ public record InventoryServiceSlice() implements Slice {
 
     // Refill scheduler
     private static final ScheduledExecutorService REFILL_SCHEDULER = Executors.newSingleThreadScheduledExecutor(r -> {
-        var t = new Thread(r, "inventory-refill");
-        t.setDaemon(true);
-        return t;
-    });
+                                                                                                                    var t = new Thread(r,
+                                                                                                                                       "inventory-refill");
+                                                                                                                    t.setDaemon(true);
+                                                                                                                    return t;
+                                                                                                                });
 
     static {
         // Initialize stock for known products
         STOCK.put("PROD-ABC123", new AtomicInteger(INITIAL_STOCK));
         STOCK.put("PROD-DEF456", new AtomicInteger(INITIAL_STOCK));
         STOCK.put("PROD-GHI789", new AtomicInteger(INITIAL_STOCK));
-
         // Start refill scheduler
-        REFILL_SCHEDULER.scheduleAtFixedRate(InventoryServiceSlice::refillStock,
-            100, 100, TimeUnit.MILLISECONDS);
+        REFILL_SCHEDULER.scheduleAtFixedRate(InventoryServiceSlice::refillStock, 100, 100, TimeUnit.MILLISECONDS);
     }
 
     private record ReservedStock(String productId, int quantity) {}
@@ -106,12 +107,7 @@ public record InventoryServiceSlice() implements Slice {
      */
     public static InventoryMetrics getMetrics() {
         return new InventoryMetrics(
-            TOTAL_RESERVATIONS.get(),
-            TOTAL_RELEASES.get(),
-            STOCK_OUTS.get(),
-            INFINITE_MODE.get(),
-            REFILL_RATE.get()
-        );
+        TOTAL_RESERVATIONS.get(), TOTAL_RELEASES.get(), STOCK_OUTS.get(), INFINITE_MODE.get(), REFILL_RATE.get());
     }
 
     /**
@@ -127,64 +123,62 @@ public record InventoryServiceSlice() implements Slice {
 
     private static void refillStock() {
         if (INFINITE_MODE.get()) {
-            return; // No refill needed in infinite mode
+            return;
         }
-
         var refillAmount = REFILL_RATE.get();
         STOCK.forEach((productId, stock) -> {
-            var current = stock.get();
-            if (current < INITIAL_STOCK) {
-                var newValue = Math.min(current + refillAmount, INITIAL_STOCK);
-                stock.set(newValue);
-            }
-        });
+                          var current = stock.get();
+                          if (current < INITIAL_STOCK) {
+                          var newValue = Math.min(current + refillAmount, INITIAL_STOCK);
+                          stock.set(newValue);
+                      }
+                      });
     }
 
     /**
      * Inventory metrics record.
      */
     public record InventoryMetrics(
-        long totalReservations,
-        long totalReleases,
-        long stockOuts,
-        boolean infiniteMode,
-        int refillRate
-    ) {}
+    long totalReservations,
+    long totalReleases,
+    long stockOuts,
+    boolean infiniteMode,
+    int refillRate) {}
 
     @Override
-    public List<SliceMethod<?, ?>> methods() {
+    public List<SliceMethod< ? , ? >> methods() {
         return List.of(
-            new SliceMethod<>(
-                MethodName.methodName("checkStock").unwrap(),
-                this::checkStock,
-                new TypeToken<StockAvailability>() {},
-                new TypeToken<CheckStockRequest>() {}
-            ),
-            new SliceMethod<>(
-                MethodName.methodName("reserveStock").unwrap(),
-                this::reserveStock,
-                new TypeToken<StockReservation>() {},
-                new TypeToken<ReserveStockRequest>() {}
-            ),
-            new SliceMethod<>(
-                MethodName.methodName("releaseStock").unwrap(),
-                this::releaseStock,
-                new TypeToken<StockReleased>() {},
-                new TypeToken<ReleaseStockRequest>() {}
-            )
-        );
+        new SliceMethod<>(
+        MethodName.methodName("checkStock")
+                  .expect("Invalid method name: checkStock"),
+        this::checkStock,
+        new TypeToken<StockAvailability>() {},
+        new TypeToken<CheckStockRequest>() {}),
+        new SliceMethod<>(
+        MethodName.methodName("reserveStock")
+                  .expect("Invalid method name: reserveStock"),
+        this::reserveStock,
+        new TypeToken<StockReservation>() {},
+        new TypeToken<ReserveStockRequest>() {}),
+        new SliceMethod<>(
+        MethodName.methodName("releaseStock")
+                  .expect("Invalid method name: releaseStock"),
+        this::releaseStock,
+        new TypeToken<StockReleased>() {},
+        new TypeToken<ReleaseStockRequest>() {}));
     }
 
     @Override
     public Promise<Unit> stop() {
         REFILL_SCHEDULER.shutdown();
-        try {
+        try{
             if (!REFILL_SCHEDULER.awaitTermination(1, TimeUnit.SECONDS)) {
                 REFILL_SCHEDULER.shutdownNow();
             }
         } catch (InterruptedException e) {
             REFILL_SCHEDULER.shutdownNow();
-            Thread.currentThread().interrupt();
+            Thread.currentThread()
+                  .interrupt();
         }
         return Promise.success(Unit.unit());
     }
@@ -192,11 +186,9 @@ public record InventoryServiceSlice() implements Slice {
     private Promise<StockAvailability> checkStock(CheckStockRequest request) {
         var productId = request.productId();
         var stock = STOCK.get(productId);
-
         if (stock == null) {
             return new InventoryError.ProductNotFound(productId).promise();
         }
-
         var available = stock.get();
         var sufficient = available >= request.quantity();
         return Promise.success(new StockAvailability(productId, available, sufficient));
@@ -205,14 +197,13 @@ public record InventoryServiceSlice() implements Slice {
     private Promise<StockReservation> reserveStock(ReserveStockRequest request) {
         var productId = request.productId();
         var stock = STOCK.get(productId);
-
         if (stock == null) {
             return new InventoryError.ProductNotFound(productId).promise();
         }
-
-        var reservationId = "RES-" + UUID.randomUUID().toString().substring(0, 8);
+        var reservationId = "RES-" + UUID.randomUUID()
+                                        .toString()
+                                        .substring(0, 8);
         var quantity = request.quantity();
-
         if (INFINITE_MODE.get()) {
             // Infinite mode: don't actually decrement stock
             TOTAL_RESERVATIONS.incrementAndGet();
@@ -220,7 +211,6 @@ public record InventoryServiceSlice() implements Slice {
             RESERVATIONS.put(reservationId, new ReservedStock(productId, quantity));
             return Promise.success(new StockReservation(reservationId, productId, quantity));
         }
-
         // Realistic mode: atomic compare-and-set loop to avoid race conditions
         while (true) {
             var current = stock.get();
@@ -228,31 +218,26 @@ public record InventoryServiceSlice() implements Slice {
                 STOCK_OUTS.incrementAndGet();
                 return new InventoryError.InsufficientStock(productId, quantity, current).promise();
             }
-
             if (stock.compareAndSet(current, current - quantity)) {
                 // CAS succeeded - reservation is safe
                 TOTAL_RESERVATIONS.incrementAndGet();
                 RESERVATIONS.put(reservationId, new ReservedStock(productId, quantity));
                 return Promise.success(new StockReservation(reservationId, productId, quantity));
             }
-            // CAS failed - another thread modified stock, retry
         }
     }
 
     private Promise<StockReleased> releaseStock(ReleaseStockRequest request) {
         var reservation = RESERVATIONS.remove(request.reservationId());
-
         if (reservation == null) {
             // In demo/load testing, reservations may not exist - just succeed
             return Promise.success(new StockReleased(request.reservationId()));
         }
-
         // Restore stock
         var stock = STOCK.get(reservation.productId());
         if (stock != null) {
             stock.addAndGet(reservation.quantity());
         }
-
         TOTAL_RELEASES.incrementAndGet();
         return Promise.success(new StockReleased(request.reservationId()));
     }

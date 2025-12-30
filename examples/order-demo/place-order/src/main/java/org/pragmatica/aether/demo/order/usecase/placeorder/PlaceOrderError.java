@@ -3,7 +3,6 @@ package org.pragmatica.aether.demo.order.usecase.placeorder;
 import org.pragmatica.lang.Cause;
 
 public sealed interface PlaceOrderError extends Cause {
-
     record InvalidRequest(String details) implements PlaceOrderError {
         @Override
         public String message() {

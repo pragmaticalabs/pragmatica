@@ -12,7 +12,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * Uses static shared storage for demo purposes (orders visible across all slices).
  */
 public interface OrderRepository {
-
     /**
      * Store a new order.
      */
@@ -37,20 +36,17 @@ public interface OrderRepository {
      * Stored order record.
      */
     record StoredOrder(
-        OrderId orderId,
-        CustomerId customerId,
-        OrderStatus status,
-        Money total,
-        List<OrderItem> items,
-        List<String> reservationIds,
-        Instant createdAt,
-        Instant updatedAt
-    ) {
+    OrderId orderId,
+    CustomerId customerId,
+    OrderStatus status,
+    Money total,
+    List<OrderItem> items,
+    List<String> reservationIds,
+    Instant createdAt,
+    Instant updatedAt) {
         public StoredOrder withStatus(OrderStatus newStatus) {
             return new StoredOrder(
-                orderId, customerId, newStatus, total, items,
-                reservationIds, createdAt, Instant.now()
-            );
+            orderId, customerId, newStatus, total, items, reservationIds, createdAt, Instant.now());
         }
     }
 
@@ -58,10 +54,9 @@ public interface OrderRepository {
      * Order line item.
      */
     record OrderItem(
-        String productId,
-        int quantity,
-        Money unitPrice
-    ) {}
+    String productId,
+    int quantity,
+    Money unitPrice) {}
 
     /**
      * Get the shared repository instance.
@@ -86,42 +81,43 @@ final class InMemoryOrderRepository implements OrderRepository {
 
     private void seedMockOrders() {
         var now = Instant.now();
-
         // Order 1 - Confirmed
         var order1 = new StoredOrder(
-            new OrderId("ORD-12345678"),
-            CustomerId.customerId("CUST-00000001").unwrap(),
-            OrderStatus.CONFIRMED,
-            Money.usd("129.97"),
-            List.of(
-                new OrderItem("PROD-ABC123", 2, Money.usd("29.99")),
-                new OrderItem("PROD-DEF456", 1, Money.usd("49.99"))
-            ),
-            List.of("RES-11111111", "RES-22222222"),
-            now.minusSeconds(3600),
-            now
-        );
-        orders.put(order1.orderId().value(), order1);
-
+        new OrderId("ORD-12345678"),
+        CustomerId.customerId("CUST-00000001")
+                  .expect("Invalid customer ID: CUST-00000001"),
+        OrderStatus.CONFIRMED,
+        Money.usd("129.97"),
+        List.of(
+        new OrderItem("PROD-ABC123", 2, Money.usd("29.99")), new OrderItem("PROD-DEF456", 1, Money.usd("49.99"))),
+        List.of("RES-11111111", "RES-22222222"),
+        now.minusSeconds(3600),
+        now);
+        orders.put(order1.orderId()
+                         .value(),
+                   order1);
         // Order 2 - Shipped
         var order2 = new StoredOrder(
-            new OrderId("ORD-87654321"),
-            CustomerId.customerId("CUST-00000002").unwrap(),
-            OrderStatus.SHIPPED,
-            Money.usd("99.99"),
-            List.of(
-                new OrderItem("PROD-GHI789", 1, Money.usd("99.99"))
-            ),
-            List.of("RES-33333333"),
-            now.minusSeconds(86400),
-            now.minusSeconds(3600)
-        );
-        orders.put(order2.orderId().value(), order2);
+        new OrderId("ORD-87654321"),
+        CustomerId.customerId("CUST-00000002")
+                  .expect("Invalid customer ID: CUST-00000002"),
+        OrderStatus.SHIPPED,
+        Money.usd("99.99"),
+        List.of(
+        new OrderItem("PROD-GHI789", 1, Money.usd("99.99"))),
+        List.of("RES-33333333"),
+        now.minusSeconds(86400),
+        now.minusSeconds(3600));
+        orders.put(order2.orderId()
+                         .value(),
+                   order2);
     }
 
     @Override
     public void save(StoredOrder order) {
-        orders.put(order.orderId().value(), order);
+        orders.put(order.orderId()
+                        .value(),
+                   order);
     }
 
     @Override
@@ -142,8 +138,9 @@ final class InMemoryOrderRepository implements OrderRepository {
         if (orders.isEmpty()) {
             return Option.empty();
         }
-        var keys = orders.keySet().toArray(new String[0]);
-        var idx = (int) (Math.random() * keys.length);
+        var keys = orders.keySet()
+                         .toArray(new String[0]);
+        var idx = (int)(Math.random() * keys.length);
         return Option.option(keys[idx]);
     }
 }
