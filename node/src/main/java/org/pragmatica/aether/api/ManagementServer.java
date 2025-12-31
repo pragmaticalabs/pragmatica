@@ -12,7 +12,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsConfig;
-import org.pragmatica.net.TlsContextFactory;
+import org.pragmatica.net.tcp.TlsContextFactory;
 
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;

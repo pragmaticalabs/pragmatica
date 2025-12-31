@@ -3,12 +3,12 @@ package org.pragmatica.aether.slice.serialization;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
-import org.pragmatica.net.serialization.binary.ClassRegistrator;
-import org.pragmatica.net.serialization.binary.kryo.KryoDeserializer;
-import org.pragmatica.net.serialization.binary.kryo.KryoPoolFactory;
-import org.pragmatica.net.serialization.binary.kryo.KryoSerializer;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
+import org.pragmatica.serialization.ClassRegistrator;
+import org.pragmatica.serialization.kryo.KryoDeserializer;
+import org.pragmatica.serialization.kryo.KryoPoolFactory;
+import org.pragmatica.serialization.kryo.KryoSerializer;
 
 import java.util.List;
 import java.util.concurrent.ArrayBlockingQueue;

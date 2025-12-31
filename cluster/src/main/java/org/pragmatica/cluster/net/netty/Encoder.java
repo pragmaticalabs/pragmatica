@@ -1,7 +1,7 @@
 package org.pragmatica.cluster.net.netty;
 
 import org.pragmatica.messaging.Message;
-import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;

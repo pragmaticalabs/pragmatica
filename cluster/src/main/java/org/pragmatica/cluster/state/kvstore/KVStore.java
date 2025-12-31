@@ -16,8 +16,8 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.MutableRouter;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.util.HashMap;
 import java.util.Map;

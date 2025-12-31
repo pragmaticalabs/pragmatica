@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>aether</artifactId>
-    <version>0.6.4</version>
+    <version>0.6.3</version>
     <packaging>pom</packaging>
     <name>Pragmatica Aether Distributed Runtime</name>
     <description>AI-driven distributed runtime environment for Java applications</description>
@@ -25,7 +25,6 @@
         <module>slice</module>
         <module>example-slice</module>
         <module>cluster</module>
-        <module>common</module>
         <module>cli</module>
         <module>examples/order-demo</module>
         <module>forge</module>
@@ -87,6 +86,31 @@
                 <artifactId>tcp</artifactId>
                 <version>${pragmatica.version}</version>
             </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>http-server</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>dns</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>serialization-api</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>serialization-kryo</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>serialization-fury</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
 
             <!-- Internal -->
             <dependency>
@@ -110,12 +134,6 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>node</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>common</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

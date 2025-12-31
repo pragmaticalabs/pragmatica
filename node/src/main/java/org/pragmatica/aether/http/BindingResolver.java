@@ -3,7 +3,7 @@ package org.pragmatica.aether.http;
 import org.pragmatica.aether.slice.routing.Binding;
 import org.pragmatica.aether.slice.routing.BindingSource;
 import org.pragmatica.lang.Result;
-import org.pragmatica.net.serialization.Deserializer;
+import org.pragmatica.serialization.Deserializer;
 
 import java.util.HashMap;
 import java.util.List;

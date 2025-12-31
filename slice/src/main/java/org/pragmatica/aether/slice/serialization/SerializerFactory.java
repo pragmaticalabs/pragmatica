@@ -1,8 +1,8 @@
 package org.pragmatica.aether.slice.serialization;
 
 import org.pragmatica.lang.Promise;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 /**
  * Factory for obtaining serializer and deserializer instances for slice method invocations.

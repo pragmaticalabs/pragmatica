@@ -8,8 +8,8 @@ import org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.rabia.CustomClasses;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.net.serialization.binary.kryo.KryoDeserializer;
-import org.pragmatica.net.serialization.binary.kryo.KryoSerializer;
+import org.pragmatica.serialization.kryo.KryoDeserializer;
+import org.pragmatica.serialization.kryo.KryoSerializer;
 
 import java.util.List;
 

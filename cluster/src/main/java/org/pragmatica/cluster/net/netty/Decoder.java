@@ -1,7 +1,7 @@
 package org.pragmatica.cluster.net.netty;
 
 import org.pragmatica.messaging.Message;
-import org.pragmatica.net.serialization.Deserializer;
+import org.pragmatica.serialization.Deserializer;
 
 import java.util.List;
 

@@ -49,16 +49,16 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.net.serialization.binary.fury.FuryDeserializer.furyDeserializer;
-import static org.pragmatica.net.serialization.binary.fury.FurySerializer.furySerializer;
+import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
+import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
 /**
  * Main entry point for an Aether cluster node.

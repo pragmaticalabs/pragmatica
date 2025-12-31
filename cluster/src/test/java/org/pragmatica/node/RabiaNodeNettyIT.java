@@ -31,8 +31,8 @@ import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.cluster.node.rabia.NodeConfig.nodeConfig;
 import static org.pragmatica.cluster.node.rabia.RabiaNode.rabiaNode;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
-import static org.pragmatica.net.serialization.binary.fury.FuryDeserializer.furyDeserializer;
-import static org.pragmatica.net.serialization.binary.fury.FurySerializer.furySerializer;
+import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
+import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
 class RabiaNodeNettyIT {
     private static final Logger log = LoggerFactory.getLogger(RabiaNodeNettyIT.class);

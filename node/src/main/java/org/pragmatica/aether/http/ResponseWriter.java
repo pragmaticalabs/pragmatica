@@ -1,7 +1,7 @@
 package org.pragmatica.aether.http;
 
 import org.pragmatica.lang.Cause;
-import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.serialization.Serializer;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;

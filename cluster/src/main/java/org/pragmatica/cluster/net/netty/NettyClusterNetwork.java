@@ -18,10 +18,10 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
-import org.pragmatica.net.Server;
-import org.pragmatica.net.ServerConfig;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.net.tcp.Server;
+import org.pragmatica.net.tcp.ServerConfig;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.util.ArrayList;
 import java.util.Collections;

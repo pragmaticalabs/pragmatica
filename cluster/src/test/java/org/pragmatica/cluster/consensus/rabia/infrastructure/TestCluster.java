@@ -11,8 +11,8 @@ import org.pragmatica.consensus.Command;
 import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.messaging.MessageRouter;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -27,8 +27,8 @@ import static org.pragmatica.consensus.NodeId.randomNodeId;
 import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
-import static org.pragmatica.net.serialization.binary.fury.FuryDeserializer.furyDeserializer;
-import static org.pragmatica.net.serialization.binary.fury.FurySerializer.furySerializer;
+import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
+import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
 /// Holds a small Rabia cluster wired over a single LocalNetwork.
 public class TestCluster {

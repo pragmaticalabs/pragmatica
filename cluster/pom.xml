@@ -34,14 +34,12 @@
             <artifactId>tcp</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>common</artifactId>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-fury</artifactId>
         </dependency>
-
-        <!-- Serialization -->
         <dependency>
-            <groupId>com.esotericsoftware</groupId>
-            <artifactId>kryo</artifactId>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-kryo</artifactId>
         </dependency>
         <dependency>
             <groupId>org.apache.fury</groupId>

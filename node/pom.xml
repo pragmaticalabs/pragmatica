@@ -18,10 +18,17 @@
             <artifactId>core</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>common</artifactId>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>dht</artifactId>
         </dependency>
-
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>utility</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>http-server</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>cluster</artifactId>

@@ -2,12 +2,12 @@ package org.pragmatica.aether.slice.serialization;
 
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.type.TypeToken;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
-import org.pragmatica.net.serialization.binary.ClassRegistrator;
-import org.pragmatica.net.serialization.binary.fury.FuryDeserializer;
-import org.pragmatica.net.serialization.binary.fury.FuryFactory;
-import org.pragmatica.net.serialization.binary.fury.FurySerializer;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
+import org.pragmatica.serialization.ClassRegistrator;
+import org.pragmatica.serialization.fury.FuryDeserializer;
+import org.pragmatica.serialization.fury.FuryFactory;
+import org.pragmatica.serialization.fury.FurySerializer;
 
 import java.util.List;
 

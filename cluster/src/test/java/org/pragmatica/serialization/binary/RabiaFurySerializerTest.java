@@ -13,8 +13,8 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
-import static org.pragmatica.net.serialization.binary.fury.FuryDeserializer.furyDeserializer;
-import static org.pragmatica.net.serialization.binary.fury.FurySerializer.furySerializer;
+import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
+import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
 class RabiaFurySerializerTest {
     @Test
