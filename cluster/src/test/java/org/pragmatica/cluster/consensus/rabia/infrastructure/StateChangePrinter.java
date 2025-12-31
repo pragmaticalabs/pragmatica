@@ -2,7 +2,7 @@ package org.pragmatica.cluster.consensus.rabia.infrastructure;
 
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.state.StateMachineNotification;
-import org.pragmatica.message.MessageReceiver;
+import org.pragmatica.messaging.MessageReceiver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

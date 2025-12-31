@@ -10,7 +10,7 @@ import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetrics
 import org.pragmatica.cluster.net.ClusterNetwork;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.topology.TopologyChangeNotification;
-import org.pragmatica.message.MessageReceiver;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;

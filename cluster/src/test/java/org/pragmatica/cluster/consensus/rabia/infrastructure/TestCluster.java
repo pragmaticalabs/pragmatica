@@ -10,7 +10,7 @@ import org.pragmatica.cluster.node.rabia.CustomClasses;
 import org.pragmatica.cluster.state.Command;
 import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.serialization.Deserializer;
 import org.pragmatica.net.serialization.Serializer;
 

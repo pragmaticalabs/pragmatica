@@ -15,7 +15,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.topology.TopologyChangeNotification;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
-import org.pragmatica.message.MessageReceiver;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
 import java.util.Map;

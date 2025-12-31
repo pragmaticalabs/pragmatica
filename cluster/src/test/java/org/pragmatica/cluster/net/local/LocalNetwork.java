@@ -11,7 +11,7 @@ import org.pragmatica.cluster.topology.TopologyManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.utility.Sleep;
 
 import java.util.*;

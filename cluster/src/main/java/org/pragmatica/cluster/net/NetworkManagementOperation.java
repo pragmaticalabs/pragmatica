@@ -1,6 +1,6 @@
 package org.pragmatica.cluster.net;
 
-import org.pragmatica.message.Message;
+import org.pragmatica.messaging.Message;
 
 import java.util.List;
 

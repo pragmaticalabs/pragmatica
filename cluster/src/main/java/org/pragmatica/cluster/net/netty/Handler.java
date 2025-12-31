@@ -1,6 +1,6 @@
 package org.pragmatica.cluster.net.netty;
 
-import org.pragmatica.message.Message;
+import org.pragmatica.messaging.Message;
 
 import java.util.function.Consumer;
 

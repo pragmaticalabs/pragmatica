@@ -1,7 +1,7 @@
 package org.pragmatica.cluster.topology;
 
 import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.message.Message;
+import org.pragmatica.messaging.Message;
 
 import java.util.List;
 

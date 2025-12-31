@@ -1,7 +1,7 @@
 package org.pragmatica.cluster.consensus.rabia;
 
 import org.pragmatica.cluster.state.Command;
-import org.pragmatica.message.Message;
+import org.pragmatica.messaging.Message;
 
 import java.util.List;
 

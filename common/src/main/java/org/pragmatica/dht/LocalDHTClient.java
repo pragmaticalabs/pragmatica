@@ -20,7 +20,7 @@ public final class LocalDHTClient<N extends Comparable<N>> implements DHTClient 
     /**
      * Create a local DHT client backed by the given node.
      */
-    public static <N extends Comparable<N>> LocalDHTClient<N> create(DHTNode<N> node) {
+    public static <N extends Comparable<N>> LocalDHTClient<N> localDHTClient(DHTNode<N> node) {
         return new LocalDHTClient<>(node);
     }
 

@@ -8,8 +8,8 @@ import org.pragmatica.cluster.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.message.MessageReceiver;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.NodeAddress;
 import org.pragmatica.net.TlsConfig;
 

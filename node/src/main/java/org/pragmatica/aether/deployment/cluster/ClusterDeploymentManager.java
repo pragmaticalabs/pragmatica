@@ -18,8 +18,8 @@ import org.pragmatica.cluster.topology.TopologyChangeNotification;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
-import org.pragmatica.message.MessageReceiver;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 
 import java.util.List;

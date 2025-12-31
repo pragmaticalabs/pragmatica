@@ -18,7 +18,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.message.MessageReceiver;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
 import java.util.Map;

@@ -5,8 +5,8 @@ import org.pragmatica.cluster.topology.QuorumStateNotification;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
-import org.pragmatica.message.MessageReceiver;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.messaging.MessageRouter;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;

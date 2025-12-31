@@ -15,8 +15,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.message.MessageReceiver;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.messaging.MessageRouter;
 
 import java.util.Comparator;
 import java.util.List;

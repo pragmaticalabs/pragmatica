@@ -8,7 +8,7 @@ import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.cluster.net.ClusterNetwork;
 import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.lang.Option;
-import org.pragmatica.message.MessageReceiver;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;

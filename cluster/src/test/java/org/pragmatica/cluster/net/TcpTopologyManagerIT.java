@@ -7,7 +7,7 @@ import org.pragmatica.cluster.topology.TopologyManager;
 import org.pragmatica.cluster.topology.ip.TopologyConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.NodeAddress;
 
 import java.net.InetSocketAddress;

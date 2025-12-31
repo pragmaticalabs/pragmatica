@@ -15,7 +15,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.topology.ip.TopologyConfig;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

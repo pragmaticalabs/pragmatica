@@ -1,6 +1,6 @@
 package org.pragmatica.cluster.state;
 
-import org.pragmatica.message.Message;
+import org.pragmatica.messaging.Message;
 
 /// State machine notifications root.
 public interface StateMachineNotification<T> extends Message.Local {

@@ -1,6 +1,6 @@
 package org.pragmatica.cluster.state.kvstore;
 
-import org.pragmatica.message.Message;
+import org.pragmatica.messaging.Message;
 
 import java.util.List;
 import java.util.Map;

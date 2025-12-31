@@ -16,7 +16,7 @@ import org.pragmatica.cluster.net.NetworkManagementOperation;
 import org.pragmatica.cluster.net.NetworkMessage;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 
 import java.util.List;
 import java.util.Map;

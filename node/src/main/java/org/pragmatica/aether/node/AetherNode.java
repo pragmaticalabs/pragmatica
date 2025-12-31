@@ -48,7 +48,7 @@ import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.serialization.Deserializer;
 import org.pragmatica.net.serialization.Serializer;
 
@@ -220,8 +220,8 @@ public interface AetherNode {
         compositeRepository(config.sliceAction()
                                   .repositories()));
         // Create DHT and artifact repository
-        var dhtStorage = MemoryStorageEngine.create();
-        var dhtRing = ConsistentHashRing.<String>create();
+        var dhtStorage = MemoryStorageEngine.memoryStorageEngine();
+        var dhtRing = ConsistentHashRing.<String>consistentHashRing();
         dhtRing.addNode(config.self()
                               .id());
         var dhtNode = DHTNode.dhtNode(config.self()
@@ -229,7 +229,7 @@ public interface AetherNode {
                                       dhtStorage,
                                       dhtRing,
                                       config.artifactRepo());
-        var dhtClient = LocalDHTClient.create(dhtNode);
+        var dhtClient = LocalDHTClient.localDHTClient(dhtNode);
         var artifactStore = ArtifactStore.artifactStore(dhtClient);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         // Wire up message routing

@@ -3,7 +3,7 @@ package org.pragmatica.aether.metrics.deployment;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.message.Message;
+import org.pragmatica.messaging.Message;
 
 /**
  * Events emitted during slice deployment lifecycle for metrics collection.

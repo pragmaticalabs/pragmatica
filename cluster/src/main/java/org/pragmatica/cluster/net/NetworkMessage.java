@@ -1,6 +1,6 @@
 package org.pragmatica.cluster.net;
 
-import org.pragmatica.message.Message;
+import org.pragmatica.messaging.Message;
 
 public sealed interface NetworkMessage extends Message.Wired {
     /// Ping - test connection request

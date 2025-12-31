@@ -19,12 +19,12 @@ public final class LocalPartitionMap<N extends Comparable<N>> implements Partiti
         this.ring = ring;
     }
 
-    public static <N extends Comparable<N>> LocalPartitionMap<N> create() {
-        return new LocalPartitionMap<>(ConsistentHashRing.<N>create());
+    public static <N extends Comparable<N>> LocalPartitionMap<N> localPartitionMap() {
+        return new LocalPartitionMap<>(ConsistentHashRing.<N>consistentHashRing());
     }
 
-    public static <N extends Comparable<N>> LocalPartitionMap<N> create(int virtualNodesPerPhysical) {
-        return new LocalPartitionMap<>(ConsistentHashRing.<N>create(virtualNodesPerPhysical));
+    public static <N extends Comparable<N>> LocalPartitionMap<N> localPartitionMap(int virtualNodesPerPhysical) {
+        return new LocalPartitionMap<>(ConsistentHashRing.<N>consistentHashRing(virtualNodesPerPhysical));
     }
 
     @Override

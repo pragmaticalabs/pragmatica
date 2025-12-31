@@ -41,7 +41,7 @@
         <junit.version>5.13.4</junit.version>
         <assertj-core.version>3.26.3</assertj-core.version>
         <mockito.version>5.14.2</mockito.version>
-        <pragmatica.version>0.9.0</pragmatica.version>
+        <pragmatica.version>0.9.2</pragmatica.version>
         <awaitility.version>4.2.1</awaitility.version>
         <tinylog.version>2.7.0</tinylog.version>
         <netty.version>4.2.9.Final</netty.version>
@@ -60,6 +60,31 @@
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>toml</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>messaging</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>utility</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>dht</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>consensus</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>tcp</artifactId>
                 <version>${pragmatica.version}</version>
             </dependency>
 

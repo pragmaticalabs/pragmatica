@@ -2,7 +2,7 @@ package org.pragmatica.cluster.state;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 
 import java.util.List;
 

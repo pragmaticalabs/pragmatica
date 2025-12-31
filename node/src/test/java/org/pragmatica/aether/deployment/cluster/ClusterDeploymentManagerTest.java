@@ -21,7 +21,7 @@ import org.pragmatica.cluster.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;

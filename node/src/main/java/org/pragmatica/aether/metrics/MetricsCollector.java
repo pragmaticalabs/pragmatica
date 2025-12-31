@@ -5,7 +5,7 @@ import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPong;
 import org.pragmatica.cluster.net.ClusterNetwork;
 import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.message.MessageReceiver;
+import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
 
 import java.lang.management.ManagementFactory;

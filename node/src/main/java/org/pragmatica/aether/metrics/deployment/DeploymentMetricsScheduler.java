@@ -7,7 +7,7 @@ import org.pragmatica.cluster.net.NodeId;
 import org.pragmatica.cluster.topology.TopologyChangeNotification;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
-import org.pragmatica.message.MessageReceiver;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
 import java.util.concurrent.*;
