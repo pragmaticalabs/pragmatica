@@ -159,9 +159,13 @@ final class SpacingRules {
             }
             return true;
         }
-        // After ')' or ']' - likely comparison
-        if (ctx.lastChar() == ')' || ctx.lastChar() == ']') {
+        // After ')' - likely comparison
+        if (ctx.lastChar() == ')') {
             return true;
+        }
+        // After ']' - array in generics (no space): Promise<int[]>
+        if (ctx.lastChar() == ']') {
+            return false;
         }
         // After '.' - likely generics invocation: List.<String>of()
         return ctx.lastChar() != '.';
