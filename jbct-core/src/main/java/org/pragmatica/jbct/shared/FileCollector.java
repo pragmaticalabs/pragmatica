@@ -30,8 +30,8 @@ public sealed interface FileCollector permits FileCollector.unused {
                           .flatMap(SourceRoot::findJavaFiles)
                           .onSuccess(files::addAll)
                           .onFailure(cause -> errorHandler.accept("Error scanning " + path + ": " + cause.message()));
-            }else if (path.toString()
-                          .endsWith(".java")) {
+            } else if (path.toString()
+                           .endsWith(".java")) {
                 files.add(path);
             }
         }

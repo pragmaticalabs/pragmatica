@@ -18,8 +18,7 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-03";
 
     // Pattern to detect FQCN like java.util.List or com.example.Foo
-    private static final Pattern FQCN_PATTERN = Pattern.compile(
-    "\\b([a-z][a-z0-9]*\\.)+[A-Z][a-zA-Z0-9]*\\b");
+    private static final Pattern FQCN_PATTERN = Pattern.compile("\\b([a-z][a-z0-9]*\\.)+[A-Z][a-zA-Z0-9]*\\b");
 
     @Override
     public String ruleId() {
@@ -29,16 +28,16 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         // Find FQCN in method bodies (not imports or package declaration)
         return findAll(root, RuleId.MethodDecl.class)
-               .stream()
-               .flatMap(method -> findFqcnInMethod(method, source, ctx));
+                      .stream()
+                      .flatMap(method -> findFqcnInMethod(method, source, ctx));
     }
 
     private Stream<Diagnostic> findFqcnInMethod(CstNode method, String source, LintContext ctx) {
@@ -55,21 +54,20 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
 
     private boolean isNotAnnotation(String fqcn) {
         // Skip common annotation packages
-        return !fqcn.startsWith("java.lang.") &&
+        return ! fqcn.startsWith("java.lang.") &&
         !fqcn.startsWith("javax.annotation.");
     }
 
     private Diagnostic createDiagnostic(CstNode method, String fqcn, String source, LintContext ctx) {
         var methodName = childByRule(method, RuleId.Identifier.class)
-                         .map(id -> text(id, source))
-                         .or("(unknown)");
-        return Diagnostic.diagnostic(
-        RULE_ID,
-        ctx.severityFor(RULE_ID),
-        ctx.fileName(),
-        startLine(method),
-        startColumn(method),
-        "Fully qualified name '" + fqcn + "' - use import instead",
-        "FQCNs reduce readability. Add an import and use the simple name.");
+                                    .map(id -> text(id, source))
+                                    .or("(unknown)");
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(method),
+                                     startColumn(method),
+                                     "Fully qualified name '" + fqcn + "' - use import instead",
+                                     "FQCNs reduce readability. Add an import and use the simple name.");
     }
 }

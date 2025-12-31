@@ -66,15 +66,15 @@ public final class ProjectInitializer {
             // Create pom.xml
             createFile("pom.xml.template",
                        projectDir.resolve("pom.xml"))
-            .onSuccess(createdFiles::add);
+                      .onSuccess(createdFiles::add);
             // Create jbct.toml
             createFile("jbct.toml.template",
                        projectDir.resolve("jbct.toml"))
-            .onSuccess(createdFiles::add);
+                      .onSuccess(createdFiles::add);
             // Create .gitignore
             createFile("gitignore.template",
                        projectDir.resolve(".gitignore"))
-            .onSuccess(createdFiles::add);
+                      .onSuccess(createdFiles::add);
             // Create .gitkeep files
             var srcKeep = srcMainJava.resolve(packagePath)
                                      .resolve(".gitkeep");
@@ -97,7 +97,7 @@ public final class ProjectInitializer {
             return Result.success(targetPath);
         }
         try (var in = getClass()
-                      .getResourceAsStream(TEMPLATES_PATH + templateName)) {
+                              .getResourceAsStream(TEMPLATES_PATH + templateName)) {
             if (in == null) {
                 return Causes.cause("Template not found: " + templateName)
                              .result();

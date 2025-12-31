@@ -21,11 +21,10 @@ public class CstNestedWrapperRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-02";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";
 
-    private static final Set<String>WRAPPER_TYPES = Set.of("Option", "Result", "Promise");
+    private static final Set<String> WRAPPER_TYPES = Set.of("Option", "Result", "Promise");
 
     // Pattern to detect nested wrappers like Promise<Result<...>>
-    private static final Pattern NESTED_PATTERN = Pattern.compile(
-    "(Promise|Result|Option)<\\s*(Promise|Result|Option)<");
+    private static final Pattern NESTED_PATTERN = Pattern.compile("(Promise|Result|Option)<\\s*(Promise|Result|Option)<");
 
     @Override
     public String ruleId() {
@@ -35,15 +34,15 @@ public class CstNestedWrapperRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         return findAll(root, RuleId.MethodDecl.class)
-               .stream()
-               .flatMap(method -> checkMethod(method, source, ctx));
+                      .stream()
+                      .flatMap(method -> checkMethod(method, source, ctx));
     }
 
     private Stream<Diagnostic> checkMethod(CstNode method, String source, LintContext ctx) {
@@ -53,12 +52,12 @@ public class CstNestedWrapperRule implements CstLintRule {
         }
         var typeText = text(returnType.getOrThrow("Return type expected"),
                             source)
-                       .trim();
+                           .trim();
         var nestedPattern = detectNestedWrapper(typeText);
         if (nestedPattern != null) {
             var methodName = childByRule(method, RuleId.Identifier.class)
-                             .map(id -> text(id, source))
-                             .or("(unknown)");
+                                        .map(id -> text(id, source))
+                                        .or("(unknown)");
             return Stream.of(createDiagnostic(method, methodName, nestedPattern, ctx));
         }
         return Stream.empty();
@@ -104,24 +103,24 @@ public class CstNestedWrapperRule implements CstLintRule {
 
     private String getSuggestion(String pattern) {
         return switch (pattern) {
-            case"Promise<Result<T>>" -> "Promise already carries failures via Cause. Use Promise<T> directly.";
-            case"Option<Option<T>>" -> "Double-wrapping Options is confusing. Flatten to Option<T>.";
-            case"Result<Result<T>>" -> "Double-wrapping Results is confusing. Flatten to Result<T> or use flatMap.";
-            case"Promise<Promise<T>>" -> "Double-wrapping Promises is confusing. Use flatMap to chain.";
+            case "Promise<Result<T>>" -> "Promise already carries failures via Cause. Use Promise<T> directly.";
+            case "Option<Option<T>>" -> "Double-wrapping Options is confusing. Flatten to Option<T>.";
+            case "Result<Result<T>>" -> "Double-wrapping Results is confusing. Flatten to Result<T> or use flatMap.";
+            case "Promise<Promise<T>>" -> "Double-wrapping Promises is confusing. Use flatMap to chain.";
             default -> "Avoid redundant nesting of monadic types.";
         };
     }
 
     private String getExample(String pattern) {
         return switch (pattern) {
-            case"Promise<Result<T>>" -> """
+            case "Promise<Result<T>>" -> """
                 // Before (forbidden)
                 public Promise<Result<User>> loadUser(UserId id) { ... }
 
                 // After
                 public Promise<User> loadUser(UserId id) { ... }
                 """;
-            case"Option<Option<T>>" -> """
+            case "Option<Option<T>>" -> """
                 // Before (forbidden)
                 public Option<Option<String>> findValue() { ... }
 

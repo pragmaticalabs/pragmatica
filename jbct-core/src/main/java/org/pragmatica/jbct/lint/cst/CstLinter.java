@@ -48,7 +48,7 @@ public class CstLinter {
      */
     public Result<List<Diagnostic>> lint(SourceFile source) {
         return parse(source)
-               .map(cst -> analyzeWithRules(cst, source));
+                    .map(cst -> analyzeWithRules(cst, source));
     }
 
     /**
@@ -56,7 +56,7 @@ public class CstLinter {
      */
     public Result<Boolean> check(SourceFile source) {
         return lint(source)
-               .map(this::passesLintRules);
+                   .map(this::passesLintRules);
     }
 
     private boolean passesLintRules(List<Diagnostic> diagnostics) {
@@ -67,16 +67,30 @@ public class CstLinter {
         }
         var hasWarnings = diagnostics.stream()
                                      .anyMatch(d -> d.severity() == DiagnosticSeverity.WARNING);
-        return !(context.config()
-                        .failOnWarning() && hasWarnings);
+        return ! ( context.config()
+                         .failOnWarning() && hasWarnings);
     }
 
     private Result<CstNode> parse(SourceFile source) {
-        var result = parser.parse(source.content());
-        if (result.isSuccess()) {
-            return result;
+        var result = parser.parseWithDiagnostics(source.content());
+        if (result.isSuccess() && result.node()
+                                        .isPresent()) {
+            return Result.success(result.node()
+                                        .unwrap());
         }
-        return Causes.cause("Parse error in " + source.fileName() + ": " + result)
+        var errorMsg = result.diagnostics()
+                             .stream()
+                             .findFirst()
+                             .map(d -> "%s:%d:%d - %s".formatted(source.fileName(),
+                                                                 d.span()
+                                                                  .start()
+                                                                  .line(),
+                                                                 d.span()
+                                                                  .start()
+                                                                  .column(),
+                                                                 d.message()))
+                             .orElse("Parse error in " + source.fileName());
+        return Causes.cause(errorMsg)
                      .result();
     }
 
@@ -96,8 +110,7 @@ public class CstLinter {
     }
 
     private static List<CstLintRule> defaultRules() {
-        return List.of(
-        // Return kinds (JBCT-RET-*)
+        return List.of(// Return kinds (JBCT-RET-*)
         new CstReturnKindRule(),
         // JBCT-RET-01
         new CstNestedWrapperRule(),

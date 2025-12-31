@@ -24,20 +24,16 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-05";
 
     // Pattern: x -> new Type(x) or (x) -> new Type(x)
-    private static final Pattern CONSTRUCTOR_LAMBDA = Pattern.compile(
-    "\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*new\\s+(\\w+)\\s*\\(\\s*\\1\\s*\\)");
+    private static final Pattern CONSTRUCTOR_LAMBDA = Pattern.compile("\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*new\\s+(\\w+)\\s*\\(\\s*\\1\\s*\\)");
 
     // Pattern: x -> x.method() or (x) -> x.method()
-    private static final Pattern INSTANCE_METHOD_LAMBDA = Pattern.compile(
-    "\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*\\1\\s*\\.\\s*(\\w+)\\s*\\(\\s*\\)");
+    private static final Pattern INSTANCE_METHOD_LAMBDA = Pattern.compile("\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*\\1\\s*\\.\\s*(\\w+)\\s*\\(\\s*\\)");
 
     // Pattern: x -> Type.method(x) or (x) -> Type.method(x)
-    private static final Pattern STATIC_METHOD_LAMBDA = Pattern.compile(
-    "\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*([A-Z]\\w*)\\s*\\.\\s*(\\w+)\\s*\\(\\s*\\1\\s*\\)");
+    private static final Pattern STATIC_METHOD_LAMBDA = Pattern.compile("\\(?\\s*(\\w+)\\s*\\)?\\s*->\\s*([A-Z]\\w*)\\s*\\.\\s*(\\w+)\\s*\\(\\s*\\1\\s*\\)");
 
     // Pattern: (a, b) -> new Type(a, b)
-    private static final Pattern MULTI_ARG_CONSTRUCTOR = Pattern.compile(
-    "\\(\\s*(\\w+)\\s*,\\s*(\\w+)\\s*\\)\\s*->\\s*new\\s+(\\w+)\\s*\\(\\s*\\1\\s*,\\s*\\2\\s*\\)");
+    private static final Pattern MULTI_ARG_CONSTRUCTOR = Pattern.compile("\\(\\s*(\\w+)\\s*,\\s*(\\w+)\\s*\\)\\s*->\\s*new\\s+(\\w+)\\s*\\(\\s*\\1\\s*,\\s*\\2\\s*\\)");
 
     @Override
     public String ruleId() {
@@ -47,21 +43,21 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         return findAll(root, RuleId.Lambda.class)
-               .stream()
-               .map(lambda -> checkLambda(lambda, source, ctx))
-               .filter(d -> d != null);
+                      .stream()
+                      .map(lambda -> checkLambda(lambda, source, ctx))
+                      .filter(d -> d != null);
     }
 
     private Diagnostic checkLambda(CstNode lambda, String source, LintContext ctx) {
         var lambdaText = text(lambda, source)
-                         .trim();
+                             .trim();
         // Check for constructor lambda: x -> new Type(x)
         var constructorMatch = CONSTRUCTOR_LAMBDA.matcher(lambdaText);
         if (constructorMatch.matches()) {

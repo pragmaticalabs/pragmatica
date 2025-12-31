@@ -24,7 +24,9 @@ public class MultilineParameters {
     }
 
     // Generic parameters
-    static <T1, T2, T3>Result<Tuple3<T1, T2, T3>> genericParams(Result<T1> first, Result<T2> second, Result<T3> third) {
+    static <T1, T2, T3> Result<Tuple3<T1, T2, T3>> genericParams(Result<T1> first,
+                                                                 Result<T2> second,
+                                                                 Result<T3> third) {
         return Result.all(first, second, third)
                      .map(Tuple3::new);
     }

@@ -20,8 +20,12 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstPatternMixingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-PAT-02";
 
-    private static final Set<String>FORK_JOIN_CALLS = Set.of(
-    "Result.all(", "Promise.all(", "Option.all(", "Result.allOf(", "Promise.allOf(", "Option.allOf(");
+    private static final Set<String> FORK_JOIN_CALLS = Set.of("Result.all(",
+                                                              "Promise.all(",
+                                                              "Option.all(",
+                                                              "Result.allOf(",
+                                                              "Promise.allOf(",
+                                                              "Option.allOf(");
 
     @Override
     public String ruleId() {
@@ -30,12 +34,12 @@ public class CstPatternMixingRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        // Find all Lambda expressions
+        // Find all Lambda expressions (not method references - those are just transformations)
         return findAll(root, RuleId.Lambda.class)
-               .stream()
-               .filter(lambda -> isInsideFlatMap(lambda, root, source))
-               .filter(lambda -> containsForkJoin(lambda, source))
-               .map(lambda -> createDiagnostic(lambda, source, ctx));
+                      .stream()
+                      .filter(lambda -> isInsideFlatMap(lambda, root, source))
+                      .filter(lambda -> containsForkJoinWithLogic(lambda, source))
+                      .map(lambda -> createDiagnostic(lambda, source, ctx));
     }
 
     private boolean isInsideFlatMap(CstNode lambda, CstNode root, String source) {
@@ -44,22 +48,46 @@ public class CstPatternMixingRule implements CstLintRule {
         var lambdaText = text(lambda, source);
         // Find the expression containing this lambda
         return findAncestor(root, lambda, RuleId.Expr.class)
-               .map(expr -> text(expr, source))
-               .filter(exprText -> {
-                           var lambdaStart = exprText.indexOf(lambdaText);
-                           if (lambdaStart > 0) {
-                           var before = exprText.substring(0, lambdaStart);
-                           return before.contains(".flatMap(") || before.contains(".andThen(");
-                       }
-                           return false;
-                       })
-               .isPresent();
+                           .map(expr -> text(expr, source))
+                           .filter(exprText -> {
+                                       var lambdaStart = exprText.indexOf(lambdaText);
+                                       if (lambdaStart > 0) {
+                                           var before = exprText.substring(0, lambdaStart);
+                                           return before.contains(".flatMap(") || before.contains(".andThen(");
+                                       }
+                                       return false;
+                                   })
+                           .isPresent();
     }
 
-    private boolean containsForkJoin(CstNode lambda, String source) {
-        var lambdaText = text(lambda, source);
+    private boolean containsForkJoinWithLogic(CstNode lambda, String source) {
+        var lambdaText = text(lambda, source)
+                             .trim();
+        // Skip if lambda body is just a single fork-join call (transformation step, not nested pattern)
+        // e.g., "results -> Result.allOf(results)" is fine
+        if (isSingleForkJoinCall(lambdaText)) {
+            return false;
+        }
         return FORK_JOIN_CALLS.stream()
                               .anyMatch(lambdaText::contains);
+    }
+
+    private boolean isSingleForkJoinCall(String lambdaText) {
+        // Check if lambda is just "param -> Result.allOf(param)" or similar
+        var arrowIdx = lambdaText.indexOf("->");
+        if (arrowIdx < 0) {
+            return false;
+        }
+        var body = lambdaText.substring(arrowIdx + 2)
+                             .trim();
+        // Single fork-join call with just the parameter
+        return FORK_JOIN_CALLS.stream()
+                              .anyMatch(call -> {
+                                            var callName = call.substring(0,
+                                                                          call.length() - 1);
+                                            // Remove trailing (
+        return body.startsWith(callName) && body.endsWith(")") && !body.contains(";");
+                                        });
     }
 
     private Diagnostic createDiagnostic(CstNode node, String source, LintContext ctx) {

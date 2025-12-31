@@ -28,9 +28,9 @@ public class CstConstructorBypassRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
@@ -41,24 +41,24 @@ public class CstConstructorBypassRule implements CstLintRule {
         }
         // Find direct constructor calls outside factory methods
         return findAll(root, RuleId.Primary.class)
-               .stream()
-               .filter(node -> isDirectConstruction(node, source, valueObjectTypes))
-               .filter(node -> !isInAllowedContext(root, node, source))
-               .map(node -> createDiagnostic(node, source, ctx));
+                      .stream()
+                      .filter(node -> isDirectConstruction(node, source, valueObjectTypes))
+                      .filter(node -> !isInAllowedContext(root, node, source))
+                      .map(node -> createDiagnostic(node, source, ctx));
     }
 
     private Set<String> collectValueObjectTypes(CstNode root, String source) {
         var types = new HashSet<String>();
         findAll(root, RuleId.RecordDecl.class)
-        .forEach(record -> {
-                     var name = childByRule(record, RuleId.Identifier.class)
-                                .map(id -> text(id, source))
-                                .or("");
-                     var recordText = text(record, source);
-                     if (recordText.contains("Result<" + name + ">")) {
-                     types.add(name);
-                 }
-                 });
+               .forEach(record -> {
+                            var name = childByRule(record, RuleId.Identifier.class)
+                                                  .map(id -> text(id, source))
+                                                  .or("");
+                            var recordText = text(record, source);
+                            if (recordText.contains("Result<" + name + ">")) {
+                                types.add(name);
+                            }
+                        });
         return types;
     }
 
@@ -76,12 +76,12 @@ public class CstConstructorBypassRule implements CstLintRule {
         // Check if inside factory method (static method returning Result)
         // Note: "static" keyword is in ClassMember, not MethodDecl
         return findAncestor(root, node, RuleId.ClassMember.class)
-               .map(member -> {
-                        var memberText = text(member, source);
-                        // Allow in factory methods (static methods returning Result)
+                           .map(member -> {
+                                    var memberText = text(member, source);
+                                    // Allow in factory methods (static methods returning Result)
         return memberText.contains("static ") && memberText.contains("Result<");
-                    })
-               .or(false);
+                                })
+                           .or(false);
     }
 
     private Diagnostic createDiagnostic(CstNode node, String source, LintContext ctx) {

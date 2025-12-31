@@ -18,7 +18,7 @@ public record SourceFile(Path path, String content) {
     public static Result<SourceFile> sourceFile(Path path) {
         return lift(Causes::fromThrowable,
                     () -> Files.readString(path))
-               .map(content -> new SourceFile(path, content));
+                   .map(content -> new SourceFile(path, content));
     }
 
     /**

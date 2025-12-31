@@ -33,52 +33,52 @@ public class CstAcronymNamingRule implements CstLintRule {
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         // Check class declarations
         var classDiagnostics = findAll(root, RuleId.ClassDecl.class)
-                               .stream()
-                               .flatMap(decl -> checkTypeName(decl, source, ctx));
+                                      .stream()
+                                      .flatMap(decl -> checkTypeName(decl, source, ctx));
         // Check interface declarations
         var interfaceDiagnostics = findAll(root, RuleId.InterfaceDecl.class)
-                                   .stream()
-                                   .flatMap(decl -> checkTypeName(decl, source, ctx));
+                                          .stream()
+                                          .flatMap(decl -> checkTypeName(decl, source, ctx));
         // Check enum declarations
         var enumDiagnostics = findAll(root, RuleId.EnumDecl.class)
-                              .stream()
-                              .flatMap(decl -> checkTypeName(decl, source, ctx));
+                                     .stream()
+                                     .flatMap(decl -> checkTypeName(decl, source, ctx));
         // Check record declarations
         var recordDiagnostics = findAll(root, RuleId.RecordDecl.class)
-                                .stream()
-                                .flatMap(decl -> checkTypeName(decl, source, ctx));
+                                       .stream()
+                                       .flatMap(decl -> checkTypeName(decl, source, ctx));
         // Check method declarations
         var methodDiagnostics = findAll(root, RuleId.MethodDecl.class)
-                                .stream()
-                                .flatMap(method -> checkMethodName(method, source, ctx));
+                                       .stream()
+                                       .flatMap(method -> checkMethodName(method, source, ctx));
         return Stream.of(classDiagnostics, interfaceDiagnostics, enumDiagnostics, recordDiagnostics, methodDiagnostics)
                      .flatMap(s -> s);
     }
 
     private Stream<Diagnostic> checkTypeName(CstNode decl, String source, LintContext ctx) {
         return childByRule(decl, RuleId.Identifier.class)
-               .map(id -> text(id, source)
-                          .trim())
-               .filter(this::hasAcronymViolation)
-               .map(name -> createDiagnostic(decl,
-                                             "Type",
-                                             name,
-                                             suggestFix(name),
-                                             ctx))
-               .stream();
+                          .map(id -> text(id, source)
+                                         .trim())
+                          .filter(this::hasAcronymViolation)
+                          .map(name -> createDiagnostic(decl,
+                                                        "Type",
+                                                        name,
+                                                        suggestFix(name),
+                                                        ctx))
+                          .stream();
     }
 
     private Stream<Diagnostic> checkMethodName(CstNode method, String source, LintContext ctx) {
         return childByRule(method, RuleId.Identifier.class)
-               .map(id -> text(id, source)
-                          .trim())
-               .filter(this::hasAcronymViolation)
-               .map(name -> createDiagnostic(method,
-                                             "Method",
-                                             name,
-                                             suggestFix(name),
-                                             ctx))
-               .stream();
+                          .map(id -> text(id, source)
+                                         .trim())
+                          .filter(this::hasAcronymViolation)
+                          .map(name -> createDiagnostic(method,
+                                                        "Method",
+                                                        name,
+                                                        suggestFix(name),
+                                                        ctx))
+                          .stream();
     }
 
     private boolean hasAcronymViolation(String name) {
@@ -112,7 +112,7 @@ public class CstAcronymNamingRule implements CstLintRule {
                             result.append(chars[acronymEnd - 1]);
                         }
                         i = acronymEnd - 2;
-                    }else {
+                    } else {
                         // Acronym at end - lowercase all but first
                         result.append(i == 0
                                       ? c
@@ -122,10 +122,10 @@ public class CstAcronymNamingRule implements CstLintRule {
                         }
                         i = acronymEnd - 1;
                     }
-                }else {
+                } else {
                     result.append(c);
                 }
-            }else {
+            } else {
                 result.append(c);
             }
         }

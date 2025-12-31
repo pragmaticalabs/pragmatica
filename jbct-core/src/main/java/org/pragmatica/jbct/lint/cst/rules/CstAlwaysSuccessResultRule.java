@@ -24,17 +24,17 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         return findAll(root, RuleId.MethodDecl.class)
-               .stream()
-               .filter(method -> returnsResult(method, source))
-               .filter(method -> alwaysReturnsSuccess(method, source))
-               .map(method -> createDiagnostic(method, source, ctx));
+                      .stream()
+                      .filter(method -> returnsResult(method, source))
+                      .filter(method -> alwaysReturnsSuccess(method, source))
+                      .map(method -> createDiagnostic(method, source, ctx));
     }
 
     private boolean returnsResult(CstNode method, String source) {
@@ -56,8 +56,8 @@ public class CstAlwaysSuccessResultRule implements CstLintRule {
 
     private Diagnostic createDiagnostic(CstNode method, String source, LintContext ctx) {
         var methodName = childByRule(method, RuleId.Identifier.class)
-                         .map(id -> text(id, source))
-                         .or("(unknown)");
+                                    .map(id -> text(id, source))
+                                    .or("(unknown)");
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

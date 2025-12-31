@@ -43,8 +43,17 @@ public class CstPrinter {
     private final AlignmentContext alignment = new AlignmentContext();
 
     // Keywords that shouldn't have preceding newlines removed
-    private static final Set<String>BLOCK_KEYWORDS = Set.of(
-    "if", "else", "for", "while", "do", "try", "catch", "finally", "switch", "case", "default");
+    private static final Set<String> BLOCK_KEYWORDS = Set.of("if",
+                                                             "else",
+                                                             "for",
+                                                             "while",
+                                                             "do",
+                                                             "try",
+                                                             "catch",
+                                                             "finally",
+                                                             "switch",
+                                                             "case",
+                                                             "default");
 
     // Pattern for detecting method calls in chains
     private static final Pattern METHOD_CALL_PATTERN = Pattern.compile("\\.[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(");
@@ -206,7 +215,10 @@ public class CstPrinter {
             case RuleId.LambdaParam _ -> printLambdaParam(nt);
             case RuleId.Param _ -> printParam(nt);
             case RuleId.Params _ -> printParams(nt);
+            case RuleId.Primary _ -> printPrimary(nt);
+            case RuleId.RecordDecl _ -> printRecordDecl(nt);
             case RuleId.RecordComponents _ -> printRecordComponents(nt);
+            case RuleId.ResourceSpec _ -> printResourceSpec(nt);
             case RuleId.Ternary _ -> printTernary(nt);
             case RuleId.Additive _ -> printAdditive(nt);
             default -> printChildren(nt);
@@ -216,11 +228,11 @@ public class CstPrinter {
     private void printOrdinaryUnit(CstNode.NonTerminal ou) {
         // Print package declaration
         childByRule(ou, RuleId.PackageDecl.class)
-        .fold(() -> null,
-              pkg -> {
-                  printNode(pkg);
-                  return null;
-              });
+                   .fold(() -> null,
+                         pkg -> {
+                             printNode(pkg);
+                             return null;
+                         });
         // Collect and organize imports
         var imports = childrenByRule(ou, RuleId.ImportDecl.class);
         if (!imports.isEmpty()) {
@@ -234,7 +246,7 @@ public class CstPrinter {
         for (var type : types) {
             if (first) {
                 println();
-            }else {
+            } else {
                 println();
                 println();
             }
@@ -248,30 +260,30 @@ public class CstPrinter {
         // Group imports: pragmatica, java/javax, other, static
         var pragmatica = imports.stream()
                                 .filter(i -> text(i, source)
-                                             .contains("org.pragmatica"))
+                                                 .contains("org.pragmatica"))
                                 .filter(i -> !text(i, source)
-                                              .contains("static"))
+                                                  .contains("static"))
                                 .toList();
         var javaImports = imports.stream()
                                  .filter(i -> text(i, source)
-                                              .contains("java.") || text(i, source)
-                                                                    .contains("javax."))
+                                                  .contains("java.") || text(i, source)
+                                                                            .contains("javax."))
                                  .filter(i -> !text(i, source)
-                                               .contains("static"))
+                                                   .contains("static"))
                                  .toList();
         var otherImports = imports.stream()
                                   .filter(i -> !text(i, source)
-                                                .contains("org.pragmatica"))
+                                                    .contains("org.pragmatica"))
                                   .filter(i -> !text(i, source)
-                                                .contains("java."))
+                                                    .contains("java."))
                                   .filter(i -> !text(i, source)
-                                                .contains("javax."))
+                                                    .contains("javax."))
                                   .filter(i -> !text(i, source)
-                                                .contains("static"))
+                                                    .contains("static"))
                                   .toList();
         var staticImports = imports.stream()
                                    .filter(i -> text(i, source)
-                                                .contains("static"))
+                                                    .contains("static"))
                                    .toList();
         boolean needsBlank = false;
         if (!pragmatica.isEmpty()) {
@@ -304,7 +316,7 @@ public class CstPrinter {
 
     private void printImportDecl(CstNode.NonTerminal imp) {
         var importText = text(imp, source)
-                         .trim();
+                             .trim();
         print(importText);
         println();
     }
@@ -326,18 +338,18 @@ public class CstPrinter {
         println();
         // Print enum constants
         childByRule(enumBody, RuleId.EnumConsts.class)
-        .fold(() -> null,
-              consts -> {
-                  var leadingTrivia = consts.leadingTrivia();
-                  boolean hasComments = leadingTrivia.stream()
-                                                     .anyMatch(t -> t instanceof Trivia.LineComment || t instanceof Trivia.BlockComment);
-                  printIndent();
-                  if (hasComments) {
-                  printCommentsOnly(leadingTrivia);
-              }
-                  printEnumConsts((CstNode.NonTerminal) consts);
-                  return null;
-              });
+                   .fold(() -> null,
+                         consts -> {
+                             var leadingTrivia = consts.leadingTrivia();
+                             boolean hasComments = leadingTrivia.stream()
+                                                                .anyMatch(t -> t instanceof Trivia.LineComment || t instanceof Trivia.BlockComment);
+                             printIndent();
+                             if (hasComments) {
+                                 printCommentsOnly(leadingTrivia);
+                             }
+                             printEnumConsts((CstNode.NonTerminal) consts);
+                             return null;
+                         });
         // Print semicolon if there are class members (fields, constructors, methods)
         if (!classMembers.isEmpty()) {
             print(";");
@@ -363,7 +375,7 @@ public class CstPrinter {
         if (!hasContent) {
             // Empty body - print {}
             print("{}");
-        }else {
+        } else {
             // Non-empty - use common braced body printer
             printBracedBody(allChildren,
                             RuleId.RecordMember.class,
@@ -393,7 +405,7 @@ public class CstPrinter {
                 print(",");
                 println();
                 printIndent();
-            }else if (child.rule() instanceof RuleId.EnumConst) {
+            } else if (child.rule() instanceof RuleId.EnumConst) {
                 printNodeSkipTrivia(child);
             }
         }
@@ -436,7 +448,7 @@ public class CstPrinter {
                     println();
                     first = false;
                     prevMember = child;
-                }else if (!isTerminalWithText(child, "{") && !isTerminalWithText(child, "}")) {
+                } else if (!isTerminalWithText(child, "{") && !isTerminalWithText(child, "}")) {
                     printNode(child);
                 }
             }
@@ -502,6 +514,19 @@ public class CstPrinter {
         };
     }
 
+    /**
+     * Check if a node has newlines in its immediate leading trivia.
+     */
+    private boolean hasNewlineInLeadingTrivia(CstNode node) {
+        for (var trivia : node.leadingTrivia()) {
+            if (trivia instanceof Trivia.Whitespace ws && ws.text()
+                                                            .contains("\n")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void printBlock(CstNode.NonTerminal block) {
         var children = children(block);
         // Check if we're inside broken arguments with lambda alignment
@@ -525,26 +550,32 @@ public class CstPrinter {
             if (useLambdaAlign) {
                 // Lambda body in broken args: align to arg column + indent
                 int bodyCol = lambdaAlignCol + config.indentSize();
-                for (var stmt : stmts) {
-                    printAlignedTo(bodyCol);
-                    printNodeSkipTrivia(stmt);
-                    // Skip trivia - we control layout
-                    println();
+                // Push new alignment context for nested blocks
+                try (var ignored = alignment.pushLambdaAlign(bodyCol)) {
+                    for (var stmt : stmts) {
+                        printAlignedTo(bodyCol);
+                        printNodeSkipTrivia(stmt);
+                        // Skip trivia - we control layout
+                        println();
+                    }
                 }
                 // Close brace aligns with lambda arg
                 printAlignedTo(lambdaAlignCol);
-            }else if (useChainAlign) {
+            } else if (useChainAlign) {
                 // Lambda body in chain: body aligns to chain + indent, close aligns to chain
                 int bodyCol = chainAlignCol + config.indentSize();
-                for (var stmt : stmts) {
-                    printAlignedTo(bodyCol);
-                    printNodeSkipTrivia(stmt);
-                    // Skip trivia - we control layout
-                    println();
+                // Push new alignment context for nested blocks
+                try (var ignored = alignment.pushLambdaAlign(bodyCol)) {
+                    for (var stmt : stmts) {
+                        printAlignedTo(bodyCol);
+                        printNodeSkipTrivia(stmt);
+                        // Skip trivia - we control layout
+                        println();
+                    }
                 }
                 // Close brace aligns with chain
                 printAlignedTo(chainAlignCol);
-            }else {
+            } else {
                 // Normal block indentation
                 indentLevel++ ;
                 for (var stmt : stmts) {
@@ -601,19 +632,19 @@ public class CstPrinter {
         for (var child : children) {
             if (child.rule() instanceof RuleId.Primary) {
                 primary = child;
-            }else if (child.rule() instanceof RuleId.PostOp) {
+            } else if (child.rule() instanceof RuleId.PostOp) {
                 postOps.add(child);
             }
         }
         // Count method call PostOps (those with parentheses)
         var methodCallPostOps = postOps.stream()
                                        .filter(op -> text(op, source)
-                                                     .contains("("))
+                                                         .contains("("))
                                        .toList();
         boolean shouldBreakChain = methodCallPostOps.size() >= 2;
         if (shouldBreakChain && !measuringMode) {
             printMethodChainAligned(primary, postOps);
-        }else {
+        } else {
             // No chain or measuring - print normally
             if (primary != null) {
                 printNode(primary);
@@ -633,19 +664,33 @@ public class CstPrinter {
     private void printPostOp(CstNode.NonTerminal postOp) {
         var children = children(postOp);
         boolean afterTypeArgs = false;
+        boolean afterOpenParen = false;
+        int openParenCol = 0;
         for (var child : children) {
             if (child.rule() instanceof RuleId.TypeArgs) {
                 printNode(child);
                 afterTypeArgs = true;
-            }else if (afterTypeArgs && child.rule() instanceof RuleId.Identifier) {
+            } else if (afterTypeArgs && child.rule() instanceof RuleId.Identifier) {
                 // After TypeArgs, print Identifier WITHOUT automatic spacing
                 // This handles: Result.<Integer>failure() (no space after >)
                 var identText = text(child, source)
-                                .trim();
+                                    .trim();
                 print(identText);
                 afterTypeArgs = false;
-            }else {
+            } else if (isTerminalWithText(child, "(")) {
                 printNode(child);
+                openParenCol = currentColumn;
+                afterOpenParen = true;
+                afterTypeArgs = false;
+            } else if (afterOpenParen && child.rule() instanceof RuleId.Args) {
+                // Skip leading trivia - first arg stays on same line as opening paren
+                // Alignment is handled by printArgs/printBrokenArgs
+                printNodeSkipTrivia(child);
+                afterOpenParen = false;
+                afterTypeArgs = false;
+            } else {
+                printNode(child);
+                afterOpenParen = false;
                 afterTypeArgs = false;
             }
         }
@@ -672,13 +717,18 @@ public class CstPrinter {
                 alignColumn = startColumn + dotPos;
             }
             printNodeContent(primary);
+            // If no dot in primary (e.g., `new Type()`), align to current position
+            // This is where the first PostOp's `.` will be
+            if (dotPos < 0) {
+                alignColumn = currentColumn;
+            }
         }
         // Enter chain context for nested lambdas
         try (var ignored = alignment.enterChain(alignColumn)) {
             boolean firstMethodCall = true;
             for (var postOp : postOps) {
                 var postOpText = text(postOp, source)
-                                 .trim();
+                                     .trim();
                 boolean isMethodCall = postOpText.contains("(");
                 if (isMethodCall && !firstMethodCall) {
                     // Continuation - break and align
@@ -731,7 +781,7 @@ public class CstPrinter {
         for (var child : children) {
             if (isTerminalWithText(child, "->")) {
                 print(" -> ");
-            }else {
+            } else {
                 printNodeContent(child);
             }
         }
@@ -755,7 +805,7 @@ public class CstPrinter {
             for (var child : children(args)) {
                 printNodeContent(child);
             }
-        }else {
+        } else {
             // Break arguments onto multiple lines
             printBrokenArgs(args);
         }
@@ -814,20 +864,15 @@ public class CstPrinter {
         // Align to current position (after opening paren)
         // Push alignment column for lambda body indentation
         try (var ignored = alignment.pushLambdaAlign(alignCol)) {
-            boolean first = true;
             for (var child : children) {
                 if (isTerminalWithText(child, ",")) {
                     print(",");
                     println();
                     printAlignedTo(alignCol);
-                }else if (child.rule() instanceof RuleId.Expr) {
-                    if (first) {
-                        printNode(child);
-                    }else {
-                        printNodeSkipTrivia(child);
-                    }
-                    first = false;
-                }else {
+                } else if (child.rule() instanceof RuleId.Expr) {
+                    // First arg stays on same line, subsequent args after comma+newline
+                    printNodeSkipTrivia(child);
+                } else {
                     printNode(child);
                 }
             }
@@ -842,11 +887,11 @@ public class CstPrinter {
                 print(" -> ");
                 // Ensure spacing around arrow
                 afterArrow = true;
-            }else if (afterArrow) {
+            } else if (afterArrow) {
                 printNodeSkipTrivia(child);
                 // Skip trivia after arrow - we added space
                 afterArrow = false;
-            }else {
+            } else {
                 printNode(child);
             }
         }
@@ -870,7 +915,7 @@ public class CstPrinter {
         if (!hasExistingBreaks && totalWidth + 3 <= config.maxLineLength()) {
             // Fits on one line - print children normally
             printChildren(params);
-        }else {
+        } else {
             // Break parameters onto multiple lines aligned to current position
             printBrokenParams(params);
         }
@@ -884,8 +929,53 @@ public class CstPrinter {
                 print(",");
                 println();
                 printAlignedTo(alignCol);
-            }else if (child.rule() instanceof RuleId.Param) {
+            } else if (child.rule() instanceof RuleId.Param) {
+                // First param stays on same line, subsequent params after comma+newline
                 printNodeSkipTrivia(child);
+            }
+        }
+    }
+
+    private void printPrimary(CstNode.NonTerminal primary) {
+        // Primary includes constructor calls: 'new' Type '(' Args? ')' ClassBody?
+        // Handle alignment of constructor args to opening paren
+        var children = children(primary);
+        boolean afterOpenParen = false;
+        int openParenCol = 0;
+        for (var child : children) {
+            if (isTerminalWithText(child, "(")) {
+                printNode(child);
+                openParenCol = currentColumn;
+                afterOpenParen = true;
+            } else if (afterOpenParen && child.rule() instanceof RuleId.Args) {
+                // Skip leading trivia - first arg stays on same line as opening paren
+                printNodeSkipTrivia(child);
+                afterOpenParen = false;
+            } else {
+                printNode(child);
+                afterOpenParen = false;
+            }
+        }
+    }
+
+    private void printRecordDecl(CstNode.NonTerminal recordDecl) {
+        // RecordDecl <- RecordKW Identifier TypeParams? '(' RecordComponents? ')' ImplementsClause? RecordBody
+        // Handle alignment of record components to opening paren
+        var children = children(recordDecl);
+        boolean afterOpenParen = false;
+        int openParenCol = 0;
+        for (var child : children) {
+            if (isTerminalWithText(child, "(")) {
+                printNode(child);
+                openParenCol = currentColumn;
+                afterOpenParen = true;
+            } else if (afterOpenParen && child.rule() instanceof RuleId.RecordComponents) {
+                // Skip leading trivia - first component stays on same line as opening paren
+                printNodeSkipTrivia(child);
+                afterOpenParen = false;
+            } else {
+                printNode(child);
+                afterOpenParen = false;
             }
         }
     }
@@ -907,7 +997,7 @@ public class CstPrinter {
         if (!hasExistingBreaks && totalWidth + 3 <= config.maxLineLength()) {
             // Fits on one line
             printChildren(components);
-        }else {
+        } else {
             // Break components onto multiple lines aligned to current position
             printBrokenRecordComponents(components);
         }
@@ -921,8 +1011,49 @@ public class CstPrinter {
                 print(",");
                 println();
                 printAlignedTo(alignCol);
-            }else if (child.rule() instanceof RuleId.RecordComp) {
+            } else if (child.rule() instanceof RuleId.RecordComp) {
+                // First component stays on same line, subsequent components after comma+newline
                 printNodeSkipTrivia(child);
+            }
+        }
+    }
+
+    private void printResourceSpec(CstNode.NonTerminal resourceSpec) {
+        // ResourceSpec <- '(' Resource (';' Resource)* ';'? ')'
+        // Align multiple resources to opening paren like params
+        var children = children(resourceSpec);
+        boolean hasBreaks = hasNewlinesInTrivia(resourceSpec);
+        if (!hasBreaks) {
+            // Fits on one line
+            printChildren(resourceSpec);
+            return;
+        }
+        // Multi-line resources - align to opening paren
+        boolean afterOpen = false;
+        int alignCol = 0;
+        boolean first = true;
+        for (var child : children) {
+            if (isTerminalWithText(child, "(")) {
+                printWithSpacing("(");
+                alignCol = currentColumn;
+                afterOpen = true;
+            } else if (isTerminalWithText(child, ")")) {
+                printWithSpacing(")");
+            } else if (isTerminalWithText(child, ";")) {
+                printWithSpacing(";");
+            } else if (child.rule() instanceof RuleId.Resource) {
+                if (afterOpen) {
+                    if (!first) {
+                        // Subsequent resources - newline and align
+                        println();
+                        printAlignedTo(alignCol);
+                    }
+                    // First resource stays on same line
+                    printNodeSkipTrivia(child);
+                    first = false;
+                } else {
+                    printNode(child);
+                }
             }
         }
     }
@@ -940,16 +1071,16 @@ public class CstPrinter {
                     printWithSpacing("...");
                     printedDots = true;
                 }
-            }else if (child.rule() instanceof RuleId.Type && isVarargs) {
+            } else if (child.rule() instanceof RuleId.Type && isVarargs) {
                 // For varargs, Type may include trailing dots from parser quirk
                 // Print type without trailing dots
                 var typeText = text(child, source)
-                               .trim();
+                                   .trim();
                 if (typeText.endsWith("...")) {
                     typeText = typeText.substring(0, typeText.length() - 3);
                 }
                 printWithSpacing(typeText);
-            }else {
+            } else {
                 printNodeSkipTrivia(child);
             }
         }
@@ -965,26 +1096,26 @@ public class CstPrinter {
         var identifierTexts = children.stream()
                                       .filter(c -> c.rule() instanceof RuleId.Identifier)
                                       .map(c -> text(c, source)
-                                                .trim())
+                                                    .trim())
                                       .collect(java.util.stream.Collectors.toSet());
         for (var child : children) {
             var rule = child.rule();
             var childText = text(child, source)
-                            .trim();
+                                .trim();
             if (rule instanceof RuleId.Identifier) {
                 // Always print identifiers
                 printWithSpacing(childText);
-            }else if (rule instanceof RuleId.Type) {
+            } else if (rule instanceof RuleId.Type) {
                 // Skip Type if its text matches an Identifier (it's duplicate noise)
                 // Only print if it's genuinely a type annotation like (String s) -> ...
                 if (!identifierTexts.contains(childText)) {
                     printNodeContent(child);
                 }
-            }else if (rule instanceof RuleId.Annotation || rule instanceof RuleId.Modifier) {
+            } else if (rule instanceof RuleId.Annotation || rule instanceof RuleId.Modifier) {
                 printNode(child);
-            }else if (isTerminalWithText(child, "...")) {
+            } else if (isTerminalWithText(child, "...")) {
                 printWithSpacing("...");
-            }else {
+            } else {
                 printNode(child);
             }
         }
@@ -1004,19 +1135,19 @@ public class CstPrinter {
                     printAlignedTo(alignCol);
                     print("? ");
                     skipNextTrivia = true;
-                }else if (isTerminalWithText(child, ":")) {
+                } else if (isTerminalWithText(child, ":")) {
                     println();
                     printAlignedTo(alignCol);
                     print(": ");
                     skipNextTrivia = true;
-                }else if (skipNextTrivia) {
+                } else if (skipNextTrivia) {
                     printNodeSkipLeadingTrivia(child);
                     skipNextTrivia = false;
-                }else {
+                } else {
                     printNode(child);
                 }
             }
-        }else {
+        } else {
             printChildren(ternary);
         }
     }
@@ -1067,13 +1198,13 @@ public class CstPrinter {
         boolean pendingPlus = false;
         for (var child : children) {
             var childText = text(child, source)
-                            .trim();
+                                .trim();
             if (childText.equals("+")) {
                 pendingPlus = true;
-            }else if (childText.equals("-")) {
+            } else if (childText.equals("-")) {
                 // Subtraction - print on same line with spaces
                 print(" - ");
-            }else {
+            } else {
                 // Operand
                 if (pendingPlus) {
                     // Check if this operand starts with a string literal
@@ -1085,7 +1216,7 @@ public class CstPrinter {
                         println();
                         printAlignedTo(alignCol);
                         print("+ ");
-                    }else {
+                    } else {
                         // Keep on same line
                         print(" + ");
                     }
@@ -1149,7 +1280,7 @@ public class CstPrinter {
                         }
                         // After newlines, add proper indentation
                         printIndent();
-                    }else if (!text.isEmpty() && lastChar != ' ' && lastChar != '\t') {
+                    } else if (!text.isEmpty() && lastChar != ' ' && lastChar != '\t') {
                         // Only add space if we don't already have one (avoid double spacing from nested trivia)
                         print(" ");
                     }
@@ -1176,7 +1307,7 @@ public class CstPrinter {
         int lastNewline = text.lastIndexOf('\n');
         if (lastNewline >= 0) {
             currentColumn = text.length() - lastNewline - 1;
-        }else {
+        } else {
             currentColumn += text.length();
         }
         updateLastChars(text);
@@ -1186,7 +1317,7 @@ public class CstPrinter {
         if (!text.isEmpty()) {
             if (text.length() >= 2) {
                 prevChar = text.charAt(text.length() - 2);
-            }else {
+            } else {
                 prevChar = lastChar;
             }
             lastChar = text.charAt(text.length() - 1);
@@ -1241,10 +1372,10 @@ public class CstPrinter {
                                      .endsWith(";") && !memberText.contains("{");
         boolean prevIsSimple = prevMember != null &&
         text(prevMember, source)
-        .trim()
-        .endsWith(";") &&
+            .trim()
+            .endsWith(";") &&
         !text(prevMember, source)
-         .contains("{");
+             .contains("{");
         // No blank line between consecutive simple interface methods
         if (isSimple && prevIsSimple) {
             return false;

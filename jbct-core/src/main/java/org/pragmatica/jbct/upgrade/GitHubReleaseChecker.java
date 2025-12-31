@@ -17,8 +17,7 @@ import java.util.regex.Pattern;
 public final class GitHubReleaseChecker {
     private static final String GITHUB_API_URL = "https://api.github.com/repos/siy/jbct-cli/releases/latest";
     private static final Pattern VERSION_PATTERN = Pattern.compile("\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
-    private static final Pattern ASSET_URL_PATTERN = Pattern.compile(
-    "\"browser_download_url\"\\s*:\\s*\"([^\"]+jbct[^\"]*\\.jar)\"");
+    private static final Pattern ASSET_URL_PATTERN = Pattern.compile("\"browser_download_url\"\\s*:\\s*\"([^\"]+jbct[^\"]*\\.jar)\"");
 
     private final HttpOperations http;
     private final String apiUrl;
@@ -68,13 +67,13 @@ public final class GitHubReleaseChecker {
      */
     public Result<Option<ReleaseInfo>> checkForUpdate(String currentVersion) {
         return checkLatestRelease()
-               .map(release -> {
-                        if (isNewerVersion(currentVersion,
-                                           release.version())) {
-                        return Option.option(release);
-                    }
-                        return Option.none();
-                    });
+                                 .map(release -> {
+                                          if (isNewerVersion(currentVersion,
+                                                             release.version())) {
+                                              return Option.option(release);
+                                          }
+                                          return Option.none();
+                                      });
     }
 
     private Result<ReleaseInfo> handleResponse(HttpResult<String> response) {
@@ -117,7 +116,7 @@ public final class GitHubReleaseChecker {
                             : 0;
             if (newerPart > currentPart) {
                 return true;
-            }else if (newerPart < currentPart) {
+            } else if (newerPart < currentPart) {
                 return false;
             }
         }
@@ -149,9 +148,8 @@ public final class GitHubReleaseChecker {
     /**
      * Information about a GitHub release.
      */
-    public record ReleaseInfo(
-    String version,
-    Option<String> downloadUrl) {
+    public record ReleaseInfo(String version,
+                              Option<String> downloadUrl) {
         /**
          * Check if this release has a downloadable JAR.
          */

@@ -33,21 +33,38 @@ public class CstFormatter {
 
     public Result<SourceFile> format(SourceFile source) {
         return parse(source)
-               .map(cst -> formatCst(cst,
-                                     source.content()))
-               .map(source::withContent);
+                    .map(cst -> formatCst(cst,
+                                          source.content()))
+                    .map(source::withContent);
     }
 
     public Result<Boolean> isFormatted(SourceFile source) {
         return format(source)
-               .map(formatted -> formatted.content()
-                                          .equals(source.content()));
+                     .map(formatted -> formatted.content()
+                                                .equals(source.content()));
     }
 
     private Result<CstNode> parse(SourceFile source) {
-        var result = parser.parse(source.content());
-        if (result.isSuccess()) {
-            return result;
+        var result = parser.parseWithDiagnostics(source.content());
+        if (result.isSuccess() && result.node()
+                                        .isPresent()) {
+            return Result.success(result.node()
+                                        .unwrap());
+        }
+        var diag = result.diagnostics()
+                         .stream()
+                         .findFirst();
+        if (diag.isPresent()) {
+            var span = diag.get()
+                           .span();
+            return FormattingError.parseError(source.fileName(),
+                                              span.start()
+                                                  .line(),
+                                              span.start()
+                                                  .column(),
+                                              diag.get()
+                                                  .message())
+                                  .result();
         }
         return FormattingError.parseError(source.fileName(),
                                           1,

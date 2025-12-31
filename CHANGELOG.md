@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.4.3] - 2025-12-31
+
+### Added
+
+### Changed
+- Build: jbct-maven-plugin moved to dedicated profile (skip with `-Djbct.skip`)
+- Build: java-peglib dependency updated to 0.1.8
+
+### Fixed
+- Parser: error messages now report actual error position instead of 1:1 (farthest failure tracking)
+- Formatter: `}else {` spacing (now `} else {`)
+- Formatter: args/params/record components alignment to opening paren when source has newlines
+- Formatter: try-with-resources alignment to opening paren
+- Formatter: nested blocks inside lambda bodies now properly indented
+- Formatter: constructor call args alignment (`new Type(args...)`)
+- Formatter: record declaration component alignment
+- Formatter: first arg/param/component stays on same line as opening paren
+- Formatter: chain alignment for constructor calls (`new Type().method1().method2()`)
+- Linter: JBCT-SEAL-01 false positive for sealed interfaces (now checks Modifier nodes)
+- Linter: JBCT-PAT-02 no longer flags method references as fork-join (e.g., `Result::allOf`)
+
 ## [0.4.2] - 2025-12-30
 
 ### Added

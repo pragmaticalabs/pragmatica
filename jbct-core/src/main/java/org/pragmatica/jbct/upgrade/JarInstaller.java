@@ -84,7 +84,7 @@ public final class JarInstaller {
      */
     public Result<Path> install(String downloadUrl, Path targetPath) {
         return download(downloadUrl)
-               .flatMap(tempFile -> installFromTemp(tempFile, targetPath));
+                       .flatMap(tempFile -> installFromTemp(tempFile, targetPath));
     }
 
     /**
@@ -104,13 +104,13 @@ public final class JarInstaller {
                        .await()
                        .flatMap(response -> {
                                     if (response.isSuccess()) {
-                                    return Result.success(response.body());
-                                }else {
-                                    try{
-                                    Files.deleteIfExists(tempFile);
-                                } catch (IOException ignored) {}
-                                    return response.toResult();
-                                }
+                                        return Result.success(response.body());
+                                    } else {
+                                        try{
+                                            Files.deleteIfExists(tempFile);
+                                        } catch (IOException ignored) {}
+                                        return response.toResult();
+                                    }
                                 });
         } catch (Exception e) {
             return Causes.cause("Download failed: " + e.getMessage())
@@ -174,8 +174,8 @@ public final class JarInstaller {
     public static Result<Path> createInstallDir() {
         try{
             var installDir = defaultInstallPath()
-                             .getParent()
-                             .getParent();
+                                               .getParent()
+                                               .getParent();
             // ~/.jbct
             var binDir = installDir.resolve("bin");
             var libDir = installDir.resolve("lib");
@@ -197,10 +197,10 @@ public final class JarInstaller {
         return copyResource("/dist/bin/jbct",
                             binDir.resolve("jbct"),
                             true)
-               .flatMap(_ -> copyResource("/dist/bin/jbct.bat",
-                                          binDir.resolve("jbct.bat"),
-                                          false))
-               .map(_ -> installDir);
+                           .flatMap(_ -> copyResource("/dist/bin/jbct.bat",
+                                                      binDir.resolve("jbct.bat"),
+                                                      false))
+                           .map(_ -> installDir);
     }
 
     private static Result<Path> copyResource(String resourcePath, Path targetPath, boolean executable) {

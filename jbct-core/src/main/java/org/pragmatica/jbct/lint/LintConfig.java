@@ -6,16 +6,13 @@ import java.util.Set;
 /**
  * Configuration for the JBCT linter.
  */
-public record LintConfig(
- Map<String, DiagnosticSeverity> ruleSeverities,
- Set<String> disabledRules,
- boolean failOnWarning) {
+public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
+                         Set<String> disabledRules,
+                         boolean failOnWarning) {
     /**
      * Default lint configuration.
      */
-    public static final LintConfig DEFAULT = new LintConfig(
-    Map.ofEntries(
-    // Return kinds
+    public static final LintConfig DEFAULT = new LintConfig(Map.ofEntries(// Return kinds
     Map.entry("JBCT-RET-01", DiagnosticSeverity.ERROR),
     // Bad return types (void, Optional, etc)
     Map.entry("JBCT-RET-02", DiagnosticSeverity.ERROR),
@@ -104,8 +101,8 @@ public record LintConfig(
     // No Fork-Join inside Sequencer
     // Slice
     Map.entry("JBCT-SLICE-01", DiagnosticSeverity.ERROR)),
-    Set.of(),
-    false);
+                                                            Set.of(),
+                                                            false);
 
     /**
      * Factory method for default config.

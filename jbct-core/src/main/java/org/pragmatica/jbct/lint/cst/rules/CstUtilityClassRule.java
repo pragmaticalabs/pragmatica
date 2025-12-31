@@ -28,25 +28,25 @@ public class CstUtilityClassRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         // TypeDecl contains: Annotation* Modifier* TypeKind (where TypeKind is ClassDecl/InterfaceDecl/etc.)
         // So we need to look at TypeDecl to get modifiers like 'final' or 'sealed'
         var utilityClassDiagnostics = findAll(root, RuleId.TypeDecl.class)
-                                      .stream()
-                                      .filter(td -> contains(td, RuleId.ClassDecl.class))
-                                      .filter(td -> isUtilityClass(td, source))
-                                      .map(td -> createUtilityClassDiagnostic(td, source, ctx));
+                                             .stream()
+                                             .filter(td -> contains(td, RuleId.ClassDecl.class))
+                                             .filter(td -> isUtilityClass(td, source))
+                                             .map(td -> createUtilityClassDiagnostic(td, source, ctx));
         var missingUnusedDiagnostics = findAll(root, RuleId.TypeDecl.class)
-                                       .stream()
-                                       .filter(td -> contains(td, RuleId.InterfaceDecl.class))
-                                       .filter(td -> isSealedUtilityInterface(td, source))
-                                       .filter(td -> !hasUnusedRecord(td, source))
-                                       .map(td -> createMissingUnusedDiagnostic(td, source, ctx));
+                                              .stream()
+                                              .filter(td -> contains(td, RuleId.InterfaceDecl.class))
+                                              .filter(td -> isSealedUtilityInterface(td, source))
+                                              .filter(td -> !hasUnusedRecord(td, source))
+                                              .map(td -> createMissingUnusedDiagnostic(td, source, ctx));
         return Stream.concat(utilityClassDiagnostics, missingUnusedDiagnostics);
     }
 
@@ -120,9 +120,9 @@ public class CstUtilityClassRule implements CstLintRule {
 
     private Diagnostic createUtilityClassDiagnostic(CstNode typeDecl, String source, LintContext ctx) {
         var className = findFirst(typeDecl, RuleId.ClassDecl.class)
-                        .flatMap(cls -> childByRule(cls, RuleId.Identifier.class))
-                        .map(id -> text(id, source))
-                        .or("UtilityClass");
+                                 .flatMap(cls -> childByRule(cls, RuleId.Identifier.class))
+                                 .map(id -> text(id, source))
+                                 .or("UtilityClass");
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),
@@ -147,9 +147,9 @@ public class CstUtilityClassRule implements CstLintRule {
 
     private Diagnostic createMissingUnusedDiagnostic(CstNode typeDecl, String source, LintContext ctx) {
         var ifaceName = findFirst(typeDecl, RuleId.InterfaceDecl.class)
-                        .flatMap(iface -> childByRule(iface, RuleId.Identifier.class))
-                        .map(id -> text(id, source))
-                        .or("UtilityInterface");
+                                 .flatMap(iface -> childByRule(iface, RuleId.Identifier.class))
+                                 .map(id -> text(id, source))
+                                 .or("UtilityInterface");
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

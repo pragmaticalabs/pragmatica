@@ -18,4 +18,4 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
-      - run: mvn verify -B
+      - run: mvn verify -B -Djbct.skip

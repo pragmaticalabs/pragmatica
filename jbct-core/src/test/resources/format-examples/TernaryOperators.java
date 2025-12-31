@@ -78,11 +78,11 @@ public class TernaryOperators {
 
     // Multiple ternaries in expression (avoid but handle)
     String multipleTernaries(boolean a, boolean b) {
-        return (a
-                ? "A"
-                : "notA") + "-" + (b
-                                   ? "B"
-                                   : "notB");
+        return ( a
+                 ? "A"
+                 : "notA") + "-" + (b
+                                    ? "B"
+                                    : "notB");
     }
 
     // Ternary with instanceof

@@ -26,53 +26,51 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ZONE-02";
 
     // Zone 3 implementation-level verbs
-    private static final Set<String>ZONE_3_VERBS = Set.of(
-    "get",
-    "set",
-    "fetch",
-    "parse",
-    "calculate",
-    "convert",
-    "hash",
-    "format",
-    "encode",
-    "decode",
-    "extract",
-    "split",
-    "join",
-    "log",
-    "send",
-    "receive",
-    "read",
-    "write",
-    "add",
-    "remove",
-    "find",
-    "query",
-    "insert",
-    "update",
-    "delete",
-    "create",
-    "build");
+    private static final Set<String> ZONE_3_VERBS = Set.of("get",
+                                                           "set",
+                                                           "fetch",
+                                                           "parse",
+                                                           "calculate",
+                                                           "convert",
+                                                           "hash",
+                                                           "format",
+                                                           "encode",
+                                                           "decode",
+                                                           "extract",
+                                                           "split",
+                                                           "join",
+                                                           "log",
+                                                           "send",
+                                                           "receive",
+                                                           "read",
+                                                           "write",
+                                                           "add",
+                                                           "remove",
+                                                           "find",
+                                                           "query",
+                                                           "insert",
+                                                           "update",
+                                                           "delete",
+                                                           "create",
+                                                           "build");
 
     // Zone 2 orchestration-level verbs (too abstract for leaf functions)
-    private static final Set<String>ZONE_2_VERBS = Set.of(
-    "validate",
-    "process",
-    "handle",
-    "transform",
-    "apply",
-    "check",
-    "load",
-    "save",
-    "manage",
-    "configure",
-    "initialize",
-    "execute",
-    "prepare",
-    "complete",
-    "resolve",
-    "verify");
+    private static final Set<String> ZONE_2_VERBS = Set.of("validate",
+                                                           "process",
+                                                           "handle",
+                                                           "transform",
+                                                           "apply",
+                                                           "check",
+                                                           "load",
+                                                           "save",
+                                                           "manage",
+                                                           "configure",
+                                                           "initialize",
+                                                           "execute",
+                                                           "prepare",
+                                                           "complete",
+                                                           "resolve",
+                                                           "verify");
 
     @Override
     public String ruleId() {
@@ -82,17 +80,17 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         // Find private methods that look like leaf functions
         return findAll(root, RuleId.MethodDecl.class)
-               .stream()
-               .filter(method -> isLeafFunction(method, root, source))
-               .flatMap(method -> checkMethodName(method, source, ctx));
+                      .stream()
+                      .filter(method -> isLeafFunction(method, root, source))
+                      .flatMap(method -> checkMethodName(method, source, ctx));
     }
 
     private boolean isLeafFunction(CstNode method, CstNode root, String source) {
@@ -112,13 +110,13 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         methodText.contains(".flatMap(") ||
         methodText.contains(".fold(");
         // Leaf functions typically don't have monadic chains (they're at the bottom)
-        return !hasMonadicChain;
+        return ! hasMonadicChain;
     }
 
     private Stream<Diagnostic> checkMethodName(CstNode method, String source, LintContext ctx) {
         var methodName = childByRule(method, RuleId.Identifier.class)
-                         .map(id -> text(id, source))
-                         .or("");
+                                    .map(id -> text(id, source))
+                                    .or("");
         if (methodName.isEmpty()) {
             return Stream.empty();
         }
@@ -147,12 +145,12 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
 
     private String suggestZone3Verb(String zone2Verb) {
         return switch (zone2Verb) {
-            case"load" -> "fetch/read/query";
-            case"save" -> "write/insert/update";
-            case"process", "transform" -> "parse/convert/calculate";
-            case"handle" -> "send/receive";
-            case"manage" -> "add/remove";
-            case"validate", "verify", "check" -> "check";
+            case "load" -> "fetch/read/query";
+            case "save" -> "write/insert/update";
+            case "process", "transform" -> "parse/convert/calculate";
+            case "handle" -> "send/receive";
+            case "manage" -> "add/remove";
+            case "validate", "verify", "check" -> "check";
             default -> "get/set/fetch";
         };
     }
@@ -162,14 +160,13 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
                                         String verb,
                                         String suggestedVerb,
                                         LintContext ctx) {
-        return Diagnostic.diagnostic(
-        RULE_ID,
-        ctx.severityFor(RULE_ID),
-        ctx.fileName(),
-        startLine(node),
-        startColumn(node),
-        "Leaf function '" + methodName + "' uses Zone 2 verb '" + verb + "'",
-        "Leaf functions should use Zone 3 implementation verbs. " + "Consider using a more specific verb like: " + suggestedVerb
-        + ".");
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(node),
+                                     startColumn(node),
+                                     "Leaf function '" + methodName + "' uses Zone 2 verb '" + verb + "'",
+                                     "Leaf functions should use Zone 3 implementation verbs. "
+                                     + "Consider using a more specific verb like: " + suggestedVerb + ".");
     }
 }

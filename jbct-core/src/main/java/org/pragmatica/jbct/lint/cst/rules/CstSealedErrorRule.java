@@ -27,37 +27,49 @@ public class CstSealedErrorRule implements CstLintRule {
 
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
-        return findAll(root, RuleId.InterfaceDecl.class)
-               .stream()
-               .filter(iface -> extendsCause(iface, source))
-               .filter(iface -> !isSealed(iface, source))
-               .map(iface -> createDiagnostic(iface, source, ctx));
+        // Find TypeDecl nodes that contain InterfaceDecl
+        return findAll(root, RuleId.TypeDecl.class)
+                      .stream()
+                      .filter(typeDecl -> hasInterfaceDecl(typeDecl))
+                      .filter(typeDecl -> extendsCause(typeDecl, source))
+                      .filter(typeDecl -> !isSealed(typeDecl, source))
+                      .map(typeDecl -> createDiagnostic(getInterfaceDecl(typeDecl),
+                                                        source,
+                                                        ctx));
     }
 
-    private boolean extendsCause(CstNode iface, String source) {
-        // Check if interface extends Cause by examining the text
-        var ifaceText = text(iface, source);
-        return ifaceText.contains("extends Cause") ||
-        ifaceText.contains("extends ") && ifaceText.contains("Cause");
+    private boolean hasInterfaceDecl(CstNode typeDecl) {
+        return childByRule(typeDecl, RuleId.InterfaceDecl.class)
+                          .isPresent();
     }
 
-    private boolean isSealed(CstNode iface, String source) {
-        // Check for 'sealed' modifier in interface declaration
-        var ifaceText = text(iface, source);
-        // Look for 'sealed' keyword before 'interface'
-        var interfaceIdx = ifaceText.indexOf("interface");
-        if (interfaceIdx > 0) {
-            var beforeInterface = ifaceText.substring(0, interfaceIdx);
-            return beforeInterface.contains("sealed");
-        }
-        return false;
+    private CstNode getInterfaceDecl(CstNode typeDecl) {
+        return childByRule(typeDecl, RuleId.InterfaceDecl.class)
+                          .or(typeDecl);
+    }
+
+    private boolean extendsCause(CstNode typeDecl, String source) {
+        // Check if interface extends Cause by examining the InterfaceDecl text
+        return childByRule(typeDecl, RuleId.InterfaceDecl.class)
+                          .map(iface -> text(iface, source))
+                          .map(ifaceText -> ifaceText.contains("extends Cause") || ifaceText.contains("extends ") && ifaceText.contains("Cause"))
+                          .or(false);
+    }
+
+    private boolean isSealed(CstNode typeDecl, String source) {
+        // Check for 'sealed' modifier in Modifier children of TypeDecl
+        return childrenByRule(typeDecl, RuleId.Modifier.class)
+                             .stream()
+                             .anyMatch(mod -> text(mod, source)
+                                                  .trim()
+                                                  .equals("sealed"));
     }
 
     private String getInterfaceName(CstNode iface, String source) {
         return childByRule(iface, RuleId.Identifier.class)
-               .map(id -> text(id, source)
-                          .trim())
-               .or("(unknown)");
+                          .map(id -> text(id, source)
+                                         .trim())
+                          .or("(unknown)");
     }
 
     private Diagnostic createDiagnostic(CstNode iface, String source, LintContext ctx) {

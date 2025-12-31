@@ -59,7 +59,7 @@ public class Comments<T> {
     private String name = "default";
 
     /// Factory method following JBCT naming convention.
-    public static <T>Comments<T> comments() {
+    public static <T> Comments<T> comments() {
         return new Comments();
     }
 

@@ -25,17 +25,17 @@ public class CstChainLengthRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         // Find statements with long method chains
         return findAll(root, RuleId.Stmt.class)
-               .stream()
-               .filter(stmt -> countChainedCalls(stmt, source) > MAX_CHAIN_LENGTH)
-               .map(stmt -> createDiagnostic(stmt, source, ctx));
+                      .stream()
+                      .filter(stmt -> countChainedCalls(stmt, source) > MAX_CHAIN_LENGTH)
+                      .map(stmt -> createDiagnostic(stmt, source, ctx));
     }
 
     private int countChainedCalls(CstNode stmt, String source) {
@@ -56,13 +56,12 @@ public class CstChainLengthRule implements CstLintRule {
 
     private Diagnostic createDiagnostic(CstNode stmt, String source, LintContext ctx) {
         var chainLength = countChainedCalls(stmt, source);
-        return Diagnostic.diagnostic(
-        RULE_ID,
-        ctx.severityFor(RULE_ID),
-        ctx.fileName(),
-        startLine(stmt),
-        startColumn(stmt),
-        "Method chain has " + chainLength + " steps (max " + MAX_CHAIN_LENGTH + ")",
-        "Long chains reduce readability. Split into intermediate variables or extract methods.");
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(stmt),
+                                     startColumn(stmt),
+                                     "Method chain has " + chainLength + " steps (max " + MAX_CHAIN_LENGTH + ")",
+                                     "Long chains reduce readability. Split into intermediate variables or extract methods.");
     }
 }
