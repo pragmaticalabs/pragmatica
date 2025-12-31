@@ -45,7 +45,7 @@ public class CstValueObjectFactoryRule implements CstLintRule {
         if (recordName.isEmpty()) return false;
         // Check if has Result-returning static method
         var recordText = text(record, source);
-        return !recordText.contains("Result<" + recordName + ">") &&
+        return ! recordText.contains("Result<" + recordName + ">") &&
         !recordText.contains("Result<" + recordName + " ");
     }
 

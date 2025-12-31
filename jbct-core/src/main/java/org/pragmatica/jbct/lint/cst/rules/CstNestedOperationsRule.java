@@ -22,14 +22,14 @@ public class CstNestedOperationsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-NEST-01";
 
     // Monadic operations that shouldn't be nested
-    private static final Set<String>MONADIC_OPS = Set.of("map",
-                                                         "flatMap",
-                                                         "fold",
-                                                         "recover",
-                                                         "filter",
-                                                         "mapFailure",
-                                                         "onSuccess",
-                                                         "onFailure");
+    private static final Set<String> MONADIC_OPS = Set.of("map",
+                                                          "flatMap",
+                                                          "fold",
+                                                          "recover",
+                                                          "filter",
+                                                          "mapFailure",
+                                                          "onSuccess",
+                                                          "onFailure");
 
     // Pattern to find lambda with nested operations
     private static final Pattern LAMBDA_PATTERN = Pattern.compile("->\\s*\\{?[^}]*\\.(map|flatMap|fold|recover|filter|mapFailure)\\s*\\(");

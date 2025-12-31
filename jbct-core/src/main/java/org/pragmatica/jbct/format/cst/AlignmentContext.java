@@ -51,7 +51,7 @@ final class AlignmentContext {
      * Check if we have a lambda alignment context.
      */
     boolean hasLambdaAlign() {
-        return !lambdaAlignStack.isEmpty();
+        return ! lambdaAlignStack.isEmpty();
     }
 
     /**

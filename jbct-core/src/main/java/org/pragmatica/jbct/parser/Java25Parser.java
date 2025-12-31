@@ -1824,7 +1824,7 @@ public final class Java25Parser {
         }
 
         public boolean hasErrors() {
-            return !diagnostics.isEmpty();
+            return ! diagnostics.isEmpty();
         }
 
         public boolean hasNode() {
@@ -1848,15 +1848,15 @@ public final class Java25Parser {
         }
 
         public int errorCount() {
-            return (int) diagnostics.stream()
-                                   .filter(d -> d.severity() == Severity.ERROR)
-                                   .count();
+            return ( int) diagnostics.stream()
+                                    .filter(d -> d.severity() == Severity.ERROR)
+                                    .count();
         }
 
         public int warningCount() {
-            return (int) diagnostics.stream()
-                                   .filter(d -> d.severity() == Severity.WARNING)
-                                   .count();
+            return ( int) diagnostics.stream()
+                                    .filter(d -> d.severity() == Severity.WARNING)
+                                    .count();
         }
     }
 
@@ -1933,7 +1933,7 @@ public final class Java25Parser {
     }
 
     private long cacheKey(int ruleId, int position) {
-        return ((long) ruleId<< 32) | position;
+        return ( ( long) ruleId<< 32) | position;
     }
 
     private void restoreLocation(SourceLocation loc) {
@@ -24604,30 +24604,30 @@ public final class Java25Parser {
                 char escaped = pattern.charAt(i + 1);
                 int consumed = 2;
                 char expected = switch (escaped) {
-                    case'n' -> '\n';
-                    case'r' -> '\r';
-                    case't' -> '\t';
-                    case'\\' -> '\\';
-                    case']' -> ']';
-                    case'-' -> '-';
-                    case'x' -> {
+                    case 'n' -> '\n';
+                    case 'r' -> '\r';
+                    case 't' -> '\t';
+                    case '\\' -> '\\';
+                    case ']' -> ']';
+                    case '-' -> '-';
+                    case 'x' -> {
                         if (i + 4 <= pattern.length()) {
                             try{
                                 var hex = pattern.substring(i + 2, i + 4);
                                 consumed = 4;
-                                yield (char) Integer.parseInt(hex, 16);
+                                yield ( char) Integer.parseInt(hex, 16);
                             } catch (NumberFormatException e) {
                                 yield 'x';
                             }
                         }
                         yield 'x';
                     }
-                    case'u' -> {
+                    case 'u' -> {
                         if (i + 6 <= pattern.length()) {
                             try{
                                 var hex = pattern.substring(i + 2, i + 6);
                                 consumed = 6;
-                                yield (char) Integer.parseInt(hex, 16);
+                                yield ( char) Integer.parseInt(hex, 16);
                             } catch (NumberFormatException e) {
                                 yield 'u';
                             }
@@ -24699,11 +24699,11 @@ public final class Java25Parser {
         }
 
         boolean isFailure() {
-            return !success;
+            return ! success;
         }
 
         boolean isCutFailure() {
-            return !success && cutFailed;
+            return ! success && cutFailed;
         }
 
         static CstParseResult success(CstNode node, String text, SourceLocation endLocation) {

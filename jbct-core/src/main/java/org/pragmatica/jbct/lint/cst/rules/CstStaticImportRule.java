@@ -24,17 +24,17 @@ public class CstStaticImportRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STATIC-01";
 
     // Factory patterns: TypeName.methodName(
-    private static final List<FactoryPattern>FACTORY_PATTERNS = List.of(new FactoryPattern("Result",
-                                                                                           Set.of("success", "failure")),
-                                                                        new FactoryPattern("Option",
-                                                                                           Set.of("some",
-                                                                                                  "none",
-                                                                                                  "option")),
-                                                                        new FactoryPattern("Causes", Set.of("cause")),
-                                                                        new FactoryPattern("Promise",
-                                                                                           Set.of("promise",
-                                                                                                  "resolved",
-                                                                                                  "failed")));
+    private static final List<FactoryPattern> FACTORY_PATTERNS = List.of(new FactoryPattern("Result",
+                                                                                            Set.of("success", "failure")),
+                                                                         new FactoryPattern("Option",
+                                                                                            Set.of("some",
+                                                                                                   "none",
+                                                                                                   "option")),
+                                                                         new FactoryPattern("Causes", Set.of("cause")),
+                                                                         new FactoryPattern("Promise",
+                                                                                            Set.of("promise",
+                                                                                                   "resolved",
+                                                                                                   "failed")));
 
     // Regex to find qualified factory calls
     private static final Pattern QUALIFIED_CALL = Pattern.compile("\\b(Result|Option|Causes|Promise)\\.([a-z]+)\\s*\\(");

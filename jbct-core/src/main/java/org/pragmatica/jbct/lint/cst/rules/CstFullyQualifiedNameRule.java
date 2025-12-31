@@ -54,7 +54,7 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
 
     private boolean isNotAnnotation(String fqcn) {
         // Skip common annotation packages
-        return !fqcn.startsWith("java.lang.") &&
+        return ! fqcn.startsWith("java.lang.") &&
         !fqcn.startsWith("javax.annotation.");
     }
 

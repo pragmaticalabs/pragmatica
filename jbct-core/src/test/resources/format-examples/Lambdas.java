@@ -65,7 +65,7 @@ public class Lambdas {
         return items.stream()
                     .filter(s -> {
                         var trimmed = s.trim();
-                        return !trimmed.isEmpty() && trimmed.length() > 3;
+                        return ! trimmed.isEmpty() && trimmed.length() > 3;
                     })
                     .map(s -> {
                         var upper = s.toUpperCase();

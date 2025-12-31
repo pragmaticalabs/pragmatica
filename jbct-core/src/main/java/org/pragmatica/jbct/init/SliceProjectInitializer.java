@@ -199,17 +199,17 @@ public final class SliceProjectInitializer {
 
     private String getInlineTemplate(String templateName) {
         return switch (templateName) {
-            case"pom.xml.template" -> SLICE_POM_TEMPLATE;
-            case"jbct.toml.template" -> JBCT_TOML_TEMPLATE;
-            case"gitignore.template" -> GITIGNORE_TEMPLATE;
-            case"Slice.java.template" -> SLICE_INTERFACE_TEMPLATE;
-            case"SliceImpl.java.template" -> SLICE_IMPL_TEMPLATE;
-            case"SampleRequest.java.template" -> SAMPLE_REQUEST_TEMPLATE;
-            case"SampleResponse.java.template" -> SAMPLE_RESPONSE_TEMPLATE;
-            case"SliceTest.java.template" -> SLICE_TEST_TEMPLATE;
-            case"deploy-forge.sh.template" -> DEPLOY_FORGE_TEMPLATE;
-            case"deploy-test.sh.template" -> DEPLOY_TEST_TEMPLATE;
-            case"deploy-prod.sh.template" -> DEPLOY_PROD_TEMPLATE;
+            case "pom.xml.template" -> SLICE_POM_TEMPLATE;
+            case "jbct.toml.template" -> JBCT_TOML_TEMPLATE;
+            case "gitignore.template" -> GITIGNORE_TEMPLATE;
+            case "Slice.java.template" -> SLICE_INTERFACE_TEMPLATE;
+            case "SliceImpl.java.template" -> SLICE_IMPL_TEMPLATE;
+            case "SampleRequest.java.template" -> SAMPLE_REQUEST_TEMPLATE;
+            case "SampleResponse.java.template" -> SAMPLE_RESPONSE_TEMPLATE;
+            case "SliceTest.java.template" -> SLICE_TEST_TEMPLATE;
+            case "deploy-forge.sh.template" -> DEPLOY_FORGE_TEMPLATE;
+            case "deploy-test.sh.template" -> DEPLOY_TEST_TEMPLATE;
+            case "deploy-prod.sh.template" -> DEPLOY_PROD_TEMPLATE;
             default -> null;
         };
     }

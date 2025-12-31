@@ -116,11 +116,11 @@ public final class SliceProjectValidator {
      */
     public record ValidationResult(List<String> errors, List<String> warnings) {
         public boolean hasErrors() {
-            return !errors.isEmpty();
+            return ! errors.isEmpty();
         }
 
         public boolean hasWarnings() {
-            return !warnings.isEmpty();
+            return ! warnings.isEmpty();
         }
 
         public boolean isValid() {

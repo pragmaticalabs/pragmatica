@@ -43,7 +43,7 @@ public class CstConditionalLoggingRule implements CstLintRule {
             return false;
         }
         // Check for log level checks and logging calls
-        return (stmtText.contains("isDebugEnabled") ||
+        return ( stmtText.contains("isDebugEnabled") ||
         stmtText.contains("isTraceEnabled") ||
         stmtText.contains("isInfoEnabled")) &&
         (stmtText.contains(".debug(") ||

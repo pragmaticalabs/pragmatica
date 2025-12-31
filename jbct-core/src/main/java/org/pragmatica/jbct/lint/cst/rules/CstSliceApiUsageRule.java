@@ -234,7 +234,7 @@ public class CstSliceApiUsageRule implements CstLintRule {
 
     private boolean isPrimitiveOrJdkType(String typeName) {
         return switch (typeName) {
-            case"int", "long", "short", "byte", "char", "boolean", "float", "double", "void",
+            case "int", "long", "short", "byte", "char", "boolean", "float", "double", "void",
             "String", "Integer", "Long", "Short", "Byte", "Character", "Boolean", "Float", "Double",
             "Object", "Class", "Void", "Number",
             "List", "Set", "Map", "Collection", "Optional", "Stream",

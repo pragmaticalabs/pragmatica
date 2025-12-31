@@ -43,17 +43,17 @@ public class CstPrinter {
     private final AlignmentContext alignment = new AlignmentContext();
 
     // Keywords that shouldn't have preceding newlines removed
-    private static final Set<String>BLOCK_KEYWORDS = Set.of("if",
-                                                            "else",
-                                                            "for",
-                                                            "while",
-                                                            "do",
-                                                            "try",
-                                                            "catch",
-                                                            "finally",
-                                                            "switch",
-                                                            "case",
-                                                            "default");
+    private static final Set<String> BLOCK_KEYWORDS = Set.of("if",
+                                                             "else",
+                                                             "for",
+                                                             "while",
+                                                             "do",
+                                                             "try",
+                                                             "catch",
+                                                             "finally",
+                                                             "switch",
+                                                             "case",
+                                                             "default");
 
     // Pattern for detecting method calls in chains
     private static final Pattern METHOD_CALL_PATTERN = Pattern.compile("\\.[a-zA-Z_][a-zA-Z0-9_]*\\s*\\(");

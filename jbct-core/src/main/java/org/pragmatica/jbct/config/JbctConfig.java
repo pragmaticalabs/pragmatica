@@ -62,16 +62,16 @@ public record JbctConfig(FormatterConfig formatter,
             String severityStr = entry.getValue()
                                       .toLowerCase();
             switch (severityStr) {
-                case"off", "disabled" -> disabledRules.add(ruleId);
-                case"error" -> {
+                case "off", "disabled" -> disabledRules.add(ruleId);
+                case "error" -> {
                     ruleSeverities.put(ruleId, DiagnosticSeverity.ERROR);
                     disabledRules.remove(ruleId);
                 }
-                case"warning", "warn" -> {
+                case "warning", "warn" -> {
                     ruleSeverities.put(ruleId, DiagnosticSeverity.WARNING);
                     disabledRules.remove(ruleId);
                 }
-                case"info" -> {
+                case "info" -> {
                     ruleSeverities.put(ruleId, DiagnosticSeverity.INFO);
                     disabledRules.remove(ruleId);
                 }

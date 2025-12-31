@@ -20,12 +20,12 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstPatternMixingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-PAT-02";
 
-    private static final Set<String>FORK_JOIN_CALLS = Set.of("Result.all(",
-                                                             "Promise.all(",
-                                                             "Option.all(",
-                                                             "Result.allOf(",
-                                                             "Promise.allOf(",
-                                                             "Option.allOf(");
+    private static final Set<String> FORK_JOIN_CALLS = Set.of("Result.all(",
+                                                              "Promise.all(",
+                                                              "Option.all(",
+                                                              "Result.allOf(",
+                                                              "Promise.allOf(",
+                                                              "Option.allOf(");
 
     @Override
     public String ruleId() {

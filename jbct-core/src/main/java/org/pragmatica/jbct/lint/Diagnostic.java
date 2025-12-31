@@ -92,6 +92,6 @@ public record Diagnostic(String ruleId,
      * Format location as file:line:column.
      */
     public String location() {
-        return "%s:%d:%d".formatted(file, line, column);
+        return "%s:%d:%d". formatted(file, line, column);
     }
 }

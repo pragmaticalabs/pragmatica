@@ -32,7 +32,7 @@ public record LintContext(List<Pattern> businessPackagePatterns,
      * Check if slice packages are configured.
      */
     public boolean hasSlicePackages() {
-        return !slicePackagePatterns.isEmpty();
+        return ! slicePackagePatterns.isEmpty();
     }
 
     /**
@@ -47,7 +47,7 @@ public record LintContext(List<Pattern> businessPackagePatterns,
      * Check if a rule is enabled.
      */
     public boolean isRuleEnabled(String ruleId) {
-        return !config.disabledRules()
+        return ! config.disabledRules()
                       .contains(ruleId);
     }
 

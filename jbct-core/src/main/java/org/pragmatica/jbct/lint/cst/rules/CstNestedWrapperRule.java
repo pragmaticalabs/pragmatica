@@ -21,7 +21,7 @@ public class CstNestedWrapperRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-02";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";
 
-    private static final Set<String>WRAPPER_TYPES = Set.of("Option", "Result", "Promise");
+    private static final Set<String> WRAPPER_TYPES = Set.of("Option", "Result", "Promise");
 
     // Pattern to detect nested wrappers like Promise<Result<...>>
     private static final Pattern NESTED_PATTERN = Pattern.compile("(Promise|Result|Option)<\\s*(Promise|Result|Option)<");
@@ -103,24 +103,24 @@ public class CstNestedWrapperRule implements CstLintRule {
 
     private String getSuggestion(String pattern) {
         return switch (pattern) {
-            case"Promise<Result<T>>" -> "Promise already carries failures via Cause. Use Promise<T> directly.";
-            case"Option<Option<T>>" -> "Double-wrapping Options is confusing. Flatten to Option<T>.";
-            case"Result<Result<T>>" -> "Double-wrapping Results is confusing. Flatten to Result<T> or use flatMap.";
-            case"Promise<Promise<T>>" -> "Double-wrapping Promises is confusing. Use flatMap to chain.";
+            case "Promise<Result<T>>" -> "Promise already carries failures via Cause. Use Promise<T> directly.";
+            case "Option<Option<T>>" -> "Double-wrapping Options is confusing. Flatten to Option<T>.";
+            case "Result<Result<T>>" -> "Double-wrapping Results is confusing. Flatten to Result<T> or use flatMap.";
+            case "Promise<Promise<T>>" -> "Double-wrapping Promises is confusing. Use flatMap to chain.";
             default -> "Avoid redundant nesting of monadic types.";
         };
     }
 
     private String getExample(String pattern) {
         return switch (pattern) {
-            case"Promise<Result<T>>" -> """
+            case "Promise<Result<T>>" -> """
                 // Before (forbidden)
                 public Promise<Result<User>> loadUser(UserId id) { ... }
 
                 // After
                 public Promise<User> loadUser(UserId id) { ... }
                 """;
-            case"Option<Option<T>>" -> """
+            case "Option<Option<T>>" -> """
                 // Before (forbidden)
                 public Option<Option<String>> findValue() { ... }
 

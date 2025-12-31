@@ -8,54 +8,57 @@ import java.util.Set;
  */
 final class SpacingRules {
     // Control flow keywords that need space before (
-    private static final Set<String>SPACE_BEFORE_PAREN_KEYWORDS = Set.of("if",
-                                                                         "else",
-                                                                         "for",
-                                                                         "while",
-                                                                         "do",
-                                                                         "try",
-                                                                         "catch",
-                                                                         "finally",
-                                                                         "switch",
-                                                                         "synchronized",
-                                                                         "assert");
+    private static final Set<String> SPACE_BEFORE_PAREN_KEYWORDS = Set.of("if",
+                                                                          "else",
+                                                                          "for",
+                                                                          "while",
+                                                                          "do",
+                                                                          "try",
+                                                                          "catch",
+                                                                          "finally",
+                                                                          "switch",
+                                                                          "synchronized",
+                                                                          "assert");
 
     // Keywords that need space after }
-    private static final Set<String>SPACE_AFTER_BRACE_KEYWORDS = Set.of("else", "catch", "finally", "while");
+    private static final Set<String> SPACE_AFTER_BRACE_KEYWORDS = Set.of("else", "catch", "finally", "while");
+
+    // Keywords that need space after them (before literals, operators, etc.)
+    private static final Set<String> SPACE_AFTER_KEYWORDS = Set.of("case", "return", "throw", "new", "yield", "assert");
 
     // Binary operators that need space around them (excluding <> which are also used for generics)
-    private static final Set<String>BINARY_OPS = Set.of("=",
-                                                        "==",
-                                                        "!=",
-                                                        "<=",
-                                                        ">=",
-                                                        "+",
-                                                        "-",
-                                                        "*",
-                                                        "/",
-                                                        "%",
-                                                        "&",
-                                                        "|",
-                                                        "^",
-                                                        "&&",
-                                                        "||",
-                                                        "->",
-                                                        "?",
-                                                        ":",
-                                                        "+=",
-                                                        "-=",
-                                                        "*=",
-                                                        "/=",
-                                                        "%=",
-                                                        "&=",
-                                                        "|=",
-                                                        "^=",
-                                                        "<<=",
-                                                        ">>=",
-                                                        ">>>=");
+    private static final Set<String> BINARY_OPS = Set.of("=",
+                                                         "==",
+                                                         "!=",
+                                                         "<=",
+                                                         ">=",
+                                                         "+",
+                                                         "-",
+                                                         "*",
+                                                         "/",
+                                                         "%",
+                                                         "&",
+                                                         "|",
+                                                         "^",
+                                                         "&&",
+                                                         "||",
+                                                         "->",
+                                                         "?",
+                                                         ":",
+                                                         "+=",
+                                                         "-=",
+                                                         "*=",
+                                                         "/=",
+                                                         "%=",
+                                                         "&=",
+                                                         "|=",
+                                                         "^=",
+                                                         "<<=",
+                                                         ">>=",
+                                                         ">>>=");
 
     // Single-char binary operators for checking output endings
-    private static final Set<Character>BINARY_OP_CHARS = Set.of('=', '+', '-', '*', '/', '%', '&', '|', '^', '?', ':');
+    private static final Set<Character> BINARY_OP_CHARS = Set.of('=', '+', '-', '*', '/', '%', '&', '|', '^', '?', ':');
 
     private SpacingRules() {}
 
@@ -68,21 +71,22 @@ final class SpacingRules {
         }
         char firstChar = text.charAt(0);
         // Check rules in order of frequency/importance
-        return checkCommaRule(ctx) || checkClosingBraceKeywordRule(ctx, text) || checkParenthesesRules(ctx,
-                                                                                                       text,
-                                                                                                       firstChar) || checkBracketRules(ctx,
-                                                                                                                                       firstChar) || checkDotRules(ctx,
-                                                                                                                                                                   text,
-                                                                                                                                                                   firstChar) || checkAnnotationRules(ctx,
-                                                                                                                                                                                                      firstChar) || checkMethodReferenceRule(ctx,
-                                                                                                                                                                                                                                             text) || checkAngleBracketRules(ctx,
-                                                                                                                                                                                                                                                                             text,
-                                                                                                                                                                                                                                                                             firstChar) || checkBinaryOperatorRules(ctx,
-                                                                                                                                                                                                                                                                                                                    text,
-                                                                                                                                                                                                                                                                                                                    firstChar) || checkAlphanumericRule(ctx,
-                                                                                                                                                                                                                                                                                                                                                        firstChar) || checkClosingParenRule(ctx,
-                                                                                                                                                                                                                                                                                                                                                                                            firstChar) || checkGenericClosingRule(ctx,
-                                                                                                                                                                                                                                                                                                                                                                                                                                  firstChar);
+        return checkCommaRule(ctx) || checkClosingBraceKeywordRule(ctx, text) || checkKeywordBeforeLiteralRule(ctx,
+                                                                                                               firstChar) || checkParenthesesRules(ctx,
+                                                                                                                                                   text,
+                                                                                                                                                   firstChar) || checkBracketRules(ctx,
+                                                                                                                                                                                   firstChar) || checkDotRules(ctx,
+                                                                                                                                                                                                               text,
+                                                                                                                                                                                                               firstChar) || checkAnnotationRules(ctx,
+                                                                                                                                                                                                                                                  firstChar) || checkMethodReferenceRule(ctx,
+                                                                                                                                                                                                                                                                                         text) || checkAngleBracketRules(ctx,
+                                                                                                                                                                                                                                                                                                                         text,
+                                                                                                                                                                                                                                                                                                                         firstChar) || checkBinaryOperatorRules(ctx,
+                                                                                                                                                                                                                                                                                                                                                                text,
+                                                                                                                                                                                                                                                                                                                                                                firstChar) || checkAlphanumericRule(ctx,
+                                                                                                                                                                                                                                                                                                                                                                                                    firstChar) || checkClosingParenRule(ctx,
+                                                                                                                                                                                                                                                                                                                                                                                                                                        firstChar) || checkGenericClosingRule(ctx,
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                              firstChar);
     }
 
     private static boolean checkCommaRule(SpacingContext ctx) {
@@ -92,6 +96,16 @@ final class SpacingRules {
     private static boolean checkClosingBraceKeywordRule(SpacingContext ctx, String text) {
         // Space between } and keywords like else, catch, finally, while (do-while)
         return ctx.lastChar() == '}' && SPACE_AFTER_BRACE_KEYWORDS.contains(text);
+    }
+
+    private static boolean checkKeywordBeforeLiteralRule(SpacingContext ctx, char firstChar) {
+        // Space after keywords like case, return, throw before literals or expressions
+        // e.g., case "value" or return 5 or throw new
+        if (!SPACE_AFTER_KEYWORDS.contains(ctx.lastWord())) {
+            return false;
+        }
+        // Need space before string literals, numbers, identifiers, minus (negative numbers)
+        return firstChar == '"' || firstChar == '\'' || Character.isDigit(firstChar) || Character.isLetter(firstChar) || firstChar == '-' || firstChar == '(';
     }
 
     private static boolean checkParenthesesRules(SpacingContext ctx, String text, char firstChar) {
@@ -222,10 +236,9 @@ final class SpacingRules {
             // After -> in lambda, need space unless followed by {
             return firstChar != '{';
         }
-        // After > in generics, space before lowercase identifier (variable name)
-        // No space before uppercase (could be type name like <T>Result or constant - limitation)
+        // After > in generics, space before any identifier
         if (Character.isLetter(firstChar)) {
-            return Character.isLowerCase(firstChar);
+            return true;
         }
         return false;
     }

@@ -20,10 +20,10 @@ public class CstReturnKindRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-01";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";
 
-    private static final Set<String>FORBIDDEN_TYPES = Set.of("Optional",
-                                                             "CompletableFuture",
-                                                             "Future",
-                                                             "CompletionStage");
+    private static final Set<String> FORBIDDEN_TYPES = Set.of("Optional",
+                                                              "CompletableFuture",
+                                                              "Future",
+                                                              "CompletionStage");
 
     @Override
     public String ruleId() {

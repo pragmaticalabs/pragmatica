@@ -24,7 +24,7 @@ public class CstParsingUtilitiesRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-UTIL-01";
 
     // Map of JDK parsing patterns to Pragmatica alternatives
-    private static final List<ParsingPattern>PATTERNS = List.of(// Number parsing
+    private static final List<ParsingPattern> PATTERNS = List.of(// Number parsing
     new ParsingPattern("Integer\\.parseInt", "Number.parseInt", "org.pragmatica.lang.utils.Number"),
     new ParsingPattern("Integer\\.parseUnsignedInt", "Number.parseInt", "org.pragmatica.lang.utils.Number"),
     new ParsingPattern("Long\\.parseLong", "Number.parseLong", "org.pragmatica.lang.utils.Number"),
@@ -68,7 +68,7 @@ public class CstParsingUtilitiesRule implements CstLintRule {
 
     // Combined regex for all patterns
     private static final Pattern COMBINED_PATTERN;
-    private static final Map<String, ParsingPattern>PATTERN_MAP;
+    private static final Map<String, ParsingPattern> PATTERN_MAP;
 
     static {
         var patternStrings = PATTERNS.stream()

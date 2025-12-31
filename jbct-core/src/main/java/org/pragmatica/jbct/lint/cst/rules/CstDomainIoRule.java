@@ -17,24 +17,24 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 public class CstDomainIoRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-MIX-01";
 
-    private static final Set<String>IO_PACKAGES = Set.of("java.io",
-                                                         "java.nio",
-                                                         "java.net",
-                                                         "java.sql",
-                                                         "javax.net",
-                                                         "java.util.concurrent");
+    private static final Set<String> IO_PACKAGES = Set.of("java.io",
+                                                          "java.nio",
+                                                          "java.net",
+                                                          "java.sql",
+                                                          "javax.net",
+                                                          "java.util.concurrent");
 
-    private static final Set<String>IO_CLASSES = Set.of("File",
-                                                        "Path",
-                                                        "InputStream",
-                                                        "OutputStream",
-                                                        "Reader",
-                                                        "Writer",
-                                                        "Socket",
-                                                        "ServerSocket",
-                                                        "HttpClient",
-                                                        "Connection",
-                                                        "Statement");
+    private static final Set<String> IO_CLASSES = Set.of("File",
+                                                         "Path",
+                                                         "InputStream",
+                                                         "OutputStream",
+                                                         "Reader",
+                                                         "Writer",
+                                                         "Socket",
+                                                         "ServerSocket",
+                                                         "HttpClient",
+                                                         "Connection",
+                                                         "Statement");
 
     @Override
     public String ruleId() {

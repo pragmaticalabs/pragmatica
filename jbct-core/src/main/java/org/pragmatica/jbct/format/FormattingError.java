@@ -10,7 +10,7 @@ public sealed interface FormattingError extends Cause {
     record ParseError(String file, int line, int column, String details) implements FormattingError {
         @Override
         public String message() {
-            return "Parse error at %s:%d:%d - %s".formatted(file, line, column, details);
+            return "Parse error at %s:%d:%d - %s". formatted(file, line, column, details);
         }
 
         @Override
@@ -22,7 +22,7 @@ public sealed interface FormattingError extends Cause {
     record IoError(String file, Throwable exception) implements FormattingError {
         @Override
         public String message() {
-            return "I/O error for %s: %s".formatted(file, exception.getMessage());
+            return "I/O error for %s: %s". formatted(file, exception.getMessage());
         }
 
         @Override

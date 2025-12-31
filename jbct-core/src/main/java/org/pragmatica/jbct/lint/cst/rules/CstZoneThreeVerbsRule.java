@@ -26,51 +26,51 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ZONE-02";
 
     // Zone 3 implementation-level verbs
-    private static final Set<String>ZONE_3_VERBS = Set.of("get",
-                                                          "set",
-                                                          "fetch",
-                                                          "parse",
-                                                          "calculate",
-                                                          "convert",
-                                                          "hash",
-                                                          "format",
-                                                          "encode",
-                                                          "decode",
-                                                          "extract",
-                                                          "split",
-                                                          "join",
-                                                          "log",
-                                                          "send",
-                                                          "receive",
-                                                          "read",
-                                                          "write",
-                                                          "add",
-                                                          "remove",
-                                                          "find",
-                                                          "query",
-                                                          "insert",
-                                                          "update",
-                                                          "delete",
-                                                          "create",
-                                                          "build");
+    private static final Set<String> ZONE_3_VERBS = Set.of("get",
+                                                           "set",
+                                                           "fetch",
+                                                           "parse",
+                                                           "calculate",
+                                                           "convert",
+                                                           "hash",
+                                                           "format",
+                                                           "encode",
+                                                           "decode",
+                                                           "extract",
+                                                           "split",
+                                                           "join",
+                                                           "log",
+                                                           "send",
+                                                           "receive",
+                                                           "read",
+                                                           "write",
+                                                           "add",
+                                                           "remove",
+                                                           "find",
+                                                           "query",
+                                                           "insert",
+                                                           "update",
+                                                           "delete",
+                                                           "create",
+                                                           "build");
 
     // Zone 2 orchestration-level verbs (too abstract for leaf functions)
-    private static final Set<String>ZONE_2_VERBS = Set.of("validate",
-                                                          "process",
-                                                          "handle",
-                                                          "transform",
-                                                          "apply",
-                                                          "check",
-                                                          "load",
-                                                          "save",
-                                                          "manage",
-                                                          "configure",
-                                                          "initialize",
-                                                          "execute",
-                                                          "prepare",
-                                                          "complete",
-                                                          "resolve",
-                                                          "verify");
+    private static final Set<String> ZONE_2_VERBS = Set.of("validate",
+                                                           "process",
+                                                           "handle",
+                                                           "transform",
+                                                           "apply",
+                                                           "check",
+                                                           "load",
+                                                           "save",
+                                                           "manage",
+                                                           "configure",
+                                                           "initialize",
+                                                           "execute",
+                                                           "prepare",
+                                                           "complete",
+                                                           "resolve",
+                                                           "verify");
 
     @Override
     public String ruleId() {
@@ -110,7 +110,7 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         methodText.contains(".flatMap(") ||
         methodText.contains(".fold(");
         // Leaf functions typically don't have monadic chains (they're at the bottom)
-        return !hasMonadicChain;
+        return ! hasMonadicChain;
     }
 
     private Stream<Diagnostic> checkMethodName(CstNode method, String source, LintContext ctx) {
@@ -145,12 +145,12 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
 
     private String suggestZone3Verb(String zone2Verb) {
         return switch (zone2Verb) {
-            case"load" -> "fetch/read/query";
-            case"save" -> "write/insert/update";
-            case"process", "transform" -> "parse/convert/calculate";
-            case"handle" -> "send/receive";
-            case"manage" -> "add/remove";
-            case"validate", "verify", "check" -> "check";
+            case "load" -> "fetch/read/query";
+            case "save" -> "write/insert/update";
+            case "process", "transform" -> "parse/convert/calculate";
+            case "handle" -> "send/receive";
+            case "manage" -> "add/remove";
+            case "validate", "verify", "check" -> "check";
             default -> "get/set/fetch";
         };
     }

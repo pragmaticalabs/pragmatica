@@ -22,7 +22,7 @@ public class CstVerifyPredicatesRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-UTIL-02";
 
     // Patterns for manual validations that could use Verify.Is
-    private static final List<ValidationPattern>PATTERNS = List.of(// Numeric checks
+    private static final List<ValidationPattern> PATTERNS = List.of(// Numeric checks
     new ValidationPattern("\\b\\w+\\s*>\\s*0\\b", "Verify.Is::positive", "Use Verify.ensure(value, Verify.Is::positive)"),
     new ValidationPattern("\\b\\w+\\s*<\\s*0\\b", "Verify.Is::negative", "Use Verify.ensure(value, Verify.Is::negative)"),
     new ValidationPattern("\\b\\w+\\s*>=\\s*0\\b",
