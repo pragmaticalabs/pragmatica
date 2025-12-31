@@ -5,6 +5,8 @@
 ### Added
 
 ### Changed
+- Build: jbct-maven-plugin moved to dedicated profile (skip with `-Djbct.skip`)
+- Build: java-peglib dependency updated to 0.1.8
 
 ### Fixed
 - Parser: error messages now report actual error position instead of 1:1 (farthest failure tracking)

@@ -245,19 +245,6 @@
                 <artifactId>maven-surefire-plugin</artifactId>
             </plugin>
             <plugin>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>jbct-maven-plugin</artifactId>
-                <version>0.3.12</version>
-                <executions>
-                    <execution>
-                        <id>check</id>
-                        <goals>
-                            <goal>check</goal>
-                        </goals>
-                    </execution>
-                </executions>
-            </plugin>
-            <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-source-plugin</artifactId>
             </plugin>
@@ -269,6 +256,31 @@
     </build>
 
     <profiles>
+        <profile>
+            <id>jbct</id>
+            <activation>
+                <property>
+                    <name>!jbct.skip</name>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.pragmatica-lite</groupId>
+                        <artifactId>jbct-maven-plugin</artifactId>
+                        <version>0.3.12</version>
+                        <executions>
+                            <execution>
+                                <id>check</id>
+                                <goals>
+                                    <goal>check</goal>
+                                </goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
         <profile>
             <id>release</id>
             <activation>
