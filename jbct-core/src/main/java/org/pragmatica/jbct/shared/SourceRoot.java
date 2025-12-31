@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.shared;
 
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -36,11 +37,11 @@ public record SourceRoot(Path path) {
         return lift(Causes::fromThrowable,
                     () -> {
                         try (Stream<Path> walk = Files.walk(path)) {
-                        return walk.filter(Files::isRegularFile)
-                                   .filter(p -> p.toString()
-                                                 .endsWith(".java"))
-                                   .toList();
-                    }
+                            return walk.filter(Files::isRegularFile)
+                                       .filter(p -> p.toString()
+                                                     .endsWith(".java"))
+                                       .toList();
+                        }
                     });
     }
 
@@ -49,11 +50,9 @@ public record SourceRoot(Path path) {
      */
     public Result<List<SourceFile>> loadJavaFiles() {
         return findJavaFiles()
-               .flatMap(paths -> {
-                            var results = paths.stream()
+                            .map(paths -> paths.stream()
                                                .map(SourceFile::sourceFile)
-                                               .toList();
-                            return Result.allOf(results);
-                        });
+                                               .toList())
+                            .flatMap((Fn1<Result<List<SourceFile>>, List<Result<SourceFile>>>) Result::allOf);
     }
 }

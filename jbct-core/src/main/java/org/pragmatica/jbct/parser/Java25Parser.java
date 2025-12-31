@@ -1616,13 +1616,12 @@ public final class Java25Parser {
         }
     }
 
-    public record Diagnostic(
-    Severity severity,
-    String code,
-    String message,
-    SourceSpan span,
-    List<DiagnosticLabel> labels,
-    List<String> notes) {
+    public record Diagnostic(Severity severity,
+                             String code,
+                             String message,
+                             SourceSpan span,
+                             List<DiagnosticLabel> labels,
+                             List<String> notes) {
         public static Diagnostic error(String message, SourceSpan span) {
             return new Diagnostic(Severity.ERROR, null, message, span, List.of(), List.of());
         }
@@ -1807,10 +1806,9 @@ public final class Java25Parser {
         }
     }
 
-    public record ParseResultWithDiagnostics(
-    Option<CstNode> node,
-    List<Diagnostic> diagnostics,
-    String source) {
+    public record ParseResultWithDiagnostics(Option<CstNode> node,
+                                             List<Diagnostic> diagnostics,
+                                             String source) {
         public static ParseResultWithDiagnostics success(CstNode node, String source) {
             return new ParseResultWithDiagnostics(Option.some(node), List.of(), source);
         }
@@ -1920,7 +1918,7 @@ public final class Java25Parser {
         if (c == '\n') {
             line++ ;
             column = 1;
-        }else {
+        } else {
             column++ ;
         }
         return c;
@@ -1950,9 +1948,9 @@ public final class Java25Parser {
                                                                        .offset()) {
             furthestFailure = Option.some(loc);
             furthestExpected = Option.some(expected);
-        }else if (loc.offset() == furthestFailure.unwrap()
-                                                 .offset() && !furthestExpected.or("")
-                                                                               .contains(expected)) {
+        } else if (loc.offset() == furthestFailure.unwrap()
+                                                  .offset() && !furthestExpected.or("")
+                                                                                .contains(expected)) {
             furthestExpected = Option.some(furthestExpected.or("")
                                                            .isEmpty()
                                            ? expected
@@ -2009,7 +2007,7 @@ public final class Java25Parser {
      */
     public Result<AstNode> parseAst(String input) {
         return parse(input)
-               .map(this::toAst);
+                    .map(this::toAst);
     }
 
     private AstNode toAst(CstNode cst) {
@@ -2022,14 +2020,13 @@ public final class Java25Parser {
                                                            tok.rule()
                                                               .name(),
                                                            tok.text());
-            case CstNode.NonTerminal nt -> new AstNode.NonTerminal(
-            nt.span(),
-            nt.rule()
-              .name(),
-            nt.children()
-              .stream()
-              .map(this::toAst)
-              .toList());
+            case CstNode.NonTerminal nt -> new AstNode.NonTerminal(nt.span(),
+                                                                   nt.rule()
+                                                                     .name(),
+                                                                   nt.children()
+                                                                     .stream()
+                                                                     .map(this::toAst)
+                                                                     .toList());
             default -> new AstNode.Terminal(cst.span(), "error", "");
         };
     }
@@ -2104,9 +2101,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -2119,9 +2116,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -2136,7 +2133,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_COMPILATION_UNIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -2177,7 +2174,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -2197,7 +2194,7 @@ public final class Java25Parser {
                     children.add(zomElem3.node.unwrap());
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -2206,7 +2203,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -2226,7 +2223,7 @@ public final class Java25Parser {
                     children.add(zomElem5.node.unwrap());
                 }
                 if (zomElem5.isFailure() || location()
-                                            .offset() == beforeLoc5.offset()) {
+                                                    .offset() == beforeLoc5.offset()) {
                     restoreLocation(beforeLoc5);
                     break;
                 }
@@ -2235,7 +2232,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -2251,7 +2248,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ORDINARY_UNIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -2287,7 +2284,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -2296,7 +2293,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -2312,7 +2309,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -2325,7 +2322,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -2344,7 +2341,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -2360,7 +2357,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -2376,7 +2373,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_PACKAGE_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -2407,7 +2404,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -2420,7 +2417,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -2445,7 +2442,7 @@ public final class Java25Parser {
                 if (elem5_0.isCutFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = elem5_0;
-                }else if (elem5_0.isFailure()) {
+                } else if (elem5_0.isFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = cut5
                              ? elem5_0.asCutFailure()
@@ -2463,7 +2460,7 @@ public final class Java25Parser {
                 if (elem5_1.isCutFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = elem5_1;
-                }else if (elem5_1.isFailure()) {
+                } else if (elem5_1.isFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = cut5
                              ? elem5_1.asCutFailure()
@@ -2479,7 +2476,7 @@ public final class Java25Parser {
                 if (elem5_2.isCutFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = elem5_2;
-                }else if (elem5_2.isFailure()) {
+                } else if (elem5_2.isFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = cut5
                              ? elem5_2.asCutFailure()
@@ -2491,9 +2488,9 @@ public final class Java25Parser {
             }
             if (alt4_0.isSuccess()) {
                 elem0_2 = alt4_0;
-            }else if (alt4_0.isCutFailure()) {
+            } else if (alt4_0.isCutFailure()) {
                 elem0_2 = alt4_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart4);
                 children.clear();
                 children.addAll(savedChildren4);
@@ -2516,7 +2513,7 @@ public final class Java25Parser {
                     if (elem9_0.isCutFailure()) {
                         restoreLocation(seqStart9);
                         alt4_1 = elem9_0;
-                    }else if (elem9_0.isFailure()) {
+                    } else if (elem9_0.isFailure()) {
                         restoreLocation(seqStart9);
                         alt4_1 = cut9
                                  ? elem9_0.asCutFailure()
@@ -2534,7 +2531,7 @@ public final class Java25Parser {
                     if (elem9_1.isCutFailure()) {
                         restoreLocation(seqStart9);
                         alt4_1 = elem9_1;
-                    }else if (elem9_1.isFailure()) {
+                    } else if (elem9_1.isFailure()) {
                         restoreLocation(seqStart9);
                         alt4_1 = cut9
                                  ? elem9_1.asCutFailure()
@@ -2555,7 +2552,7 @@ public final class Java25Parser {
                         if (elem15_0.isCutFailure()) {
                             restoreLocation(seqStart15);
                             optElem13 = elem15_0;
-                        }else if (elem15_0.isFailure()) {
+                        } else if (elem15_0.isFailure()) {
                             restoreLocation(seqStart15);
                             optElem13 = cut15
                                         ? elem15_0.asCutFailure()
@@ -2571,7 +2568,7 @@ public final class Java25Parser {
                         if (elem15_1.isCutFailure()) {
                             restoreLocation(seqStart15);
                             optElem13 = elem15_1;
-                        }else if (elem15_1.isFailure()) {
+                        } else if (elem15_1.isFailure()) {
                             restoreLocation(seqStart15);
                             optElem13 = cut15
                                         ? elem15_1.asCutFailure()
@@ -2590,7 +2587,7 @@ public final class Java25Parser {
                     if (elem9_2.isCutFailure()) {
                         restoreLocation(seqStart9);
                         alt4_1 = elem9_2;
-                    }else if (elem9_2.isFailure()) {
+                    } else if (elem9_2.isFailure()) {
                         restoreLocation(seqStart9);
                         alt4_1 = cut9
                                  ? elem9_2.asCutFailure()
@@ -2606,7 +2603,7 @@ public final class Java25Parser {
                     if (elem9_3.isCutFailure()) {
                         restoreLocation(seqStart9);
                         alt4_1 = elem9_3;
-                    }else if (elem9_3.isFailure()) {
+                    } else if (elem9_3.isFailure()) {
                         restoreLocation(seqStart9);
                         alt4_1 = cut9
                                  ? elem9_3.asCutFailure()
@@ -2618,9 +2615,9 @@ public final class Java25Parser {
                 }
                 if (alt4_1.isSuccess()) {
                     elem0_2 = alt4_1;
-                }else if (alt4_1.isCutFailure()) {
+                } else if (alt4_1.isCutFailure()) {
                     elem0_2 = alt4_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart4);
                 }
             }
@@ -2632,7 +2629,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -2648,7 +2645,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_IMPORT_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -2684,7 +2681,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -2693,7 +2690,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -2716,7 +2713,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -2732,7 +2729,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -2745,7 +2742,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -2764,7 +2761,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -2780,7 +2777,7 @@ public final class Java25Parser {
             if (elem0_5.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_5;
-            }else if (elem0_5.isFailure()) {
+            } else if (elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_5.asCutFailure()
@@ -2800,7 +2797,7 @@ public final class Java25Parser {
                     children.add(zomElem9.node.unwrap());
                 }
                 if (zomElem9.isFailure() || location()
-                                            .offset() == beforeLoc9.offset()) {
+                                                    .offset() == beforeLoc9.offset()) {
                     restoreLocation(beforeLoc9);
                     break;
                 }
@@ -2809,7 +2806,7 @@ public final class Java25Parser {
             if (elem0_6.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_6;
-            }else if (elem0_6.isFailure()) {
+            } else if (elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_6.asCutFailure()
@@ -2825,7 +2822,7 @@ public final class Java25Parser {
             if (elem0_7.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_7;
-            }else if (elem0_7.isFailure()) {
+            } else if (elem0_7.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_7.asCutFailure()
@@ -2841,7 +2838,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_MODULE_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -2875,9 +2872,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -2890,9 +2887,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -2905,9 +2902,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                     children.clear();
                     children.addAll(savedChildren0);
@@ -2920,9 +2917,9 @@ public final class Java25Parser {
                     }
                     if (alt0_3.isSuccess()) {
                         result = alt0_3;
-                    }else if (alt0_3.isCutFailure()) {
+                    } else if (alt0_3.isCutFailure()) {
                         result = alt0_3.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart0);
                         children.clear();
                         children.addAll(savedChildren0);
@@ -2935,9 +2932,9 @@ public final class Java25Parser {
                         }
                         if (alt0_4.isSuccess()) {
                             result = alt0_4;
-                        }else if (alt0_4.isCutFailure()) {
+                        } else if (alt0_4.isCutFailure()) {
                             result = alt0_4.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart0);
                         }
                     }
@@ -2955,7 +2952,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_MODULE_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -2986,7 +2983,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -2999,7 +2996,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -3024,9 +3021,9 @@ public final class Java25Parser {
                 }
                 if (alt5_0.isSuccess()) {
                     zomElem3 = alt5_0;
-                }else if (alt5_0.isCutFailure()) {
+                } else if (alt5_0.isCutFailure()) {
                     zomElem3 = alt5_0.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart5);
                     children.clear();
                     children.addAll(savedChildren5);
@@ -3036,9 +3033,9 @@ public final class Java25Parser {
                     }
                     if (alt5_1.isSuccess()) {
                         zomElem3 = alt5_1;
-                    }else if (alt5_1.isCutFailure()) {
+                    } else if (alt5_1.isCutFailure()) {
                         zomElem3 = alt5_1.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart5);
                     }
                 }
@@ -3048,7 +3045,7 @@ public final class Java25Parser {
                     zomElem3 = CstParseResult.failure("one of alternatives");
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -3057,7 +3054,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -3075,7 +3072,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -3091,7 +3088,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -3107,7 +3104,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_REQUIRES_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -3138,7 +3135,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -3151,7 +3148,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -3170,7 +3167,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -3191,7 +3188,7 @@ public final class Java25Parser {
                 if (elem6_0.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_0;
-                }else if (elem6_0.isFailure()) {
+                } else if (elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_0.asCutFailure()
@@ -3209,7 +3206,7 @@ public final class Java25Parser {
                 if (elem6_1.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_1;
-                }else if (elem6_1.isFailure()) {
+                } else if (elem6_1.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_1.asCutFailure()
@@ -3233,7 +3230,7 @@ public final class Java25Parser {
                         if (elem11_0.isCutFailure()) {
                             restoreLocation(seqStart11);
                             zomElem9 = elem11_0;
-                        }else if (elem11_0.isFailure()) {
+                        } else if (elem11_0.isFailure()) {
                             restoreLocation(seqStart11);
                             zomElem9 = cut11
                                        ? elem11_0.asCutFailure()
@@ -3251,7 +3248,7 @@ public final class Java25Parser {
                         if (elem11_1.isCutFailure()) {
                             restoreLocation(seqStart11);
                             zomElem9 = elem11_1;
-                        }else if (elem11_1.isFailure()) {
+                        } else if (elem11_1.isFailure()) {
                             restoreLocation(seqStart11);
                             zomElem9 = cut11
                                        ? elem11_1.asCutFailure()
@@ -3262,7 +3259,7 @@ public final class Java25Parser {
                         zomElem9 = CstParseResult.success(null, substring(seqStart11.offset(), pos), location());
                     }
                     if (zomElem9.isFailure() || location()
-                                                .offset() == beforeLoc9.offset()) {
+                                                        .offset() == beforeLoc9.offset()) {
                         restoreLocation(beforeLoc9);
                         break;
                     }
@@ -3271,7 +3268,7 @@ public final class Java25Parser {
                 if (elem6_2.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_2;
-                }else if (elem6_2.isFailure()) {
+                } else if (elem6_2.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_2.asCutFailure()
@@ -3290,7 +3287,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -3306,7 +3303,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -3322,7 +3319,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_EXPORTS_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -3353,7 +3350,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -3366,7 +3363,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -3385,7 +3382,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -3406,7 +3403,7 @@ public final class Java25Parser {
                 if (elem6_0.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_0;
-                }else if (elem6_0.isFailure()) {
+                } else if (elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_0.asCutFailure()
@@ -3424,7 +3421,7 @@ public final class Java25Parser {
                 if (elem6_1.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_1;
-                }else if (elem6_1.isFailure()) {
+                } else if (elem6_1.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_1.asCutFailure()
@@ -3448,7 +3445,7 @@ public final class Java25Parser {
                         if (elem11_0.isCutFailure()) {
                             restoreLocation(seqStart11);
                             zomElem9 = elem11_0;
-                        }else if (elem11_0.isFailure()) {
+                        } else if (elem11_0.isFailure()) {
                             restoreLocation(seqStart11);
                             zomElem9 = cut11
                                        ? elem11_0.asCutFailure()
@@ -3466,7 +3463,7 @@ public final class Java25Parser {
                         if (elem11_1.isCutFailure()) {
                             restoreLocation(seqStart11);
                             zomElem9 = elem11_1;
-                        }else if (elem11_1.isFailure()) {
+                        } else if (elem11_1.isFailure()) {
                             restoreLocation(seqStart11);
                             zomElem9 = cut11
                                        ? elem11_1.asCutFailure()
@@ -3477,7 +3474,7 @@ public final class Java25Parser {
                         zomElem9 = CstParseResult.success(null, substring(seqStart11.offset(), pos), location());
                     }
                     if (zomElem9.isFailure() || location()
-                                                .offset() == beforeLoc9.offset()) {
+                                                        .offset() == beforeLoc9.offset()) {
                         restoreLocation(beforeLoc9);
                         break;
                     }
@@ -3486,7 +3483,7 @@ public final class Java25Parser {
                 if (elem6_2.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_2;
-                }else if (elem6_2.isFailure()) {
+                } else if (elem6_2.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_2.asCutFailure()
@@ -3505,7 +3502,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -3521,7 +3518,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -3537,7 +3534,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_OPENS_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -3568,7 +3565,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -3581,7 +3578,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -3600,7 +3597,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -3616,7 +3613,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -3632,7 +3629,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_USES_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -3663,7 +3660,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -3676,7 +3673,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -3695,7 +3692,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -3711,7 +3708,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -3729,7 +3726,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -3753,7 +3750,7 @@ public final class Java25Parser {
                     if (elem8_0.isCutFailure()) {
                         restoreLocation(seqStart8);
                         zomElem6 = elem8_0;
-                    }else if (elem8_0.isFailure()) {
+                    } else if (elem8_0.isFailure()) {
                         restoreLocation(seqStart8);
                         zomElem6 = cut8
                                    ? elem8_0.asCutFailure()
@@ -3771,7 +3768,7 @@ public final class Java25Parser {
                     if (elem8_1.isCutFailure()) {
                         restoreLocation(seqStart8);
                         zomElem6 = elem8_1;
-                    }else if (elem8_1.isFailure()) {
+                    } else if (elem8_1.isFailure()) {
                         restoreLocation(seqStart8);
                         zomElem6 = cut8
                                    ? elem8_1.asCutFailure()
@@ -3782,7 +3779,7 @@ public final class Java25Parser {
                     zomElem6 = CstParseResult.success(null, substring(seqStart8.offset(), pos), location());
                 }
                 if (zomElem6.isFailure() || location()
-                                            .offset() == beforeLoc6.offset()) {
+                                                    .offset() == beforeLoc6.offset()) {
                     restoreLocation(beforeLoc6);
                     break;
                 }
@@ -3791,7 +3788,7 @@ public final class Java25Parser {
             if (elem0_5.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_5;
-            }else if (elem0_5.isFailure()) {
+            } else if (elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_5.asCutFailure()
@@ -3807,7 +3804,7 @@ public final class Java25Parser {
             if (elem0_6.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_6;
-            }else if (elem0_6.isFailure()) {
+            } else if (elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_6.asCutFailure()
@@ -3823,7 +3820,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_PROVIDES_DIRECTIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -3859,7 +3856,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -3868,7 +3865,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -3888,7 +3885,7 @@ public final class Java25Parser {
                     children.add(zomElem3.node.unwrap());
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -3897,7 +3894,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -3915,7 +3912,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -3931,7 +3928,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TYPE_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -3965,9 +3962,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -3980,9 +3977,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -3995,9 +3992,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                     children.clear();
                     children.addAll(savedChildren0);
@@ -4010,9 +4007,9 @@ public final class Java25Parser {
                     }
                     if (alt0_3.isSuccess()) {
                         result = alt0_3;
-                    }else if (alt0_3.isCutFailure()) {
+                    } else if (alt0_3.isCutFailure()) {
                         result = alt0_3.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart0);
                         children.clear();
                         children.addAll(savedChildren0);
@@ -4025,9 +4022,9 @@ public final class Java25Parser {
                         }
                         if (alt0_4.isSuccess()) {
                             result = alt0_4;
-                        }else if (alt0_4.isCutFailure()) {
+                        } else if (alt0_4.isCutFailure()) {
                             result = alt0_4.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart0);
                         }
                     }
@@ -4045,7 +4042,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TYPE_KIND, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -4079,7 +4076,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -4092,7 +4089,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -4111,7 +4108,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -4136,7 +4133,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -4157,7 +4154,7 @@ public final class Java25Parser {
                 if (elem8_0.isCutFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = elem8_0;
-                }else if (elem8_0.isFailure()) {
+                } else if (elem8_0.isFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = cut8
                                ? elem8_0.asCutFailure()
@@ -4175,7 +4172,7 @@ public final class Java25Parser {
                 if (elem8_1.isCutFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = elem8_1;
-                }else if (elem8_1.isFailure()) {
+                } else if (elem8_1.isFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = cut8
                                ? elem8_1.asCutFailure()
@@ -4194,7 +4191,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -4219,7 +4216,7 @@ public final class Java25Parser {
             if (elem0_5.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_5;
-            }else if (elem0_5.isFailure()) {
+            } else if (elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_5.asCutFailure()
@@ -4244,7 +4241,7 @@ public final class Java25Parser {
             if (elem0_6.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_6;
-            }else if (elem0_6.isFailure()) {
+            } else if (elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_6.asCutFailure()
@@ -4262,7 +4259,7 @@ public final class Java25Parser {
             if (elem0_7.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_7;
-            }else if (elem0_7.isFailure()) {
+            } else if (elem0_7.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_7.asCutFailure()
@@ -4278,7 +4275,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_CLASS_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -4312,7 +4309,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -4325,7 +4322,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -4344,7 +4341,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -4369,7 +4366,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -4390,7 +4387,7 @@ public final class Java25Parser {
                 if (elem8_0.isCutFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = elem8_0;
-                }else if (elem8_0.isFailure()) {
+                } else if (elem8_0.isFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = cut8
                                ? elem8_0.asCutFailure()
@@ -4408,7 +4405,7 @@ public final class Java25Parser {
                 if (elem8_1.isCutFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = elem8_1;
-                }else if (elem8_1.isFailure()) {
+                } else if (elem8_1.isFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = cut8
                                ? elem8_1.asCutFailure()
@@ -4427,7 +4424,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -4452,7 +4449,7 @@ public final class Java25Parser {
             if (elem0_5.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_5;
-            }else if (elem0_5.isFailure()) {
+            } else if (elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_5.asCutFailure()
@@ -4470,7 +4467,7 @@ public final class Java25Parser {
             if (elem0_6.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_6;
-            }else if (elem0_6.isFailure()) {
+            } else if (elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_6.asCutFailure()
@@ -4486,7 +4483,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_INTERFACE_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -4517,7 +4514,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -4535,7 +4532,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -4548,7 +4545,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -4567,7 +4564,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -4585,7 +4582,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -4601,7 +4598,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -4632,7 +4629,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -4650,7 +4647,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -4670,7 +4667,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -4679,7 +4676,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_CLASS_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -4710,7 +4707,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -4728,7 +4725,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -4748,7 +4745,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -4757,7 +4754,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_INTERFACE_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -4788,7 +4785,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -4808,7 +4805,7 @@ public final class Java25Parser {
                     children.add(zomElem2.node.unwrap());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -4817,7 +4814,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -4833,7 +4830,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -4849,7 +4846,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_BODY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -4890,7 +4887,7 @@ public final class Java25Parser {
                     children.add(zomElem2.node.unwrap());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -4899,7 +4896,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -4919,7 +4916,7 @@ public final class Java25Parser {
                     children.add(zomElem4.node.unwrap());
                 }
                 if (zomElem4.isFailure() || location()
-                                            .offset() == beforeLoc4.offset()) {
+                                                    .offset() == beforeLoc4.offset()) {
                     restoreLocation(beforeLoc4);
                     break;
                 }
@@ -4928,7 +4925,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -4950,9 +4947,9 @@ public final class Java25Parser {
             }
             if (alt7_0.isSuccess()) {
                 elem1_2 = alt7_0;
-            }else if (alt7_0.isCutFailure()) {
+            } else if (alt7_0.isCutFailure()) {
                 elem1_2 = alt7_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart7);
                 children.clear();
                 children.addAll(savedChildren7);
@@ -4965,9 +4962,9 @@ public final class Java25Parser {
                 }
                 if (alt7_1.isSuccess()) {
                     elem1_2 = alt7_1;
-                }else if (alt7_1.isCutFailure()) {
+                } else if (alt7_1.isCutFailure()) {
                     elem1_2 = alt7_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart7);
                     children.clear();
                     children.addAll(savedChildren7);
@@ -4980,9 +4977,9 @@ public final class Java25Parser {
                     }
                     if (alt7_2.isSuccess()) {
                         elem1_2 = alt7_2;
-                    }else if (alt7_2.isCutFailure()) {
+                    } else if (alt7_2.isCutFailure()) {
                         elem1_2 = alt7_2.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart7);
                     }
                 }
@@ -4995,7 +4992,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_2.asCutFailure()
@@ -5007,9 +5004,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -5019,9 +5016,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -5036,7 +5033,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_MEMBER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -5070,7 +5067,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -5088,7 +5085,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -5104,7 +5101,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -5120,7 +5117,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -5141,7 +5138,7 @@ public final class Java25Parser {
                 if (elem7_0.isCutFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = elem7_0;
-                }else if (elem7_0.isFailure()) {
+                } else if (elem7_0.isFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = cut7
                                ? elem7_0.asCutFailure()
@@ -5159,7 +5156,7 @@ public final class Java25Parser {
                 if (elem7_1.isCutFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = elem7_1;
-                }else if (elem7_1.isFailure()) {
+                } else if (elem7_1.isFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = cut7
                                ? elem7_1.asCutFailure()
@@ -5178,7 +5175,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -5194,7 +5191,7 @@ public final class Java25Parser {
             if (elem0_5.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_5;
-            }else if (elem0_5.isFailure()) {
+            } else if (elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_5.asCutFailure()
@@ -5210,7 +5207,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_ELEM_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -5244,7 +5241,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -5257,7 +5254,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -5276,7 +5273,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -5301,7 +5298,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -5319,7 +5316,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -5335,7 +5332,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ENUM_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -5369,7 +5366,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -5391,7 +5388,7 @@ public final class Java25Parser {
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
                     andElem2 = elem4_0;
-                }else if (elem4_0.isFailure()) {
+                } else if (elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     andElem2 = cut4
                                ? elem4_0.asCutFailure()
@@ -5413,7 +5410,7 @@ public final class Java25Parser {
                 if (elem4_1.isCutFailure()) {
                     restoreLocation(seqStart4);
                     andElem2 = elem4_1;
-                }else if (elem4_1.isFailure()) {
+                } else if (elem4_1.isFailure()) {
                     restoreLocation(seqStart4);
                     andElem2 = cut4
                                ? elem4_1.asCutFailure()
@@ -5426,7 +5423,7 @@ public final class Java25Parser {
                 if (elem4_2.isCutFailure()) {
                     restoreLocation(seqStart4);
                     andElem2 = elem4_2;
-                }else if (elem4_2.isFailure()) {
+                } else if (elem4_2.isFailure()) {
                     restoreLocation(seqStart4);
                     andElem2 = cut4
                                ? elem4_2.asCutFailure()
@@ -5445,7 +5442,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -5463,7 +5460,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -5476,7 +5473,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -5502,7 +5499,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -5518,7 +5515,7 @@ public final class Java25Parser {
             if (elem0_5.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_5;
-            }else if (elem0_5.isFailure()) {
+            } else if (elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_5.asCutFailure()
@@ -5543,7 +5540,7 @@ public final class Java25Parser {
             if (elem0_6.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_6;
-            }else if (elem0_6.isFailure()) {
+            } else if (elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_6.asCutFailure()
@@ -5559,7 +5556,7 @@ public final class Java25Parser {
             if (elem0_7.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_7;
-            }else if (elem0_7.isFailure()) {
+            } else if (elem0_7.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_7.asCutFailure()
@@ -5584,7 +5581,7 @@ public final class Java25Parser {
             if (elem0_8.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_8;
-            }else if (elem0_8.isFailure()) {
+            } else if (elem0_8.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_8.asCutFailure()
@@ -5602,7 +5599,7 @@ public final class Java25Parser {
             if (elem0_9.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_9;
-            }else if (elem0_9.isFailure()) {
+            } else if (elem0_9.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_9.asCutFailure()
@@ -5618,7 +5615,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_RECORD_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -5649,7 +5646,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -5667,7 +5664,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -5687,7 +5684,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -5696,7 +5693,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_ENUM_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -5727,7 +5724,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -5745,7 +5742,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -5765,7 +5762,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -5774,7 +5771,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_RECORD_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -5805,7 +5802,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -5818,7 +5815,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -5837,7 +5834,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -5853,7 +5850,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_IMPLEMENTS_CLAUSE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -5884,7 +5881,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -5897,7 +5894,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -5916,7 +5913,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -5932,7 +5929,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_PERMITS_CLAUSE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -5966,7 +5963,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -5990,7 +5987,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -6008,7 +6005,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -6019,7 +6016,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -6028,7 +6025,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -6044,7 +6041,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TYPE_LIST, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -6075,7 +6072,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -6093,7 +6090,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -6117,7 +6114,7 @@ public final class Java25Parser {
                     if (elem5_0.isCutFailure()) {
                         restoreLocation(seqStart5);
                         zomElem3 = elem5_0;
-                    }else if (elem5_0.isFailure()) {
+                    } else if (elem5_0.isFailure()) {
                         restoreLocation(seqStart5);
                         zomElem3 = cut5
                                    ? elem5_0.asCutFailure()
@@ -6135,7 +6132,7 @@ public final class Java25Parser {
                     if (elem5_1.isCutFailure()) {
                         restoreLocation(seqStart5);
                         zomElem3 = elem5_1;
-                    }else if (elem5_1.isFailure()) {
+                    } else if (elem5_1.isFailure()) {
                         restoreLocation(seqStart5);
                         zomElem3 = cut5
                                    ? elem5_1.asCutFailure()
@@ -6146,7 +6143,7 @@ public final class Java25Parser {
                     zomElem3 = CstParseResult.success(null, substring(seqStart5.offset(), pos), location());
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -6155,7 +6152,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -6171,7 +6168,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -6187,7 +6184,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TYPE_PARAMS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -6221,7 +6218,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -6242,7 +6239,7 @@ public final class Java25Parser {
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_0;
-                }else if (elem4_0.isFailure()) {
+                } else if (elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
                                ? elem4_0.asCutFailure()
@@ -6260,7 +6257,7 @@ public final class Java25Parser {
                 if (elem4_1.isCutFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_1;
-                }else if (elem4_1.isFailure()) {
+                } else if (elem4_1.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
                                ? elem4_1.asCutFailure()
@@ -6284,7 +6281,7 @@ public final class Java25Parser {
                         if (elem9_0.isCutFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = elem9_0;
-                        }else if (elem9_0.isFailure()) {
+                        } else if (elem9_0.isFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = cut9
                                        ? elem9_0.asCutFailure()
@@ -6302,7 +6299,7 @@ public final class Java25Parser {
                         if (elem9_1.isCutFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = elem9_1;
-                        }else if (elem9_1.isFailure()) {
+                        } else if (elem9_1.isFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = cut9
                                        ? elem9_1.asCutFailure()
@@ -6313,7 +6310,7 @@ public final class Java25Parser {
                         zomElem7 = CstParseResult.success(null, substring(seqStart9.offset(), pos), location());
                     }
                     if (zomElem7.isFailure() || location()
-                                                .offset() == beforeLoc7.offset()) {
+                                                        .offset() == beforeLoc7.offset()) {
                         restoreLocation(beforeLoc7);
                         break;
                     }
@@ -6322,7 +6319,7 @@ public final class Java25Parser {
                 if (elem4_2.isCutFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_2;
-                }else if (elem4_2.isFailure()) {
+                } else if (elem4_2.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
                                ? elem4_2.asCutFailure()
@@ -6341,7 +6338,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -6357,7 +6354,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TYPE_PARAM, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -6388,7 +6385,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -6408,7 +6405,7 @@ public final class Java25Parser {
                     children.add(zomElem2.node.unwrap());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -6417,7 +6414,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -6433,7 +6430,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -6449,7 +6446,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_CLASS_BODY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -6490,7 +6487,7 @@ public final class Java25Parser {
                     children.add(zomElem2.node.unwrap());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -6499,7 +6496,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -6519,7 +6516,7 @@ public final class Java25Parser {
                     children.add(zomElem4.node.unwrap());
                 }
                 if (zomElem4.isFailure() || location()
-                                            .offset() == beforeLoc4.offset()) {
+                                                    .offset() == beforeLoc4.offset()) {
                     restoreLocation(beforeLoc4);
                     break;
                 }
@@ -6528,7 +6525,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -6546,7 +6543,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_2.asCutFailure()
@@ -6558,9 +6555,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -6573,9 +6570,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -6585,9 +6582,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                 }
             }
@@ -6603,7 +6600,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_CLASS_MEMBER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -6637,9 +6634,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -6652,9 +6649,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -6667,9 +6664,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                     children.clear();
                     children.addAll(savedChildren0);
@@ -6682,9 +6679,9 @@ public final class Java25Parser {
                     }
                     if (alt0_3.isSuccess()) {
                         result = alt0_3;
-                    }else if (alt0_3.isCutFailure()) {
+                    } else if (alt0_3.isCutFailure()) {
                         result = alt0_3.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart0);
                     }
                 }
@@ -6701,7 +6698,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_MEMBER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -6740,7 +6737,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -6758,7 +6755,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -6774,7 +6771,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_INITIALIZER_BLOCK, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -6805,7 +6802,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -6830,7 +6827,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -6851,7 +6848,7 @@ public final class Java25Parser {
                 if (elem6_0.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_0;
-                }else if (elem6_0.isFailure()) {
+                } else if (elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_0.asCutFailure()
@@ -6871,7 +6868,7 @@ public final class Java25Parser {
                         children.add(zomElem8.node.unwrap());
                     }
                     if (zomElem8.isFailure() || location()
-                                                .offset() == beforeLoc8.offset()) {
+                                                        .offset() == beforeLoc8.offset()) {
                         restoreLocation(beforeLoc8);
                         break;
                     }
@@ -6880,7 +6877,7 @@ public final class Java25Parser {
                 if (elem6_1.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_1;
-                }else if (elem6_1.isFailure()) {
+                } else if (elem6_1.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_1.asCutFailure()
@@ -6899,7 +6896,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -6915,7 +6912,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -6931,7 +6928,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ENUM_BODY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -6965,7 +6962,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -6989,7 +6986,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -7007,7 +7004,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -7018,7 +7015,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -7027,7 +7024,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -7050,7 +7047,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -7066,7 +7063,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ENUM_CONSTS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -7102,7 +7099,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -7111,7 +7108,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -7129,7 +7126,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -7150,7 +7147,7 @@ public final class Java25Parser {
                 if (elem6_0.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_0;
-                }else if (elem6_0.isFailure()) {
+                } else if (elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_0.asCutFailure()
@@ -7175,7 +7172,7 @@ public final class Java25Parser {
                 if (elem6_1.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_1;
-                }else if (elem6_1.isFailure()) {
+                } else if (elem6_1.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_1.asCutFailure()
@@ -7191,7 +7188,7 @@ public final class Java25Parser {
                 if (elem6_2.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_2;
-                }else if (elem6_2.isFailure()) {
+                } else if (elem6_2.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_2.asCutFailure()
@@ -7210,7 +7207,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -7235,7 +7232,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -7251,7 +7248,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ENUM_CONST, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -7285,7 +7282,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -7309,7 +7306,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -7327,7 +7324,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -7338,7 +7335,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -7347,7 +7344,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -7363,7 +7360,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_RECORD_COMPONENTS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -7399,7 +7396,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -7408,7 +7405,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -7426,7 +7423,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -7444,7 +7441,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -7460,7 +7457,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_RECORD_COMP, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -7491,7 +7488,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -7511,7 +7508,7 @@ public final class Java25Parser {
                     children.add(zomElem2.node.unwrap());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -7520,7 +7517,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -7536,7 +7533,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -7552,7 +7549,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_RECORD_BODY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -7586,9 +7583,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -7601,9 +7598,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -7618,7 +7615,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_RECORD_MEMBER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -7654,7 +7651,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -7663,7 +7660,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -7683,7 +7680,7 @@ public final class Java25Parser {
                     children.add(zomElem3.node.unwrap());
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -7692,7 +7689,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -7710,7 +7707,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -7728,7 +7725,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -7744,7 +7741,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_COMPACT_CONSTRUCTOR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -7778,7 +7775,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -7796,7 +7793,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -7812,7 +7809,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -7828,7 +7825,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_FIELD_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -7862,7 +7859,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -7886,7 +7883,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -7904,7 +7901,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -7915,7 +7912,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -7924,7 +7921,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -7940,7 +7937,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_VAR_DECLS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -7974,7 +7971,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -7999,7 +7996,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -8020,7 +8017,7 @@ public final class Java25Parser {
                 if (elem6_0.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_0;
-                }else if (elem6_0.isFailure()) {
+                } else if (elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_0.asCutFailure()
@@ -8038,7 +8035,7 @@ public final class Java25Parser {
                 if (elem6_1.isCutFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = elem6_1;
-                }else if (elem6_1.isFailure()) {
+                } else if (elem6_1.isFailure()) {
                     restoreLocation(seqStart6);
                     optElem4 = cut6
                                ? elem6_1.asCutFailure()
@@ -8057,7 +8054,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -8073,7 +8070,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_VAR_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -8109,7 +8106,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -8133,7 +8130,7 @@ public final class Java25Parser {
                 if (elem5_0.isCutFailure()) {
                     restoreLocation(seqStart5);
                     optElem3 = elem5_0;
-                }else if (elem5_0.isFailure()) {
+                } else if (elem5_0.isFailure()) {
                     restoreLocation(seqStart5);
                     optElem3 = cut5
                                ? elem5_0.asCutFailure()
@@ -8157,7 +8154,7 @@ public final class Java25Parser {
                         if (elem9_0.isCutFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = elem9_0;
-                        }else if (elem9_0.isFailure()) {
+                        } else if (elem9_0.isFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = cut9
                                        ? elem9_0.asCutFailure()
@@ -8175,7 +8172,7 @@ public final class Java25Parser {
                         if (elem9_1.isCutFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = elem9_1;
-                        }else if (elem9_1.isFailure()) {
+                        } else if (elem9_1.isFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = cut9
                                        ? elem9_1.asCutFailure()
@@ -8186,7 +8183,7 @@ public final class Java25Parser {
                         zomElem7 = CstParseResult.success(null, substring(seqStart9.offset(), pos), location());
                     }
                     if (zomElem7.isFailure() || location()
-                                                .offset() == beforeLoc7.offset()) {
+                                                        .offset() == beforeLoc7.offset()) {
                         restoreLocation(beforeLoc7);
                         break;
                     }
@@ -8195,7 +8192,7 @@ public final class Java25Parser {
                 if (elem5_1.isCutFailure()) {
                     restoreLocation(seqStart5);
                     optElem3 = elem5_1;
-                }else if (elem5_1.isFailure()) {
+                } else if (elem5_1.isFailure()) {
                     restoreLocation(seqStart5);
                     optElem3 = cut5
                                ? elem5_1.asCutFailure()
@@ -8218,7 +8215,7 @@ public final class Java25Parser {
                 if (elem5_2.isCutFailure()) {
                     restoreLocation(seqStart5);
                     optElem3 = elem5_2;
-                }else if (elem5_2.isFailure()) {
+                } else if (elem5_2.isFailure()) {
                     restoreLocation(seqStart5);
                     optElem3 = cut5
                                ? elem5_2.asCutFailure()
@@ -8237,7 +8234,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -8253,7 +8250,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_2.asCutFailure()
@@ -8265,9 +8262,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -8280,9 +8277,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -8297,7 +8294,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_VAR_INIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -8338,7 +8335,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -8356,7 +8353,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -8374,7 +8371,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -8390,7 +8387,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -8403,7 +8400,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -8429,7 +8426,7 @@ public final class Java25Parser {
             if (elem0_5.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_5;
-            }else if (elem0_5.isFailure()) {
+            } else if (elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_5.asCutFailure()
@@ -8445,7 +8442,7 @@ public final class Java25Parser {
             if (elem0_6.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_6;
-            }else if (elem0_6.isFailure()) {
+            } else if (elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_6.asCutFailure()
@@ -8470,7 +8467,7 @@ public final class Java25Parser {
             if (elem0_7.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_7;
-            }else if (elem0_7.isFailure()) {
+            } else if (elem0_7.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_7.asCutFailure()
@@ -8495,7 +8492,7 @@ public final class Java25Parser {
             if (elem0_8.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_8;
-            }else if (elem0_8.isFailure()) {
+            } else if (elem0_8.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_8.asCutFailure()
@@ -8517,9 +8514,9 @@ public final class Java25Parser {
             }
             if (alt15_0.isSuccess()) {
                 elem0_9 = alt15_0;
-            }else if (alt15_0.isCutFailure()) {
+            } else if (alt15_0.isCutFailure()) {
                 elem0_9 = alt15_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart15);
                 children.clear();
                 children.addAll(savedChildren15);
@@ -8529,9 +8526,9 @@ public final class Java25Parser {
                 }
                 if (alt15_1.isSuccess()) {
                     elem0_9 = alt15_1;
-                }else if (alt15_1.isCutFailure()) {
+                } else if (alt15_1.isCutFailure()) {
                     elem0_9 = alt15_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart15);
                 }
             }
@@ -8543,7 +8540,7 @@ public final class Java25Parser {
             if (elem0_9.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_9;
-            }else if (elem0_9.isFailure()) {
+            } else if (elem0_9.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_9.asCutFailure()
@@ -8559,7 +8556,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_METHOD_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -8593,7 +8590,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -8617,7 +8614,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -8635,7 +8632,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -8646,7 +8643,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -8655,7 +8652,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -8671,7 +8668,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_PARAMS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -8707,7 +8704,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -8716,7 +8713,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -8736,7 +8733,7 @@ public final class Java25Parser {
                     children.add(zomElem3.node.unwrap());
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -8745,7 +8742,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -8763,7 +8760,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -8786,7 +8783,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -8804,7 +8801,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -8829,7 +8826,7 @@ public final class Java25Parser {
             if (elem0_5.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_5;
-            }else if (elem0_5.isFailure()) {
+            } else if (elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_5.asCutFailure()
@@ -8845,7 +8842,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_PARAM, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -8876,7 +8873,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -8889,7 +8886,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -8908,7 +8905,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -8924,7 +8921,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_THROWS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -8965,7 +8962,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -8983,7 +8980,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -8999,7 +8996,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -9012,7 +9009,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -9038,7 +9035,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -9054,7 +9051,7 @@ public final class Java25Parser {
             if (elem0_5.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_5;
-            }else if (elem0_5.isFailure()) {
+            } else if (elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_5.asCutFailure()
@@ -9079,7 +9076,7 @@ public final class Java25Parser {
             if (elem0_6.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_6;
-            }else if (elem0_6.isFailure()) {
+            } else if (elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_6.asCutFailure()
@@ -9097,7 +9094,7 @@ public final class Java25Parser {
             if (elem0_7.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_7;
-            }else if (elem0_7.isFailure()) {
+            } else if (elem0_7.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_7.asCutFailure()
@@ -9113,7 +9110,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_CONSTRUCTOR_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -9144,7 +9141,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -9164,7 +9161,7 @@ public final class Java25Parser {
                     children.add(zomElem2.node.unwrap());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -9173,7 +9170,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -9189,7 +9186,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -9205,7 +9202,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_BLOCK, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -9239,9 +9236,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -9254,9 +9251,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -9269,9 +9266,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                 }
             }
@@ -9287,7 +9284,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_BLOCK_STMT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -9323,7 +9320,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -9332,7 +9329,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -9352,7 +9349,7 @@ public final class Java25Parser {
                     children.add(zomElem3.node.unwrap());
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -9361,7 +9358,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -9379,7 +9376,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -9395,7 +9392,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_LOCAL_TYPE_DECL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -9431,7 +9428,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -9440,7 +9437,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -9458,7 +9455,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -9476,7 +9473,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -9492,7 +9489,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -9508,7 +9505,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_LOCAL_VAR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -9544,7 +9541,7 @@ public final class Java25Parser {
             if (elem2_0.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_0;
-            }else if (elem2_0.isFailure()) {
+            } else if (elem2_0.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_0.asCutFailure()
@@ -9562,7 +9559,7 @@ public final class Java25Parser {
             if (elem2_1.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_1;
-            }else if (elem2_1.isFailure()) {
+            } else if (elem2_1.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_1.asCutFailure()
@@ -9582,14 +9579,14 @@ public final class Java25Parser {
             var tbNode1 = new CstNode.Token(tbSpan1, RULE_PEG_TOKEN, tbText1, List.of(), List.of());
             children.add(tbNode1);
             alt0_0 = CstParseResult.success(tbNode1, tbText1, location());
-        }else {
+        } else {
             alt0_0 = tbElem1;
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -9602,9 +9599,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -9619,7 +9616,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_LOCAL_VAR_TYPE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -9653,9 +9650,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -9673,7 +9670,7 @@ public final class Java25Parser {
                 if (elem2_0.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_0;
-                }else if (elem2_0.isFailure()) {
+                } else if (elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_0.asCutFailure()
@@ -9686,7 +9683,7 @@ public final class Java25Parser {
                 if (elem2_1.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_1;
-                }else if (elem2_1.isFailure()) {
+                } else if (elem2_1.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_1.asCutFailure()
@@ -9703,7 +9700,7 @@ public final class Java25Parser {
                 if (elem2_2.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_2;
-                }else if (elem2_2.isFailure()) {
+                } else if (elem2_2.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_2.asCutFailure()
@@ -9721,7 +9718,7 @@ public final class Java25Parser {
                 if (elem2_3.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_3;
-                }else if (elem2_3.isFailure()) {
+                } else if (elem2_3.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_3.asCutFailure()
@@ -9737,7 +9734,7 @@ public final class Java25Parser {
                 if (elem2_4.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_4;
-                }else if (elem2_4.isFailure()) {
+                } else if (elem2_4.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_4.asCutFailure()
@@ -9755,7 +9752,7 @@ public final class Java25Parser {
                 if (elem2_5.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_5;
-                }else if (elem2_5.isFailure()) {
+                } else if (elem2_5.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_5.asCutFailure()
@@ -9776,7 +9773,7 @@ public final class Java25Parser {
                     if (elem11_0.isCutFailure()) {
                         restoreLocation(seqStart11);
                         optElem9 = elem11_0;
-                    }else if (elem11_0.isFailure()) {
+                    } else if (elem11_0.isFailure()) {
                         restoreLocation(seqStart11);
                         optElem9 = cut11
                                    ? elem11_0.asCutFailure()
@@ -9794,7 +9791,7 @@ public final class Java25Parser {
                     if (elem11_1.isCutFailure()) {
                         restoreLocation(seqStart11);
                         optElem9 = elem11_1;
-                    }else if (elem11_1.isFailure()) {
+                    } else if (elem11_1.isFailure()) {
                         restoreLocation(seqStart11);
                         optElem9 = cut11
                                    ? elem11_1.asCutFailure()
@@ -9813,7 +9810,7 @@ public final class Java25Parser {
                 if (elem2_6.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_6;
-                }else if (elem2_6.isFailure()) {
+                } else if (elem2_6.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_6.asCutFailure()
@@ -9825,9 +9822,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -9845,7 +9842,7 @@ public final class Java25Parser {
                     if (elem14_0.isCutFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = elem14_0;
-                    }else if (elem14_0.isFailure()) {
+                    } else if (elem14_0.isFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = cut14
                                  ? elem14_0.asCutFailure()
@@ -9858,7 +9855,7 @@ public final class Java25Parser {
                     if (elem14_1.isCutFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = elem14_1;
-                    }else if (elem14_1.isFailure()) {
+                    } else if (elem14_1.isFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = cut14
                                  ? elem14_1.asCutFailure()
@@ -9875,7 +9872,7 @@ public final class Java25Parser {
                     if (elem14_2.isCutFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = elem14_2;
-                    }else if (elem14_2.isFailure()) {
+                    } else if (elem14_2.isFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = cut14
                                  ? elem14_2.asCutFailure()
@@ -9893,7 +9890,7 @@ public final class Java25Parser {
                     if (elem14_3.isCutFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = elem14_3;
-                    }else if (elem14_3.isFailure()) {
+                    } else if (elem14_3.isFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = cut14
                                  ? elem14_3.asCutFailure()
@@ -9909,7 +9906,7 @@ public final class Java25Parser {
                     if (elem14_4.isCutFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = elem14_4;
-                    }else if (elem14_4.isFailure()) {
+                    } else if (elem14_4.isFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = cut14
                                  ? elem14_4.asCutFailure()
@@ -9927,7 +9924,7 @@ public final class Java25Parser {
                     if (elem14_5.isCutFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = elem14_5;
-                    }else if (elem14_5.isFailure()) {
+                    } else if (elem14_5.isFailure()) {
                         restoreLocation(seqStart14);
                         alt0_2 = cut14
                                  ? elem14_5.asCutFailure()
@@ -9939,9 +9936,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                     children.clear();
                     children.addAll(savedChildren0);
@@ -9959,7 +9956,7 @@ public final class Java25Parser {
                         if (elem21_0.isCutFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = elem21_0;
-                        }else if (elem21_0.isFailure()) {
+                        } else if (elem21_0.isFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = cut21
                                      ? elem21_0.asCutFailure()
@@ -9972,7 +9969,7 @@ public final class Java25Parser {
                         if (elem21_1.isCutFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = elem21_1;
-                        }else if (elem21_1.isFailure()) {
+                        } else if (elem21_1.isFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = cut21
                                      ? elem21_1.asCutFailure()
@@ -9989,7 +9986,7 @@ public final class Java25Parser {
                         if (elem21_2.isCutFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = elem21_2;
-                        }else if (elem21_2.isFailure()) {
+                        } else if (elem21_2.isFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = cut21
                                      ? elem21_2.asCutFailure()
@@ -10007,7 +10004,7 @@ public final class Java25Parser {
                         if (elem21_3.isCutFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = elem21_3;
-                        }else if (elem21_3.isFailure()) {
+                        } else if (elem21_3.isFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = cut21
                                      ? elem21_3.asCutFailure()
@@ -10023,7 +10020,7 @@ public final class Java25Parser {
                         if (elem21_4.isCutFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = elem21_4;
-                        }else if (elem21_4.isFailure()) {
+                        } else if (elem21_4.isFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = cut21
                                      ? elem21_4.asCutFailure()
@@ -10041,7 +10038,7 @@ public final class Java25Parser {
                         if (elem21_5.isCutFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = elem21_5;
-                        }else if (elem21_5.isFailure()) {
+                        } else if (elem21_5.isFailure()) {
                             restoreLocation(seqStart21);
                             alt0_3 = cut21
                                      ? elem21_5.asCutFailure()
@@ -10053,9 +10050,9 @@ public final class Java25Parser {
                     }
                     if (alt0_3.isSuccess()) {
                         result = alt0_3;
-                    }else if (alt0_3.isCutFailure()) {
+                    } else if (alt0_3.isCutFailure()) {
                         result = alt0_3.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart0);
                         children.clear();
                         children.addAll(savedChildren0);
@@ -10073,7 +10070,7 @@ public final class Java25Parser {
                             if (elem28_0.isCutFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = elem28_0;
-                            }else if (elem28_0.isFailure()) {
+                            } else if (elem28_0.isFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = cut28
                                          ? elem28_0.asCutFailure()
@@ -10086,7 +10083,7 @@ public final class Java25Parser {
                             if (elem28_1.isCutFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = elem28_1;
-                            }else if (elem28_1.isFailure()) {
+                            } else if (elem28_1.isFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = cut28
                                          ? elem28_1.asCutFailure()
@@ -10105,7 +10102,7 @@ public final class Java25Parser {
                             if (elem28_2.isCutFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = elem28_2;
-                            }else if (elem28_2.isFailure()) {
+                            } else if (elem28_2.isFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = cut28
                                          ? elem28_2.asCutFailure()
@@ -10121,7 +10118,7 @@ public final class Java25Parser {
                             if (elem28_3.isCutFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = elem28_3;
-                            }else if (elem28_3.isFailure()) {
+                            } else if (elem28_3.isFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = cut28
                                          ? elem28_3.asCutFailure()
@@ -10137,7 +10134,7 @@ public final class Java25Parser {
                             if (elem28_4.isCutFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = elem28_4;
-                            }else if (elem28_4.isFailure()) {
+                            } else if (elem28_4.isFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = cut28
                                          ? elem28_4.asCutFailure()
@@ -10155,7 +10152,7 @@ public final class Java25Parser {
                             if (elem28_5.isCutFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = elem28_5;
-                            }else if (elem28_5.isFailure()) {
+                            } else if (elem28_5.isFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = cut28
                                          ? elem28_5.asCutFailure()
@@ -10171,7 +10168,7 @@ public final class Java25Parser {
                             if (elem28_6.isCutFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = elem28_6;
-                            }else if (elem28_6.isFailure()) {
+                            } else if (elem28_6.isFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = cut28
                                          ? elem28_6.asCutFailure()
@@ -10187,7 +10184,7 @@ public final class Java25Parser {
                             if (elem28_7.isCutFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = elem28_7;
-                            }else if (elem28_7.isFailure()) {
+                            } else if (elem28_7.isFailure()) {
                                 restoreLocation(seqStart28);
                                 alt0_4 = cut28
                                          ? elem28_7.asCutFailure()
@@ -10199,9 +10196,9 @@ public final class Java25Parser {
                         }
                         if (alt0_4.isSuccess()) {
                             result = alt0_4;
-                        }else if (alt0_4.isCutFailure()) {
+                        } else if (alt0_4.isCutFailure()) {
                             result = alt0_4.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart0);
                             children.clear();
                             children.addAll(savedChildren0);
@@ -10219,7 +10216,7 @@ public final class Java25Parser {
                                 if (elem37_0.isCutFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = elem37_0;
-                                }else if (elem37_0.isFailure()) {
+                                } else if (elem37_0.isFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = cut37
                                              ? elem37_0.asCutFailure()
@@ -10232,7 +10229,7 @@ public final class Java25Parser {
                                 if (elem37_1.isCutFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = elem37_1;
-                                }else if (elem37_1.isFailure()) {
+                                } else if (elem37_1.isFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = cut37
                                              ? elem37_1.asCutFailure()
@@ -10258,7 +10255,7 @@ public final class Java25Parser {
                                 if (elem37_2.isCutFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = elem37_2;
-                                }else if (elem37_2.isFailure()) {
+                                } else if (elem37_2.isFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = cut37
                                              ? elem37_2.asCutFailure()
@@ -10276,7 +10273,7 @@ public final class Java25Parser {
                                 if (elem37_3.isCutFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = elem37_3;
-                                }else if (elem37_3.isFailure()) {
+                                } else if (elem37_3.isFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = cut37
                                              ? elem37_3.asCutFailure()
@@ -10296,7 +10293,7 @@ public final class Java25Parser {
                                         children.add(zomElem43.node.unwrap());
                                     }
                                     if (zomElem43.isFailure() || location()
-                                                                 .offset() == beforeLoc43.offset()) {
+                                                                         .offset() == beforeLoc43.offset()) {
                                         restoreLocation(beforeLoc43);
                                         break;
                                     }
@@ -10305,7 +10302,7 @@ public final class Java25Parser {
                                 if (elem37_4.isCutFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = elem37_4;
-                                }else if (elem37_4.isFailure()) {
+                                } else if (elem37_4.isFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = cut37
                                              ? elem37_4.asCutFailure()
@@ -10330,7 +10327,7 @@ public final class Java25Parser {
                                 if (elem37_5.isCutFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = elem37_5;
-                                }else if (elem37_5.isFailure()) {
+                                } else if (elem37_5.isFailure()) {
                                     restoreLocation(seqStart37);
                                     alt0_5 = cut37
                                              ? elem37_5.asCutFailure()
@@ -10342,9 +10339,9 @@ public final class Java25Parser {
                             }
                             if (alt0_5.isSuccess()) {
                                 result = alt0_5;
-                            }else if (alt0_5.isCutFailure()) {
+                            } else if (alt0_5.isCutFailure()) {
                                 result = alt0_5.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart0);
                                 children.clear();
                                 children.addAll(savedChildren0);
@@ -10362,7 +10359,7 @@ public final class Java25Parser {
                                     if (elem47_0.isCutFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = elem47_0;
-                                    }else if (elem47_0.isFailure()) {
+                                    } else if (elem47_0.isFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = cut47
                                                  ? elem47_0.asCutFailure()
@@ -10375,7 +10372,7 @@ public final class Java25Parser {
                                     if (elem47_1.isCutFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = elem47_1;
-                                    }else if (elem47_1.isFailure()) {
+                                    } else if (elem47_1.isFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = cut47
                                                  ? elem47_1.asCutFailure()
@@ -10392,7 +10389,7 @@ public final class Java25Parser {
                                     if (elem47_2.isCutFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = elem47_2;
-                                    }else if (elem47_2.isFailure()) {
+                                    } else if (elem47_2.isFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = cut47
                                                  ? elem47_2.asCutFailure()
@@ -10410,7 +10407,7 @@ public final class Java25Parser {
                                     if (elem47_3.isCutFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = elem47_3;
-                                    }else if (elem47_3.isFailure()) {
+                                    } else if (elem47_3.isFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = cut47
                                                  ? elem47_3.asCutFailure()
@@ -10426,7 +10423,7 @@ public final class Java25Parser {
                                     if (elem47_4.isCutFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = elem47_4;
-                                    }else if (elem47_4.isFailure()) {
+                                    } else if (elem47_4.isFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = cut47
                                                  ? elem47_4.asCutFailure()
@@ -10444,7 +10441,7 @@ public final class Java25Parser {
                                     if (elem47_5.isCutFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = elem47_5;
-                                    }else if (elem47_5.isFailure()) {
+                                    } else if (elem47_5.isFailure()) {
                                         restoreLocation(seqStart47);
                                         alt0_6 = cut47
                                                  ? elem47_5.asCutFailure()
@@ -10458,9 +10455,9 @@ public final class Java25Parser {
                                 }
                                 if (alt0_6.isSuccess()) {
                                     result = alt0_6;
-                                }else if (alt0_6.isCutFailure()) {
+                                } else if (alt0_6.isCutFailure()) {
                                     result = alt0_6.asRegularFailure();
-                                }else {
+                                } else {
                                     restoreLocation(choiceStart0);
                                     children.clear();
                                     children.addAll(savedChildren0);
@@ -10478,7 +10475,7 @@ public final class Java25Parser {
                                         if (elem54_0.isCutFailure()) {
                                             restoreLocation(seqStart54);
                                             alt0_7 = elem54_0;
-                                        }else if (elem54_0.isFailure()) {
+                                        } else if (elem54_0.isFailure()) {
                                             restoreLocation(seqStart54);
                                             alt0_7 = cut54
                                                      ? elem54_0.asCutFailure()
@@ -10503,7 +10500,7 @@ public final class Java25Parser {
                                         if (elem54_1.isCutFailure()) {
                                             restoreLocation(seqStart54);
                                             alt0_7 = elem54_1;
-                                        }else if (elem54_1.isFailure()) {
+                                        } else if (elem54_1.isFailure()) {
                                             restoreLocation(seqStart54);
                                             alt0_7 = cut54
                                                      ? elem54_1.asCutFailure()
@@ -10519,7 +10516,7 @@ public final class Java25Parser {
                                         if (elem54_2.isCutFailure()) {
                                             restoreLocation(seqStart54);
                                             alt0_7 = elem54_2;
-                                        }else if (elem54_2.isFailure()) {
+                                        } else if (elem54_2.isFailure()) {
                                             restoreLocation(seqStart54);
                                             alt0_7 = cut54
                                                      ? elem54_2.asCutFailure()
@@ -10533,9 +10530,9 @@ public final class Java25Parser {
                                     }
                                     if (alt0_7.isSuccess()) {
                                         result = alt0_7;
-                                    }else if (alt0_7.isCutFailure()) {
+                                    } else if (alt0_7.isCutFailure()) {
                                         result = alt0_7.asRegularFailure();
-                                    }else {
+                                    } else {
                                         restoreLocation(choiceStart0);
                                         children.clear();
                                         children.addAll(savedChildren0);
@@ -10553,7 +10550,7 @@ public final class Java25Parser {
                                             if (elem59_0.isCutFailure()) {
                                                 restoreLocation(seqStart59);
                                                 alt0_8 = elem59_0;
-                                            }else if (elem59_0.isFailure()) {
+                                            } else if (elem59_0.isFailure()) {
                                                 restoreLocation(seqStart59);
                                                 alt0_8 = cut59
                                                          ? elem59_0.asCutFailure()
@@ -10571,7 +10568,7 @@ public final class Java25Parser {
                                             if (elem59_1.isCutFailure()) {
                                                 restoreLocation(seqStart59);
                                                 alt0_8 = elem59_1;
-                                            }else if (elem59_1.isFailure()) {
+                                            } else if (elem59_1.isFailure()) {
                                                 restoreLocation(seqStart59);
                                                 alt0_8 = cut59
                                                          ? elem59_1.asCutFailure()
@@ -10587,7 +10584,7 @@ public final class Java25Parser {
                                             if (elem59_2.isCutFailure()) {
                                                 restoreLocation(seqStart59);
                                                 alt0_8 = elem59_2;
-                                            }else if (elem59_2.isFailure()) {
+                                            } else if (elem59_2.isFailure()) {
                                                 restoreLocation(seqStart59);
                                                 alt0_8 = cut59
                                                          ? elem59_2.asCutFailure()
@@ -10601,9 +10598,9 @@ public final class Java25Parser {
                                         }
                                         if (alt0_8.isSuccess()) {
                                             result = alt0_8;
-                                        }else if (alt0_8.isCutFailure()) {
+                                        } else if (alt0_8.isCutFailure()) {
                                             result = alt0_8.asRegularFailure();
-                                        }else {
+                                        } else {
                                             restoreLocation(choiceStart0);
                                             children.clear();
                                             children.addAll(savedChildren0);
@@ -10621,7 +10618,7 @@ public final class Java25Parser {
                                                 if (elem63_0.isCutFailure()) {
                                                     restoreLocation(seqStart63);
                                                     alt0_9 = elem63_0;
-                                                }else if (elem63_0.isFailure()) {
+                                                } else if (elem63_0.isFailure()) {
                                                     restoreLocation(seqStart63);
                                                     alt0_9 = cut63
                                                              ? elem63_0.asCutFailure()
@@ -10646,7 +10643,7 @@ public final class Java25Parser {
                                                 if (elem63_1.isCutFailure()) {
                                                     restoreLocation(seqStart63);
                                                     alt0_9 = elem63_1;
-                                                }else if (elem63_1.isFailure()) {
+                                                } else if (elem63_1.isFailure()) {
                                                     restoreLocation(seqStart63);
                                                     alt0_9 = cut63
                                                              ? elem63_1.asCutFailure()
@@ -10662,7 +10659,7 @@ public final class Java25Parser {
                                                 if (elem63_2.isCutFailure()) {
                                                     restoreLocation(seqStart63);
                                                     alt0_9 = elem63_2;
-                                                }else if (elem63_2.isFailure()) {
+                                                } else if (elem63_2.isFailure()) {
                                                     restoreLocation(seqStart63);
                                                     alt0_9 = cut63
                                                              ? elem63_2.asCutFailure()
@@ -10676,9 +10673,9 @@ public final class Java25Parser {
                                             }
                                             if (alt0_9.isSuccess()) {
                                                 result = alt0_9;
-                                            }else if (alt0_9.isCutFailure()) {
+                                            } else if (alt0_9.isCutFailure()) {
                                                 result = alt0_9.asRegularFailure();
-                                            }else {
+                                            } else {
                                                 restoreLocation(choiceStart0);
                                                 children.clear();
                                                 children.addAll(savedChildren0);
@@ -10696,7 +10693,7 @@ public final class Java25Parser {
                                                     if (elem68_0.isCutFailure()) {
                                                         restoreLocation(seqStart68);
                                                         alt0_10 = elem68_0;
-                                                    }else if (elem68_0.isFailure()) {
+                                                    } else if (elem68_0.isFailure()) {
                                                         restoreLocation(seqStart68);
                                                         alt0_10 = cut68
                                                                   ? elem68_0.asCutFailure()
@@ -10721,7 +10718,7 @@ public final class Java25Parser {
                                                     if (elem68_1.isCutFailure()) {
                                                         restoreLocation(seqStart68);
                                                         alt0_10 = elem68_1;
-                                                    }else if (elem68_1.isFailure()) {
+                                                    } else if (elem68_1.isFailure()) {
                                                         restoreLocation(seqStart68);
                                                         alt0_10 = cut68
                                                                   ? elem68_1.asCutFailure()
@@ -10737,7 +10734,7 @@ public final class Java25Parser {
                                                     if (elem68_2.isCutFailure()) {
                                                         restoreLocation(seqStart68);
                                                         alt0_10 = elem68_2;
-                                                    }else if (elem68_2.isFailure()) {
+                                                    } else if (elem68_2.isFailure()) {
                                                         restoreLocation(seqStart68);
                                                         alt0_10 = cut68
                                                                   ? elem68_2.asCutFailure()
@@ -10751,9 +10748,9 @@ public final class Java25Parser {
                                                 }
                                                 if (alt0_10.isSuccess()) {
                                                     result = alt0_10;
-                                                }else if (alt0_10.isCutFailure()) {
+                                                } else if (alt0_10.isCutFailure()) {
                                                     result = alt0_10.asRegularFailure();
-                                                }else {
+                                                } else {
                                                     restoreLocation(choiceStart0);
                                                     children.clear();
                                                     children.addAll(savedChildren0);
@@ -10771,7 +10768,7 @@ public final class Java25Parser {
                                                         if (elem73_0.isCutFailure()) {
                                                             restoreLocation(seqStart73);
                                                             alt0_11 = elem73_0;
-                                                        }else if (elem73_0.isFailure()) {
+                                                        } else if (elem73_0.isFailure()) {
                                                             restoreLocation(seqStart73);
                                                             alt0_11 = cut73
                                                                       ? elem73_0.asCutFailure()
@@ -10789,7 +10786,7 @@ public final class Java25Parser {
                                                         if (elem73_1.isCutFailure()) {
                                                             restoreLocation(seqStart73);
                                                             alt0_11 = elem73_1;
-                                                        }else if (elem73_1.isFailure()) {
+                                                        } else if (elem73_1.isFailure()) {
                                                             restoreLocation(seqStart73);
                                                             alt0_11 = cut73
                                                                       ? elem73_1.asCutFailure()
@@ -10812,7 +10809,7 @@ public final class Java25Parser {
                                                             if (elem78_0.isCutFailure()) {
                                                                 restoreLocation(seqStart78);
                                                                 optElem76 = elem78_0;
-                                                            }else if (elem78_0.isFailure()) {
+                                                            } else if (elem78_0.isFailure()) {
                                                                 restoreLocation(seqStart78);
                                                                 optElem76 = cut78
                                                                             ? elem78_0.asCutFailure()
@@ -10830,7 +10827,7 @@ public final class Java25Parser {
                                                             if (elem78_1.isCutFailure()) {
                                                                 restoreLocation(seqStart78);
                                                                 optElem76 = elem78_1;
-                                                            }else if (elem78_1.isFailure()) {
+                                                            } else if (elem78_1.isFailure()) {
                                                                 restoreLocation(seqStart78);
                                                                 optElem76 = cut78
                                                                             ? elem78_1.asCutFailure()
@@ -10852,7 +10849,7 @@ public final class Java25Parser {
                                                         if (elem73_2.isCutFailure()) {
                                                             restoreLocation(seqStart73);
                                                             alt0_11 = elem73_2;
-                                                        }else if (elem73_2.isFailure()) {
+                                                        } else if (elem73_2.isFailure()) {
                                                             restoreLocation(seqStart73);
                                                             alt0_11 = cut73
                                                                       ? elem73_2.asCutFailure()
@@ -10868,7 +10865,7 @@ public final class Java25Parser {
                                                         if (elem73_3.isCutFailure()) {
                                                             restoreLocation(seqStart73);
                                                             alt0_11 = elem73_3;
-                                                        }else if (elem73_3.isFailure()) {
+                                                        } else if (elem73_3.isFailure()) {
                                                             restoreLocation(seqStart73);
                                                             alt0_11 = cut73
                                                                       ? elem73_3.asCutFailure()
@@ -10883,9 +10880,9 @@ public final class Java25Parser {
                                                     }
                                                     if (alt0_11.isSuccess()) {
                                                         result = alt0_11;
-                                                    }else if (alt0_11.isCutFailure()) {
+                                                    } else if (alt0_11.isCutFailure()) {
                                                         result = alt0_11.asRegularFailure();
-                                                    }else {
+                                                    } else {
                                                         restoreLocation(choiceStart0);
                                                         children.clear();
                                                         children.addAll(savedChildren0);
@@ -10905,7 +10902,7 @@ public final class Java25Parser {
                                                             if (elem82_0.isCutFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = elem82_0;
-                                                            }else if (elem82_0.isFailure()) {
+                                                            } else if (elem82_0.isFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = cut82
                                                                           ? elem82_0.asCutFailure()
@@ -10918,7 +10915,7 @@ public final class Java25Parser {
                                                             if (elem82_1.isCutFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = elem82_1;
-                                                            }else if (elem82_1.isFailure()) {
+                                                            } else if (elem82_1.isFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = cut82
                                                                           ? elem82_1.asCutFailure()
@@ -10935,7 +10932,7 @@ public final class Java25Parser {
                                                             if (elem82_2.isCutFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = elem82_2;
-                                                            }else if (elem82_2.isFailure()) {
+                                                            } else if (elem82_2.isFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = cut82
                                                                           ? elem82_2.asCutFailure()
@@ -10953,7 +10950,7 @@ public final class Java25Parser {
                                                             if (elem82_3.isCutFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = elem82_3;
-                                                            }else if (elem82_3.isFailure()) {
+                                                            } else if (elem82_3.isFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = cut82
                                                                           ? elem82_3.asCutFailure()
@@ -10969,7 +10966,7 @@ public final class Java25Parser {
                                                             if (elem82_4.isCutFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = elem82_4;
-                                                            }else if (elem82_4.isFailure()) {
+                                                            } else if (elem82_4.isFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = cut82
                                                                           ? elem82_4.asCutFailure()
@@ -10987,7 +10984,7 @@ public final class Java25Parser {
                                                             if (elem82_5.isCutFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = elem82_5;
-                                                            }else if (elem82_5.isFailure()) {
+                                                            } else if (elem82_5.isFailure()) {
                                                                 restoreLocation(seqStart82);
                                                                 alt0_12 = cut82
                                                                           ? elem82_5.asCutFailure()
@@ -11002,9 +10999,9 @@ public final class Java25Parser {
                                                         }
                                                         if (alt0_12.isSuccess()) {
                                                             result = alt0_12;
-                                                        }else if (alt0_12.isCutFailure()) {
+                                                        } else if (alt0_12.isCutFailure()) {
                                                             result = alt0_12.asRegularFailure();
-                                                        }else {
+                                                        } else {
                                                             restoreLocation(choiceStart0);
                                                             children.clear();
                                                             children.addAll(savedChildren0);
@@ -11024,7 +11021,7 @@ public final class Java25Parser {
                                                                 if (elem89_0.isCutFailure()) {
                                                                     restoreLocation(seqStart89);
                                                                     alt0_13 = elem89_0;
-                                                                }else if (elem89_0.isFailure()) {
+                                                                } else if (elem89_0.isFailure()) {
                                                                     restoreLocation(seqStart89);
                                                                     alt0_13 = cut89
                                                                               ? elem89_0.asCutFailure()
@@ -11042,7 +11039,7 @@ public final class Java25Parser {
                                                                 if (elem89_1.isCutFailure()) {
                                                                     restoreLocation(seqStart89);
                                                                     alt0_13 = elem89_1;
-                                                                }else if (elem89_1.isFailure()) {
+                                                                } else if (elem89_1.isFailure()) {
                                                                     restoreLocation(seqStart89);
                                                                     alt0_13 = cut89
                                                                               ? elem89_1.asCutFailure()
@@ -11058,7 +11055,7 @@ public final class Java25Parser {
                                                                 if (elem89_2.isCutFailure()) {
                                                                     restoreLocation(seqStart89);
                                                                     alt0_13 = elem89_2;
-                                                                }else if (elem89_2.isFailure()) {
+                                                                } else if (elem89_2.isFailure()) {
                                                                     restoreLocation(seqStart89);
                                                                     alt0_13 = cut89
                                                                               ? elem89_2.asCutFailure()
@@ -11073,9 +11070,9 @@ public final class Java25Parser {
                                                             }
                                                             if (alt0_13.isSuccess()) {
                                                                 result = alt0_13;
-                                                            }else if (alt0_13.isCutFailure()) {
+                                                            } else if (alt0_13.isCutFailure()) {
                                                                 result = alt0_13.asRegularFailure();
-                                                            }else {
+                                                            } else {
                                                                 restoreLocation(choiceStart0);
                                                                 children.clear();
                                                                 children.addAll(savedChildren0);
@@ -11095,7 +11092,7 @@ public final class Java25Parser {
                                                                     if (elem93_0.isCutFailure()) {
                                                                         restoreLocation(seqStart93);
                                                                         alt0_14 = elem93_0;
-                                                                    }else if (elem93_0.isFailure()) {
+                                                                    } else if (elem93_0.isFailure()) {
                                                                         restoreLocation(seqStart93);
                                                                         alt0_14 = cut93
                                                                                   ? elem93_0.asCutFailure()
@@ -11111,7 +11108,7 @@ public final class Java25Parser {
                                                                     if (elem93_1.isCutFailure()) {
                                                                         restoreLocation(seqStart93);
                                                                         alt0_14 = elem93_1;
-                                                                    }else if (elem93_1.isFailure()) {
+                                                                    } else if (elem93_1.isFailure()) {
                                                                         restoreLocation(seqStart93);
                                                                         alt0_14 = cut93
                                                                                   ? elem93_1.asCutFailure()
@@ -11129,7 +11126,7 @@ public final class Java25Parser {
                                                                     if (elem93_2.isCutFailure()) {
                                                                         restoreLocation(seqStart93);
                                                                         alt0_14 = elem93_2;
-                                                                    }else if (elem93_2.isFailure()) {
+                                                                    } else if (elem93_2.isFailure()) {
                                                                         restoreLocation(seqStart93);
                                                                         alt0_14 = cut93
                                                                                   ? elem93_2.asCutFailure()
@@ -11144,9 +11141,9 @@ public final class Java25Parser {
                                                                 }
                                                                 if (alt0_14.isSuccess()) {
                                                                     result = alt0_14;
-                                                                }else if (alt0_14.isCutFailure()) {
+                                                                } else if (alt0_14.isCutFailure()) {
                                                                     result = alt0_14.asRegularFailure();
-                                                                }else {
+                                                                } else {
                                                                     restoreLocation(choiceStart0);
                                                                     children.clear();
                                                                     children.addAll(savedChildren0);
@@ -11166,7 +11163,7 @@ public final class Java25Parser {
                                                                         if (elem97_0.isCutFailure()) {
                                                                             restoreLocation(seqStart97);
                                                                             alt0_15 = elem97_0;
-                                                                        }else if (elem97_0.isFailure()) {
+                                                                        } else if (elem97_0.isFailure()) {
                                                                             restoreLocation(seqStart97);
                                                                             alt0_15 = cut97
                                                                                       ? elem97_0.asCutFailure()
@@ -11182,7 +11179,7 @@ public final class Java25Parser {
                                                                         if (elem97_1.isCutFailure()) {
                                                                             restoreLocation(seqStart97);
                                                                             alt0_15 = elem97_1;
-                                                                        }else if (elem97_1.isFailure()) {
+                                                                        } else if (elem97_1.isFailure()) {
                                                                             restoreLocation(seqStart97);
                                                                             alt0_15 = cut97
                                                                                       ? elem97_1.asCutFailure()
@@ -11197,9 +11194,9 @@ public final class Java25Parser {
                                                                     }
                                                                     if (alt0_15.isSuccess()) {
                                                                         result = alt0_15;
-                                                                    }else if (alt0_15.isCutFailure()) {
+                                                                    } else if (alt0_15.isCutFailure()) {
                                                                         result = alt0_15.asRegularFailure();
-                                                                    }else {
+                                                                    } else {
                                                                         restoreLocation(choiceStart0);
                                                                         children.clear();
                                                                         children.addAll(savedChildren0);
@@ -11209,9 +11206,9 @@ public final class Java25Parser {
                                                                         }
                                                                         if (alt0_16.isSuccess()) {
                                                                             result = alt0_16;
-                                                                        }else if (alt0_16.isCutFailure()) {
+                                                                        } else if (alt0_16.isCutFailure()) {
                                                                             result = alt0_16.asRegularFailure();
-                                                                        }else {
+                                                                        } else {
                                                                             restoreLocation(choiceStart0);
                                                                         }
                                                                     }
@@ -11241,7 +11238,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_STMT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -11272,7 +11269,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -11290,7 +11287,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -11310,7 +11307,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -11319,7 +11316,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_IF_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -11350,7 +11347,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -11368,7 +11365,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -11388,7 +11385,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -11397,7 +11394,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_WHILE_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -11428,7 +11425,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -11446,7 +11443,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -11466,7 +11463,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -11475,7 +11472,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_FOR_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -11506,7 +11503,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -11524,7 +11521,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -11544,7 +11541,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -11553,7 +11550,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_DO_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -11584,7 +11581,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -11602,7 +11599,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -11622,7 +11619,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -11631,7 +11628,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_TRY_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -11662,7 +11659,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -11680,7 +11677,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -11700,7 +11697,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -11709,7 +11706,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_SWITCH_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -11740,7 +11737,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -11758,7 +11755,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -11778,7 +11775,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -11787,7 +11784,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_SYNCHRONIZED_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -11818,7 +11815,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -11836,7 +11833,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -11856,7 +11853,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -11865,7 +11862,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_RETURN_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -11896,7 +11893,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -11914,7 +11911,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -11934,7 +11931,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -11943,7 +11940,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_THROW_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -11974,7 +11971,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -11992,7 +11989,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -12012,7 +12009,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -12021,7 +12018,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_BREAK_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -12052,7 +12049,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -12070,7 +12067,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -12090,7 +12087,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -12099,7 +12096,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_CONTINUE_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -12130,7 +12127,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -12148,7 +12145,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -12168,7 +12165,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -12177,7 +12174,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_ASSERT_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -12208,7 +12205,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -12226,7 +12223,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -12246,7 +12243,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -12255,7 +12252,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_YIELD_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -12286,7 +12283,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -12304,7 +12301,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -12324,7 +12321,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -12333,7 +12330,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_CATCH_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -12364,7 +12361,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -12382,7 +12379,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -12402,7 +12399,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -12411,7 +12408,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_FINALLY_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -12442,7 +12439,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -12460,7 +12457,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -12480,7 +12477,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -12489,7 +12486,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_WHEN_K_W, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -12535,7 +12532,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -12551,7 +12548,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -12576,7 +12573,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_2.asCutFailure()
@@ -12592,7 +12589,7 @@ public final class Java25Parser {
             if (elem1_3.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
-            }else if (elem1_3.isFailure()) {
+            } else if (elem1_3.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_3.asCutFailure()
@@ -12617,7 +12614,7 @@ public final class Java25Parser {
             if (elem1_4.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_4;
-            }else if (elem1_4.isFailure()) {
+            } else if (elem1_4.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_4.asCutFailure()
@@ -12629,9 +12626,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -12649,7 +12646,7 @@ public final class Java25Parser {
                 if (elem10_0.isCutFailure()) {
                     restoreLocation(seqStart10);
                     alt0_1 = elem10_0;
-                }else if (elem10_0.isFailure()) {
+                } else if (elem10_0.isFailure()) {
                     restoreLocation(seqStart10);
                     alt0_1 = cut10
                              ? elem10_0.asCutFailure()
@@ -12667,7 +12664,7 @@ public final class Java25Parser {
                 if (elem10_1.isCutFailure()) {
                     restoreLocation(seqStart10);
                     alt0_1 = elem10_1;
-                }else if (elem10_1.isFailure()) {
+                } else if (elem10_1.isFailure()) {
                     restoreLocation(seqStart10);
                     alt0_1 = cut10
                              ? elem10_1.asCutFailure()
@@ -12683,7 +12680,7 @@ public final class Java25Parser {
                 if (elem10_2.isCutFailure()) {
                     restoreLocation(seqStart10);
                     alt0_1 = elem10_2;
-                }else if (elem10_2.isFailure()) {
+                } else if (elem10_2.isFailure()) {
                     restoreLocation(seqStart10);
                     alt0_1 = cut10
                              ? elem10_2.asCutFailure()
@@ -12701,7 +12698,7 @@ public final class Java25Parser {
                 if (elem10_3.isCutFailure()) {
                     restoreLocation(seqStart10);
                     alt0_1 = elem10_3;
-                }else if (elem10_3.isFailure()) {
+                } else if (elem10_3.isFailure()) {
                     restoreLocation(seqStart10);
                     alt0_1 = cut10
                              ? elem10_3.asCutFailure()
@@ -12713,9 +12710,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -12730,7 +12727,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_FOR_CTRL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -12764,9 +12761,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -12779,9 +12776,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -12796,7 +12793,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_FOR_INIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -12832,7 +12829,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -12841,7 +12838,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -12859,7 +12856,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -12877,7 +12874,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -12893,7 +12890,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_LOCAL_VAR_NO_SEMI, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -12924,7 +12921,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -12942,7 +12939,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -12966,7 +12963,7 @@ public final class Java25Parser {
                     if (elem5_0.isCutFailure()) {
                         restoreLocation(seqStart5);
                         zomElem3 = elem5_0;
-                    }else if (elem5_0.isFailure()) {
+                    } else if (elem5_0.isFailure()) {
                         restoreLocation(seqStart5);
                         zomElem3 = cut5
                                    ? elem5_0.asCutFailure()
@@ -12984,7 +12981,7 @@ public final class Java25Parser {
                     if (elem5_1.isCutFailure()) {
                         restoreLocation(seqStart5);
                         zomElem3 = elem5_1;
-                    }else if (elem5_1.isFailure()) {
+                    } else if (elem5_1.isFailure()) {
                         restoreLocation(seqStart5);
                         zomElem3 = cut5
                                    ? elem5_1.asCutFailure()
@@ -12995,7 +12992,7 @@ public final class Java25Parser {
                     zomElem3 = CstParseResult.success(null, substring(seqStart5.offset(), pos), location());
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -13004,7 +13001,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -13027,7 +13024,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -13043,7 +13040,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -13059,7 +13056,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_RESOURCE_SPEC, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -13100,7 +13097,7 @@ public final class Java25Parser {
                     children.add(zomElem2.node.unwrap());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -13109,7 +13106,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -13127,7 +13124,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -13145,7 +13142,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_2.asCutFailure()
@@ -13161,7 +13158,7 @@ public final class Java25Parser {
             if (elem1_3.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
-            }else if (elem1_3.isFailure()) {
+            } else if (elem1_3.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_3.asCutFailure()
@@ -13179,7 +13176,7 @@ public final class Java25Parser {
             if (elem1_4.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_4;
-            }else if (elem1_4.isFailure()) {
+            } else if (elem1_4.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_4.asCutFailure()
@@ -13191,9 +13188,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -13206,9 +13203,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -13223,7 +13220,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_RESOURCE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -13257,7 +13254,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -13270,7 +13267,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -13287,7 +13284,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -13307,7 +13304,7 @@ public final class Java25Parser {
                     children.add(zomElem4.node.unwrap());
                 }
                 if (zomElem4.isFailure() || location()
-                                            .offset() == beforeLoc4.offset()) {
+                                                    .offset() == beforeLoc4.offset()) {
                     restoreLocation(beforeLoc4);
                     break;
                 }
@@ -13316,7 +13313,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -13334,7 +13331,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -13358,7 +13355,7 @@ public final class Java25Parser {
                     if (elem9_0.isCutFailure()) {
                         restoreLocation(seqStart9);
                         zomElem7 = elem9_0;
-                    }else if (elem9_0.isFailure()) {
+                    } else if (elem9_0.isFailure()) {
                         restoreLocation(seqStart9);
                         zomElem7 = cut9
                                    ? elem9_0.asCutFailure()
@@ -13376,7 +13373,7 @@ public final class Java25Parser {
                     if (elem9_1.isCutFailure()) {
                         restoreLocation(seqStart9);
                         zomElem7 = elem9_1;
-                    }else if (elem9_1.isFailure()) {
+                    } else if (elem9_1.isFailure()) {
                         restoreLocation(seqStart9);
                         zomElem7 = cut9
                                    ? elem9_1.asCutFailure()
@@ -13387,7 +13384,7 @@ public final class Java25Parser {
                     zomElem7 = CstParseResult.success(null, substring(seqStart9.offset(), pos), location());
                 }
                 if (zomElem7.isFailure() || location()
-                                            .offset() == beforeLoc7.offset()) {
+                                                    .offset() == beforeLoc7.offset()) {
                     restoreLocation(beforeLoc7);
                     break;
                 }
@@ -13396,7 +13393,7 @@ public final class Java25Parser {
             if (elem0_5.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_5;
-            }else if (elem0_5.isFailure()) {
+            } else if (elem0_5.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_5.asCutFailure()
@@ -13414,7 +13411,7 @@ public final class Java25Parser {
             if (elem0_6.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_6;
-            }else if (elem0_6.isFailure()) {
+            } else if (elem0_6.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_6.asCutFailure()
@@ -13430,7 +13427,7 @@ public final class Java25Parser {
             if (elem0_7.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_7;
-            }else if (elem0_7.isFailure()) {
+            } else if (elem0_7.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_7.asCutFailure()
@@ -13448,7 +13445,7 @@ public final class Java25Parser {
             if (elem0_8.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_8;
-            }else if (elem0_8.isFailure()) {
+            } else if (elem0_8.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_8.asCutFailure()
@@ -13464,7 +13461,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_CATCH, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -13498,7 +13495,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -13511,7 +13508,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -13530,7 +13527,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -13546,7 +13543,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_FINALLY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -13577,7 +13574,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -13597,7 +13594,7 @@ public final class Java25Parser {
                     children.add(zomElem2.node.unwrap());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -13606,7 +13603,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -13622,7 +13619,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -13638,7 +13635,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_SWITCH_BLOCK, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -13677,7 +13674,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -13693,7 +13690,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -13720,7 +13717,7 @@ public final class Java25Parser {
                 if (elem6_0.isCutFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = elem6_0;
-                }else if (elem6_0.isFailure()) {
+                } else if (elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = cut6
                              ? elem6_0.asCutFailure()
@@ -13736,7 +13733,7 @@ public final class Java25Parser {
                 if (elem6_1.isCutFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = elem6_1;
-                }else if (elem6_1.isFailure()) {
+                } else if (elem6_1.isFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = cut6
                              ? elem6_1.asCutFailure()
@@ -13748,9 +13745,9 @@ public final class Java25Parser {
             }
             if (alt5_0.isSuccess()) {
                 elem1_2 = alt5_0;
-            }else if (alt5_0.isCutFailure()) {
+            } else if (alt5_0.isCutFailure()) {
                 elem1_2 = alt5_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart5);
                 children.clear();
                 children.addAll(savedChildren5);
@@ -13763,9 +13760,9 @@ public final class Java25Parser {
                 }
                 if (alt5_1.isSuccess()) {
                     elem1_2 = alt5_1;
-                }else if (alt5_1.isCutFailure()) {
+                } else if (alt5_1.isCutFailure()) {
                     elem1_2 = alt5_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart5);
                     children.clear();
                     children.addAll(savedChildren5);
@@ -13783,7 +13780,7 @@ public final class Java25Parser {
                         if (elem10_0.isCutFailure()) {
                             restoreLocation(seqStart10);
                             alt5_2 = elem10_0;
-                        }else if (elem10_0.isFailure()) {
+                        } else if (elem10_0.isFailure()) {
                             restoreLocation(seqStart10);
                             alt5_2 = cut10
                                      ? elem10_0.asCutFailure()
@@ -13801,7 +13798,7 @@ public final class Java25Parser {
                         if (elem10_1.isCutFailure()) {
                             restoreLocation(seqStart10);
                             alt5_2 = elem10_1;
-                        }else if (elem10_1.isFailure()) {
+                        } else if (elem10_1.isFailure()) {
                             restoreLocation(seqStart10);
                             alt5_2 = cut10
                                      ? elem10_1.asCutFailure()
@@ -13817,7 +13814,7 @@ public final class Java25Parser {
                         if (elem10_2.isCutFailure()) {
                             restoreLocation(seqStart10);
                             alt5_2 = elem10_2;
-                        }else if (elem10_2.isFailure()) {
+                        } else if (elem10_2.isFailure()) {
                             restoreLocation(seqStart10);
                             alt5_2 = cut10
                                      ? elem10_2.asCutFailure()
@@ -13829,9 +13826,9 @@ public final class Java25Parser {
                     }
                     if (alt5_2.isSuccess()) {
                         elem1_2 = alt5_2;
-                    }else if (alt5_2.isCutFailure()) {
+                    } else if (alt5_2.isCutFailure()) {
                         elem1_2 = alt5_2.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart5);
                     }
                 }
@@ -13844,7 +13841,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_2.asCutFailure()
@@ -13856,9 +13853,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -13876,7 +13873,7 @@ public final class Java25Parser {
                 if (elem14_0.isCutFailure()) {
                     restoreLocation(seqStart14);
                     alt0_1 = elem14_0;
-                }else if (elem14_0.isFailure()) {
+                } else if (elem14_0.isFailure()) {
                     restoreLocation(seqStart14);
                     alt0_1 = cut14
                              ? elem14_0.asCutFailure()
@@ -13892,7 +13889,7 @@ public final class Java25Parser {
                 if (elem14_1.isCutFailure()) {
                     restoreLocation(seqStart14);
                     alt0_1 = elem14_1;
-                }else if (elem14_1.isFailure()) {
+                } else if (elem14_1.isFailure()) {
                     restoreLocation(seqStart14);
                     alt0_1 = cut14
                              ? elem14_1.asCutFailure()
@@ -13912,7 +13909,7 @@ public final class Java25Parser {
                         children.add(zomElem17.node.unwrap());
                     }
                     if (zomElem17.isFailure() || location()
-                                                 .offset() == beforeLoc17.offset()) {
+                                                         .offset() == beforeLoc17.offset()) {
                         restoreLocation(beforeLoc17);
                         break;
                     }
@@ -13921,7 +13918,7 @@ public final class Java25Parser {
                 if (elem14_2.isCutFailure()) {
                     restoreLocation(seqStart14);
                     alt0_1 = elem14_2;
-                }else if (elem14_2.isFailure()) {
+                } else if (elem14_2.isFailure()) {
                     restoreLocation(seqStart14);
                     alt0_1 = cut14
                              ? elem14_2.asCutFailure()
@@ -13933,9 +13930,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -13950,7 +13947,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_SWITCH_RULE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -13986,7 +13983,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -13999,7 +13996,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -14024,7 +14021,7 @@ public final class Java25Parser {
                 if (elem6_0.isCutFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = elem6_0;
-                }else if (elem6_0.isFailure()) {
+                } else if (elem6_0.isFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = cut6
                              ? elem6_0.asCutFailure()
@@ -14045,7 +14042,7 @@ public final class Java25Parser {
                     if (elem10_0.isCutFailure()) {
                         restoreLocation(seqStart10);
                         optElem8 = elem10_0;
-                    }else if (elem10_0.isFailure()) {
+                    } else if (elem10_0.isFailure()) {
                         restoreLocation(seqStart10);
                         optElem8 = cut10
                                    ? elem10_0.asCutFailure()
@@ -14061,7 +14058,7 @@ public final class Java25Parser {
                     if (elem10_1.isCutFailure()) {
                         restoreLocation(seqStart10);
                         optElem8 = elem10_1;
-                    }else if (elem10_1.isFailure()) {
+                    } else if (elem10_1.isFailure()) {
                         restoreLocation(seqStart10);
                         optElem8 = cut10
                                    ? elem10_1.asCutFailure()
@@ -14080,7 +14077,7 @@ public final class Java25Parser {
                 if (elem6_1.isCutFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = elem6_1;
-                }else if (elem6_1.isFailure()) {
+                } else if (elem6_1.isFailure()) {
                     restoreLocation(seqStart6);
                     alt5_0 = cut6
                              ? elem6_1.asCutFailure()
@@ -14092,9 +14089,9 @@ public final class Java25Parser {
             }
             if (alt5_0.isSuccess()) {
                 elem1_2 = alt5_0;
-            }else if (alt5_0.isCutFailure()) {
+            } else if (alt5_0.isCutFailure()) {
                 elem1_2 = alt5_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart5);
                 children.clear();
                 children.addAll(savedChildren5);
@@ -14112,7 +14109,7 @@ public final class Java25Parser {
                     if (elem13_0.isCutFailure()) {
                         restoreLocation(seqStart13);
                         alt5_1 = elem13_0;
-                    }else if (elem13_0.isFailure()) {
+                    } else if (elem13_0.isFailure()) {
                         restoreLocation(seqStart13);
                         alt5_1 = cut13
                                  ? elem13_0.asCutFailure()
@@ -14136,7 +14133,7 @@ public final class Java25Parser {
                             if (elem17_0.isCutFailure()) {
                                 restoreLocation(seqStart17);
                                 zomElem15 = elem17_0;
-                            }else if (elem17_0.isFailure()) {
+                            } else if (elem17_0.isFailure()) {
                                 restoreLocation(seqStart17);
                                 zomElem15 = cut17
                                             ? elem17_0.asCutFailure()
@@ -14154,7 +14151,7 @@ public final class Java25Parser {
                             if (elem17_1.isCutFailure()) {
                                 restoreLocation(seqStart17);
                                 zomElem15 = elem17_1;
-                            }else if (elem17_1.isFailure()) {
+                            } else if (elem17_1.isFailure()) {
                                 restoreLocation(seqStart17);
                                 zomElem15 = cut17
                                             ? elem17_1.asCutFailure()
@@ -14165,7 +14162,7 @@ public final class Java25Parser {
                             zomElem15 = CstParseResult.success(null, substring(seqStart17.offset(), pos), location());
                         }
                         if (zomElem15.isFailure() || location()
-                                                     .offset() == beforeLoc15.offset()) {
+                                                             .offset() == beforeLoc15.offset()) {
                             restoreLocation(beforeLoc15);
                             break;
                         }
@@ -14174,7 +14171,7 @@ public final class Java25Parser {
                     if (elem13_1.isCutFailure()) {
                         restoreLocation(seqStart13);
                         alt5_1 = elem13_1;
-                    }else if (elem13_1.isFailure()) {
+                    } else if (elem13_1.isFailure()) {
                         restoreLocation(seqStart13);
                         alt5_1 = cut13
                                  ? elem13_1.asCutFailure()
@@ -14199,7 +14196,7 @@ public final class Java25Parser {
                     if (elem13_2.isCutFailure()) {
                         restoreLocation(seqStart13);
                         alt5_1 = elem13_2;
-                    }else if (elem13_2.isFailure()) {
+                    } else if (elem13_2.isFailure()) {
                         restoreLocation(seqStart13);
                         alt5_1 = cut13
                                  ? elem13_2.asCutFailure()
@@ -14211,9 +14208,9 @@ public final class Java25Parser {
                 }
                 if (alt5_1.isSuccess()) {
                     elem1_2 = alt5_1;
-                }else if (alt5_1.isCutFailure()) {
+                } else if (alt5_1.isCutFailure()) {
                     elem1_2 = alt5_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart5);
                 }
             }
@@ -14225,7 +14222,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_2.asCutFailure()
@@ -14237,9 +14234,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -14249,9 +14246,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -14266,7 +14263,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_SWITCH_LABEL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -14300,9 +14297,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -14320,7 +14317,7 @@ public final class Java25Parser {
                 if (elem2_0.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_0;
-                }else if (elem2_0.isFailure()) {
+                } else if (elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_0.asCutFailure()
@@ -14336,30 +14333,30 @@ public final class Java25Parser {
                 var alt6_0 = matchLiteralCst("->", false);
                 if (alt6_0.isSuccess()) {
                     andElem4 = alt6_0;
-                }else if (alt6_0.isCutFailure()) {
+                } else if (alt6_0.isCutFailure()) {
                     andElem4 = alt6_0.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart6);
                     var alt6_1 = matchLiteralCst(",", false);
                     if (alt6_1.isSuccess()) {
                         andElem4 = alt6_1;
-                    }else if (alt6_1.isCutFailure()) {
+                    } else if (alt6_1.isCutFailure()) {
                         andElem4 = alt6_1.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart6);
                         var alt6_2 = matchLiteralCst(":", false);
                         if (alt6_2.isSuccess()) {
                             andElem4 = alt6_2;
-                        }else if (alt6_2.isCutFailure()) {
+                        } else if (alt6_2.isCutFailure()) {
                             andElem4 = alt6_2.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart6);
                             var alt6_3 = matchLiteralCst("when", false);
                             if (alt6_3.isSuccess()) {
                                 andElem4 = alt6_3;
-                            }else if (alt6_3.isCutFailure()) {
+                            } else if (alt6_3.isCutFailure()) {
                                 andElem4 = alt6_3.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart6);
                             }
                         }
@@ -14377,7 +14374,7 @@ public final class Java25Parser {
                 if (elem2_1.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_1;
-                }else if (elem2_1.isFailure()) {
+                } else if (elem2_1.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_1.asCutFailure()
@@ -14389,9 +14386,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -14404,9 +14401,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                 }
             }
@@ -14422,7 +14419,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_CASE_ITEM, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -14456,9 +14453,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -14471,9 +14468,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -14488,7 +14485,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_PATTERN, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -14530,7 +14527,7 @@ public final class Java25Parser {
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
                     andElem2 = elem4_0;
-                }else if (elem4_0.isFailure()) {
+                } else if (elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     andElem2 = cut4
                                ? elem4_0.asCutFailure()
@@ -14545,7 +14542,7 @@ public final class Java25Parser {
                 if (elem4_1.isCutFailure()) {
                     restoreLocation(seqStart4);
                     andElem2 = elem4_1;
-                }else if (elem4_1.isFailure()) {
+                } else if (elem4_1.isFailure()) {
                     restoreLocation(seqStart4);
                     andElem2 = cut4
                                ? elem4_1.asCutFailure()
@@ -14564,7 +14561,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -14582,7 +14579,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -14600,7 +14597,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_2.asCutFailure()
@@ -14612,9 +14609,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -14624,9 +14621,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -14641,7 +14638,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TYPE_PATTERN, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -14675,7 +14672,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -14691,7 +14688,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -14716,7 +14713,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -14732,7 +14729,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -14748,7 +14745,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_RECORD_PATTERN, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -14782,7 +14779,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -14806,7 +14803,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -14824,7 +14821,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -14835,7 +14832,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -14844,7 +14841,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -14860,7 +14857,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_PATTERN_LIST, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -14894,7 +14891,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -14912,7 +14909,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -14928,7 +14925,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_GUARD, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -14961,7 +14958,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_EXPR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -14995,7 +14992,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -15020,9 +15017,9 @@ public final class Java25Parser {
                 }
                 if (alt6_0.isSuccess()) {
                     elem4_0 = alt6_0;
-                }else if (alt6_0.isCutFailure()) {
+                } else if (alt6_0.isCutFailure()) {
                     elem4_0 = alt6_0.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart6);
                     children.clear();
                     children.addAll(savedChildren6);
@@ -15032,9 +15029,9 @@ public final class Java25Parser {
                     }
                     if (alt6_1.isSuccess()) {
                         elem4_0 = alt6_1;
-                    }else if (alt6_1.isCutFailure()) {
+                    } else if (alt6_1.isCutFailure()) {
                         elem4_0 = alt6_1.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart6);
                         children.clear();
                         children.addAll(savedChildren6);
@@ -15044,9 +15041,9 @@ public final class Java25Parser {
                         }
                         if (alt6_2.isSuccess()) {
                             elem4_0 = alt6_2;
-                        }else if (alt6_2.isCutFailure()) {
+                        } else if (alt6_2.isCutFailure()) {
                             elem4_0 = alt6_2.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart6);
                             children.clear();
                             children.addAll(savedChildren6);
@@ -15056,9 +15053,9 @@ public final class Java25Parser {
                             }
                             if (alt6_3.isSuccess()) {
                                 elem4_0 = alt6_3;
-                            }else if (alt6_3.isCutFailure()) {
+                            } else if (alt6_3.isCutFailure()) {
                                 elem4_0 = alt6_3.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart6);
                                 children.clear();
                                 children.addAll(savedChildren6);
@@ -15068,9 +15065,9 @@ public final class Java25Parser {
                                 }
                                 if (alt6_4.isSuccess()) {
                                     elem4_0 = alt6_4;
-                                }else if (alt6_4.isCutFailure()) {
+                                } else if (alt6_4.isCutFailure()) {
                                     elem4_0 = alt6_4.asRegularFailure();
-                                }else {
+                                } else {
                                     restoreLocation(choiceStart6);
                                     children.clear();
                                     children.addAll(savedChildren6);
@@ -15080,9 +15077,9 @@ public final class Java25Parser {
                                     }
                                     if (alt6_5.isSuccess()) {
                                         elem4_0 = alt6_5;
-                                    }else if (alt6_5.isCutFailure()) {
+                                    } else if (alt6_5.isCutFailure()) {
                                         elem4_0 = alt6_5.asRegularFailure();
-                                    }else {
+                                    } else {
                                         restoreLocation(choiceStart6);
                                         children.clear();
                                         children.addAll(savedChildren6);
@@ -15092,9 +15089,9 @@ public final class Java25Parser {
                                         }
                                         if (alt6_6.isSuccess()) {
                                             elem4_0 = alt6_6;
-                                        }else if (alt6_6.isCutFailure()) {
+                                        } else if (alt6_6.isCutFailure()) {
                                             elem4_0 = alt6_6.asRegularFailure();
-                                        }else {
+                                        } else {
                                             restoreLocation(choiceStart6);
                                             children.clear();
                                             children.addAll(savedChildren6);
@@ -15104,9 +15101,9 @@ public final class Java25Parser {
                                             }
                                             if (alt6_7.isSuccess()) {
                                                 elem4_0 = alt6_7;
-                                            }else if (alt6_7.isCutFailure()) {
+                                            } else if (alt6_7.isCutFailure()) {
                                                 elem4_0 = alt6_7.asRegularFailure();
-                                            }else {
+                                            } else {
                                                 restoreLocation(choiceStart6);
                                                 children.clear();
                                                 children.addAll(savedChildren6);
@@ -15116,9 +15113,9 @@ public final class Java25Parser {
                                                 }
                                                 if (alt6_8.isSuccess()) {
                                                     elem4_0 = alt6_8;
-                                                }else if (alt6_8.isCutFailure()) {
+                                                } else if (alt6_8.isCutFailure()) {
                                                     elem4_0 = alt6_8.asRegularFailure();
-                                                }else {
+                                                } else {
                                                     restoreLocation(choiceStart6);
                                                     children.clear();
                                                     children.addAll(savedChildren6);
@@ -15128,9 +15125,9 @@ public final class Java25Parser {
                                                     }
                                                     if (alt6_9.isSuccess()) {
                                                         elem4_0 = alt6_9;
-                                                    }else if (alt6_9.isCutFailure()) {
+                                                    } else if (alt6_9.isCutFailure()) {
                                                         elem4_0 = alt6_9.asRegularFailure();
-                                                    }else {
+                                                    } else {
                                                         restoreLocation(choiceStart6);
                                                         children.clear();
                                                         children.addAll(savedChildren6);
@@ -15140,9 +15137,9 @@ public final class Java25Parser {
                                                         }
                                                         if (alt6_10.isSuccess()) {
                                                             elem4_0 = alt6_10;
-                                                        }else if (alt6_10.isCutFailure()) {
+                                                        } else if (alt6_10.isCutFailure()) {
                                                             elem4_0 = alt6_10.asRegularFailure();
-                                                        }else {
+                                                        } else {
                                                             restoreLocation(choiceStart6);
                                                             children.clear();
                                                             children.addAll(savedChildren6);
@@ -15152,9 +15149,9 @@ public final class Java25Parser {
                                                             }
                                                             if (alt6_11.isSuccess()) {
                                                                 elem4_0 = alt6_11;
-                                                            }else if (alt6_11.isCutFailure()) {
+                                                            } else if (alt6_11.isCutFailure()) {
                                                                 elem4_0 = alt6_11.asRegularFailure();
-                                                            }else {
+                                                            } else {
                                                                 restoreLocation(choiceStart6);
                                                             }
                                                         }
@@ -15176,7 +15173,7 @@ public final class Java25Parser {
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_0;
-                }else if (elem4_0.isFailure()) {
+                } else if (elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
                                ? elem4_0.asCutFailure()
@@ -15194,7 +15191,7 @@ public final class Java25Parser {
                 if (elem4_1.isCutFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_1;
-                }else if (elem4_1.isFailure()) {
+                } else if (elem4_1.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
                                ? elem4_1.asCutFailure()
@@ -15213,7 +15210,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -15229,7 +15226,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ASSIGNMENT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -15263,7 +15260,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -15284,7 +15281,7 @@ public final class Java25Parser {
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_0;
-                }else if (elem4_0.isFailure()) {
+                } else if (elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
                                ? elem4_0.asCutFailure()
@@ -15302,7 +15299,7 @@ public final class Java25Parser {
                 if (elem4_1.isCutFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_1;
-                }else if (elem4_1.isFailure()) {
+                } else if (elem4_1.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
                                ? elem4_1.asCutFailure()
@@ -15318,7 +15315,7 @@ public final class Java25Parser {
                 if (elem4_2.isCutFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_2;
-                }else if (elem4_2.isFailure()) {
+                } else if (elem4_2.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
                                ? elem4_2.asCutFailure()
@@ -15336,7 +15333,7 @@ public final class Java25Parser {
                 if (elem4_3.isCutFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = elem4_3;
-                }else if (elem4_3.isFailure()) {
+                } else if (elem4_3.isFailure()) {
                     restoreLocation(seqStart4);
                     optElem2 = cut4
                                ? elem4_3.asCutFailure()
@@ -15355,7 +15352,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -15371,7 +15368,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TERNARY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -15405,7 +15402,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -15429,7 +15426,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -15447,7 +15444,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -15458,7 +15455,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -15467,7 +15464,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -15483,7 +15480,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_LOG_OR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -15517,7 +15514,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -15541,7 +15538,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -15559,7 +15556,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -15570,7 +15567,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -15579,7 +15576,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -15595,7 +15592,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_LOG_AND, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -15629,7 +15626,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -15658,7 +15655,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -15679,7 +15676,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -15695,7 +15692,7 @@ public final class Java25Parser {
                     if (elem4_2.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_2;
-                    }else if (elem4_2.isFailure()) {
+                    } else if (elem4_2.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_2.asCutFailure()
@@ -15713,7 +15710,7 @@ public final class Java25Parser {
                     if (elem4_3.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_3;
-                    }else if (elem4_3.isFailure()) {
+                    } else if (elem4_3.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_3.asCutFailure()
@@ -15724,7 +15721,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -15733,7 +15730,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -15749,7 +15746,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_BIT_OR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -15783,7 +15780,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -15812,7 +15809,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -15828,7 +15825,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -15846,7 +15843,7 @@ public final class Java25Parser {
                     if (elem4_2.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_2;
-                    }else if (elem4_2.isFailure()) {
+                    } else if (elem4_2.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_2.asCutFailure()
@@ -15857,7 +15854,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -15866,7 +15863,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -15882,7 +15879,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_BIT_XOR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -15916,7 +15913,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -15945,7 +15942,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -15966,7 +15963,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -15982,7 +15979,7 @@ public final class Java25Parser {
                     if (elem4_2.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_2;
-                    }else if (elem4_2.isFailure()) {
+                    } else if (elem4_2.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_2.asCutFailure()
@@ -16000,7 +15997,7 @@ public final class Java25Parser {
                     if (elem4_3.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_3;
-                    }else if (elem4_3.isFailure()) {
+                    } else if (elem4_3.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_3.asCutFailure()
@@ -16011,7 +16008,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -16020,7 +16017,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -16036,7 +16033,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_BIT_AND, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -16070,7 +16067,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -16098,9 +16095,9 @@ public final class Java25Parser {
                     }
                     if (alt6_0.isSuccess()) {
                         elem4_0 = alt6_0;
-                    }else if (alt6_0.isCutFailure()) {
+                    } else if (alt6_0.isCutFailure()) {
                         elem4_0 = alt6_0.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart6);
                         children.clear();
                         children.addAll(savedChildren6);
@@ -16110,9 +16107,9 @@ public final class Java25Parser {
                         }
                         if (alt6_1.isSuccess()) {
                             elem4_0 = alt6_1;
-                        }else if (alt6_1.isCutFailure()) {
+                        } else if (alt6_1.isCutFailure()) {
                             elem4_0 = alt6_1.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart6);
                         }
                     }
@@ -16124,7 +16121,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -16142,7 +16139,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -16153,7 +16150,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -16162,7 +16159,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -16178,7 +16175,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_EQUALITY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -16212,7 +16209,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -16242,9 +16239,9 @@ public final class Java25Parser {
                 }
                 if (alt7_0.isSuccess()) {
                     elem5_0 = alt7_0;
-                }else if (alt7_0.isCutFailure()) {
+                } else if (alt7_0.isCutFailure()) {
                     elem5_0 = alt7_0.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart7);
                     children.clear();
                     children.addAll(savedChildren7);
@@ -16254,9 +16251,9 @@ public final class Java25Parser {
                     }
                     if (alt7_1.isSuccess()) {
                         elem5_0 = alt7_1;
-                    }else if (alt7_1.isCutFailure()) {
+                    } else if (alt7_1.isCutFailure()) {
                         elem5_0 = alt7_1.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart7);
                         children.clear();
                         children.addAll(savedChildren7);
@@ -16266,9 +16263,9 @@ public final class Java25Parser {
                         }
                         if (alt7_2.isSuccess()) {
                             elem5_0 = alt7_2;
-                        }else if (alt7_2.isCutFailure()) {
+                        } else if (alt7_2.isCutFailure()) {
                             elem5_0 = alt7_2.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart7);
                             children.clear();
                             children.addAll(savedChildren7);
@@ -16278,9 +16275,9 @@ public final class Java25Parser {
                             }
                             if (alt7_3.isSuccess()) {
                                 elem5_0 = alt7_3;
-                            }else if (alt7_3.isCutFailure()) {
+                            } else if (alt7_3.isCutFailure()) {
                                 elem5_0 = alt7_3.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart7);
                             }
                         }
@@ -16294,7 +16291,7 @@ public final class Java25Parser {
                 if (elem5_0.isCutFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = elem5_0;
-                }else if (elem5_0.isFailure()) {
+                } else if (elem5_0.isFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = cut5
                              ? elem5_0.asCutFailure()
@@ -16312,7 +16309,7 @@ public final class Java25Parser {
                 if (elem5_1.isCutFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = elem5_1;
-                }else if (elem5_1.isFailure()) {
+                } else if (elem5_1.isFailure()) {
                     restoreLocation(seqStart5);
                     alt4_0 = cut5
                              ? elem5_1.asCutFailure()
@@ -16324,9 +16321,9 @@ public final class Java25Parser {
             }
             if (alt4_0.isSuccess()) {
                 optElem2 = alt4_0;
-            }else if (alt4_0.isCutFailure()) {
+            } else if (alt4_0.isCutFailure()) {
                 optElem2 = alt4_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart4);
                 children.clear();
                 children.addAll(savedChildren4);
@@ -16341,7 +16338,7 @@ public final class Java25Parser {
                     if (elem13_0.isCutFailure()) {
                         restoreLocation(seqStart13);
                         alt4_1 = elem13_0;
-                    }else if (elem13_0.isFailure()) {
+                    } else if (elem13_0.isFailure()) {
                         restoreLocation(seqStart13);
                         alt4_1 = cut13
                                  ? elem13_0.asCutFailure()
@@ -16363,9 +16360,9 @@ public final class Java25Parser {
                     }
                     if (alt16_0.isSuccess()) {
                         elem13_1 = alt16_0;
-                    }else if (alt16_0.isCutFailure()) {
+                    } else if (alt16_0.isCutFailure()) {
                         elem13_1 = alt16_0.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart16);
                         children.clear();
                         children.addAll(savedChildren16);
@@ -16378,9 +16375,9 @@ public final class Java25Parser {
                         }
                         if (alt16_1.isSuccess()) {
                             elem13_1 = alt16_1;
-                        }else if (alt16_1.isCutFailure()) {
+                        } else if (alt16_1.isCutFailure()) {
                             elem13_1 = alt16_1.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart16);
                         }
                     }
@@ -16392,7 +16389,7 @@ public final class Java25Parser {
                     if (elem13_1.isCutFailure()) {
                         restoreLocation(seqStart13);
                         alt4_1 = elem13_1;
-                    }else if (elem13_1.isFailure()) {
+                    } else if (elem13_1.isFailure()) {
                         restoreLocation(seqStart13);
                         alt4_1 = cut13
                                  ? elem13_1.asCutFailure()
@@ -16404,9 +16401,9 @@ public final class Java25Parser {
                 }
                 if (alt4_1.isSuccess()) {
                     optElem2 = alt4_1;
-                }else if (alt4_1.isCutFailure()) {
+                } else if (alt4_1.isCutFailure()) {
                     optElem2 = alt4_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart4);
                 }
             }
@@ -16424,7 +16421,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -16440,7 +16437,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_RELATIONAL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -16474,7 +16471,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -16512,7 +16509,7 @@ public final class Java25Parser {
                         if (elem7_0.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = elem7_0;
-                        }else if (elem7_0.isFailure()) {
+                        } else if (elem7_0.isFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = cut7
                                      ? elem7_0.asCutFailure()
@@ -16528,7 +16525,7 @@ public final class Java25Parser {
                         if (elem7_1.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = elem7_1;
-                        }else if (elem7_1.isFailure()) {
+                        } else if (elem7_1.isFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = cut7
                                      ? elem7_1.asCutFailure()
@@ -16540,9 +16537,9 @@ public final class Java25Parser {
                     }
                     if (alt6_0.isSuccess()) {
                         elem4_0 = alt6_0;
-                    }else if (alt6_0.isCutFailure()) {
+                    } else if (alt6_0.isCutFailure()) {
                         elem4_0 = alt6_0.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart6);
                         children.clear();
                         children.addAll(savedChildren6);
@@ -16562,7 +16559,7 @@ public final class Java25Parser {
                             if (elem11_0.isCutFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = elem11_0;
-                            }else if (elem11_0.isFailure()) {
+                            } else if (elem11_0.isFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = cut11
                                          ? elem11_0.asCutFailure()
@@ -16578,7 +16575,7 @@ public final class Java25Parser {
                             if (elem11_1.isCutFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = elem11_1;
-                            }else if (elem11_1.isFailure()) {
+                            } else if (elem11_1.isFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = cut11
                                          ? elem11_1.asCutFailure()
@@ -16590,9 +16587,9 @@ public final class Java25Parser {
                         }
                         if (alt6_1.isSuccess()) {
                             elem4_0 = alt6_1;
-                        }else if (alt6_1.isCutFailure()) {
+                        } else if (alt6_1.isCutFailure()) {
                             elem4_0 = alt6_1.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart6);
                             children.clear();
                             children.addAll(savedChildren6);
@@ -16612,7 +16609,7 @@ public final class Java25Parser {
                                 if (elem15_0.isCutFailure()) {
                                     restoreLocation(seqStart15);
                                     alt6_2 = elem15_0;
-                                }else if (elem15_0.isFailure()) {
+                                } else if (elem15_0.isFailure()) {
                                     restoreLocation(seqStart15);
                                     alt6_2 = cut15
                                              ? elem15_0.asCutFailure()
@@ -16633,7 +16630,7 @@ public final class Java25Parser {
                                 if (elem15_1.isCutFailure()) {
                                     restoreLocation(seqStart15);
                                     alt6_2 = elem15_1;
-                                }else if (elem15_1.isFailure()) {
+                                } else if (elem15_1.isFailure()) {
                                     restoreLocation(seqStart15);
                                     alt6_2 = cut15
                                              ? elem15_1.asCutFailure()
@@ -16649,7 +16646,7 @@ public final class Java25Parser {
                                 if (elem15_2.isCutFailure()) {
                                     restoreLocation(seqStart15);
                                     alt6_2 = elem15_2;
-                                }else if (elem15_2.isFailure()) {
+                                } else if (elem15_2.isFailure()) {
                                     restoreLocation(seqStart15);
                                     alt6_2 = cut15
                                              ? elem15_2.asCutFailure()
@@ -16661,9 +16658,9 @@ public final class Java25Parser {
                             }
                             if (alt6_2.isSuccess()) {
                                 elem4_0 = alt6_2;
-                            }else if (alt6_2.isCutFailure()) {
+                            } else if (alt6_2.isCutFailure()) {
                                 elem4_0 = alt6_2.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart6);
                             }
                         }
@@ -16676,7 +16673,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -16694,7 +16691,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -16705,7 +16702,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -16714,7 +16711,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -16730,7 +16727,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_SHIFT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -16764,7 +16761,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -16802,7 +16799,7 @@ public final class Java25Parser {
                         if (elem7_0.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = elem7_0;
-                        }else if (elem7_0.isFailure()) {
+                        } else if (elem7_0.isFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = cut7
                                      ? elem7_0.asCutFailure()
@@ -16818,7 +16815,7 @@ public final class Java25Parser {
                         if (elem7_1.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = elem7_1;
-                        }else if (elem7_1.isFailure()) {
+                        } else if (elem7_1.isFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = cut7
                                      ? elem7_1.asCutFailure()
@@ -16830,9 +16827,9 @@ public final class Java25Parser {
                     }
                     if (alt6_0.isSuccess()) {
                         elem4_0 = alt6_0;
-                    }else if (alt6_0.isCutFailure()) {
+                    } else if (alt6_0.isCutFailure()) {
                         elem4_0 = alt6_0.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart6);
                         children.clear();
                         children.addAll(savedChildren6);
@@ -16852,7 +16849,7 @@ public final class Java25Parser {
                             if (elem11_0.isCutFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = elem11_0;
-                            }else if (elem11_0.isFailure()) {
+                            } else if (elem11_0.isFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = cut11
                                          ? elem11_0.asCutFailure()
@@ -16873,7 +16870,7 @@ public final class Java25Parser {
                             if (elem11_1.isCutFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = elem11_1;
-                            }else if (elem11_1.isFailure()) {
+                            } else if (elem11_1.isFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = cut11
                                          ? elem11_1.asCutFailure()
@@ -16889,7 +16886,7 @@ public final class Java25Parser {
                             if (elem11_2.isCutFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = elem11_2;
-                            }else if (elem11_2.isFailure()) {
+                            } else if (elem11_2.isFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = cut11
                                          ? elem11_2.asCutFailure()
@@ -16901,9 +16898,9 @@ public final class Java25Parser {
                         }
                         if (alt6_1.isSuccess()) {
                             elem4_0 = alt6_1;
-                        }else if (alt6_1.isCutFailure()) {
+                        } else if (alt6_1.isCutFailure()) {
                             elem4_0 = alt6_1.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart6);
                         }
                     }
@@ -16915,7 +16912,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -16933,7 +16930,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -16944,7 +16941,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -16953,7 +16950,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -16969,7 +16966,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ADDITIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -17003,7 +17000,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -17041,7 +17038,7 @@ public final class Java25Parser {
                         if (elem7_0.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = elem7_0;
-                        }else if (elem7_0.isFailure()) {
+                        } else if (elem7_0.isFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = cut7
                                      ? elem7_0.asCutFailure()
@@ -17057,7 +17054,7 @@ public final class Java25Parser {
                         if (elem7_1.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = elem7_1;
-                        }else if (elem7_1.isFailure()) {
+                        } else if (elem7_1.isFailure()) {
                             restoreLocation(seqStart7);
                             alt6_0 = cut7
                                      ? elem7_1.asCutFailure()
@@ -17069,9 +17066,9 @@ public final class Java25Parser {
                     }
                     if (alt6_0.isSuccess()) {
                         elem4_0 = alt6_0;
-                    }else if (alt6_0.isCutFailure()) {
+                    } else if (alt6_0.isCutFailure()) {
                         elem4_0 = alt6_0.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart6);
                         children.clear();
                         children.addAll(savedChildren6);
@@ -17091,7 +17088,7 @@ public final class Java25Parser {
                             if (elem11_0.isCutFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = elem11_0;
-                            }else if (elem11_0.isFailure()) {
+                            } else if (elem11_0.isFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = cut11
                                          ? elem11_0.asCutFailure()
@@ -17107,7 +17104,7 @@ public final class Java25Parser {
                             if (elem11_1.isCutFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = elem11_1;
-                            }else if (elem11_1.isFailure()) {
+                            } else if (elem11_1.isFailure()) {
                                 restoreLocation(seqStart11);
                                 alt6_1 = cut11
                                          ? elem11_1.asCutFailure()
@@ -17119,9 +17116,9 @@ public final class Java25Parser {
                         }
                         if (alt6_1.isSuccess()) {
                             elem4_0 = alt6_1;
-                        }else if (alt6_1.isCutFailure()) {
+                        } else if (alt6_1.isCutFailure()) {
                             elem4_0 = alt6_1.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart6);
                             children.clear();
                             children.addAll(savedChildren6);
@@ -17141,7 +17138,7 @@ public final class Java25Parser {
                                 if (elem15_0.isCutFailure()) {
                                     restoreLocation(seqStart15);
                                     alt6_2 = elem15_0;
-                                }else if (elem15_0.isFailure()) {
+                                } else if (elem15_0.isFailure()) {
                                     restoreLocation(seqStart15);
                                     alt6_2 = cut15
                                              ? elem15_0.asCutFailure()
@@ -17157,7 +17154,7 @@ public final class Java25Parser {
                                 if (elem15_1.isCutFailure()) {
                                     restoreLocation(seqStart15);
                                     alt6_2 = elem15_1;
-                                }else if (elem15_1.isFailure()) {
+                                } else if (elem15_1.isFailure()) {
                                     restoreLocation(seqStart15);
                                     alt6_2 = cut15
                                              ? elem15_1.asCutFailure()
@@ -17169,9 +17166,9 @@ public final class Java25Parser {
                             }
                             if (alt6_2.isSuccess()) {
                                 elem4_0 = alt6_2;
-                            }else if (alt6_2.isCutFailure()) {
+                            } else if (alt6_2.isCutFailure()) {
                                 elem4_0 = alt6_2.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart6);
                             }
                         }
@@ -17184,7 +17181,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -17202,7 +17199,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -17213,7 +17210,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -17222,7 +17219,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -17238,7 +17235,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_MULTIPLICATIVE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -17278,9 +17275,9 @@ public final class Java25Parser {
             }
             if (alt3_0.isSuccess()) {
                 elem1_0 = alt3_0;
-            }else if (alt3_0.isCutFailure()) {
+            } else if (alt3_0.isCutFailure()) {
                 elem1_0 = alt3_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart3);
                 children.clear();
                 children.addAll(savedChildren3);
@@ -17290,9 +17287,9 @@ public final class Java25Parser {
                 }
                 if (alt3_1.isSuccess()) {
                     elem1_0 = alt3_1;
-                }else if (alt3_1.isCutFailure()) {
+                } else if (alt3_1.isCutFailure()) {
                     elem1_0 = alt3_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart3);
                     children.clear();
                     children.addAll(savedChildren3);
@@ -17302,9 +17299,9 @@ public final class Java25Parser {
                     }
                     if (alt3_2.isSuccess()) {
                         elem1_0 = alt3_2;
-                    }else if (alt3_2.isCutFailure()) {
+                    } else if (alt3_2.isCutFailure()) {
                         elem1_0 = alt3_2.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart3);
                         children.clear();
                         children.addAll(savedChildren3);
@@ -17314,9 +17311,9 @@ public final class Java25Parser {
                         }
                         if (alt3_3.isSuccess()) {
                             elem1_0 = alt3_3;
-                        }else if (alt3_3.isCutFailure()) {
+                        } else if (alt3_3.isCutFailure()) {
                             elem1_0 = alt3_3.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart3);
                             children.clear();
                             children.addAll(savedChildren3);
@@ -17326,9 +17323,9 @@ public final class Java25Parser {
                             }
                             if (alt3_4.isSuccess()) {
                                 elem1_0 = alt3_4;
-                            }else if (alt3_4.isCutFailure()) {
+                            } else if (alt3_4.isCutFailure()) {
                                 elem1_0 = alt3_4.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart3);
                                 children.clear();
                                 children.addAll(savedChildren3);
@@ -17338,9 +17335,9 @@ public final class Java25Parser {
                                 }
                                 if (alt3_5.isSuccess()) {
                                     elem1_0 = alt3_5;
-                                }else if (alt3_5.isCutFailure()) {
+                                } else if (alt3_5.isCutFailure()) {
                                     elem1_0 = alt3_5.asRegularFailure();
-                                }else {
+                                } else {
                                     restoreLocation(choiceStart3);
                                 }
                             }
@@ -17356,7 +17353,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -17374,7 +17371,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -17386,9 +17383,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -17403,7 +17400,7 @@ public final class Java25Parser {
                 if (elem11_0.isCutFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = elem11_0;
-                }else if (elem11_0.isFailure()) {
+                } else if (elem11_0.isFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = cut11
                              ? elem11_0.asCutFailure()
@@ -17421,7 +17418,7 @@ public final class Java25Parser {
                 if (elem11_1.isCutFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = elem11_1;
-                }else if (elem11_1.isFailure()) {
+                } else if (elem11_1.isFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = cut11
                              ? elem11_1.asCutFailure()
@@ -17445,7 +17442,7 @@ public final class Java25Parser {
                         if (elem16_0.isCutFailure()) {
                             restoreLocation(seqStart16);
                             zomElem14 = elem16_0;
-                        }else if (elem16_0.isFailure()) {
+                        } else if (elem16_0.isFailure()) {
                             restoreLocation(seqStart16);
                             zomElem14 = cut16
                                         ? elem16_0.asCutFailure()
@@ -17463,7 +17460,7 @@ public final class Java25Parser {
                         if (elem16_1.isCutFailure()) {
                             restoreLocation(seqStart16);
                             zomElem14 = elem16_1;
-                        }else if (elem16_1.isFailure()) {
+                        } else if (elem16_1.isFailure()) {
                             restoreLocation(seqStart16);
                             zomElem14 = cut16
                                         ? elem16_1.asCutFailure()
@@ -17474,7 +17471,7 @@ public final class Java25Parser {
                         zomElem14 = CstParseResult.success(null, substring(seqStart16.offset(), pos), location());
                     }
                     if (zomElem14.isFailure() || location()
-                                                 .offset() == beforeLoc14.offset()) {
+                                                         .offset() == beforeLoc14.offset()) {
                         restoreLocation(beforeLoc14);
                         break;
                     }
@@ -17483,7 +17480,7 @@ public final class Java25Parser {
                 if (elem11_2.isCutFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = elem11_2;
-                }else if (elem11_2.isFailure()) {
+                } else if (elem11_2.isFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = cut11
                              ? elem11_2.asCutFailure()
@@ -17499,7 +17496,7 @@ public final class Java25Parser {
                 if (elem11_3.isCutFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = elem11_3;
-                }else if (elem11_3.isFailure()) {
+                } else if (elem11_3.isFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = cut11
                              ? elem11_3.asCutFailure()
@@ -17517,7 +17514,7 @@ public final class Java25Parser {
                 if (elem11_4.isCutFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = elem11_4;
-                }else if (elem11_4.isFailure()) {
+                } else if (elem11_4.isFailure()) {
                     restoreLocation(seqStart11);
                     alt0_1 = cut11
                              ? elem11_4.asCutFailure()
@@ -17529,9 +17526,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -17544,9 +17541,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                 }
             }
@@ -17562,7 +17559,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_UNARY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -17596,7 +17593,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -17616,7 +17613,7 @@ public final class Java25Parser {
                     children.add(zomElem2.node.unwrap());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -17625,7 +17622,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -17641,7 +17638,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_POSTFIX, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -17677,7 +17674,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -17702,7 +17699,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -17720,7 +17717,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_2.asCutFailure()
@@ -17741,7 +17738,7 @@ public final class Java25Parser {
                 if (elem8_0.isCutFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = elem8_0;
-                }else if (elem8_0.isFailure()) {
+                } else if (elem8_0.isFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = cut8
                                ? elem8_0.asCutFailure()
@@ -17766,7 +17763,7 @@ public final class Java25Parser {
                 if (elem8_1.isCutFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = elem8_1;
-                }else if (elem8_1.isFailure()) {
+                } else if (elem8_1.isFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = cut8
                                ? elem8_1.asCutFailure()
@@ -17782,7 +17779,7 @@ public final class Java25Parser {
                 if (elem8_2.isCutFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = elem8_2;
-                }else if (elem8_2.isFailure()) {
+                } else if (elem8_2.isFailure()) {
                     restoreLocation(seqStart8);
                     optElem6 = cut8
                                ? elem8_2.asCutFailure()
@@ -17801,7 +17798,7 @@ public final class Java25Parser {
             if (elem1_3.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
-            }else if (elem1_3.isFailure()) {
+            } else if (elem1_3.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_3.asCutFailure()
@@ -17813,9 +17810,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -17830,7 +17827,7 @@ public final class Java25Parser {
                 if (elem13_0.isCutFailure()) {
                     restoreLocation(seqStart13);
                     alt0_1 = elem13_0;
-                }else if (elem13_0.isFailure()) {
+                } else if (elem13_0.isFailure()) {
                     restoreLocation(seqStart13);
                     alt0_1 = cut13
                              ? elem13_0.asCutFailure()
@@ -17846,7 +17843,7 @@ public final class Java25Parser {
                 if (elem13_1.isCutFailure()) {
                     restoreLocation(seqStart13);
                     alt0_1 = elem13_1;
-                }else if (elem13_1.isFailure()) {
+                } else if (elem13_1.isFailure()) {
                     restoreLocation(seqStart13);
                     alt0_1 = cut13
                              ? elem13_1.asCutFailure()
@@ -17858,9 +17855,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -17875,7 +17872,7 @@ public final class Java25Parser {
                     if (elem16_0.isCutFailure()) {
                         restoreLocation(seqStart16);
                         alt0_2 = elem16_0;
-                    }else if (elem16_0.isFailure()) {
+                    } else if (elem16_0.isFailure()) {
                         restoreLocation(seqStart16);
                         alt0_2 = cut16
                                  ? elem16_0.asCutFailure()
@@ -17891,7 +17888,7 @@ public final class Java25Parser {
                     if (elem16_1.isCutFailure()) {
                         restoreLocation(seqStart16);
                         alt0_2 = elem16_1;
-                    }else if (elem16_1.isFailure()) {
+                    } else if (elem16_1.isFailure()) {
                         restoreLocation(seqStart16);
                         alt0_2 = cut16
                                  ? elem16_1.asCutFailure()
@@ -17903,9 +17900,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                     children.clear();
                     children.addAll(savedChildren0);
@@ -17920,7 +17917,7 @@ public final class Java25Parser {
                         if (elem19_0.isCutFailure()) {
                             restoreLocation(seqStart19);
                             alt0_3 = elem19_0;
-                        }else if (elem19_0.isFailure()) {
+                        } else if (elem19_0.isFailure()) {
                             restoreLocation(seqStart19);
                             alt0_3 = cut19
                                      ? elem19_0.asCutFailure()
@@ -17938,7 +17935,7 @@ public final class Java25Parser {
                         if (elem19_1.isCutFailure()) {
                             restoreLocation(seqStart19);
                             alt0_3 = elem19_1;
-                        }else if (elem19_1.isFailure()) {
+                        } else if (elem19_1.isFailure()) {
                             restoreLocation(seqStart19);
                             alt0_3 = cut19
                                      ? elem19_1.asCutFailure()
@@ -17954,7 +17951,7 @@ public final class Java25Parser {
                         if (elem19_2.isCutFailure()) {
                             restoreLocation(seqStart19);
                             alt0_3 = elem19_2;
-                        }else if (elem19_2.isFailure()) {
+                        } else if (elem19_2.isFailure()) {
                             restoreLocation(seqStart19);
                             alt0_3 = cut19
                                      ? elem19_2.asCutFailure()
@@ -17966,9 +17963,9 @@ public final class Java25Parser {
                     }
                     if (alt0_3.isSuccess()) {
                         result = alt0_3;
-                    }else if (alt0_3.isCutFailure()) {
+                    } else if (alt0_3.isCutFailure()) {
                         result = alt0_3.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart0);
                         children.clear();
                         children.addAll(savedChildren0);
@@ -17983,7 +17980,7 @@ public final class Java25Parser {
                             if (elem23_0.isCutFailure()) {
                                 restoreLocation(seqStart23);
                                 alt0_4 = elem23_0;
-                            }else if (elem23_0.isFailure()) {
+                            } else if (elem23_0.isFailure()) {
                                 restoreLocation(seqStart23);
                                 alt0_4 = cut23
                                          ? elem23_0.asCutFailure()
@@ -18008,7 +18005,7 @@ public final class Java25Parser {
                             if (elem23_1.isCutFailure()) {
                                 restoreLocation(seqStart23);
                                 alt0_4 = elem23_1;
-                            }else if (elem23_1.isFailure()) {
+                            } else if (elem23_1.isFailure()) {
                                 restoreLocation(seqStart23);
                                 alt0_4 = cut23
                                          ? elem23_1.asCutFailure()
@@ -18024,7 +18021,7 @@ public final class Java25Parser {
                             if (elem23_2.isCutFailure()) {
                                 restoreLocation(seqStart23);
                                 alt0_4 = elem23_2;
-                            }else if (elem23_2.isFailure()) {
+                            } else if (elem23_2.isFailure()) {
                                 restoreLocation(seqStart23);
                                 alt0_4 = cut23
                                          ? elem23_2.asCutFailure()
@@ -18036,9 +18033,9 @@ public final class Java25Parser {
                         }
                         if (alt0_4.isSuccess()) {
                             result = alt0_4;
-                        }else if (alt0_4.isCutFailure()) {
+                        } else if (alt0_4.isCutFailure()) {
                             result = alt0_4.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart0);
                             children.clear();
                             children.addAll(savedChildren0);
@@ -18048,9 +18045,9 @@ public final class Java25Parser {
                             }
                             if (alt0_5.isSuccess()) {
                                 result = alt0_5;
-                            }else if (alt0_5.isCutFailure()) {
+                            } else if (alt0_5.isCutFailure()) {
                                 result = alt0_5.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart0);
                                 children.clear();
                                 children.addAll(savedChildren0);
@@ -18060,9 +18057,9 @@ public final class Java25Parser {
                                 }
                                 if (alt0_6.isSuccess()) {
                                     result = alt0_6;
-                                }else if (alt0_6.isCutFailure()) {
+                                } else if (alt0_6.isCutFailure()) {
                                     result = alt0_6.asRegularFailure();
-                                }else {
+                                } else {
                                     restoreLocation(choiceStart0);
                                     children.clear();
                                     children.addAll(savedChildren0);
@@ -18077,7 +18074,7 @@ public final class Java25Parser {
                                         if (elem30_0.isCutFailure()) {
                                             restoreLocation(seqStart30);
                                             alt0_7 = elem30_0;
-                                        }else if (elem30_0.isFailure()) {
+                                        } else if (elem30_0.isFailure()) {
                                             restoreLocation(seqStart30);
                                             alt0_7 = cut30
                                                      ? elem30_0.asCutFailure()
@@ -18102,7 +18099,7 @@ public final class Java25Parser {
                                         if (elem30_1.isCutFailure()) {
                                             restoreLocation(seqStart30);
                                             alt0_7 = elem30_1;
-                                        }else if (elem30_1.isFailure()) {
+                                        } else if (elem30_1.isFailure()) {
                                             restoreLocation(seqStart30);
                                             alt0_7 = cut30
                                                      ? elem30_1.asCutFailure()
@@ -18124,9 +18121,9 @@ public final class Java25Parser {
                                         }
                                         if (alt35_0.isSuccess()) {
                                             elem30_2 = alt35_0;
-                                        }else if (alt35_0.isCutFailure()) {
+                                        } else if (alt35_0.isCutFailure()) {
                                             elem30_2 = alt35_0.asRegularFailure();
-                                        }else {
+                                        } else {
                                             restoreLocation(choiceStart35);
                                             children.clear();
                                             children.addAll(savedChildren35);
@@ -18136,9 +18133,9 @@ public final class Java25Parser {
                                             }
                                             if (alt35_1.isSuccess()) {
                                                 elem30_2 = alt35_1;
-                                            }else if (alt35_1.isCutFailure()) {
+                                            } else if (alt35_1.isCutFailure()) {
                                                 elem30_2 = alt35_1.asRegularFailure();
-                                            }else {
+                                            } else {
                                                 restoreLocation(choiceStart35);
                                             }
                                         }
@@ -18150,7 +18147,7 @@ public final class Java25Parser {
                                         if (elem30_2.isCutFailure()) {
                                             restoreLocation(seqStart30);
                                             alt0_7 = elem30_2;
-                                        }else if (elem30_2.isFailure()) {
+                                        } else if (elem30_2.isFailure()) {
                                             restoreLocation(seqStart30);
                                             alt0_7 = cut30
                                                      ? elem30_2.asCutFailure()
@@ -18164,9 +18161,9 @@ public final class Java25Parser {
                                     }
                                     if (alt0_7.isSuccess()) {
                                         result = alt0_7;
-                                    }else if (alt0_7.isCutFailure()) {
+                                    } else if (alt0_7.isCutFailure()) {
                                         result = alt0_7.asRegularFailure();
-                                    }else {
+                                    } else {
                                         restoreLocation(choiceStart0);
                                     }
                                 }
@@ -18187,7 +18184,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_POST_OP, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -18221,9 +18218,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -18238,7 +18235,7 @@ public final class Java25Parser {
                 if (elem3_0.isCutFailure()) {
                     restoreLocation(seqStart3);
                     tbElem2 = elem3_0;
-                }else if (elem3_0.isFailure()) {
+                } else if (elem3_0.isFailure()) {
                     restoreLocation(seqStart3);
                     tbElem2 = cut3
                               ? elem3_0.asCutFailure()
@@ -18256,7 +18253,7 @@ public final class Java25Parser {
                 if (elem3_1.isCutFailure()) {
                     restoreLocation(seqStart3);
                     tbElem2 = elem3_1;
-                }else if (elem3_1.isFailure()) {
+                } else if (elem3_1.isFailure()) {
                     restoreLocation(seqStart3);
                     tbElem2 = cut3
                               ? elem3_1.asCutFailure()
@@ -18276,14 +18273,14 @@ public final class Java25Parser {
                 var tbNode2 = new CstNode.Token(tbSpan2, RULE_PEG_TOKEN, tbText2, List.of(), List.of());
                 children.add(tbNode2);
                 alt0_1 = CstParseResult.success(tbNode2, tbText2, location());
-            }else {
+            } else {
                 alt0_1 = tbElem2;
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -18298,7 +18295,7 @@ public final class Java25Parser {
                     if (elem8_0.isCutFailure()) {
                         restoreLocation(seqStart8);
                         tbElem7 = elem8_0;
-                    }else if (elem8_0.isFailure()) {
+                    } else if (elem8_0.isFailure()) {
                         restoreLocation(seqStart8);
                         tbElem7 = cut8
                                   ? elem8_0.asCutFailure()
@@ -18316,7 +18313,7 @@ public final class Java25Parser {
                     if (elem8_1.isCutFailure()) {
                         restoreLocation(seqStart8);
                         tbElem7 = elem8_1;
-                    }else if (elem8_1.isFailure()) {
+                    } else if (elem8_1.isFailure()) {
                         restoreLocation(seqStart8);
                         tbElem7 = cut8
                                   ? elem8_1.asCutFailure()
@@ -18336,14 +18333,14 @@ public final class Java25Parser {
                     var tbNode7 = new CstNode.Token(tbSpan7, RULE_PEG_TOKEN, tbText7, List.of(), List.of());
                     children.add(tbNode7);
                     alt0_2 = CstParseResult.success(tbNode7, tbText7, location());
-                }else {
+                } else {
                     alt0_2 = tbElem7;
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                     children.clear();
                     children.addAll(savedChildren0);
@@ -18362,7 +18359,7 @@ public final class Java25Parser {
                             if (elem14_0.isCutFailure()) {
                                 restoreLocation(seqStart14);
                                 tbElem13 = elem14_0;
-                            }else if (elem14_0.isFailure()) {
+                            } else if (elem14_0.isFailure()) {
                                 restoreLocation(seqStart14);
                                 tbElem13 = cut14
                                            ? elem14_0.asCutFailure()
@@ -18380,7 +18377,7 @@ public final class Java25Parser {
                             if (elem14_1.isCutFailure()) {
                                 restoreLocation(seqStart14);
                                 tbElem13 = elem14_1;
-                            }else if (elem14_1.isFailure()) {
+                            } else if (elem14_1.isFailure()) {
                                 restoreLocation(seqStart14);
                                 tbElem13 = cut14
                                            ? elem14_1.asCutFailure()
@@ -18400,13 +18397,13 @@ public final class Java25Parser {
                             var tbNode13 = new CstNode.Token(tbSpan13, RULE_PEG_TOKEN, tbText13, List.of(), List.of());
                             children.add(tbNode13);
                             elem12_0 = CstParseResult.success(tbNode13, tbText13, location());
-                        }else {
+                        } else {
                             elem12_0 = tbElem13;
                         }
                         if (elem12_0.isCutFailure()) {
                             restoreLocation(seqStart12);
                             alt0_3 = elem12_0;
-                        }else if (elem12_0.isFailure()) {
+                        } else if (elem12_0.isFailure()) {
                             restoreLocation(seqStart12);
                             alt0_3 = cut12
                                      ? elem12_0.asCutFailure()
@@ -18431,7 +18428,7 @@ public final class Java25Parser {
                         if (elem12_1.isCutFailure()) {
                             restoreLocation(seqStart12);
                             alt0_3 = elem12_1;
-                        }else if (elem12_1.isFailure()) {
+                        } else if (elem12_1.isFailure()) {
                             restoreLocation(seqStart12);
                             alt0_3 = cut12
                                      ? elem12_1.asCutFailure()
@@ -18449,7 +18446,7 @@ public final class Java25Parser {
                         if (elem12_2.isCutFailure()) {
                             restoreLocation(seqStart12);
                             alt0_3 = elem12_2;
-                        }else if (elem12_2.isFailure()) {
+                        } else if (elem12_2.isFailure()) {
                             restoreLocation(seqStart12);
                             alt0_3 = cut12
                                      ? elem12_2.asCutFailure()
@@ -18473,7 +18470,7 @@ public final class Java25Parser {
                             if (elem23_0.isCutFailure()) {
                                 restoreLocation(seqStart23);
                                 alt22_0 = elem23_0;
-                            }else if (elem23_0.isFailure()) {
+                            } else if (elem23_0.isFailure()) {
                                 restoreLocation(seqStart23);
                                 alt22_0 = cut23
                                           ? elem23_0.asCutFailure()
@@ -18498,7 +18495,7 @@ public final class Java25Parser {
                             if (elem23_1.isCutFailure()) {
                                 restoreLocation(seqStart23);
                                 alt22_0 = elem23_1;
-                            }else if (elem23_1.isFailure()) {
+                            } else if (elem23_1.isFailure()) {
                                 restoreLocation(seqStart23);
                                 alt22_0 = cut23
                                           ? elem23_1.asCutFailure()
@@ -18514,7 +18511,7 @@ public final class Java25Parser {
                             if (elem23_2.isCutFailure()) {
                                 restoreLocation(seqStart23);
                                 alt22_0 = elem23_2;
-                            }else if (elem23_2.isFailure()) {
+                            } else if (elem23_2.isFailure()) {
                                 restoreLocation(seqStart23);
                                 alt22_0 = cut23
                                           ? elem23_2.asCutFailure()
@@ -18539,7 +18536,7 @@ public final class Java25Parser {
                             if (elem23_3.isCutFailure()) {
                                 restoreLocation(seqStart23);
                                 alt22_0 = elem23_3;
-                            }else if (elem23_3.isFailure()) {
+                            } else if (elem23_3.isFailure()) {
                                 restoreLocation(seqStart23);
                                 alt22_0 = cut23
                                           ? elem23_3.asCutFailure()
@@ -18551,9 +18548,9 @@ public final class Java25Parser {
                         }
                         if (alt22_0.isSuccess()) {
                             elem12_3 = alt22_0;
-                        }else if (alt22_0.isCutFailure()) {
+                        } else if (alt22_0.isCutFailure()) {
                             elem12_3 = alt22_0.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart22);
                             children.clear();
                             children.addAll(savedChildren22);
@@ -18578,7 +18575,7 @@ public final class Java25Parser {
                                 if (elem30_0.isCutFailure()) {
                                     restoreLocation(seqStart30);
                                     alt22_1 = elem30_0;
-                                }else if (elem30_0.isFailure()) {
+                                } else if (elem30_0.isFailure()) {
                                     restoreLocation(seqStart30);
                                     alt22_1 = cut30
                                               ? elem30_0.asCutFailure()
@@ -18603,7 +18600,7 @@ public final class Java25Parser {
                                 if (elem30_1.isCutFailure()) {
                                     restoreLocation(seqStart30);
                                     alt22_1 = elem30_1;
-                                }else if (elem30_1.isFailure()) {
+                                } else if (elem30_1.isFailure()) {
                                     restoreLocation(seqStart30);
                                     alt22_1 = cut30
                                               ? elem30_1.asCutFailure()
@@ -18615,9 +18612,9 @@ public final class Java25Parser {
                             }
                             if (alt22_1.isSuccess()) {
                                 elem12_3 = alt22_1;
-                            }else if (alt22_1.isCutFailure()) {
+                            } else if (alt22_1.isCutFailure()) {
                                 elem12_3 = alt22_1.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart22);
                             }
                         }
@@ -18629,7 +18626,7 @@ public final class Java25Parser {
                         if (elem12_3.isCutFailure()) {
                             restoreLocation(seqStart12);
                             alt0_3 = elem12_3;
-                        }else if (elem12_3.isFailure()) {
+                        } else if (elem12_3.isFailure()) {
                             restoreLocation(seqStart12);
                             alt0_3 = cut12
                                      ? elem12_3.asCutFailure()
@@ -18641,9 +18638,9 @@ public final class Java25Parser {
                     }
                     if (alt0_3.isSuccess()) {
                         result = alt0_3;
-                    }else if (alt0_3.isCutFailure()) {
+                    } else if (alt0_3.isCutFailure()) {
                         result = alt0_3.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart0);
                         children.clear();
                         children.addAll(savedChildren0);
@@ -18661,7 +18658,7 @@ public final class Java25Parser {
                             if (elem35_0.isCutFailure()) {
                                 restoreLocation(seqStart35);
                                 alt0_4 = elem35_0;
-                            }else if (elem35_0.isFailure()) {
+                            } else if (elem35_0.isFailure()) {
                                 restoreLocation(seqStart35);
                                 alt0_4 = cut35
                                          ? elem35_0.asCutFailure()
@@ -18677,7 +18674,7 @@ public final class Java25Parser {
                             if (elem35_1.isCutFailure()) {
                                 restoreLocation(seqStart35);
                                 alt0_4 = elem35_1;
-                            }else if (elem35_1.isFailure()) {
+                            } else if (elem35_1.isFailure()) {
                                 restoreLocation(seqStart35);
                                 alt0_4 = cut35
                                          ? elem35_1.asCutFailure()
@@ -18695,7 +18692,7 @@ public final class Java25Parser {
                             if (elem35_2.isCutFailure()) {
                                 restoreLocation(seqStart35);
                                 alt0_4 = elem35_2;
-                            }else if (elem35_2.isFailure()) {
+                            } else if (elem35_2.isFailure()) {
                                 restoreLocation(seqStart35);
                                 alt0_4 = cut35
                                          ? elem35_2.asCutFailure()
@@ -18711,7 +18708,7 @@ public final class Java25Parser {
                             if (elem35_3.isCutFailure()) {
                                 restoreLocation(seqStart35);
                                 alt0_4 = elem35_3;
-                            }else if (elem35_3.isFailure()) {
+                            } else if (elem35_3.isFailure()) {
                                 restoreLocation(seqStart35);
                                 alt0_4 = cut35
                                          ? elem35_3.asCutFailure()
@@ -18729,7 +18726,7 @@ public final class Java25Parser {
                             if (elem35_4.isCutFailure()) {
                                 restoreLocation(seqStart35);
                                 alt0_4 = elem35_4;
-                            }else if (elem35_4.isFailure()) {
+                            } else if (elem35_4.isFailure()) {
                                 restoreLocation(seqStart35);
                                 alt0_4 = cut35
                                          ? elem35_4.asCutFailure()
@@ -18741,9 +18738,9 @@ public final class Java25Parser {
                         }
                         if (alt0_4.isSuccess()) {
                             result = alt0_4;
-                        }else if (alt0_4.isCutFailure()) {
+                        } else if (alt0_4.isCutFailure()) {
                             result = alt0_4.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart0);
                             children.clear();
                             children.addAll(savedChildren0);
@@ -18756,9 +18753,9 @@ public final class Java25Parser {
                             }
                             if (alt0_5.isSuccess()) {
                                 result = alt0_5;
-                            }else if (alt0_5.isCutFailure()) {
+                            } else if (alt0_5.isCutFailure()) {
                                 result = alt0_5.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart0);
                                 children.clear();
                                 children.addAll(savedChildren0);
@@ -18773,7 +18770,7 @@ public final class Java25Parser {
                                     if (elem42_0.isCutFailure()) {
                                         restoreLocation(seqStart42);
                                         alt0_6 = elem42_0;
-                                    }else if (elem42_0.isFailure()) {
+                                    } else if (elem42_0.isFailure()) {
                                         restoreLocation(seqStart42);
                                         alt0_6 = cut42
                                                  ? elem42_0.asCutFailure()
@@ -18791,7 +18788,7 @@ public final class Java25Parser {
                                     if (elem42_1.isCutFailure()) {
                                         restoreLocation(seqStart42);
                                         alt0_6 = elem42_1;
-                                    }else if (elem42_1.isFailure()) {
+                                    } else if (elem42_1.isFailure()) {
                                         restoreLocation(seqStart42);
                                         alt0_6 = cut42
                                                  ? elem42_1.asCutFailure()
@@ -18807,7 +18804,7 @@ public final class Java25Parser {
                                     if (elem42_2.isCutFailure()) {
                                         restoreLocation(seqStart42);
                                         alt0_6 = elem42_2;
-                                    }else if (elem42_2.isFailure()) {
+                                    } else if (elem42_2.isFailure()) {
                                         restoreLocation(seqStart42);
                                         alt0_6 = cut42
                                                  ? elem42_2.asCutFailure()
@@ -18821,9 +18818,9 @@ public final class Java25Parser {
                                 }
                                 if (alt0_6.isSuccess()) {
                                     result = alt0_6;
-                                }else if (alt0_6.isCutFailure()) {
+                                } else if (alt0_6.isCutFailure()) {
                                     result = alt0_6.asRegularFailure();
-                                }else {
+                                } else {
                                     restoreLocation(choiceStart0);
                                     children.clear();
                                     children.addAll(savedChildren0);
@@ -18836,9 +18833,9 @@ public final class Java25Parser {
                                     }
                                     if (alt0_7.isSuccess()) {
                                         result = alt0_7;
-                                    }else if (alt0_7.isCutFailure()) {
+                                    } else if (alt0_7.isCutFailure()) {
                                         result = alt0_7.asRegularFailure();
-                                    }else {
+                                    } else {
                                         restoreLocation(choiceStart0);
                                         children.clear();
                                         children.addAll(savedChildren0);
@@ -18851,9 +18848,9 @@ public final class Java25Parser {
                                         }
                                         if (alt0_8.isSuccess()) {
                                             result = alt0_8;
-                                        }else if (alt0_8.isCutFailure()) {
+                                        } else if (alt0_8.isCutFailure()) {
                                             result = alt0_8.asRegularFailure();
-                                        }else {
+                                        } else {
                                             restoreLocation(choiceStart0);
                                         }
                                     }
@@ -18875,7 +18872,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_PRIMARY, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -18909,7 +18906,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -18933,7 +18930,7 @@ public final class Java25Parser {
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
                     alt3_0 = elem4_0;
-                }else if (elem4_0.isFailure()) {
+                } else if (elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     alt3_0 = cut4
                              ? elem4_0.asCutFailure()
@@ -18956,13 +18953,13 @@ public final class Java25Parser {
                     var tbNode6 = new CstNode.Token(tbSpan6, RULE_PEG_TOKEN, tbText6, List.of(), List.of());
                     children.add(tbNode6);
                     elem4_1 = CstParseResult.success(tbNode6, tbText6, location());
-                }else {
+                } else {
                     elem4_1 = tbElem6;
                 }
                 if (elem4_1.isCutFailure()) {
                     restoreLocation(seqStart4);
                     alt3_0 = elem4_1;
-                }else if (elem4_1.isFailure()) {
+                } else if (elem4_1.isFailure()) {
                     restoreLocation(seqStart4);
                     alt3_0 = cut4
                              ? elem4_1.asCutFailure()
@@ -18974,9 +18971,9 @@ public final class Java25Parser {
             }
             if (alt3_0.isSuccess()) {
                 elem0_1 = alt3_0;
-            }else if (alt3_0.isCutFailure()) {
+            } else if (alt3_0.isCutFailure()) {
                 elem0_1 = alt3_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart3);
                 children.clear();
                 children.addAll(savedChildren3);
@@ -18991,7 +18988,7 @@ public final class Java25Parser {
                     if (elem8_0.isCutFailure()) {
                         restoreLocation(seqStart8);
                         alt3_1 = elem8_0;
-                    }else if (elem8_0.isFailure()) {
+                    } else if (elem8_0.isFailure()) {
                         restoreLocation(seqStart8);
                         alt3_1 = cut8
                                  ? elem8_0.asCutFailure()
@@ -19016,7 +19013,7 @@ public final class Java25Parser {
                     if (elem8_1.isCutFailure()) {
                         restoreLocation(seqStart8);
                         alt3_1 = elem8_1;
-                    }else if (elem8_1.isFailure()) {
+                    } else if (elem8_1.isFailure()) {
                         restoreLocation(seqStart8);
                         alt3_1 = cut8
                                  ? elem8_1.asCutFailure()
@@ -19043,14 +19040,14 @@ public final class Java25Parser {
                         var tbNode14 = new CstNode.Token(tbSpan14, RULE_PEG_TOKEN, tbText14, List.of(), List.of());
                         children.add(tbNode14);
                         alt13_0 = CstParseResult.success(tbNode14, tbText14, location());
-                    }else {
+                    } else {
                         alt13_0 = tbElem14;
                     }
                     if (alt13_0.isSuccess()) {
                         elem8_2 = alt13_0;
-                    }else if (alt13_0.isCutFailure()) {
+                    } else if (alt13_0.isCutFailure()) {
                         elem8_2 = alt13_0.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart13);
                         children.clear();
                         children.addAll(savedChildren13);
@@ -19063,9 +19060,9 @@ public final class Java25Parser {
                         }
                         if (alt13_1.isSuccess()) {
                             elem8_2 = alt13_1;
-                        }else if (alt13_1.isCutFailure()) {
+                        } else if (alt13_1.isCutFailure()) {
                             elem8_2 = alt13_1.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart13);
                         }
                     }
@@ -19077,7 +19074,7 @@ public final class Java25Parser {
                     if (elem8_2.isCutFailure()) {
                         restoreLocation(seqStart8);
                         alt3_1 = elem8_2;
-                    }else if (elem8_2.isFailure()) {
+                    } else if (elem8_2.isFailure()) {
                         restoreLocation(seqStart8);
                         alt3_1 = cut8
                                  ? elem8_2.asCutFailure()
@@ -19089,9 +19086,9 @@ public final class Java25Parser {
                 }
                 if (alt3_1.isSuccess()) {
                     elem0_1 = alt3_1;
-                }else if (alt3_1.isCutFailure()) {
+                } else if (alt3_1.isCutFailure()) {
                     elem0_1 = alt3_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart3);
                 }
             }
@@ -19103,7 +19100,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -19119,7 +19116,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TYPE_EXPR, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -19153,7 +19150,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -19169,7 +19166,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -19191,9 +19188,9 @@ public final class Java25Parser {
             }
             if (alt4_0.isSuccess()) {
                 elem0_2 = alt4_0;
-            }else if (alt4_0.isCutFailure()) {
+            } else if (alt4_0.isCutFailure()) {
                 elem0_2 = alt4_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart4);
                 children.clear();
                 children.addAll(savedChildren4);
@@ -19206,9 +19203,9 @@ public final class Java25Parser {
                 }
                 if (alt4_1.isSuccess()) {
                     elem0_2 = alt4_1;
-                }else if (alt4_1.isCutFailure()) {
+                } else if (alt4_1.isCutFailure()) {
                     elem0_2 = alt4_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart4);
                 }
             }
@@ -19220,7 +19217,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -19236,7 +19233,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_LAMBDA, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -19270,9 +19267,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -19282,9 +19279,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -19299,7 +19296,7 @@ public final class Java25Parser {
                     if (elem3_0.isCutFailure()) {
                         restoreLocation(seqStart3);
                         alt0_2 = elem3_0;
-                    }else if (elem3_0.isFailure()) {
+                    } else if (elem3_0.isFailure()) {
                         restoreLocation(seqStart3);
                         alt0_2 = cut3
                                  ? elem3_0.asCutFailure()
@@ -19324,7 +19321,7 @@ public final class Java25Parser {
                     if (elem3_1.isCutFailure()) {
                         restoreLocation(seqStart3);
                         alt0_2 = elem3_1;
-                    }else if (elem3_1.isFailure()) {
+                    } else if (elem3_1.isFailure()) {
                         restoreLocation(seqStart3);
                         alt0_2 = cut3
                                  ? elem3_1.asCutFailure()
@@ -19348,7 +19345,7 @@ public final class Java25Parser {
                             if (elem9_0.isCutFailure()) {
                                 restoreLocation(seqStart9);
                                 zomElem7 = elem9_0;
-                            }else if (elem9_0.isFailure()) {
+                            } else if (elem9_0.isFailure()) {
                                 restoreLocation(seqStart9);
                                 zomElem7 = cut9
                                            ? elem9_0.asCutFailure()
@@ -19366,7 +19363,7 @@ public final class Java25Parser {
                             if (elem9_1.isCutFailure()) {
                                 restoreLocation(seqStart9);
                                 zomElem7 = elem9_1;
-                            }else if (elem9_1.isFailure()) {
+                            } else if (elem9_1.isFailure()) {
                                 restoreLocation(seqStart9);
                                 zomElem7 = cut9
                                            ? elem9_1.asCutFailure()
@@ -19377,7 +19374,7 @@ public final class Java25Parser {
                             zomElem7 = CstParseResult.success(null, substring(seqStart9.offset(), pos), location());
                         }
                         if (zomElem7.isFailure() || location()
-                                                    .offset() == beforeLoc7.offset()) {
+                                                            .offset() == beforeLoc7.offset()) {
                             restoreLocation(beforeLoc7);
                             break;
                         }
@@ -19386,7 +19383,7 @@ public final class Java25Parser {
                     if (elem3_2.isCutFailure()) {
                         restoreLocation(seqStart3);
                         alt0_2 = elem3_2;
-                    }else if (elem3_2.isFailure()) {
+                    } else if (elem3_2.isFailure()) {
                         restoreLocation(seqStart3);
                         alt0_2 = cut3
                                  ? elem3_2.asCutFailure()
@@ -19402,7 +19399,7 @@ public final class Java25Parser {
                     if (elem3_3.isCutFailure()) {
                         restoreLocation(seqStart3);
                         alt0_2 = elem3_3;
-                    }else if (elem3_3.isFailure()) {
+                    } else if (elem3_3.isFailure()) {
                         restoreLocation(seqStart3);
                         alt0_2 = cut3
                                  ? elem3_3.asCutFailure()
@@ -19414,9 +19411,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                 }
             }
@@ -19432,7 +19429,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_LAMBDA_PARAMS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -19468,7 +19465,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -19477,7 +19474,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -19497,7 +19494,7 @@ public final class Java25Parser {
                     children.add(zomElem3.node.unwrap());
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -19506,7 +19503,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -19536,7 +19533,7 @@ public final class Java25Parser {
                     if (elem11_0.isCutFailure()) {
                         restoreLocation(seqStart11);
                         tbElem10 = elem11_0;
-                    }else if (elem11_0.isFailure()) {
+                    } else if (elem11_0.isFailure()) {
                         restoreLocation(seqStart11);
                         tbElem10 = cut11
                                    ? elem11_0.asCutFailure()
@@ -19554,7 +19551,7 @@ public final class Java25Parser {
                     if (elem11_1.isCutFailure()) {
                         restoreLocation(seqStart11);
                         tbElem10 = elem11_1;
-                    }else if (elem11_1.isFailure()) {
+                    } else if (elem11_1.isFailure()) {
                         restoreLocation(seqStart11);
                         tbElem10 = cut11
                                    ? elem11_1.asCutFailure()
@@ -19574,14 +19571,14 @@ public final class Java25Parser {
                     var tbNode10 = new CstNode.Token(tbSpan10, RULE_PEG_TOKEN, tbText10, List.of(), List.of());
                     children.add(tbNode10);
                     alt9_0 = CstParseResult.success(tbNode10, tbText10, location());
-                }else {
+                } else {
                     alt9_0 = tbElem10;
                 }
                 if (alt9_0.isSuccess()) {
                     elem7_0 = alt9_0;
-                }else if (alt9_0.isCutFailure()) {
+                } else if (alt9_0.isCutFailure()) {
                     elem7_0 = alt9_0.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart9);
                     children.clear();
                     children.addAll(savedChildren9);
@@ -19594,9 +19591,9 @@ public final class Java25Parser {
                     }
                     if (alt9_1.isSuccess()) {
                         elem7_0 = alt9_1;
-                    }else if (alt9_1.isCutFailure()) {
+                    } else if (alt9_1.isCutFailure()) {
                         elem7_0 = alt9_1.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart9);
                     }
                 }
@@ -19608,7 +19605,7 @@ public final class Java25Parser {
                 if (elem7_0.isCutFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = elem7_0;
-                }else if (elem7_0.isFailure()) {
+                } else if (elem7_0.isFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = cut7
                                ? elem7_0.asCutFailure()
@@ -19624,9 +19621,9 @@ public final class Java25Parser {
                 var alt18_0 = matchLiteralCst("...", false);
                 if (alt18_0.isSuccess()) {
                     andElem16 = alt18_0;
-                }else if (alt18_0.isCutFailure()) {
+                } else if (alt18_0.isCutFailure()) {
                     andElem16 = alt18_0.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart18);
                     var trivia20 = inTokenBoundary
                                    ? List.<Trivia>of()
@@ -19634,16 +19631,16 @@ public final class Java25Parser {
                     var alt18_1 = parse_Identifier(trivia20);
                     if (alt18_1.isSuccess()) {
                         andElem16 = alt18_1;
-                    }else if (alt18_1.isCutFailure()) {
+                    } else if (alt18_1.isCutFailure()) {
                         andElem16 = alt18_1.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart18);
                         var alt18_2 = matchLiteralCst("_", false);
                         if (alt18_2.isSuccess()) {
                             andElem16 = alt18_2;
-                        }else if (alt18_2.isCutFailure()) {
+                        } else if (alt18_2.isCutFailure()) {
                             andElem16 = alt18_2.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart18);
                         }
                     }
@@ -19660,7 +19657,7 @@ public final class Java25Parser {
                 if (elem7_1.isCutFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = elem7_1;
-                }else if (elem7_1.isFailure()) {
+                } else if (elem7_1.isFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = cut7
                                ? elem7_1.asCutFailure()
@@ -19679,7 +19676,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -19702,7 +19699,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -19724,9 +19721,9 @@ public final class Java25Parser {
             }
             if (alt25_0.isSuccess()) {
                 elem0_4 = alt25_0;
-            }else if (alt25_0.isCutFailure()) {
+            } else if (alt25_0.isCutFailure()) {
                 elem0_4 = alt25_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart25);
                 children.clear();
                 children.addAll(savedChildren25);
@@ -19736,9 +19733,9 @@ public final class Java25Parser {
                 }
                 if (alt25_1.isSuccess()) {
                     elem0_4 = alt25_1;
-                }else if (alt25_1.isCutFailure()) {
+                } else if (alt25_1.isCutFailure()) {
                     elem0_4 = alt25_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart25);
                 }
             }
@@ -19750,7 +19747,7 @@ public final class Java25Parser {
             if (elem0_4.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_4;
-            }else if (elem0_4.isFailure()) {
+            } else if (elem0_4.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_4.asCutFailure()
@@ -19766,7 +19763,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_LAMBDA_PARAM, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -19800,7 +19797,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -19824,7 +19821,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -19842,7 +19839,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -19853,7 +19850,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -19862,7 +19859,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -19878,7 +19875,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ARGS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -19912,7 +19909,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -19936,7 +19933,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -19954,7 +19951,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -19965,7 +19962,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -19974,7 +19971,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -19990,7 +19987,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_EXPR_LIST, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -20026,7 +20023,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -20035,7 +20032,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -20057,9 +20054,9 @@ public final class Java25Parser {
             }
             if (alt4_0.isSuccess()) {
                 elem0_1 = alt4_0;
-            }else if (alt4_0.isCutFailure()) {
+            } else if (alt4_0.isCutFailure()) {
                 elem0_1 = alt4_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart4);
                 children.clear();
                 children.addAll(savedChildren4);
@@ -20072,9 +20069,9 @@ public final class Java25Parser {
                 }
                 if (alt4_1.isSuccess()) {
                     elem0_1 = alt4_1;
-                }else if (alt4_1.isCutFailure()) {
+                } else if (alt4_1.isCutFailure()) {
                     elem0_1 = alt4_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart4);
                 }
             }
@@ -20086,7 +20083,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -20111,7 +20108,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -20127,7 +20124,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TYPE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -20159,65 +20156,65 @@ public final class Java25Parser {
             var alt3_0 = matchLiteralCst("boolean", false);
             if (alt3_0.isSuccess()) {
                 elem1_0 = alt3_0;
-            }else if (alt3_0.isCutFailure()) {
+            } else if (alt3_0.isCutFailure()) {
                 elem1_0 = alt3_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart3);
                 var alt3_1 = matchLiteralCst("byte", false);
                 if (alt3_1.isSuccess()) {
                     elem1_0 = alt3_1;
-                }else if (alt3_1.isCutFailure()) {
+                } else if (alt3_1.isCutFailure()) {
                     elem1_0 = alt3_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart3);
                     var alt3_2 = matchLiteralCst("short", false);
                     if (alt3_2.isSuccess()) {
                         elem1_0 = alt3_2;
-                    }else if (alt3_2.isCutFailure()) {
+                    } else if (alt3_2.isCutFailure()) {
                         elem1_0 = alt3_2.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart3);
                         var alt3_3 = matchLiteralCst("int", false);
                         if (alt3_3.isSuccess()) {
                             elem1_0 = alt3_3;
-                        }else if (alt3_3.isCutFailure()) {
+                        } else if (alt3_3.isCutFailure()) {
                             elem1_0 = alt3_3.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart3);
                             var alt3_4 = matchLiteralCst("long", false);
                             if (alt3_4.isSuccess()) {
                                 elem1_0 = alt3_4;
-                            }else if (alt3_4.isCutFailure()) {
+                            } else if (alt3_4.isCutFailure()) {
                                 elem1_0 = alt3_4.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart3);
                                 var alt3_5 = matchLiteralCst("float", false);
                                 if (alt3_5.isSuccess()) {
                                     elem1_0 = alt3_5;
-                                }else if (alt3_5.isCutFailure()) {
+                                } else if (alt3_5.isCutFailure()) {
                                     elem1_0 = alt3_5.asRegularFailure();
-                                }else {
+                                } else {
                                     restoreLocation(choiceStart3);
                                     var alt3_6 = matchLiteralCst("double", false);
                                     if (alt3_6.isSuccess()) {
                                         elem1_0 = alt3_6;
-                                    }else if (alt3_6.isCutFailure()) {
+                                    } else if (alt3_6.isCutFailure()) {
                                         elem1_0 = alt3_6.asRegularFailure();
-                                    }else {
+                                    } else {
                                         restoreLocation(choiceStart3);
                                         var alt3_7 = matchLiteralCst("char", false);
                                         if (alt3_7.isSuccess()) {
                                             elem1_0 = alt3_7;
-                                        }else if (alt3_7.isCutFailure()) {
+                                        } else if (alt3_7.isCutFailure()) {
                                             elem1_0 = alt3_7.asRegularFailure();
-                                        }else {
+                                        } else {
                                             restoreLocation(choiceStart3);
                                             var alt3_8 = matchLiteralCst("void", false);
                                             if (alt3_8.isSuccess()) {
                                                 elem1_0 = alt3_8;
-                                            }else if (alt3_8.isCutFailure()) {
+                                            } else if (alt3_8.isCutFailure()) {
                                                 elem1_0 = alt3_8.asRegularFailure();
-                                            }else {
+                                            } else {
                                                 restoreLocation(choiceStart3);
                                             }
                                         }
@@ -20234,7 +20231,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -20252,7 +20249,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -20272,7 +20269,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -20281,7 +20278,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_PRIM_TYPE, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -20315,7 +20312,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -20342,7 +20339,7 @@ public final class Java25Parser {
                         if (elem7_0.isCutFailure()) {
                             restoreLocation(seqStart7);
                             andElem5 = elem7_0;
-                        }else if (elem7_0.isFailure()) {
+                        } else if (elem7_0.isFailure()) {
                             restoreLocation(seqStart7);
                             andElem5 = cut7
                                        ? elem7_0.asCutFailure()
@@ -20355,9 +20352,9 @@ public final class Java25Parser {
                         var alt10_0 = matchLiteralCst("@", false);
                         if (alt10_0.isSuccess()) {
                             elem7_1 = alt10_0;
-                        }else if (alt10_0.isCutFailure()) {
+                        } else if (alt10_0.isCutFailure()) {
                             elem7_1 = alt10_0.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart10);
                             var trivia12 = inTokenBoundary
                                            ? List.<Trivia>of()
@@ -20365,9 +20362,9 @@ public final class Java25Parser {
                             var alt10_1 = parse_Identifier(trivia12);
                             if (alt10_1.isSuccess()) {
                                 elem7_1 = alt10_1;
-                            }else if (alt10_1.isCutFailure()) {
+                            } else if (alt10_1.isCutFailure()) {
                                 elem7_1 = alt10_1.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart10);
                             }
                         }
@@ -20377,7 +20374,7 @@ public final class Java25Parser {
                         if (elem7_1.isCutFailure()) {
                             restoreLocation(seqStart7);
                             andElem5 = elem7_1;
-                        }else if (elem7_1.isFailure()) {
+                        } else if (elem7_1.isFailure()) {
                             restoreLocation(seqStart7);
                             andElem5 = cut7
                                        ? elem7_1.asCutFailure()
@@ -20396,7 +20393,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -20412,7 +20409,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -20430,7 +20427,7 @@ public final class Java25Parser {
                     if (elem4_2.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_2;
-                    }else if (elem4_2.isFailure()) {
+                    } else if (elem4_2.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_2.asCutFailure()
@@ -20441,7 +20438,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -20450,7 +20447,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -20466,7 +20463,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_REF_TYPE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -20502,7 +20499,7 @@ public final class Java25Parser {
                     children.add(zomElem1.node.unwrap());
                 }
                 if (zomElem1.isFailure() || location()
-                                            .offset() == beforeLoc1.offset()) {
+                                                    .offset() == beforeLoc1.offset()) {
                     restoreLocation(beforeLoc1);
                     break;
                 }
@@ -20511,7 +20508,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -20529,7 +20526,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -20554,7 +20551,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -20570,7 +20567,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ANNOTATED_TYPE_NAME, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -20606,7 +20603,7 @@ public final class Java25Parser {
                     children.add(zomElem3.node.unwrap());
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -20615,7 +20612,7 @@ public final class Java25Parser {
             if (elem2_0.isCutFailure()) {
                 restoreLocation(seqStart2);
                 oomFirst0 = elem2_0;
-            }else if (elem2_0.isFailure()) {
+            } else if (elem2_0.isFailure()) {
                 restoreLocation(seqStart2);
                 oomFirst0 = cut2
                             ? elem2_0.asCutFailure()
@@ -20631,7 +20628,7 @@ public final class Java25Parser {
             if (elem2_1.isCutFailure()) {
                 restoreLocation(seqStart2);
                 oomFirst0 = elem2_1;
-            }else if (elem2_1.isFailure()) {
+            } else if (elem2_1.isFailure()) {
                 restoreLocation(seqStart2);
                 oomFirst0 = cut2
                             ? elem2_1.asCutFailure()
@@ -20647,7 +20644,7 @@ public final class Java25Parser {
             if (elem2_2.isCutFailure()) {
                 restoreLocation(seqStart2);
                 oomFirst0 = elem2_2;
-            }else if (elem2_2.isFailure()) {
+            } else if (elem2_2.isFailure()) {
                 restoreLocation(seqStart2);
                 oomFirst0 = cut2
                             ? elem2_2.asCutFailure()
@@ -20679,7 +20676,7 @@ public final class Java25Parser {
                             children.add(zomElem9.node.unwrap());
                         }
                         if (zomElem9.isFailure() || location()
-                                                    .offset() == beforeLoc9.offset()) {
+                                                            .offset() == beforeLoc9.offset()) {
                             restoreLocation(beforeLoc9);
                             break;
                         }
@@ -20688,7 +20685,7 @@ public final class Java25Parser {
                     if (elem8_0.isCutFailure()) {
                         restoreLocation(seqStart8);
                         oomElem0 = elem8_0;
-                    }else if (elem8_0.isFailure()) {
+                    } else if (elem8_0.isFailure()) {
                         restoreLocation(seqStart8);
                         oomElem0 = cut8
                                    ? elem8_0.asCutFailure()
@@ -20704,7 +20701,7 @@ public final class Java25Parser {
                     if (elem8_1.isCutFailure()) {
                         restoreLocation(seqStart8);
                         oomElem0 = elem8_1;
-                    }else if (elem8_1.isFailure()) {
+                    } else if (elem8_1.isFailure()) {
                         restoreLocation(seqStart8);
                         oomElem0 = cut8
                                    ? elem8_1.asCutFailure()
@@ -20720,7 +20717,7 @@ public final class Java25Parser {
                     if (elem8_2.isCutFailure()) {
                         restoreLocation(seqStart8);
                         oomElem0 = elem8_2;
-                    }else if (elem8_2.isFailure()) {
+                    } else if (elem8_2.isFailure()) {
                         restoreLocation(seqStart8);
                         oomElem0 = cut8
                                    ? elem8_2.asCutFailure()
@@ -20731,7 +20728,7 @@ public final class Java25Parser {
                     oomElem0 = CstParseResult.success(null, substring(seqStart8.offset(), pos), location());
                 }
                 if (oomElem0.isFailure() || location()
-                                            .offset() == beforeLoc0.offset()) {
+                                                    .offset() == beforeLoc0.offset()) {
                     restoreLocation(beforeLoc0);
                     break;
                 }
@@ -20743,7 +20740,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_DIMS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -20779,7 +20776,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -20795,7 +20792,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -20807,9 +20804,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -20824,7 +20821,7 @@ public final class Java25Parser {
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_0;
-                }else if (elem4_0.isFailure()) {
+                } else if (elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
                              ? elem4_0.asCutFailure()
@@ -20842,7 +20839,7 @@ public final class Java25Parser {
                 if (elem4_1.isCutFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_1;
-                }else if (elem4_1.isFailure()) {
+                } else if (elem4_1.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
                              ? elem4_1.asCutFailure()
@@ -20866,7 +20863,7 @@ public final class Java25Parser {
                         if (elem9_0.isCutFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = elem9_0;
-                        }else if (elem9_0.isFailure()) {
+                        } else if (elem9_0.isFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = cut9
                                        ? elem9_0.asCutFailure()
@@ -20884,7 +20881,7 @@ public final class Java25Parser {
                         if (elem9_1.isCutFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = elem9_1;
-                        }else if (elem9_1.isFailure()) {
+                        } else if (elem9_1.isFailure()) {
                             restoreLocation(seqStart9);
                             zomElem7 = cut9
                                        ? elem9_1.asCutFailure()
@@ -20895,7 +20892,7 @@ public final class Java25Parser {
                         zomElem7 = CstParseResult.success(null, substring(seqStart9.offset(), pos), location());
                     }
                     if (zomElem7.isFailure() || location()
-                                                .offset() == beforeLoc7.offset()) {
+                                                        .offset() == beforeLoc7.offset()) {
                         restoreLocation(beforeLoc7);
                         break;
                     }
@@ -20904,7 +20901,7 @@ public final class Java25Parser {
                 if (elem4_2.isCutFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_2;
-                }else if (elem4_2.isFailure()) {
+                } else if (elem4_2.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
                              ? elem4_2.asCutFailure()
@@ -20920,7 +20917,7 @@ public final class Java25Parser {
                 if (elem4_3.isCutFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = elem4_3;
-                }else if (elem4_3.isFailure()) {
+                } else if (elem4_3.isFailure()) {
                     restoreLocation(seqStart4);
                     alt0_1 = cut4
                              ? elem4_3.asCutFailure()
@@ -20932,9 +20929,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -20949,7 +20946,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TYPE_ARGS, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -20983,9 +20980,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -21000,7 +20997,7 @@ public final class Java25Parser {
                 if (elem2_0.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_0;
-                }else if (elem2_0.isFailure()) {
+                } else if (elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_0.asCutFailure()
@@ -21026,7 +21023,7 @@ public final class Java25Parser {
                             children.add(zomElem7.node.unwrap());
                         }
                         if (zomElem7.isFailure() || location()
-                                                    .offset() == beforeLoc7.offset()) {
+                                                            .offset() == beforeLoc7.offset()) {
                             restoreLocation(beforeLoc7);
                             break;
                         }
@@ -21035,7 +21032,7 @@ public final class Java25Parser {
                     if (elem6_0.isCutFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = elem6_0;
-                    }else if (elem6_0.isFailure()) {
+                    } else if (elem6_0.isFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = cut6
                                    ? elem6_0.asCutFailure()
@@ -21054,9 +21051,9 @@ public final class Java25Parser {
                     }
                     if (alt10_0.isSuccess()) {
                         elem6_1 = alt10_0;
-                    }else if (alt10_0.isCutFailure()) {
+                    } else if (alt10_0.isCutFailure()) {
                         elem6_1 = alt10_0.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart10);
                         children.clear();
                         children.addAll(savedChildren10);
@@ -21066,9 +21063,9 @@ public final class Java25Parser {
                         }
                         if (alt10_1.isSuccess()) {
                             elem6_1 = alt10_1;
-                        }else if (alt10_1.isCutFailure()) {
+                        } else if (alt10_1.isCutFailure()) {
                             elem6_1 = alt10_1.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart10);
                         }
                     }
@@ -21080,7 +21077,7 @@ public final class Java25Parser {
                     if (elem6_1.isCutFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = elem6_1;
-                    }else if (elem6_1.isFailure()) {
+                    } else if (elem6_1.isFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = cut6
                                    ? elem6_1.asCutFailure()
@@ -21098,7 +21095,7 @@ public final class Java25Parser {
                     if (elem6_2.isCutFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = elem6_2;
-                    }else if (elem6_2.isFailure()) {
+                    } else if (elem6_2.isFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = cut6
                                    ? elem6_2.asCutFailure()
@@ -21117,7 +21114,7 @@ public final class Java25Parser {
                 if (elem2_1.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_1;
-                }else if (elem2_1.isFailure()) {
+                } else if (elem2_1.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_1.asCutFailure()
@@ -21129,9 +21126,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -21146,7 +21143,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_TYPE_ARG, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -21180,7 +21177,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -21207,7 +21204,7 @@ public final class Java25Parser {
                         if (elem7_0.isCutFailure()) {
                             restoreLocation(seqStart7);
                             andElem5 = elem7_0;
-                        }else if (elem7_0.isFailure()) {
+                        } else if (elem7_0.isFailure()) {
                             restoreLocation(seqStart7);
                             andElem5 = cut7
                                        ? elem7_0.asCutFailure()
@@ -21222,7 +21219,7 @@ public final class Java25Parser {
                         if (elem7_1.isCutFailure()) {
                             restoreLocation(seqStart7);
                             andElem5 = elem7_1;
-                        }else if (elem7_1.isFailure()) {
+                        } else if (elem7_1.isFailure()) {
                             restoreLocation(seqStart7);
                             andElem5 = cut7
                                        ? elem7_1.asCutFailure()
@@ -21241,7 +21238,7 @@ public final class Java25Parser {
                     if (elem4_0.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_0;
-                    }else if (elem4_0.isFailure()) {
+                    } else if (elem4_0.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_0.asCutFailure()
@@ -21257,7 +21254,7 @@ public final class Java25Parser {
                     if (elem4_1.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_1;
-                    }else if (elem4_1.isFailure()) {
+                    } else if (elem4_1.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_1.asCutFailure()
@@ -21275,7 +21272,7 @@ public final class Java25Parser {
                     if (elem4_2.isCutFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = elem4_2;
-                    }else if (elem4_2.isFailure()) {
+                    } else if (elem4_2.isFailure()) {
                         restoreLocation(seqStart4);
                         zomElem2 = cut4
                                    ? elem4_2.asCutFailure()
@@ -21286,7 +21283,7 @@ public final class Java25Parser {
                     zomElem2 = CstParseResult.success(null, substring(seqStart4.offset(), pos), location());
                 }
                 if (zomElem2.isFailure() || location()
-                                            .offset() == beforeLoc2.offset()) {
+                                                    .offset() == beforeLoc2.offset()) {
                     restoreLocation(beforeLoc2);
                     break;
                 }
@@ -21295,7 +21292,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -21311,7 +21308,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_QUALIFIED_NAME, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -21350,7 +21347,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -21370,7 +21367,7 @@ public final class Java25Parser {
                 if (elem4_0.isCutFailure()) {
                     restoreLocation(seqStart4);
                     tbElem3 = elem4_0;
-                }else if (elem4_0.isFailure()) {
+                } else if (elem4_0.isFailure()) {
                     restoreLocation(seqStart4);
                     tbElem3 = cut4
                               ? elem4_0.asCutFailure()
@@ -21385,7 +21382,7 @@ public final class Java25Parser {
                     if (!inTokenBoundary) skipWhitespace();
                     var zomElem6 = matchCharClassCst("a-zA-Z0-9_$", false, false);
                     if (zomElem6.isFailure() || location()
-                                                .offset() == beforeLoc6.offset()) {
+                                                        .offset() == beforeLoc6.offset()) {
                         restoreLocation(beforeLoc6);
                         break;
                     }
@@ -21394,7 +21391,7 @@ public final class Java25Parser {
                 if (elem4_1.isCutFailure()) {
                     restoreLocation(seqStart4);
                     tbElem3 = elem4_1;
-                }else if (elem4_1.isFailure()) {
+                } else if (elem4_1.isFailure()) {
                     restoreLocation(seqStart4);
                     tbElem3 = cut4
                               ? elem4_1.asCutFailure()
@@ -21414,13 +21411,13 @@ public final class Java25Parser {
                 var tbNode3 = new CstNode.Token(tbSpan3, RULE_PEG_TOKEN, tbText3, List.of(), List.of());
                 children.add(tbNode3);
                 elem0_1 = CstParseResult.success(tbNode3, tbText3, location());
-            }else {
+            } else {
                 elem0_1 = tbElem3;
             }
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -21436,7 +21433,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_IDENTIFIER, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -21468,100 +21465,100 @@ public final class Java25Parser {
             var alt3_0 = matchLiteralCst("public", false);
             if (alt3_0.isSuccess()) {
                 elem1_0 = alt3_0;
-            }else if (alt3_0.isCutFailure()) {
+            } else if (alt3_0.isCutFailure()) {
                 elem1_0 = alt3_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart3);
                 var alt3_1 = matchLiteralCst("protected", false);
                 if (alt3_1.isSuccess()) {
                     elem1_0 = alt3_1;
-                }else if (alt3_1.isCutFailure()) {
+                } else if (alt3_1.isCutFailure()) {
                     elem1_0 = alt3_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart3);
                     var alt3_2 = matchLiteralCst("private", false);
                     if (alt3_2.isSuccess()) {
                         elem1_0 = alt3_2;
-                    }else if (alt3_2.isCutFailure()) {
+                    } else if (alt3_2.isCutFailure()) {
                         elem1_0 = alt3_2.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart3);
                         var alt3_3 = matchLiteralCst("static", false);
                         if (alt3_3.isSuccess()) {
                             elem1_0 = alt3_3;
-                        }else if (alt3_3.isCutFailure()) {
+                        } else if (alt3_3.isCutFailure()) {
                             elem1_0 = alt3_3.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart3);
                             var alt3_4 = matchLiteralCst("final", false);
                             if (alt3_4.isSuccess()) {
                                 elem1_0 = alt3_4;
-                            }else if (alt3_4.isCutFailure()) {
+                            } else if (alt3_4.isCutFailure()) {
                                 elem1_0 = alt3_4.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart3);
                                 var alt3_5 = matchLiteralCst("abstract", false);
                                 if (alt3_5.isSuccess()) {
                                     elem1_0 = alt3_5;
-                                }else if (alt3_5.isCutFailure()) {
+                                } else if (alt3_5.isCutFailure()) {
                                     elem1_0 = alt3_5.asRegularFailure();
-                                }else {
+                                } else {
                                     restoreLocation(choiceStart3);
                                     var alt3_6 = matchLiteralCst("native", false);
                                     if (alt3_6.isSuccess()) {
                                         elem1_0 = alt3_6;
-                                    }else if (alt3_6.isCutFailure()) {
+                                    } else if (alt3_6.isCutFailure()) {
                                         elem1_0 = alt3_6.asRegularFailure();
-                                    }else {
+                                    } else {
                                         restoreLocation(choiceStart3);
                                         var alt3_7 = matchLiteralCst("synchronized", false);
                                         if (alt3_7.isSuccess()) {
                                             elem1_0 = alt3_7;
-                                        }else if (alt3_7.isCutFailure()) {
+                                        } else if (alt3_7.isCutFailure()) {
                                             elem1_0 = alt3_7.asRegularFailure();
-                                        }else {
+                                        } else {
                                             restoreLocation(choiceStart3);
                                             var alt3_8 = matchLiteralCst("transient", false);
                                             if (alt3_8.isSuccess()) {
                                                 elem1_0 = alt3_8;
-                                            }else if (alt3_8.isCutFailure()) {
+                                            } else if (alt3_8.isCutFailure()) {
                                                 elem1_0 = alt3_8.asRegularFailure();
-                                            }else {
+                                            } else {
                                                 restoreLocation(choiceStart3);
                                                 var alt3_9 = matchLiteralCst("volatile", false);
                                                 if (alt3_9.isSuccess()) {
                                                     elem1_0 = alt3_9;
-                                                }else if (alt3_9.isCutFailure()) {
+                                                } else if (alt3_9.isCutFailure()) {
                                                     elem1_0 = alt3_9.asRegularFailure();
-                                                }else {
+                                                } else {
                                                     restoreLocation(choiceStart3);
                                                     var alt3_10 = matchLiteralCst("strictfp", false);
                                                     if (alt3_10.isSuccess()) {
                                                         elem1_0 = alt3_10;
-                                                    }else if (alt3_10.isCutFailure()) {
+                                                    } else if (alt3_10.isCutFailure()) {
                                                         elem1_0 = alt3_10.asRegularFailure();
-                                                    }else {
+                                                    } else {
                                                         restoreLocation(choiceStart3);
                                                         var alt3_11 = matchLiteralCst("default", false);
                                                         if (alt3_11.isSuccess()) {
                                                             elem1_0 = alt3_11;
-                                                        }else if (alt3_11.isCutFailure()) {
+                                                        } else if (alt3_11.isCutFailure()) {
                                                             elem1_0 = alt3_11.asRegularFailure();
-                                                        }else {
+                                                        } else {
                                                             restoreLocation(choiceStart3);
                                                             var alt3_12 = matchLiteralCst("sealed", false);
                                                             if (alt3_12.isSuccess()) {
                                                                 elem1_0 = alt3_12;
-                                                            }else if (alt3_12.isCutFailure()) {
+                                                            } else if (alt3_12.isCutFailure()) {
                                                                 elem1_0 = alt3_12.asRegularFailure();
-                                                            }else {
+                                                            } else {
                                                                 restoreLocation(choiceStart3);
                                                                 var alt3_13 = matchLiteralCst("non-sealed", false);
                                                                 if (alt3_13.isSuccess()) {
                                                                     elem1_0 = alt3_13;
-                                                                }else if (alt3_13.isCutFailure()) {
+                                                                } else if (alt3_13.isCutFailure()) {
                                                                     elem1_0 = alt3_13.asRegularFailure();
-                                                                }else {
+                                                                } else {
                                                                     restoreLocation(choiceStart3);
                                                                 }
                                                             }
@@ -21583,7 +21580,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -21601,7 +21598,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -21621,7 +21618,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -21630,7 +21627,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_MODIFIER, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -21661,7 +21658,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -21682,7 +21679,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -21700,7 +21697,7 @@ public final class Java25Parser {
             if (elem0_2.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_2;
-            }else if (elem0_2.isFailure()) {
+            } else if (elem0_2.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_2.asCutFailure()
@@ -21721,7 +21718,7 @@ public final class Java25Parser {
                 if (elem7_0.isCutFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = elem7_0;
-                }else if (elem7_0.isFailure()) {
+                } else if (elem7_0.isFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = cut7
                                ? elem7_0.asCutFailure()
@@ -21746,7 +21743,7 @@ public final class Java25Parser {
                 if (elem7_1.isCutFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = elem7_1;
-                }else if (elem7_1.isFailure()) {
+                } else if (elem7_1.isFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = cut7
                                ? elem7_1.asCutFailure()
@@ -21762,7 +21759,7 @@ public final class Java25Parser {
                 if (elem7_2.isCutFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = elem7_2;
-                }else if (elem7_2.isFailure()) {
+                } else if (elem7_2.isFailure()) {
                     restoreLocation(seqStart7);
                     optElem5 = cut7
                                ? elem7_2.asCutFailure()
@@ -21781,7 +21778,7 @@ public final class Java25Parser {
             if (elem0_3.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_3;
-            }else if (elem0_3.isFailure()) {
+            } else if (elem0_3.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_3.asCutFailure()
@@ -21797,7 +21794,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ANNOTATION, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -21836,7 +21833,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_0.asCutFailure()
@@ -21852,7 +21849,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_1.asCutFailure()
@@ -21870,7 +21867,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_2.asCutFailure()
@@ -21894,7 +21891,7 @@ public final class Java25Parser {
                     if (elem7_0.isCutFailure()) {
                         restoreLocation(seqStart7);
                         zomElem5 = elem7_0;
-                    }else if (elem7_0.isFailure()) {
+                    } else if (elem7_0.isFailure()) {
                         restoreLocation(seqStart7);
                         zomElem5 = cut7
                                    ? elem7_0.asCutFailure()
@@ -21912,7 +21909,7 @@ public final class Java25Parser {
                     if (elem7_1.isCutFailure()) {
                         restoreLocation(seqStart7);
                         zomElem5 = elem7_1;
-                    }else if (elem7_1.isFailure()) {
+                    } else if (elem7_1.isFailure()) {
                         restoreLocation(seqStart7);
                         zomElem5 = cut7
                                    ? elem7_1.asCutFailure()
@@ -21928,7 +21925,7 @@ public final class Java25Parser {
                     if (elem7_2.isCutFailure()) {
                         restoreLocation(seqStart7);
                         zomElem5 = elem7_2;
-                    }else if (elem7_2.isFailure()) {
+                    } else if (elem7_2.isFailure()) {
                         restoreLocation(seqStart7);
                         zomElem5 = cut7
                                    ? elem7_2.asCutFailure()
@@ -21946,7 +21943,7 @@ public final class Java25Parser {
                     if (elem7_3.isCutFailure()) {
                         restoreLocation(seqStart7);
                         zomElem5 = elem7_3;
-                    }else if (elem7_3.isFailure()) {
+                    } else if (elem7_3.isFailure()) {
                         restoreLocation(seqStart7);
                         zomElem5 = cut7
                                    ? elem7_3.asCutFailure()
@@ -21957,7 +21954,7 @@ public final class Java25Parser {
                     zomElem5 = CstParseResult.success(null, substring(seqStart7.offset(), pos), location());
                 }
                 if (zomElem5.isFailure() || location()
-                                            .offset() == beforeLoc5.offset()) {
+                                                    .offset() == beforeLoc5.offset()) {
                     restoreLocation(beforeLoc5);
                     break;
                 }
@@ -21966,7 +21963,7 @@ public final class Java25Parser {
             if (elem1_3.isCutFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = elem1_3;
-            }else if (elem1_3.isFailure()) {
+            } else if (elem1_3.isFailure()) {
                 restoreLocation(seqStart1);
                 alt0_0 = cut1
                          ? elem1_3.asCutFailure()
@@ -21978,9 +21975,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -21993,9 +21990,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -22010,7 +22007,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_VALUE, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -22044,9 +22041,9 @@ public final class Java25Parser {
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -22061,7 +22058,7 @@ public final class Java25Parser {
                 if (elem2_0.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_0;
-                }else if (elem2_0.isFailure()) {
+                } else if (elem2_0.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_0.asCutFailure()
@@ -22085,7 +22082,7 @@ public final class Java25Parser {
                     if (elem6_0.isCutFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = elem6_0;
-                    }else if (elem6_0.isFailure()) {
+                    } else if (elem6_0.isFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = cut6
                                    ? elem6_0.asCutFailure()
@@ -22109,7 +22106,7 @@ public final class Java25Parser {
                             if (elem10_0.isCutFailure()) {
                                 restoreLocation(seqStart10);
                                 zomElem8 = elem10_0;
-                            }else if (elem10_0.isFailure()) {
+                            } else if (elem10_0.isFailure()) {
                                 restoreLocation(seqStart10);
                                 zomElem8 = cut10
                                            ? elem10_0.asCutFailure()
@@ -22127,7 +22124,7 @@ public final class Java25Parser {
                             if (elem10_1.isCutFailure()) {
                                 restoreLocation(seqStart10);
                                 zomElem8 = elem10_1;
-                            }else if (elem10_1.isFailure()) {
+                            } else if (elem10_1.isFailure()) {
                                 restoreLocation(seqStart10);
                                 zomElem8 = cut10
                                            ? elem10_1.asCutFailure()
@@ -22138,7 +22135,7 @@ public final class Java25Parser {
                             zomElem8 = CstParseResult.success(null, substring(seqStart10.offset(), pos), location());
                         }
                         if (zomElem8.isFailure() || location()
-                                                    .offset() == beforeLoc8.offset()) {
+                                                            .offset() == beforeLoc8.offset()) {
                             restoreLocation(beforeLoc8);
                             break;
                         }
@@ -22147,7 +22144,7 @@ public final class Java25Parser {
                     if (elem6_1.isCutFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = elem6_1;
-                    }else if (elem6_1.isFailure()) {
+                    } else if (elem6_1.isFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = cut6
                                    ? elem6_1.asCutFailure()
@@ -22170,7 +22167,7 @@ public final class Java25Parser {
                     if (elem6_2.isCutFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = elem6_2;
-                    }else if (elem6_2.isFailure()) {
+                    } else if (elem6_2.isFailure()) {
                         restoreLocation(seqStart6);
                         optElem4 = cut6
                                    ? elem6_2.asCutFailure()
@@ -22189,7 +22186,7 @@ public final class Java25Parser {
                 if (elem2_1.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_1;
-                }else if (elem2_1.isFailure()) {
+                } else if (elem2_1.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_1.asCutFailure()
@@ -22205,7 +22202,7 @@ public final class Java25Parser {
                 if (elem2_2.isCutFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = elem2_2;
-                }else if (elem2_2.isFailure()) {
+                } else if (elem2_2.isFailure()) {
                     restoreLocation(seqStart2);
                     alt0_1 = cut2
                              ? elem2_2.asCutFailure()
@@ -22217,9 +22214,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -22232,9 +22229,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                 }
             }
@@ -22250,7 +22247,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_ANNOTATION_ELEM, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -22287,23 +22284,23 @@ public final class Java25Parser {
             var alt4_0 = matchLiteralCst("null", false);
             if (alt4_0.isSuccess()) {
                 elem2_0 = alt4_0;
-            }else if (alt4_0.isCutFailure()) {
+            } else if (alt4_0.isCutFailure()) {
                 elem2_0 = alt4_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart4);
                 var alt4_1 = matchLiteralCst("true", false);
                 if (alt4_1.isSuccess()) {
                     elem2_0 = alt4_1;
-                }else if (alt4_1.isCutFailure()) {
+                } else if (alt4_1.isCutFailure()) {
                     elem2_0 = alt4_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart4);
                     var alt4_2 = matchLiteralCst("false", false);
                     if (alt4_2.isSuccess()) {
                         elem2_0 = alt4_2;
-                    }else if (alt4_2.isCutFailure()) {
+                    } else if (alt4_2.isCutFailure()) {
                         elem2_0 = alt4_2.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart4);
                     }
                 }
@@ -22314,7 +22311,7 @@ public final class Java25Parser {
             if (elem2_0.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_0;
-            }else if (elem2_0.isFailure()) {
+            } else if (elem2_0.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_0.asCutFailure()
@@ -22332,7 +22329,7 @@ public final class Java25Parser {
             if (elem2_1.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_1;
-            }else if (elem2_1.isFailure()) {
+            } else if (elem2_1.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_1.asCutFailure()
@@ -22352,14 +22349,14 @@ public final class Java25Parser {
             var tbNode1 = new CstNode.Token(tbSpan1, RULE_PEG_TOKEN, tbText1, List.of(), List.of());
             children.add(tbNode1);
             alt0_0 = CstParseResult.success(tbNode1, tbText1, location());
-        }else {
+        } else {
             alt0_0 = tbElem1;
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -22372,9 +22369,9 @@ public final class Java25Parser {
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -22387,9 +22384,9 @@ public final class Java25Parser {
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                     children.clear();
                     children.addAll(savedChildren0);
@@ -22402,9 +22399,9 @@ public final class Java25Parser {
                     }
                     if (alt0_3.isSuccess()) {
                         result = alt0_3;
-                    }else if (alt0_3.isCutFailure()) {
+                    } else if (alt0_3.isCutFailure()) {
                         result = alt0_3.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart0);
                     }
                 }
@@ -22421,7 +22418,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_LITERAL, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -22452,7 +22449,7 @@ public final class Java25Parser {
             if (elem1_0.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_0;
-            }else if (elem1_0.isFailure()) {
+            } else if (elem1_0.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_0.asCutFailure()
@@ -22470,9 +22467,9 @@ public final class Java25Parser {
                 var alt5_0 = matchCharClassCst("'\\\\", true, false);
                 if (alt5_0.isSuccess()) {
                     zomElem3 = alt5_0;
-                }else if (alt5_0.isCutFailure()) {
+                } else if (alt5_0.isCutFailure()) {
                     zomElem3 = alt5_0.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart5);
                     CstParseResult alt5_1 = CstParseResult.success(null, "", location());
                     var seqStart7 = location();
@@ -22482,7 +22479,7 @@ public final class Java25Parser {
                         if (elem7_0.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt5_1 = elem7_0;
-                        }else if (elem7_0.isFailure()) {
+                        } else if (elem7_0.isFailure()) {
                             restoreLocation(seqStart7);
                             alt5_1 = cut7
                                      ? elem7_0.asCutFailure()
@@ -22495,7 +22492,7 @@ public final class Java25Parser {
                         if (elem7_1.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt5_1 = elem7_1;
-                        }else if (elem7_1.isFailure()) {
+                        } else if (elem7_1.isFailure()) {
                             restoreLocation(seqStart7);
                             alt5_1 = cut7
                                      ? elem7_1.asCutFailure()
@@ -22507,9 +22504,9 @@ public final class Java25Parser {
                     }
                     if (alt5_1.isSuccess()) {
                         zomElem3 = alt5_1;
-                    }else if (alt5_1.isCutFailure()) {
+                    } else if (alt5_1.isCutFailure()) {
                         zomElem3 = alt5_1.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart5);
                     }
                 }
@@ -22517,7 +22514,7 @@ public final class Java25Parser {
                     zomElem3 = CstParseResult.failure("one of alternatives");
                 }
                 if (zomElem3.isFailure() || location()
-                                            .offset() == beforeLoc3.offset()) {
+                                                    .offset() == beforeLoc3.offset()) {
                     restoreLocation(beforeLoc3);
                     break;
                 }
@@ -22526,7 +22523,7 @@ public final class Java25Parser {
             if (elem1_1.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_1;
-            }else if (elem1_1.isFailure()) {
+            } else if (elem1_1.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_1.asCutFailure()
@@ -22539,7 +22536,7 @@ public final class Java25Parser {
             if (elem1_2.isCutFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = elem1_2;
-            }else if (elem1_2.isFailure()) {
+            } else if (elem1_2.isFailure()) {
                 restoreLocation(seqStart1);
                 tbElem0 = cut1
                           ? elem1_2.asCutFailure()
@@ -22559,7 +22556,7 @@ public final class Java25Parser {
             var tbNode0 = new CstNode.Token(tbSpan0, RULE_PEG_TOKEN, tbText0, List.of(), List.of());
             children.add(tbNode0);
             result = CstParseResult.success(tbNode0, tbText0, location());
-        }else {
+        } else {
             result = tbElem0;
         }
         CstParseResult finalResult;
@@ -22568,7 +22565,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.Token(span, RULE_CHAR_LIT, result.text.unwrap(), leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -22604,7 +22601,7 @@ public final class Java25Parser {
             if (elem2_0.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_0;
-            }else if (elem2_0.isFailure()) {
+            } else if (elem2_0.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_0.asCutFailure()
@@ -22630,7 +22627,7 @@ public final class Java25Parser {
                     if (elem6_0.isCutFailure()) {
                         restoreLocation(seqStart6);
                         zomElem4 = elem6_0;
-                    }else if (elem6_0.isFailure()) {
+                    } else if (elem6_0.isFailure()) {
                         restoreLocation(seqStart6);
                         zomElem4 = cut6
                                    ? elem6_0.asCutFailure()
@@ -22643,7 +22640,7 @@ public final class Java25Parser {
                     if (elem6_1.isCutFailure()) {
                         restoreLocation(seqStart6);
                         zomElem4 = elem6_1;
-                    }else if (elem6_1.isFailure()) {
+                    } else if (elem6_1.isFailure()) {
                         restoreLocation(seqStart6);
                         zomElem4 = cut6
                                    ? elem6_1.asCutFailure()
@@ -22654,7 +22651,7 @@ public final class Java25Parser {
                     zomElem4 = CstParseResult.success(null, substring(seqStart6.offset(), pos), location());
                 }
                 if (zomElem4.isFailure() || location()
-                                            .offset() == beforeLoc4.offset()) {
+                                                    .offset() == beforeLoc4.offset()) {
                     restoreLocation(beforeLoc4);
                     break;
                 }
@@ -22663,7 +22660,7 @@ public final class Java25Parser {
             if (elem2_1.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_1;
-            }else if (elem2_1.isFailure()) {
+            } else if (elem2_1.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_1.asCutFailure()
@@ -22676,7 +22673,7 @@ public final class Java25Parser {
             if (elem2_2.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_2;
-            }else if (elem2_2.isFailure()) {
+            } else if (elem2_2.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_2.asCutFailure()
@@ -22696,14 +22693,14 @@ public final class Java25Parser {
             var tbNode1 = new CstNode.Token(tbSpan1, RULE_PEG_TOKEN, tbText1, List.of(), List.of());
             children.add(tbNode1);
             alt0_0 = CstParseResult.success(tbNode1, tbText1, location());
-        }else {
+        } else {
             alt0_0 = tbElem1;
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -22718,7 +22715,7 @@ public final class Java25Parser {
                 if (elem12_0.isCutFailure()) {
                     restoreLocation(seqStart12);
                     tbElem11 = elem12_0;
-                }else if (elem12_0.isFailure()) {
+                } else if (elem12_0.isFailure()) {
                     restoreLocation(seqStart12);
                     tbElem11 = cut12
                                ? elem12_0.asCutFailure()
@@ -22736,9 +22733,9 @@ public final class Java25Parser {
                     var alt16_0 = matchCharClassCst("\"\\\\", true, false);
                     if (alt16_0.isSuccess()) {
                         zomElem14 = alt16_0;
-                    }else if (alt16_0.isCutFailure()) {
+                    } else if (alt16_0.isCutFailure()) {
                         zomElem14 = alt16_0.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart16);
                         CstParseResult alt16_1 = CstParseResult.success(null, "", location());
                         var seqStart18 = location();
@@ -22748,7 +22745,7 @@ public final class Java25Parser {
                             if (elem18_0.isCutFailure()) {
                                 restoreLocation(seqStart18);
                                 alt16_1 = elem18_0;
-                            }else if (elem18_0.isFailure()) {
+                            } else if (elem18_0.isFailure()) {
                                 restoreLocation(seqStart18);
                                 alt16_1 = cut18
                                           ? elem18_0.asCutFailure()
@@ -22761,7 +22758,7 @@ public final class Java25Parser {
                             if (elem18_1.isCutFailure()) {
                                 restoreLocation(seqStart18);
                                 alt16_1 = elem18_1;
-                            }else if (elem18_1.isFailure()) {
+                            } else if (elem18_1.isFailure()) {
                                 restoreLocation(seqStart18);
                                 alt16_1 = cut18
                                           ? elem18_1.asCutFailure()
@@ -22773,9 +22770,9 @@ public final class Java25Parser {
                         }
                         if (alt16_1.isSuccess()) {
                             zomElem14 = alt16_1;
-                        }else if (alt16_1.isCutFailure()) {
+                        } else if (alt16_1.isCutFailure()) {
                             zomElem14 = alt16_1.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart16);
                         }
                     }
@@ -22783,7 +22780,7 @@ public final class Java25Parser {
                         zomElem14 = CstParseResult.failure("one of alternatives");
                     }
                     if (zomElem14.isFailure() || location()
-                                                 .offset() == beforeLoc14.offset()) {
+                                                         .offset() == beforeLoc14.offset()) {
                         restoreLocation(beforeLoc14);
                         break;
                     }
@@ -22792,7 +22789,7 @@ public final class Java25Parser {
                 if (elem12_1.isCutFailure()) {
                     restoreLocation(seqStart12);
                     tbElem11 = elem12_1;
-                }else if (elem12_1.isFailure()) {
+                } else if (elem12_1.isFailure()) {
                     restoreLocation(seqStart12);
                     tbElem11 = cut12
                                ? elem12_1.asCutFailure()
@@ -22805,7 +22802,7 @@ public final class Java25Parser {
                 if (elem12_2.isCutFailure()) {
                     restoreLocation(seqStart12);
                     tbElem11 = elem12_2;
-                }else if (elem12_2.isFailure()) {
+                } else if (elem12_2.isFailure()) {
                     restoreLocation(seqStart12);
                     tbElem11 = cut12
                                ? elem12_2.asCutFailure()
@@ -22825,14 +22822,14 @@ public final class Java25Parser {
                 var tbNode11 = new CstNode.Token(tbSpan11, RULE_PEG_TOKEN, tbText11, List.of(), List.of());
                 children.add(tbNode11);
                 alt0_1 = CstParseResult.success(tbNode11, tbText11, location());
-            }else {
+            } else {
                 alt0_1 = tbElem11;
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
             }
         }
@@ -22847,7 +22844,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_STRING_LIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -22883,7 +22880,7 @@ public final class Java25Parser {
             if (elem2_0.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_0;
-            }else if (elem2_0.isFailure()) {
+            } else if (elem2_0.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_0.asCutFailure()
@@ -22896,7 +22893,7 @@ public final class Java25Parser {
             if (elem2_1.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_1;
-            }else if (elem2_1.isFailure()) {
+            } else if (elem2_1.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_1.asCutFailure()
@@ -22914,7 +22911,7 @@ public final class Java25Parser {
                     if (!inTokenBoundary) skipWhitespace();
                     var oomElem5 = matchCharClassCst("0-9a-fA-F_", false, false);
                     if (oomElem5.isFailure() || location()
-                                                .offset() == beforeLoc5.offset()) {
+                                                        .offset() == beforeLoc5.offset()) {
                         restoreLocation(beforeLoc5);
                         break;
                     }
@@ -22923,7 +22920,7 @@ public final class Java25Parser {
             if (elem2_2.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_2;
-            }else if (elem2_2.isFailure()) {
+            } else if (elem2_2.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_2.asCutFailure()
@@ -22943,7 +22940,7 @@ public final class Java25Parser {
             if (elem2_3.isCutFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = elem2_3;
-            }else if (elem2_3.isFailure()) {
+            } else if (elem2_3.isFailure()) {
                 restoreLocation(seqStart2);
                 tbElem1 = cut2
                           ? elem2_3.asCutFailure()
@@ -22963,14 +22960,14 @@ public final class Java25Parser {
             var tbNode1 = new CstNode.Token(tbSpan1, RULE_PEG_TOKEN, tbText1, List.of(), List.of());
             children.add(tbNode1);
             alt0_0 = CstParseResult.success(tbNode1, tbText1, location());
-        }else {
+        } else {
             alt0_0 = tbElem1;
         }
         if (alt0_0.isSuccess()) {
             result = alt0_0;
-        }else if (alt0_0.isCutFailure()) {
+        } else if (alt0_0.isCutFailure()) {
             result = alt0_0.asRegularFailure();
-        }else {
+        } else {
             restoreLocation(choiceStart0);
             children.clear();
             children.addAll(savedChildren0);
@@ -22985,7 +22982,7 @@ public final class Java25Parser {
                 if (elem11_0.isCutFailure()) {
                     restoreLocation(seqStart11);
                     tbElem10 = elem11_0;
-                }else if (elem11_0.isFailure()) {
+                } else if (elem11_0.isFailure()) {
                     restoreLocation(seqStart11);
                     tbElem10 = cut11
                                ? elem11_0.asCutFailure()
@@ -22998,7 +22995,7 @@ public final class Java25Parser {
                 if (elem11_1.isCutFailure()) {
                     restoreLocation(seqStart11);
                     tbElem10 = elem11_1;
-                }else if (elem11_1.isFailure()) {
+                } else if (elem11_1.isFailure()) {
                     restoreLocation(seqStart11);
                     tbElem10 = cut11
                                ? elem11_1.asCutFailure()
@@ -23016,7 +23013,7 @@ public final class Java25Parser {
                         if (!inTokenBoundary) skipWhitespace();
                         var oomElem14 = matchCharClassCst("01_", false, false);
                         if (oomElem14.isFailure() || location()
-                                                     .offset() == beforeLoc14.offset()) {
+                                                             .offset() == beforeLoc14.offset()) {
                             restoreLocation(beforeLoc14);
                             break;
                         }
@@ -23025,7 +23022,7 @@ public final class Java25Parser {
                 if (elem11_2.isCutFailure()) {
                     restoreLocation(seqStart11);
                     tbElem10 = elem11_2;
-                }else if (elem11_2.isFailure()) {
+                } else if (elem11_2.isFailure()) {
                     restoreLocation(seqStart11);
                     tbElem10 = cut11
                                ? elem11_2.asCutFailure()
@@ -23045,7 +23042,7 @@ public final class Java25Parser {
                 if (elem11_3.isCutFailure()) {
                     restoreLocation(seqStart11);
                     tbElem10 = elem11_3;
-                }else if (elem11_3.isFailure()) {
+                } else if (elem11_3.isFailure()) {
                     restoreLocation(seqStart11);
                     tbElem10 = cut11
                                ? elem11_3.asCutFailure()
@@ -23065,14 +23062,14 @@ public final class Java25Parser {
                 var tbNode10 = new CstNode.Token(tbSpan10, RULE_PEG_TOKEN, tbText10, List.of(), List.of());
                 children.add(tbNode10);
                 alt0_1 = CstParseResult.success(tbNode10, tbText10, location());
-            }else {
+            } else {
                 alt0_1 = tbElem10;
             }
             if (alt0_1.isSuccess()) {
                 result = alt0_1;
-            }else if (alt0_1.isCutFailure()) {
+            } else if (alt0_1.isCutFailure()) {
                 result = alt0_1.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart0);
                 children.clear();
                 children.addAll(savedChildren0);
@@ -23087,7 +23084,7 @@ public final class Java25Parser {
                     if (elem20_0.isCutFailure()) {
                         restoreLocation(seqStart20);
                         tbElem19 = elem20_0;
-                    }else if (elem20_0.isFailure()) {
+                    } else if (elem20_0.isFailure()) {
                         restoreLocation(seqStart20);
                         tbElem19 = cut20
                                    ? elem20_0.asCutFailure()
@@ -23102,7 +23099,7 @@ public final class Java25Parser {
                         if (!inTokenBoundary) skipWhitespace();
                         var zomElem22 = matchCharClassCst("0-9_", false, false);
                         if (zomElem22.isFailure() || location()
-                                                     .offset() == beforeLoc22.offset()) {
+                                                             .offset() == beforeLoc22.offset()) {
                             restoreLocation(beforeLoc22);
                             break;
                         }
@@ -23111,7 +23108,7 @@ public final class Java25Parser {
                     if (elem20_1.isCutFailure()) {
                         restoreLocation(seqStart20);
                         tbElem19 = elem20_1;
-                    }else if (elem20_1.isFailure()) {
+                    } else if (elem20_1.isFailure()) {
                         restoreLocation(seqStart20);
                         tbElem19 = cut20
                                    ? elem20_1.asCutFailure()
@@ -23129,7 +23126,7 @@ public final class Java25Parser {
                         if (elem26_0.isCutFailure()) {
                             restoreLocation(seqStart26);
                             optElem24 = elem26_0;
-                        }else if (elem26_0.isFailure()) {
+                        } else if (elem26_0.isFailure()) {
                             restoreLocation(seqStart26);
                             optElem24 = cut26
                                         ? elem26_0.asCutFailure()
@@ -23144,7 +23141,7 @@ public final class Java25Parser {
                             if (!inTokenBoundary) skipWhitespace();
                             var zomElem28 = matchCharClassCst("0-9_", false, false);
                             if (zomElem28.isFailure() || location()
-                                                         .offset() == beforeLoc28.offset()) {
+                                                                 .offset() == beforeLoc28.offset()) {
                                 restoreLocation(beforeLoc28);
                                 break;
                             }
@@ -23153,7 +23150,7 @@ public final class Java25Parser {
                         if (elem26_1.isCutFailure()) {
                             restoreLocation(seqStart26);
                             optElem24 = elem26_1;
-                        }else if (elem26_1.isFailure()) {
+                        } else if (elem26_1.isFailure()) {
                             restoreLocation(seqStart26);
                             optElem24 = cut26
                                         ? elem26_1.asCutFailure()
@@ -23172,7 +23169,7 @@ public final class Java25Parser {
                     if (elem20_2.isCutFailure()) {
                         restoreLocation(seqStart20);
                         tbElem19 = elem20_2;
-                    }else if (elem20_2.isFailure()) {
+                    } else if (elem20_2.isFailure()) {
                         restoreLocation(seqStart20);
                         tbElem19 = cut20
                                    ? elem20_2.asCutFailure()
@@ -23190,7 +23187,7 @@ public final class Java25Parser {
                         if (elem32_0.isCutFailure()) {
                             restoreLocation(seqStart32);
                             optElem30 = elem32_0;
-                        }else if (elem32_0.isFailure()) {
+                        } else if (elem32_0.isFailure()) {
                             restoreLocation(seqStart32);
                             optElem30 = cut32
                                         ? elem32_0.asCutFailure()
@@ -23210,7 +23207,7 @@ public final class Java25Parser {
                         if (elem32_1.isCutFailure()) {
                             restoreLocation(seqStart32);
                             optElem30 = elem32_1;
-                        }else if (elem32_1.isFailure()) {
+                        } else if (elem32_1.isFailure()) {
                             restoreLocation(seqStart32);
                             optElem30 = cut32
                                         ? elem32_1.asCutFailure()
@@ -23228,7 +23225,7 @@ public final class Java25Parser {
                                 if (!inTokenBoundary) skipWhitespace();
                                 var oomElem36 = matchCharClassCst("0-9_", false, false);
                                 if (oomElem36.isFailure() || location()
-                                                             .offset() == beforeLoc36.offset()) {
+                                                                     .offset() == beforeLoc36.offset()) {
                                     restoreLocation(beforeLoc36);
                                     break;
                                 }
@@ -23237,7 +23234,7 @@ public final class Java25Parser {
                         if (elem32_2.isCutFailure()) {
                             restoreLocation(seqStart32);
                             optElem30 = elem32_2;
-                        }else if (elem32_2.isFailure()) {
+                        } else if (elem32_2.isFailure()) {
                             restoreLocation(seqStart32);
                             optElem30 = cut32
                                         ? elem32_2.asCutFailure()
@@ -23256,7 +23253,7 @@ public final class Java25Parser {
                     if (elem20_3.isCutFailure()) {
                         restoreLocation(seqStart20);
                         tbElem19 = elem20_3;
-                    }else if (elem20_3.isFailure()) {
+                    } else if (elem20_3.isFailure()) {
                         restoreLocation(seqStart20);
                         tbElem19 = cut20
                                    ? elem20_3.asCutFailure()
@@ -23276,7 +23273,7 @@ public final class Java25Parser {
                     if (elem20_4.isCutFailure()) {
                         restoreLocation(seqStart20);
                         tbElem19 = elem20_4;
-                    }else if (elem20_4.isFailure()) {
+                    } else if (elem20_4.isFailure()) {
                         restoreLocation(seqStart20);
                         tbElem19 = cut20
                                    ? elem20_4.asCutFailure()
@@ -23296,14 +23293,14 @@ public final class Java25Parser {
                     var tbNode19 = new CstNode.Token(tbSpan19, RULE_PEG_TOKEN, tbText19, List.of(), List.of());
                     children.add(tbNode19);
                     alt0_2 = CstParseResult.success(tbNode19, tbText19, location());
-                }else {
+                } else {
                     alt0_2 = tbElem19;
                 }
                 if (alt0_2.isSuccess()) {
                     result = alt0_2;
-                }else if (alt0_2.isCutFailure()) {
+                } else if (alt0_2.isCutFailure()) {
                     result = alt0_2.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart0);
                     children.clear();
                     children.addAll(savedChildren0);
@@ -23318,7 +23315,7 @@ public final class Java25Parser {
                         if (elem42_0.isCutFailure()) {
                             restoreLocation(seqStart42);
                             tbElem41 = elem42_0;
-                        }else if (elem42_0.isFailure()) {
+                        } else if (elem42_0.isFailure()) {
                             restoreLocation(seqStart42);
                             tbElem41 = cut42
                                        ? elem42_0.asCutFailure()
@@ -23336,7 +23333,7 @@ public final class Java25Parser {
                                 if (!inTokenBoundary) skipWhitespace();
                                 var oomElem44 = matchCharClassCst("0-9_", false, false);
                                 if (oomElem44.isFailure() || location()
-                                                             .offset() == beforeLoc44.offset()) {
+                                                                     .offset() == beforeLoc44.offset()) {
                                     restoreLocation(beforeLoc44);
                                     break;
                                 }
@@ -23345,7 +23342,7 @@ public final class Java25Parser {
                         if (elem42_1.isCutFailure()) {
                             restoreLocation(seqStart42);
                             tbElem41 = elem42_1;
-                        }else if (elem42_1.isFailure()) {
+                        } else if (elem42_1.isFailure()) {
                             restoreLocation(seqStart42);
                             tbElem41 = cut42
                                        ? elem42_1.asCutFailure()
@@ -23363,7 +23360,7 @@ public final class Java25Parser {
                             if (elem49_0.isCutFailure()) {
                                 restoreLocation(seqStart49);
                                 optElem47 = elem49_0;
-                            }else if (elem49_0.isFailure()) {
+                            } else if (elem49_0.isFailure()) {
                                 restoreLocation(seqStart49);
                                 optElem47 = cut49
                                             ? elem49_0.asCutFailure()
@@ -23383,7 +23380,7 @@ public final class Java25Parser {
                             if (elem49_1.isCutFailure()) {
                                 restoreLocation(seqStart49);
                                 optElem47 = elem49_1;
-                            }else if (elem49_1.isFailure()) {
+                            } else if (elem49_1.isFailure()) {
                                 restoreLocation(seqStart49);
                                 optElem47 = cut49
                                             ? elem49_1.asCutFailure()
@@ -23401,7 +23398,7 @@ public final class Java25Parser {
                                     if (!inTokenBoundary) skipWhitespace();
                                     var oomElem53 = matchCharClassCst("0-9_", false, false);
                                     if (oomElem53.isFailure() || location()
-                                                                 .offset() == beforeLoc53.offset()) {
+                                                                         .offset() == beforeLoc53.offset()) {
                                         restoreLocation(beforeLoc53);
                                         break;
                                     }
@@ -23410,7 +23407,7 @@ public final class Java25Parser {
                             if (elem49_2.isCutFailure()) {
                                 restoreLocation(seqStart49);
                                 optElem47 = elem49_2;
-                            }else if (elem49_2.isFailure()) {
+                            } else if (elem49_2.isFailure()) {
                                 restoreLocation(seqStart49);
                                 optElem47 = cut49
                                             ? elem49_2.asCutFailure()
@@ -23429,7 +23426,7 @@ public final class Java25Parser {
                         if (elem42_2.isCutFailure()) {
                             restoreLocation(seqStart42);
                             tbElem41 = elem42_2;
-                        }else if (elem42_2.isFailure()) {
+                        } else if (elem42_2.isFailure()) {
                             restoreLocation(seqStart42);
                             tbElem41 = cut42
                                        ? elem42_2.asCutFailure()
@@ -23449,7 +23446,7 @@ public final class Java25Parser {
                         if (elem42_3.isCutFailure()) {
                             restoreLocation(seqStart42);
                             tbElem41 = elem42_3;
-                        }else if (elem42_3.isFailure()) {
+                        } else if (elem42_3.isFailure()) {
                             restoreLocation(seqStart42);
                             tbElem41 = cut42
                                        ? elem42_3.asCutFailure()
@@ -23469,14 +23466,14 @@ public final class Java25Parser {
                         var tbNode41 = new CstNode.Token(tbSpan41, RULE_PEG_TOKEN, tbText41, List.of(), List.of());
                         children.add(tbNode41);
                         alt0_3 = CstParseResult.success(tbNode41, tbText41, location());
-                    }else {
+                    } else {
                         alt0_3 = tbElem41;
                     }
                     if (alt0_3.isSuccess()) {
                         result = alt0_3;
-                    }else if (alt0_3.isCutFailure()) {
+                    } else if (alt0_3.isCutFailure()) {
                         result = alt0_3.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart0);
                     }
                 }
@@ -23493,7 +23490,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_NUM_LIT, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -23528,9 +23525,9 @@ public final class Java25Parser {
             }
             if (alt2_0.isSuccess()) {
                 elem0_0 = alt2_0;
-            }else if (alt2_0.isCutFailure()) {
+            } else if (alt2_0.isCutFailure()) {
                 elem0_0 = alt2_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart2);
                 children.clear();
                 children.addAll(savedChildren2);
@@ -23540,9 +23537,9 @@ public final class Java25Parser {
                 }
                 if (alt2_1.isSuccess()) {
                     elem0_0 = alt2_1;
-                }else if (alt2_1.isCutFailure()) {
+                } else if (alt2_1.isCutFailure()) {
                     elem0_0 = alt2_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart2);
                     children.clear();
                     children.addAll(savedChildren2);
@@ -23552,9 +23549,9 @@ public final class Java25Parser {
                     }
                     if (alt2_2.isSuccess()) {
                         elem0_0 = alt2_2;
-                    }else if (alt2_2.isCutFailure()) {
+                    } else if (alt2_2.isCutFailure()) {
                         elem0_0 = alt2_2.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart2);
                         children.clear();
                         children.addAll(savedChildren2);
@@ -23564,9 +23561,9 @@ public final class Java25Parser {
                         }
                         if (alt2_3.isSuccess()) {
                             elem0_0 = alt2_3;
-                        }else if (alt2_3.isCutFailure()) {
+                        } else if (alt2_3.isCutFailure()) {
                             elem0_0 = alt2_3.asRegularFailure();
-                        }else {
+                        } else {
                             restoreLocation(choiceStart2);
                             children.clear();
                             children.addAll(savedChildren2);
@@ -23576,9 +23573,9 @@ public final class Java25Parser {
                             }
                             if (alt2_4.isSuccess()) {
                                 elem0_0 = alt2_4;
-                            }else if (alt2_4.isCutFailure()) {
+                            } else if (alt2_4.isCutFailure()) {
                                 elem0_0 = alt2_4.asRegularFailure();
-                            }else {
+                            } else {
                                 restoreLocation(choiceStart2);
                                 children.clear();
                                 children.addAll(savedChildren2);
@@ -23588,9 +23585,9 @@ public final class Java25Parser {
                                 }
                                 if (alt2_5.isSuccess()) {
                                     elem0_0 = alt2_5;
-                                }else if (alt2_5.isCutFailure()) {
+                                } else if (alt2_5.isCutFailure()) {
                                     elem0_0 = alt2_5.asRegularFailure();
-                                }else {
+                                } else {
                                     restoreLocation(choiceStart2);
                                     children.clear();
                                     children.addAll(savedChildren2);
@@ -23600,9 +23597,9 @@ public final class Java25Parser {
                                     }
                                     if (alt2_6.isSuccess()) {
                                         elem0_0 = alt2_6;
-                                    }else if (alt2_6.isCutFailure()) {
+                                    } else if (alt2_6.isCutFailure()) {
                                         elem0_0 = alt2_6.asRegularFailure();
-                                    }else {
+                                    } else {
                                         restoreLocation(choiceStart2);
                                         children.clear();
                                         children.addAll(savedChildren2);
@@ -23612,9 +23609,9 @@ public final class Java25Parser {
                                         }
                                         if (alt2_7.isSuccess()) {
                                             elem0_0 = alt2_7;
-                                        }else if (alt2_7.isCutFailure()) {
+                                        } else if (alt2_7.isCutFailure()) {
                                             elem0_0 = alt2_7.asRegularFailure();
-                                        }else {
+                                        } else {
                                             restoreLocation(choiceStart2);
                                             children.clear();
                                             children.addAll(savedChildren2);
@@ -23624,9 +23621,9 @@ public final class Java25Parser {
                                             }
                                             if (alt2_8.isSuccess()) {
                                                 elem0_0 = alt2_8;
-                                            }else if (alt2_8.isCutFailure()) {
+                                            } else if (alt2_8.isCutFailure()) {
                                                 elem0_0 = alt2_8.asRegularFailure();
-                                            }else {
+                                            } else {
                                                 restoreLocation(choiceStart2);
                                                 children.clear();
                                                 children.addAll(savedChildren2);
@@ -23636,9 +23633,9 @@ public final class Java25Parser {
                                                 }
                                                 if (alt2_9.isSuccess()) {
                                                     elem0_0 = alt2_9;
-                                                }else if (alt2_9.isCutFailure()) {
+                                                } else if (alt2_9.isCutFailure()) {
                                                     elem0_0 = alt2_9.asRegularFailure();
-                                                }else {
+                                                } else {
                                                     restoreLocation(choiceStart2);
                                                     children.clear();
                                                     children.addAll(savedChildren2);
@@ -23648,9 +23645,9 @@ public final class Java25Parser {
                                                     }
                                                     if (alt2_10.isSuccess()) {
                                                         elem0_0 = alt2_10;
-                                                    }else if (alt2_10.isCutFailure()) {
+                                                    } else if (alt2_10.isCutFailure()) {
                                                         elem0_0 = alt2_10.asRegularFailure();
-                                                    }else {
+                                                    } else {
                                                         restoreLocation(choiceStart2);
                                                         children.clear();
                                                         children.addAll(savedChildren2);
@@ -23660,9 +23657,9 @@ public final class Java25Parser {
                                                         }
                                                         if (alt2_11.isSuccess()) {
                                                             elem0_0 = alt2_11;
-                                                        }else if (alt2_11.isCutFailure()) {
+                                                        } else if (alt2_11.isCutFailure()) {
                                                             elem0_0 = alt2_11.asRegularFailure();
-                                                        }else {
+                                                        } else {
                                                             restoreLocation(choiceStart2);
                                                             children.clear();
                                                             children.addAll(savedChildren2);
@@ -23672,9 +23669,9 @@ public final class Java25Parser {
                                                             }
                                                             if (alt2_12.isSuccess()) {
                                                                 elem0_0 = alt2_12;
-                                                            }else if (alt2_12.isCutFailure()) {
+                                                            } else if (alt2_12.isCutFailure()) {
                                                                 elem0_0 = alt2_12.asRegularFailure();
-                                                            }else {
+                                                            } else {
                                                                 restoreLocation(choiceStart2);
                                                                 children.clear();
                                                                 children.addAll(savedChildren2);
@@ -23684,9 +23681,9 @@ public final class Java25Parser {
                                                                 }
                                                                 if (alt2_13.isSuccess()) {
                                                                     elem0_0 = alt2_13;
-                                                                }else if (alt2_13.isCutFailure()) {
+                                                                } else if (alt2_13.isCutFailure()) {
                                                                     elem0_0 = alt2_13.asRegularFailure();
-                                                                }else {
+                                                                } else {
                                                                     restoreLocation(choiceStart2);
                                                                     children.clear();
                                                                     children.addAll(savedChildren2);
@@ -23696,9 +23693,9 @@ public final class Java25Parser {
                                                                     }
                                                                     if (alt2_14.isSuccess()) {
                                                                         elem0_0 = alt2_14;
-                                                                    }else if (alt2_14.isCutFailure()) {
+                                                                    } else if (alt2_14.isCutFailure()) {
                                                                         elem0_0 = alt2_14.asRegularFailure();
-                                                                    }else {
+                                                                    } else {
                                                                         restoreLocation(choiceStart2);
                                                                         children.clear();
                                                                         children.addAll(savedChildren2);
@@ -23708,9 +23705,9 @@ public final class Java25Parser {
                                                                         }
                                                                         if (alt2_15.isSuccess()) {
                                                                             elem0_0 = alt2_15;
-                                                                        }else if (alt2_15.isCutFailure()) {
+                                                                        } else if (alt2_15.isCutFailure()) {
                                                                             elem0_0 = alt2_15.asRegularFailure();
-                                                                        }else {
+                                                                        } else {
                                                                             restoreLocation(choiceStart2);
                                                                             children.clear();
                                                                             children.addAll(savedChildren2);
@@ -23721,9 +23718,9 @@ public final class Java25Parser {
                                                                             }
                                                                             if (alt2_16.isSuccess()) {
                                                                                 elem0_0 = alt2_16;
-                                                                            }else if (alt2_16.isCutFailure()) {
+                                                                            } else if (alt2_16.isCutFailure()) {
                                                                                 elem0_0 = alt2_16.asRegularFailure();
-                                                                            }else {
+                                                                            } else {
                                                                                 restoreLocation(choiceStart2);
                                                                                 children.clear();
                                                                                 children.addAll(savedChildren2);
@@ -23734,9 +23731,9 @@ public final class Java25Parser {
                                                                                 }
                                                                                 if (alt2_17.isSuccess()) {
                                                                                     elem0_0 = alt2_17;
-                                                                                }else if (alt2_17.isCutFailure()) {
+                                                                                } else if (alt2_17.isCutFailure()) {
                                                                                     elem0_0 = alt2_17.asRegularFailure();
-                                                                                }else {
+                                                                                } else {
                                                                                     restoreLocation(choiceStart2);
                                                                                     children.clear();
                                                                                     children.addAll(savedChildren2);
@@ -23747,9 +23744,9 @@ public final class Java25Parser {
                                                                                     }
                                                                                     if (alt2_18.isSuccess()) {
                                                                                         elem0_0 = alt2_18;
-                                                                                    }else if (alt2_18.isCutFailure()) {
+                                                                                    } else if (alt2_18.isCutFailure()) {
                                                                                         elem0_0 = alt2_18.asRegularFailure();
-                                                                                    }else {
+                                                                                    } else {
                                                                                         restoreLocation(choiceStart2);
                                                                                         children.clear();
                                                                                         children.addAll(savedChildren2);
@@ -23760,9 +23757,9 @@ public final class Java25Parser {
                                                                                         }
                                                                                         if (alt2_19.isSuccess()) {
                                                                                             elem0_0 = alt2_19;
-                                                                                        }else if (alt2_19.isCutFailure()) {
+                                                                                        } else if (alt2_19.isCutFailure()) {
                                                                                             elem0_0 = alt2_19.asRegularFailure();
-                                                                                        }else {
+                                                                                        } else {
                                                                                             restoreLocation(choiceStart2);
                                                                                             children.clear();
                                                                                             children.addAll(savedChildren2);
@@ -23773,9 +23770,9 @@ public final class Java25Parser {
                                                                                             }
                                                                                             if (alt2_20.isSuccess()) {
                                                                                                 elem0_0 = alt2_20;
-                                                                                            }else if (alt2_20.isCutFailure()) {
+                                                                                            } else if (alt2_20.isCutFailure()) {
                                                                                                 elem0_0 = alt2_20.asRegularFailure();
-                                                                                            }else {
+                                                                                            } else {
                                                                                                 restoreLocation(choiceStart2);
                                                                                                 children.clear();
                                                                                                 children.addAll(savedChildren2);
@@ -23786,9 +23783,9 @@ public final class Java25Parser {
                                                                                                 }
                                                                                                 if (alt2_21.isSuccess()) {
                                                                                                     elem0_0 = alt2_21;
-                                                                                                }else if (alt2_21.isCutFailure()) {
+                                                                                                } else if (alt2_21.isCutFailure()) {
                                                                                                     elem0_0 = alt2_21.asRegularFailure();
-                                                                                                }else {
+                                                                                                } else {
                                                                                                     restoreLocation(choiceStart2);
                                                                                                     children.clear();
                                                                                                     children.addAll(savedChildren2);
@@ -23799,9 +23796,9 @@ public final class Java25Parser {
                                                                                                     }
                                                                                                     if (alt2_22.isSuccess()) {
                                                                                                         elem0_0 = alt2_22;
-                                                                                                    }else if (alt2_22.isCutFailure()) {
+                                                                                                    } else if (alt2_22.isCutFailure()) {
                                                                                                         elem0_0 = alt2_22.asRegularFailure();
-                                                                                                    }else {
+                                                                                                    } else {
                                                                                                         restoreLocation(choiceStart2);
                                                                                                         children.clear();
                                                                                                         children.addAll(savedChildren2);
@@ -23812,9 +23809,9 @@ public final class Java25Parser {
                                                                                                         }
                                                                                                         if (alt2_23.isSuccess()) {
                                                                                                             elem0_0 = alt2_23;
-                                                                                                        }else if (alt2_23.isCutFailure()) {
+                                                                                                        } else if (alt2_23.isCutFailure()) {
                                                                                                             elem0_0 = alt2_23.asRegularFailure();
-                                                                                                        }else {
+                                                                                                        } else {
                                                                                                             restoreLocation(choiceStart2);
                                                                                                             children.clear();
                                                                                                             children.addAll(savedChildren2);
@@ -23825,9 +23822,9 @@ public final class Java25Parser {
                                                                                                             }
                                                                                                             if (alt2_24.isSuccess()) {
                                                                                                                 elem0_0 = alt2_24;
-                                                                                                            }else if (alt2_24.isCutFailure()) {
+                                                                                                            } else if (alt2_24.isCutFailure()) {
                                                                                                                 elem0_0 = alt2_24.asRegularFailure();
-                                                                                                            }else {
+                                                                                                            } else {
                                                                                                                 restoreLocation(choiceStart2);
                                                                                                                 children.clear();
                                                                                                                 children.addAll(savedChildren2);
@@ -23838,9 +23835,9 @@ public final class Java25Parser {
                                                                                                                 }
                                                                                                                 if (alt2_25.isSuccess()) {
                                                                                                                     elem0_0 = alt2_25;
-                                                                                                                }else if (alt2_25.isCutFailure()) {
+                                                                                                                } else if (alt2_25.isCutFailure()) {
                                                                                                                     elem0_0 = alt2_25.asRegularFailure();
-                                                                                                                }else {
+                                                                                                                } else {
                                                                                                                     restoreLocation(choiceStart2);
                                                                                                                     children.clear();
                                                                                                                     children.addAll(savedChildren2);
@@ -23851,9 +23848,9 @@ public final class Java25Parser {
                                                                                                                     }
                                                                                                                     if (alt2_26.isSuccess()) {
                                                                                                                         elem0_0 = alt2_26;
-                                                                                                                    }else if (alt2_26.isCutFailure()) {
+                                                                                                                    } else if (alt2_26.isCutFailure()) {
                                                                                                                         elem0_0 = alt2_26.asRegularFailure();
-                                                                                                                    }else {
+                                                                                                                    } else {
                                                                                                                         restoreLocation(choiceStart2);
                                                                                                                         children.clear();
                                                                                                                         children.addAll(savedChildren2);
@@ -23864,9 +23861,9 @@ public final class Java25Parser {
                                                                                                                         }
                                                                                                                         if (alt2_27.isSuccess()) {
                                                                                                                             elem0_0 = alt2_27;
-                                                                                                                        }else if (alt2_27.isCutFailure()) {
+                                                                                                                        } else if (alt2_27.isCutFailure()) {
                                                                                                                             elem0_0 = alt2_27.asRegularFailure();
-                                                                                                                        }else {
+                                                                                                                        } else {
                                                                                                                             restoreLocation(choiceStart2);
                                                                                                                             children.clear();
                                                                                                                             children.addAll(savedChildren2);
@@ -23877,9 +23874,9 @@ public final class Java25Parser {
                                                                                                                             }
                                                                                                                             if (alt2_28.isSuccess()) {
                                                                                                                                 elem0_0 = alt2_28;
-                                                                                                                            }else if (alt2_28.isCutFailure()) {
+                                                                                                                            } else if (alt2_28.isCutFailure()) {
                                                                                                                                 elem0_0 = alt2_28.asRegularFailure();
-                                                                                                                            }else {
+                                                                                                                            } else {
                                                                                                                                 restoreLocation(choiceStart2);
                                                                                                                                 children.clear();
                                                                                                                                 children.addAll(savedChildren2);
@@ -23890,9 +23887,9 @@ public final class Java25Parser {
                                                                                                                                 }
                                                                                                                                 if (alt2_29.isSuccess()) {
                                                                                                                                     elem0_0 = alt2_29;
-                                                                                                                                }else if (alt2_29.isCutFailure()) {
+                                                                                                                                } else if (alt2_29.isCutFailure()) {
                                                                                                                                     elem0_0 = alt2_29.asRegularFailure();
-                                                                                                                                }else {
+                                                                                                                                } else {
                                                                                                                                     restoreLocation(choiceStart2);
                                                                                                                                     children.clear();
                                                                                                                                     children.addAll(savedChildren2);
@@ -23903,9 +23900,9 @@ public final class Java25Parser {
                                                                                                                                     }
                                                                                                                                     if (alt2_30.isSuccess()) {
                                                                                                                                         elem0_0 = alt2_30;
-                                                                                                                                    }else if (alt2_30.isCutFailure()) {
+                                                                                                                                    } else if (alt2_30.isCutFailure()) {
                                                                                                                                         elem0_0 = alt2_30.asRegularFailure();
-                                                                                                                                    }else {
+                                                                                                                                    } else {
                                                                                                                                         restoreLocation(choiceStart2);
                                                                                                                                         children.clear();
                                                                                                                                         children.addAll(savedChildren2);
@@ -23916,9 +23913,9 @@ public final class Java25Parser {
                                                                                                                                         }
                                                                                                                                         if (alt2_31.isSuccess()) {
                                                                                                                                             elem0_0 = alt2_31;
-                                                                                                                                        }else if (alt2_31.isCutFailure()) {
+                                                                                                                                        } else if (alt2_31.isCutFailure()) {
                                                                                                                                             elem0_0 = alt2_31.asRegularFailure();
-                                                                                                                                        }else {
+                                                                                                                                        } else {
                                                                                                                                             restoreLocation(choiceStart2);
                                                                                                                                             children.clear();
                                                                                                                                             children.addAll(savedChildren2);
@@ -23929,9 +23926,9 @@ public final class Java25Parser {
                                                                                                                                             }
                                                                                                                                             if (alt2_32.isSuccess()) {
                                                                                                                                                 elem0_0 = alt2_32;
-                                                                                                                                            }else if (alt2_32.isCutFailure()) {
+                                                                                                                                            } else if (alt2_32.isCutFailure()) {
                                                                                                                                                 elem0_0 = alt2_32.asRegularFailure();
-                                                                                                                                            }else {
+                                                                                                                                            } else {
                                                                                                                                                 restoreLocation(choiceStart2);
                                                                                                                                                 children.clear();
                                                                                                                                                 children.addAll(savedChildren2);
@@ -23942,9 +23939,9 @@ public final class Java25Parser {
                                                                                                                                                 }
                                                                                                                                                 if (alt2_33.isSuccess()) {
                                                                                                                                                     elem0_0 = alt2_33;
-                                                                                                                                                }else if (alt2_33.isCutFailure()) {
+                                                                                                                                                } else if (alt2_33.isCutFailure()) {
                                                                                                                                                     elem0_0 = alt2_33.asRegularFailure();
-                                                                                                                                                }else {
+                                                                                                                                                } else {
                                                                                                                                                     restoreLocation(choiceStart2);
                                                                                                                                                     children.clear();
                                                                                                                                                     children.addAll(savedChildren2);
@@ -23955,9 +23952,9 @@ public final class Java25Parser {
                                                                                                                                                     }
                                                                                                                                                     if (alt2_34.isSuccess()) {
                                                                                                                                                         elem0_0 = alt2_34;
-                                                                                                                                                    }else if (alt2_34.isCutFailure()) {
+                                                                                                                                                    } else if (alt2_34.isCutFailure()) {
                                                                                                                                                         elem0_0 = alt2_34.asRegularFailure();
-                                                                                                                                                    }else {
+                                                                                                                                                    } else {
                                                                                                                                                         restoreLocation(choiceStart2);
                                                                                                                                                         children.clear();
                                                                                                                                                         children.addAll(savedChildren2);
@@ -23968,9 +23965,9 @@ public final class Java25Parser {
                                                                                                                                                         }
                                                                                                                                                         if (alt2_35.isSuccess()) {
                                                                                                                                                             elem0_0 = alt2_35;
-                                                                                                                                                        }else if (alt2_35.isCutFailure()) {
+                                                                                                                                                        } else if (alt2_35.isCutFailure()) {
                                                                                                                                                             elem0_0 = alt2_35.asRegularFailure();
-                                                                                                                                                        }else {
+                                                                                                                                                        } else {
                                                                                                                                                             restoreLocation(choiceStart2);
                                                                                                                                                             children.clear();
                                                                                                                                                             children.addAll(savedChildren2);
@@ -23981,9 +23978,9 @@ public final class Java25Parser {
                                                                                                                                                             }
                                                                                                                                                             if (alt2_36.isSuccess()) {
                                                                                                                                                                 elem0_0 = alt2_36;
-                                                                                                                                                            }else if (alt2_36.isCutFailure()) {
+                                                                                                                                                            } else if (alt2_36.isCutFailure()) {
                                                                                                                                                                 elem0_0 = alt2_36.asRegularFailure();
-                                                                                                                                                            }else {
+                                                                                                                                                            } else {
                                                                                                                                                                 restoreLocation(choiceStart2);
                                                                                                                                                                 children.clear();
                                                                                                                                                                 children.addAll(savedChildren2);
@@ -23994,9 +23991,9 @@ public final class Java25Parser {
                                                                                                                                                                 }
                                                                                                                                                                 if (alt2_37.isSuccess()) {
                                                                                                                                                                     elem0_0 = alt2_37;
-                                                                                                                                                                }else if (alt2_37.isCutFailure()) {
+                                                                                                                                                                } else if (alt2_37.isCutFailure()) {
                                                                                                                                                                     elem0_0 = alt2_37.asRegularFailure();
-                                                                                                                                                                }else {
+                                                                                                                                                                } else {
                                                                                                                                                                     restoreLocation(choiceStart2);
                                                                                                                                                                     children.clear();
                                                                                                                                                                     children.addAll(savedChildren2);
@@ -24007,9 +24004,9 @@ public final class Java25Parser {
                                                                                                                                                                     }
                                                                                                                                                                     if (alt2_38.isSuccess()) {
                                                                                                                                                                         elem0_0 = alt2_38;
-                                                                                                                                                                    }else if (alt2_38.isCutFailure()) {
+                                                                                                                                                                    } else if (alt2_38.isCutFailure()) {
                                                                                                                                                                         elem0_0 = alt2_38.asRegularFailure();
-                                                                                                                                                                    }else {
+                                                                                                                                                                    } else {
                                                                                                                                                                         restoreLocation(choiceStart2);
                                                                                                                                                                         children.clear();
                                                                                                                                                                         children.addAll(savedChildren2);
@@ -24020,9 +24017,9 @@ public final class Java25Parser {
                                                                                                                                                                         }
                                                                                                                                                                         if (alt2_39.isSuccess()) {
                                                                                                                                                                             elem0_0 = alt2_39;
-                                                                                                                                                                        }else if (alt2_39.isCutFailure()) {
+                                                                                                                                                                        } else if (alt2_39.isCutFailure()) {
                                                                                                                                                                             elem0_0 = alt2_39.asRegularFailure();
-                                                                                                                                                                        }else {
+                                                                                                                                                                        } else {
                                                                                                                                                                             restoreLocation(choiceStart2);
                                                                                                                                                                             children.clear();
                                                                                                                                                                             children.addAll(savedChildren2);
@@ -24033,9 +24030,9 @@ public final class Java25Parser {
                                                                                                                                                                             }
                                                                                                                                                                             if (alt2_40.isSuccess()) {
                                                                                                                                                                                 elem0_0 = alt2_40;
-                                                                                                                                                                            }else if (alt2_40.isCutFailure()) {
+                                                                                                                                                                            } else if (alt2_40.isCutFailure()) {
                                                                                                                                                                                 elem0_0 = alt2_40.asRegularFailure();
-                                                                                                                                                                            }else {
+                                                                                                                                                                            } else {
                                                                                                                                                                                 restoreLocation(choiceStart2);
                                                                                                                                                                                 children.clear();
                                                                                                                                                                                 children.addAll(savedChildren2);
@@ -24046,9 +24043,9 @@ public final class Java25Parser {
                                                                                                                                                                                 }
                                                                                                                                                                                 if (alt2_41.isSuccess()) {
                                                                                                                                                                                     elem0_0 = alt2_41;
-                                                                                                                                                                                }else if (alt2_41.isCutFailure()) {
+                                                                                                                                                                                } else if (alt2_41.isCutFailure()) {
                                                                                                                                                                                     elem0_0 = alt2_41.asRegularFailure();
-                                                                                                                                                                                }else {
+                                                                                                                                                                                } else {
                                                                                                                                                                                     restoreLocation(choiceStart2);
                                                                                                                                                                                     children.clear();
                                                                                                                                                                                     children.addAll(savedChildren2);
@@ -24059,9 +24056,9 @@ public final class Java25Parser {
                                                                                                                                                                                     }
                                                                                                                                                                                     if (alt2_42.isSuccess()) {
                                                                                                                                                                                         elem0_0 = alt2_42;
-                                                                                                                                                                                    }else if (alt2_42.isCutFailure()) {
+                                                                                                                                                                                    } else if (alt2_42.isCutFailure()) {
                                                                                                                                                                                         elem0_0 = alt2_42.asRegularFailure();
-                                                                                                                                                                                    }else {
+                                                                                                                                                                                    } else {
                                                                                                                                                                                         restoreLocation(choiceStart2);
                                                                                                                                                                                         children.clear();
                                                                                                                                                                                         children.addAll(savedChildren2);
@@ -24072,9 +24069,9 @@ public final class Java25Parser {
                                                                                                                                                                                         }
                                                                                                                                                                                         if (alt2_43.isSuccess()) {
                                                                                                                                                                                             elem0_0 = alt2_43;
-                                                                                                                                                                                        }else if (alt2_43.isCutFailure()) {
+                                                                                                                                                                                        } else if (alt2_43.isCutFailure()) {
                                                                                                                                                                                             elem0_0 = alt2_43.asRegularFailure();
-                                                                                                                                                                                        }else {
+                                                                                                                                                                                        } else {
                                                                                                                                                                                             restoreLocation(choiceStart2);
                                                                                                                                                                                             children.clear();
                                                                                                                                                                                             children.addAll(savedChildren2);
@@ -24085,9 +24082,9 @@ public final class Java25Parser {
                                                                                                                                                                                             }
                                                                                                                                                                                             if (alt2_44.isSuccess()) {
                                                                                                                                                                                                 elem0_0 = alt2_44;
-                                                                                                                                                                                            }else if (alt2_44.isCutFailure()) {
+                                                                                                                                                                                            } else if (alt2_44.isCutFailure()) {
                                                                                                                                                                                                 elem0_0 = alt2_44.asRegularFailure();
-                                                                                                                                                                                            }else {
+                                                                                                                                                                                            } else {
                                                                                                                                                                                                 restoreLocation(choiceStart2);
                                                                                                                                                                                                 children.clear();
                                                                                                                                                                                                 children.addAll(savedChildren2);
@@ -24098,9 +24095,9 @@ public final class Java25Parser {
                                                                                                                                                                                                 }
                                                                                                                                                                                                 if (alt2_45.isSuccess()) {
                                                                                                                                                                                                     elem0_0 = alt2_45;
-                                                                                                                                                                                                }else if (alt2_45.isCutFailure()) {
+                                                                                                                                                                                                } else if (alt2_45.isCutFailure()) {
                                                                                                                                                                                                     elem0_0 = alt2_45.asRegularFailure();
-                                                                                                                                                                                                }else {
+                                                                                                                                                                                                } else {
                                                                                                                                                                                                     restoreLocation(choiceStart2);
                                                                                                                                                                                                     children.clear();
                                                                                                                                                                                                     children.addAll(savedChildren2);
@@ -24111,9 +24108,9 @@ public final class Java25Parser {
                                                                                                                                                                                                     }
                                                                                                                                                                                                     if (alt2_46.isSuccess()) {
                                                                                                                                                                                                         elem0_0 = alt2_46;
-                                                                                                                                                                                                    }else if (alt2_46.isCutFailure()) {
+                                                                                                                                                                                                    } else if (alt2_46.isCutFailure()) {
                                                                                                                                                                                                         elem0_0 = alt2_46.asRegularFailure();
-                                                                                                                                                                                                    }else {
+                                                                                                                                                                                                    } else {
                                                                                                                                                                                                         restoreLocation(choiceStart2);
                                                                                                                                                                                                         children.clear();
                                                                                                                                                                                                         children.addAll(savedChildren2);
@@ -24124,9 +24121,9 @@ public final class Java25Parser {
                                                                                                                                                                                                         }
                                                                                                                                                                                                         if (alt2_47.isSuccess()) {
                                                                                                                                                                                                             elem0_0 = alt2_47;
-                                                                                                                                                                                                        }else if (alt2_47.isCutFailure()) {
+                                                                                                                                                                                                        } else if (alt2_47.isCutFailure()) {
                                                                                                                                                                                                             elem0_0 = alt2_47.asRegularFailure();
-                                                                                                                                                                                                        }else {
+                                                                                                                                                                                                        } else {
                                                                                                                                                                                                             restoreLocation(choiceStart2);
                                                                                                                                                                                                             children.clear();
                                                                                                                                                                                                             children.addAll(savedChildren2);
@@ -24137,9 +24134,9 @@ public final class Java25Parser {
                                                                                                                                                                                                             }
                                                                                                                                                                                                             if (alt2_48.isSuccess()) {
                                                                                                                                                                                                                 elem0_0 = alt2_48;
-                                                                                                                                                                                                            }else if (alt2_48.isCutFailure()) {
+                                                                                                                                                                                                            } else if (alt2_48.isCutFailure()) {
                                                                                                                                                                                                                 elem0_0 = alt2_48.asRegularFailure();
-                                                                                                                                                                                                            }else {
+                                                                                                                                                                                                            } else {
                                                                                                                                                                                                                 restoreLocation(choiceStart2);
                                                                                                                                                                                                                 children.clear();
                                                                                                                                                                                                                 children.addAll(savedChildren2);
@@ -24150,9 +24147,9 @@ public final class Java25Parser {
                                                                                                                                                                                                                 }
                                                                                                                                                                                                                 if (alt2_49.isSuccess()) {
                                                                                                                                                                                                                     elem0_0 = alt2_49;
-                                                                                                                                                                                                                }else if (alt2_49.isCutFailure()) {
+                                                                                                                                                                                                                } else if (alt2_49.isCutFailure()) {
                                                                                                                                                                                                                     elem0_0 = alt2_49.asRegularFailure();
-                                                                                                                                                                                                                }else {
+                                                                                                                                                                                                                } else {
                                                                                                                                                                                                                     restoreLocation(choiceStart2);
                                                                                                                                                                                                                     children.clear();
                                                                                                                                                                                                                     children.addAll(savedChildren2);
@@ -24163,9 +24160,9 @@ public final class Java25Parser {
                                                                                                                                                                                                                     }
                                                                                                                                                                                                                     if (alt2_50.isSuccess()) {
                                                                                                                                                                                                                         elem0_0 = alt2_50;
-                                                                                                                                                                                                                    }else if (alt2_50.isCutFailure()) {
+                                                                                                                                                                                                                    } else if (alt2_50.isCutFailure()) {
                                                                                                                                                                                                                         elem0_0 = alt2_50.asRegularFailure();
-                                                                                                                                                                                                                    }else {
+                                                                                                                                                                                                                    } else {
                                                                                                                                                                                                                         restoreLocation(choiceStart2);
                                                                                                                                                                                                                         children.clear();
                                                                                                                                                                                                                         children.addAll(savedChildren2);
@@ -24176,9 +24173,9 @@ public final class Java25Parser {
                                                                                                                                                                                                                         }
                                                                                                                                                                                                                         if (alt2_51.isSuccess()) {
                                                                                                                                                                                                                             elem0_0 = alt2_51;
-                                                                                                                                                                                                                        }else if (alt2_51.isCutFailure()) {
+                                                                                                                                                                                                                        } else if (alt2_51.isCutFailure()) {
                                                                                                                                                                                                                             elem0_0 = alt2_51.asRegularFailure();
-                                                                                                                                                                                                                        }else {
+                                                                                                                                                                                                                        } else {
                                                                                                                                                                                                                             restoreLocation(choiceStart2);
                                                                                                                                                                                                                             children.clear();
                                                                                                                                                                                                                             children.addAll(savedChildren2);
@@ -24189,9 +24186,9 @@ public final class Java25Parser {
                                                                                                                                                                                                                             }
                                                                                                                                                                                                                             if (alt2_52.isSuccess()) {
                                                                                                                                                                                                                                 elem0_0 = alt2_52;
-                                                                                                                                                                                                                            }else if (alt2_52.isCutFailure()) {
+                                                                                                                                                                                                                            } else if (alt2_52.isCutFailure()) {
                                                                                                                                                                                                                                 elem0_0 = alt2_52.asRegularFailure();
-                                                                                                                                                                                                                            }else {
+                                                                                                                                                                                                                            } else {
                                                                                                                                                                                                                                 restoreLocation(choiceStart2);
                                                                                                                                                                                                                             }
                                                                                                                                                                                                                         }
@@ -24254,7 +24251,7 @@ public final class Java25Parser {
             if (elem0_0.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_0;
-            }else if (elem0_0.isFailure()) {
+            } else if (elem0_0.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_0.asCutFailure()
@@ -24275,7 +24272,7 @@ public final class Java25Parser {
             if (elem0_1.isCutFailure()) {
                 restoreLocation(seqStart0);
                 result = elem0_1;
-            }else if (elem0_1.isFailure()) {
+            } else if (elem0_1.isFailure()) {
                 restoreLocation(seqStart0);
                 result = cut0
                          ? elem0_1.asCutFailure()
@@ -24291,7 +24288,7 @@ public final class Java25Parser {
             var span = SourceSpan.of(startLoc, endLoc);
             var node = new CstNode.NonTerminal(span, RULE_KEYWORD, children, leadingTrivia, List.of());
             finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
-        }else {
+        } else {
             restoreLocation(startLoc);
             finalResult = result;
         }
@@ -24311,9 +24308,9 @@ public final class Java25Parser {
             var alt1_0 = matchCharClassCst(" \\t\\r\\n", false, false);
             if (alt1_0.isSuccess()) {
                 wsResult = alt1_0;
-            }else if (alt1_0.isCutFailure()) {
+            } else if (alt1_0.isCutFailure()) {
                 wsResult = alt1_0.asRegularFailure();
-            }else {
+            } else {
                 restoreLocation(choiceStart1);
                 CstParseResult alt1_1 = CstParseResult.success(null, "", location());
                 var seqStart3 = location();
@@ -24323,7 +24320,7 @@ public final class Java25Parser {
                     if (elem3_0.isCutFailure()) {
                         restoreLocation(seqStart3);
                         alt1_1 = elem3_0;
-                    }else if (elem3_0.isFailure()) {
+                    } else if (elem3_0.isFailure()) {
                         restoreLocation(seqStart3);
                         alt1_1 = cut3
                                  ? elem3_0.asCutFailure()
@@ -24337,7 +24334,7 @@ public final class Java25Parser {
                         var beforeLoc5 = location();
                         var zomElem5 = matchCharClassCst("\\n", true, false);
                         if (zomElem5.isFailure() || location()
-                                                    .offset() == beforeLoc5.offset()) {
+                                                            .offset() == beforeLoc5.offset()) {
                             restoreLocation(beforeLoc5);
                             break;
                         }
@@ -24346,7 +24343,7 @@ public final class Java25Parser {
                     if (elem3_1.isCutFailure()) {
                         restoreLocation(seqStart3);
                         alt1_1 = elem3_1;
-                    }else if (elem3_1.isFailure()) {
+                    } else if (elem3_1.isFailure()) {
                         restoreLocation(seqStart3);
                         alt1_1 = cut3
                                  ? elem3_1.asCutFailure()
@@ -24358,9 +24355,9 @@ public final class Java25Parser {
                 }
                 if (alt1_1.isSuccess()) {
                     wsResult = alt1_1;
-                }else if (alt1_1.isCutFailure()) {
+                } else if (alt1_1.isCutFailure()) {
                     wsResult = alt1_1.asRegularFailure();
-                }else {
+                } else {
                     restoreLocation(choiceStart1);
                     CstParseResult alt1_2 = CstParseResult.success(null, "", location());
                     var seqStart7 = location();
@@ -24370,7 +24367,7 @@ public final class Java25Parser {
                         if (elem7_0.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt1_2 = elem7_0;
-                        }else if (elem7_0.isFailure()) {
+                        } else if (elem7_0.isFailure()) {
                             restoreLocation(seqStart7);
                             alt1_2 = cut7
                                      ? elem7_0.asCutFailure()
@@ -24395,7 +24392,7 @@ public final class Java25Parser {
                                 if (elem11_0.isCutFailure()) {
                                     restoreLocation(seqStart11);
                                     zomElem9 = elem11_0;
-                                }else if (elem11_0.isFailure()) {
+                                } else if (elem11_0.isFailure()) {
                                     restoreLocation(seqStart11);
                                     zomElem9 = cut11
                                                ? elem11_0.asCutFailure()
@@ -24407,7 +24404,7 @@ public final class Java25Parser {
                                 if (elem11_1.isCutFailure()) {
                                     restoreLocation(seqStart11);
                                     zomElem9 = elem11_1;
-                                }else if (elem11_1.isFailure()) {
+                                } else if (elem11_1.isFailure()) {
                                     restoreLocation(seqStart11);
                                     zomElem9 = cut11
                                                ? elem11_1.asCutFailure()
@@ -24418,7 +24415,7 @@ public final class Java25Parser {
                                 zomElem9 = CstParseResult.success(null, substring(seqStart11.offset(), pos), location());
                             }
                             if (zomElem9.isFailure() || location()
-                                                        .offset() == beforeLoc9.offset()) {
+                                                                .offset() == beforeLoc9.offset()) {
                                 restoreLocation(beforeLoc9);
                                 break;
                             }
@@ -24427,7 +24424,7 @@ public final class Java25Parser {
                         if (elem7_1.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt1_2 = elem7_1;
-                        }else if (elem7_1.isFailure()) {
+                        } else if (elem7_1.isFailure()) {
                             restoreLocation(seqStart7);
                             alt1_2 = cut7
                                      ? elem7_1.asCutFailure()
@@ -24439,7 +24436,7 @@ public final class Java25Parser {
                         if (elem7_2.isCutFailure()) {
                             restoreLocation(seqStart7);
                             alt1_2 = elem7_2;
-                        }else if (elem7_2.isFailure()) {
+                        } else if (elem7_2.isFailure()) {
                             restoreLocation(seqStart7);
                             alt1_2 = cut7
                                      ? elem7_2.asCutFailure()
@@ -24451,9 +24448,9 @@ public final class Java25Parser {
                     }
                     if (alt1_2.isSuccess()) {
                         wsResult = alt1_2;
-                    }else if (alt1_2.isCutFailure()) {
+                    } else if (alt1_2.isCutFailure()) {
                         wsResult = alt1_2.asRegularFailure();
-                    }else {
+                    } else {
                         restoreLocation(choiceStart1);
                     }
                 }
@@ -24472,9 +24469,9 @@ public final class Java25Parser {
     private Trivia classifyTrivia(SourceSpan span, String text) {
         if (text.startsWith("//")) {
             return new Trivia.LineComment(span, text);
-        }else if (text.startsWith("/*")) {
+        } else if (text.startsWith("/*")) {
             return new Trivia.BlockComment(span, text);
-        }else {
+        } else {
             return new Trivia.Whitespace(span, text);
         }
     }
@@ -24484,14 +24481,26 @@ public final class Java25Parser {
             return node;
         }
         return switch (node) {
-            case CstNode.Terminal t -> new CstNode.Terminal(
-            t.span(), t.rule(), t.text(), t.leadingTrivia(), trailingTrivia);
-            case CstNode.NonTerminal nt -> new CstNode.NonTerminal(
-            nt.span(), nt.rule(), nt.children(), nt.leadingTrivia(), trailingTrivia);
-            case CstNode.Token tok -> new CstNode.Token(
-            tok.span(), tok.rule(), tok.text(), tok.leadingTrivia(), trailingTrivia);
-            case CstNode.Error err -> new CstNode.Error(
-            err.span(), err.skippedText(), err.expected(), err.leadingTrivia(), trailingTrivia);
+            case CstNode.Terminal t -> new CstNode.Terminal(t.span(),
+                                                            t.rule(),
+                                                            t.text(),
+                                                            t.leadingTrivia(),
+                                                            trailingTrivia);
+            case CstNode.NonTerminal nt -> new CstNode.NonTerminal(nt.span(),
+                                                                   nt.rule(),
+                                                                   nt.children(),
+                                                                   nt.leadingTrivia(),
+                                                                   trailingTrivia);
+            case CstNode.Token tok -> new CstNode.Token(tok.span(),
+                                                        tok.rule(),
+                                                        tok.text(),
+                                                        tok.leadingTrivia(),
+                                                        trailingTrivia);
+            case CstNode.Error err -> new CstNode.Error(err.span(),
+                                                        err.skippedText(),
+                                                        err.expected(),
+                                                        err.leadingTrivia(),
+                                                        trailingTrivia);
         };
     }
 
@@ -24509,7 +24518,7 @@ public final class Java25Parser {
                     trackFailure("'" + text + "'");
                     return CstParseResult.failure("'" + text + "'");
                 }
-            }else {
+            } else {
                 if (expected != actual) {
                     trackFailure("'" + text + "'");
                     return CstParseResult.failure("'" + text + "'");
@@ -24553,7 +24562,7 @@ public final class Java25Parser {
             char actual = peek(i);
             if (caseInsensitive) {
                 if (Character.toLowerCase(expected) != Character.toLowerCase(actual)) return false;
-            }else {
+            } else {
                 if (expected != actual) return false;
             }
         }
@@ -24640,7 +24649,7 @@ public final class Java25Parser {
                 }
                 if (testChar >= start && testChar <= end) return true;
                 i += 3;
-            }else {
+            } else {
                 if (caseInsensitive) start = Character.toLowerCase(start);
                 if (testChar == start) return true;
                 i++ ;

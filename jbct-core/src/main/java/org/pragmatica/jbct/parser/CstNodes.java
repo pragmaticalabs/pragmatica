@@ -51,8 +51,8 @@ public final class CstNodes {
         walk(root,
              node -> {
                  if (isRule(node, ruleClass)) {
-                 results.add(node);
-             }
+                     results.add(node);
+                 }
              });
         return results;
     }
@@ -65,8 +65,8 @@ public final class CstNodes {
         walk(root,
              node -> {
                  if (predicate.test(node)) {
-                 results.add(node);
-             }
+                     results.add(node);
+                 }
              });
         return results;
     }
@@ -99,15 +99,15 @@ public final class CstNodes {
      */
     public static Option<CstNode> findAncestor(CstNode root, CstNode target, Class< ? extends RuleId> ruleClass) {
         return findAncestorPath(root, target)
-               .flatMap(path -> {
-                            for (int i = path.size() - 2; i >= 0; i-- ) {
-                            if (isRule(path.get(i),
-                                       ruleClass)) {
-                            return Option.some(path.get(i));
-                        }
-                        }
-                            return Option.none();
-                        });
+                               .flatMap(path -> {
+                                            for (int i = path.size() - 2; i >= 0; i-- ) {
+                                                if (isRule(path.get(i),
+                                                           ruleClass)) {
+                                                    return Option.some(path.get(i));
+                                                }
+                                            }
+                                            return Option.none();
+                                        });
     }
 
     /**
@@ -150,11 +150,10 @@ public final class CstNodes {
      * Stream all nodes in the tree depth-first.
      */
     public static Stream<CstNode> stream(CstNode root) {
-        return Stream.concat(
-        Stream.of(root),
-        children(root)
-        .stream()
-        .flatMap(CstNodes::stream));
+        return Stream.concat(Stream.of(root),
+                             children(root)
+                                     .stream()
+                                     .flatMap(CstNodes::stream));
     }
 
     /**
@@ -198,7 +197,7 @@ public final class CstNodes {
      */
     public static boolean contains(CstNode root, Class< ? extends RuleId> ruleClass) {
         return findFirst(root, ruleClass)
-               .isPresent();
+                        .isPresent();
     }
 
     /**
@@ -230,7 +229,7 @@ public final class CstNodes {
      */
     public static int count(CstNode root, Class< ? extends RuleId> ruleClass) {
         return findAll(root, ruleClass)
-               .size();
+                      .size();
     }
 
     /**
@@ -256,8 +255,8 @@ public final class CstNodes {
      */
     public static String packageName(CstNode root, String source) {
         return findFirst(root, RuleId.PackageDecl.class)
-               .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-               .map(qn -> text(qn, source))
-               .or("");
+                        .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                        .map(qn -> text(qn, source))
+                        .or("");
     }
 }

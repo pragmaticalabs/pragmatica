@@ -52,9 +52,9 @@ public final class SuppressionExtractor {
         for (var annotation : annotations) {
             // Check if this is @SuppressWarnings
             var name = findFirst(annotation, RuleId.QualifiedName.class)
-                       .map(qn -> text(qn, source)
-                                  .trim())
-                       .or("");
+                                .map(qn -> text(qn, source)
+                                               .trim())
+                                .or("");
             if (!"SuppressWarnings".equals(name) && !"java.lang.SuppressWarnings".equals(name)) {
                 continue;
             }
@@ -109,8 +109,8 @@ public final class SuppressionExtractor {
         // Walk up the tree from the annotation to find what it annotates
         // Annotations can appear on: TypeDecl, ClassMember, Param, LocalVar, etc.
         return findAncestorPath(root, annotation)
-               .map(path -> findDeclarationInPath(path))
-               .fold(Optional::empty, v -> v);
+                               .map(path -> findDeclarationInPath(path))
+                               .fold(Optional::empty, v -> v);
     }
 
     private static Optional<CstNode> findDeclarationInPath(List<CstNode> path) {

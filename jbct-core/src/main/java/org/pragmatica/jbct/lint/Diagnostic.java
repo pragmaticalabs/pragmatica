@@ -5,16 +5,15 @@ import org.pragmatica.lang.Option;
 /**
  * A lint diagnostic representing a JBCT rule violation or suggestion.
  */
-public record Diagnostic(
- String ruleId,
- DiagnosticSeverity severity,
- String file,
- int line,
- int column,
- String message,
- String details,
- Option<String> example,
- Option<String> docLink) {
+public record Diagnostic(String ruleId,
+                         DiagnosticSeverity severity,
+                         String file,
+                         int line,
+                         int column,
+                         String message,
+                         String details,
+                         Option<String> example,
+                         Option<String> docLink) {
     /**
      * Factory method for creating a diagnostic.
      */

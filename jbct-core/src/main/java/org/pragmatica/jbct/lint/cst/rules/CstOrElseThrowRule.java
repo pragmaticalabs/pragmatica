@@ -26,17 +26,17 @@ public class CstOrElseThrowRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         // Find Primary nodes containing orElseThrow
         return findAll(root, RuleId.Primary.class)
-               .stream()
-               .filter(node -> isOrElseThrow(node, source))
-               .map(node -> createDiagnostic(node, ctx));
+                      .stream()
+                      .filter(node -> isOrElseThrow(node, source))
+                      .map(node -> createDiagnostic(node, ctx));
     }
 
     private boolean isOrElseThrow(CstNode node, String source) {

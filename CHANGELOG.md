@@ -16,6 +16,10 @@
 - Formatter: nested blocks inside lambda bodies now properly indented
 - Formatter: constructor call args alignment (`new Type(args...)`)
 - Formatter: record declaration component alignment
+- Formatter: first arg/param/component stays on same line as opening paren
+- Formatter: chain alignment for constructor calls (`new Type().method1().method2()`)
+- Linter: JBCT-SEAL-01 false positive for sealed interfaces (now checks Modifier nodes)
+- Linter: JBCT-PAT-02 no longer flags method references as fork-join (e.g., `Result::allOf`)
 
 ## [0.4.2] - 2025-12-30
 

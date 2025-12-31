@@ -6,11 +6,10 @@ import java.util.regex.Pattern;
 /**
  * Context for lint analysis providing configuration.
  */
-public record LintContext(
- List<Pattern> businessPackagePatterns,
- List<Pattern> slicePackagePatterns,
- LintConfig config,
- String fileName) {
+public record LintContext(List<Pattern> businessPackagePatterns,
+                          List<Pattern> slicePackagePatterns,
+                          LintConfig config,
+                          String fileName) {
     /**
      * Check if a package name matches any business package pattern.
      */
@@ -56,13 +55,11 @@ public record LintContext(
      * Factory method with default configuration.
      */
     public static LintContext defaultContext() {
-        return new LintContext(
-        List.of(
-        Pattern.compile(".*\\.usecase\\..*"), Pattern.compile(".*\\.domain\\..*")),
-        List.of(),
-        // No slice packages by default
+        return new LintContext(List.of(Pattern.compile(".*\\.usecase\\..*"), Pattern.compile(".*\\.domain\\..*")),
+                               List.of(),
+                               // No slice packages by default
         LintConfig.defaultConfig(),
-        "Unknown.java");
+                               "Unknown.java");
     }
 
     /**
@@ -124,7 +121,7 @@ public record LintContext(
      */
     public static LintContext fromConfig(org.pragmatica.jbct.config.JbctConfig jbctConfig) {
         return lintContext(jbctConfig.businessPackages())
-               .withSlicePackages(jbctConfig.slicePackages())
-               .withConfig(jbctConfig.lint());
+                          .withSlicePackages(jbctConfig.slicePackages())
+                          .withConfig(jbctConfig.lint());
     }
 }

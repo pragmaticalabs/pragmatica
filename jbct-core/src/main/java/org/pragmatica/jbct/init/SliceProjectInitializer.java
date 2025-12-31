@@ -81,70 +81,70 @@ public final class SliceProjectInitializer {
             // Create pom.xml
             createFile("pom.xml.template",
                        projectDir.resolve("pom.xml"))
-            .onSuccess(createdFiles::add)
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(createdFiles::add)
+                      .onFailure(cause -> errors.add(cause.message()));
             // Create jbct.toml
             createFile("jbct.toml.template",
                        projectDir.resolve("jbct.toml"))
-            .onSuccess(createdFiles::add)
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(createdFiles::add)
+                      .onFailure(cause -> errors.add(cause.message()));
             // Create .gitignore
             createFile("gitignore.template",
                        projectDir.resolve(".gitignore"))
-            .onSuccess(createdFiles::add)
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(createdFiles::add)
+                      .onFailure(cause -> errors.add(cause.message()));
             // Create slice interface
             var slicePath = srcMainJava.resolve(packagePath)
                                        .resolve(sliceName + ".java");
             createFile("Slice.java.template", slicePath)
-            .onSuccess(createdFiles::add)
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(createdFiles::add)
+                      .onFailure(cause -> errors.add(cause.message()));
             // Create slice implementation
             var implPath = srcMainJava.resolve(packagePath)
                                       .resolve(sliceName + "Impl.java");
             createFile("SliceImpl.java.template", implPath)
-            .onSuccess(createdFiles::add)
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(createdFiles::add)
+                      .onFailure(cause -> errors.add(cause.message()));
             // Create sample request
             var requestPath = srcMainJava.resolve(packagePath)
                                          .resolve("SampleRequest.java");
             createFile("SampleRequest.java.template", requestPath)
-            .onSuccess(createdFiles::add)
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(createdFiles::add)
+                      .onFailure(cause -> errors.add(cause.message()));
             // Create sample response
             var responsePath = srcMainJava.resolve(packagePath)
                                           .resolve("SampleResponse.java");
             createFile("SampleResponse.java.template", responsePath)
-            .onSuccess(createdFiles::add)
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(createdFiles::add)
+                      .onFailure(cause -> errors.add(cause.message()));
             // Create test
             var testPath = srcTestJava.resolve(packagePath)
                                       .resolve(sliceName + "Test.java");
             createFile("SliceTest.java.template", testPath)
-            .onSuccess(createdFiles::add)
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(createdFiles::add)
+                      .onFailure(cause -> errors.add(cause.message()));
             // Create deploy scripts
             var deployForgePath = projectDir.resolve("deploy-forge.sh");
             createFile("deploy-forge.sh.template", deployForgePath)
-            .onSuccess(path -> {
-                makeExecutable(path);
-                createdFiles.add(path);
-            })
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(path -> {
+                          makeExecutable(path);
+                          createdFiles.add(path);
+                      })
+                      .onFailure(cause -> errors.add(cause.message()));
             var deployTestPath = projectDir.resolve("deploy-test.sh");
             createFile("deploy-test.sh.template", deployTestPath)
-            .onSuccess(path -> {
-                makeExecutable(path);
-                createdFiles.add(path);
-            })
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(path -> {
+                          makeExecutable(path);
+                          createdFiles.add(path);
+                      })
+                      .onFailure(cause -> errors.add(cause.message()));
             var deployProdPath = projectDir.resolve("deploy-prod.sh");
             createFile("deploy-prod.sh.template", deployProdPath)
-            .onSuccess(path -> {
-                makeExecutable(path);
-                createdFiles.add(path);
-            })
-            .onFailure(cause -> errors.add(cause.message()));
+                      .onSuccess(path -> {
+                          makeExecutable(path);
+                          createdFiles.add(path);
+                      })
+                      .onFailure(cause -> errors.add(cause.message()));
             // Check for accumulated errors
             if (!errors.isEmpty()) {
                 return Causes.cause("File creation errors: " + String.join("; ", errors))
@@ -166,7 +166,7 @@ public final class SliceProjectInitializer {
             return Result.success(targetPath);
         }
         try (var in = getClass()
-                      .getResourceAsStream(TEMPLATES_PATH + templateName)) {
+                              .getResourceAsStream(TEMPLATES_PATH + templateName)) {
             if (in == null) {
                 // Fall back to inline templates if resource not found
                 return createFromInlineTemplate(templateName, targetPath);

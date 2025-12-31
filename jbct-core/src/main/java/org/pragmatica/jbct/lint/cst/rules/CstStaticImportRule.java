@@ -24,15 +24,20 @@ public class CstStaticImportRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STATIC-01";
 
     // Factory patterns: TypeName.methodName(
-    private static final List<FactoryPattern>FACTORY_PATTERNS = List.of(
-    new FactoryPattern("Result", Set.of("success", "failure")),
-    new FactoryPattern("Option", Set.of("some", "none", "option")),
-    new FactoryPattern("Causes", Set.of("cause")),
-    new FactoryPattern("Promise", Set.of("promise", "resolved", "failed")));
+    private static final List<FactoryPattern>FACTORY_PATTERNS = List.of(new FactoryPattern("Result",
+                                                                                           Set.of("success", "failure")),
+                                                                        new FactoryPattern("Option",
+                                                                                           Set.of("some",
+                                                                                                  "none",
+                                                                                                  "option")),
+                                                                        new FactoryPattern("Causes", Set.of("cause")),
+                                                                        new FactoryPattern("Promise",
+                                                                                           Set.of("promise",
+                                                                                                  "resolved",
+                                                                                                  "failed")));
 
     // Regex to find qualified factory calls
-    private static final Pattern QUALIFIED_CALL = Pattern.compile(
-    "\\b(Result|Option|Causes|Promise)\\.([a-z]+)\\s*\\(");
+    private static final Pattern QUALIFIED_CALL = Pattern.compile("\\b(Result|Option|Causes|Promise)\\.([a-z]+)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -42,9 +47,9 @@ public class CstStaticImportRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
@@ -52,29 +57,29 @@ public class CstStaticImportRule implements CstLintRule {
         var staticImports = collectStaticImports(root, source);
         // Find qualified factory calls
         return findAll(root, RuleId.MethodDecl.class)
-               .stream()
-               .flatMap(method -> findQualifiedCalls(method, source, staticImports, ctx));
+                      .stream()
+                      .flatMap(method -> findQualifiedCalls(method, source, staticImports, ctx));
     }
 
     private Set<String> collectStaticImports(CstNode root, String source) {
         var imports = new HashSet<String>();
         findAll(root, RuleId.ImportDecl.class)
-        .forEach(imp -> {
-                     var importText = text(imp, source);
-                     if (importText.contains("static")) {
-                     // Extract the imported members
+               .forEach(imp -> {
+                            var importText = text(imp, source);
+                            if (importText.contains("static")) {
+                                // Extract the imported members
         for (var pattern : FACTORY_PATTERNS) {
-                     for (var method : pattern.methods()) {
-                     // Check for specific method import or wildcard
+                                    for (var method : pattern.methods()) {
+                                        // Check for specific method import or wildcard
         if (importText.contains("." + method + ";") ||
         importText.contains("." + pattern.typeName() + ".*;") ||
         importText.contains("." + pattern.typeName() + "." + method)) {
-                     imports.add(pattern.typeName() + "." + method);
-                 }
-                 }
-                 }
-                 }
-                 });
+                                            imports.add(pattern.typeName() + "." + method);
+                                        }
+                                    }
+                                }
+                            }
+                        });
         return imports;
     }
 
@@ -106,15 +111,14 @@ public class CstStaticImportRule implements CstLintRule {
                                         String typeName,
                                         String methodName,
                                         LintContext ctx) {
-        return Diagnostic.diagnostic(
-        RULE_ID,
-        ctx.severityFor(RULE_ID),
-        ctx.fileName(),
-        startLine(node),
-        startColumn(node),
-        "Use static import for " + typeName + "." + methodName + "()",
-        "Add 'import static org.pragmatica.lang." + typeName + "." + methodName + ";' " + "and use '" + methodName
-        + "(...)' directly for cleaner code.");
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(node),
+                                     startColumn(node),
+                                     "Use static import for " + typeName + "." + methodName + "()",
+                                     "Add 'import static org.pragmatica.lang." + typeName + "." + methodName + ";' "
+                                     + "and use '" + methodName + "(...)' directly for cleaner code.");
     }
 
     private record FactoryPattern(String typeName, Set<String> methods) {}

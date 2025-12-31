@@ -61,10 +61,10 @@ public final class AiToolsInstaller {
             Files.createDirectories(agentsDir);
             // Install skills
             installFromResources(AI_TOOLS_PATH + SKILLS_SUBPATH, skillsDir)
-            .onSuccess(installedFiles::addAll);
+                                .onSuccess(installedFiles::addAll);
             // Install agents
             installFromResources(AI_TOOLS_PATH + AGENTS_SUBPATH, agentsDir)
-            .onSuccess(installedFiles::addAll);
+                                .onSuccess(installedFiles::addAll);
             return Result.success(installedFiles);
         } catch (Exception e) {
             return Causes.cause("Failed to install AI tools: " + e.getMessage())
@@ -76,14 +76,14 @@ public final class AiToolsInstaller {
         var installedFiles = new ArrayList<Path>();
         try{
             var resource = getClass()
-                           .getResource(resourcePath);
+                                   .getResource(resourcePath);
             if (resource == null) {
                 return Result.success(installedFiles);
             }
             if ("jar".equals(resource.getProtocol())) {
                 // Running from JAR - extract files
                 return installFromJar(resourcePath, targetDir);
-            }else {
+            } else {
                 // Running from filesystem (development)
                 return installFromFilesystem(Path.of(resource.toURI()),
                                              targetDir);
@@ -98,10 +98,10 @@ public final class AiToolsInstaller {
         var installedFiles = new ArrayList<Path>();
         try{
             var jarPath = getClass()
-                          .getProtectionDomain()
-                          .getCodeSource()
-                          .getLocation()
-                          .toURI();
+                                  .getProtectionDomain()
+                                  .getCodeSource()
+                                  .getLocation()
+                                  .toURI();
             try (var jar = new JarFile(Path.of(jarPath)
                                            .toFile())) {
                 var entries = jar.entries();

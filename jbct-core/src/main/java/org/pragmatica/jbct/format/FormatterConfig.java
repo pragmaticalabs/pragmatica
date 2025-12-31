@@ -2,19 +2,17 @@ package org.pragmatica.jbct.format;
 /**
  * Configuration for the JBCT formatter.
  */
-public record FormatterConfig(
- int maxLineLength,
- int indentSize,
- boolean useTabs,
- boolean alignChainedCalls,
- boolean alignArguments,
- boolean alignParameters,
- boolean organizeImports) {
+public record FormatterConfig(int maxLineLength,
+                              int indentSize,
+                              boolean useTabs,
+                              boolean alignChainedCalls,
+                              boolean alignArguments,
+                              boolean alignParameters,
+                              boolean organizeImports) {
     /**
      * Default JBCT formatting configuration.
      */
-    public static final FormatterConfig DEFAULT = new FormatterConfig(
-    120, 4, false, true, true, true, true);
+    public static final FormatterConfig DEFAULT = new FormatterConfig(120, 4, false, true, true, true, true);
 
     /**
      * Factory method for default config.

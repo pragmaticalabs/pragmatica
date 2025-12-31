@@ -29,32 +29,32 @@ public class CstNullReturnRule implements CstLintRule {
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         // Get package name
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         // Find all return statements that return null
         return findAll(root, RuleId.Stmt.class)
-               .stream()
-               .filter(stmt -> isReturnNull(stmt, source))
-               .map(stmt -> createDiagnostic(root, stmt, source, ctx));
+                      .stream()
+                      .filter(stmt -> isReturnNull(stmt, source))
+                      .map(stmt -> createDiagnostic(root, stmt, source, ctx));
     }
 
     private boolean isReturnNull(CstNode stmt, String source) {
         // Check if this is "return null;"
         var stmtText = text(stmt, source)
-                       .trim();
+                           .trim();
         if (!stmtText.startsWith("return")) {
             return false;
         }
         // Check if it contains "null" literal
         return findFirst(stmt, RuleId.Literal.class)
-               .map(lit -> text(lit, source)
-                           .trim())
-               .filter("null"::equals)
-               .isPresent();
+                        .map(lit -> text(lit, source)
+                                        .trim())
+                        .filter("null"::equals)
+                        .isPresent();
     }
 
     private Diagnostic createDiagnostic(CstNode root, CstNode stmt, String source, LintContext ctx) {
@@ -62,9 +62,9 @@ public class CstNullReturnRule implements CstLintRule {
         var column = startColumn(stmt);
         // Find enclosing method name
         var methodName = findAncestor(root, stmt, RuleId.MethodDecl.class)
-                         .flatMap(md -> childByRule(md, RuleId.Identifier.class))
-                         .map(id -> text(id, source))
-                         .or("(unknown)");
+                                     .flatMap(md -> childByRule(md, RuleId.Identifier.class))
+                                     .map(id -> text(id, source))
+                                     .or("(unknown)");
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),
                                      ctx.fileName(),

@@ -24,24 +24,24 @@ public class CstValueObjectFactoryRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         // Check records
         var recordDiagnostics = findAll(root, RuleId.RecordDecl.class)
-                                .stream()
-                                .filter(record -> needsFactoryMethod(record, source))
-                                .map(record -> createDiagnostic(record, source, ctx));
+                                       .stream()
+                                       .filter(record -> needsFactoryMethod(record, source))
+                                       .map(record -> createDiagnostic(record, source, ctx));
         return recordDiagnostics;
     }
 
     private boolean needsFactoryMethod(CstNode record, String source) {
         var recordName = childByRule(record, RuleId.Identifier.class)
-                         .map(id -> text(id, source))
-                         .or("");
+                                    .map(id -> text(id, source))
+                                    .or("");
         if (recordName.isEmpty()) return false;
         // Check if has Result-returning static method
         var recordText = text(record, source);
@@ -51,8 +51,8 @@ public class CstValueObjectFactoryRule implements CstLintRule {
 
     private Diagnostic createDiagnostic(CstNode record, String source, LintContext ctx) {
         var name = childByRule(record, RuleId.Identifier.class)
-                   .map(id -> text(id, source))
-                   .or("(unknown)");
+                              .map(id -> text(id, source))
+                              .or("(unknown)");
         var camelName = camelCase(name);
         return Diagnostic.diagnostic(RULE_ID,
                                      ctx.severityFor(RULE_ID),

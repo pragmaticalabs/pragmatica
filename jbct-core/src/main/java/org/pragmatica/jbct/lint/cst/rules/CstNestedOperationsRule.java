@@ -22,16 +22,20 @@ public class CstNestedOperationsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-NEST-01";
 
     // Monadic operations that shouldn't be nested
-    private static final Set<String>MONADIC_OPS = Set.of(
-    "map", "flatMap", "fold", "recover", "filter", "mapFailure", "onSuccess", "onFailure");
+    private static final Set<String>MONADIC_OPS = Set.of("map",
+                                                         "flatMap",
+                                                         "fold",
+                                                         "recover",
+                                                         "filter",
+                                                         "mapFailure",
+                                                         "onSuccess",
+                                                         "onFailure");
 
     // Pattern to find lambda with nested operations
-    private static final Pattern LAMBDA_PATTERN = Pattern.compile(
-    "->\\s*\\{?[^}]*\\.(map|flatMap|fold|recover|filter|mapFailure)\\s*\\(");
+    private static final Pattern LAMBDA_PATTERN = Pattern.compile("->\\s*\\{?[^}]*\\.(map|flatMap|fold|recover|filter|mapFailure)\\s*\\(");
 
     // Pattern to find nested chain inside lambda
-    private static final Pattern NESTED_CHAIN_PATTERN = Pattern.compile(
-    "\\)\\s*\\.(map|flatMap|fold|recover|filter)\\s*\\(");
+    private static final Pattern NESTED_CHAIN_PATTERN = Pattern.compile("\\)\\s*\\.(map|flatMap|fold|recover|filter)\\s*\\(");
 
     @Override
     public String ruleId() {
@@ -41,17 +45,17 @@ public class CstNestedOperationsRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         // Find lambdas with nested operations
         return findAll(root, RuleId.Lambda.class)
-               .stream()
-               .filter(lambda -> hasNestedOperations(lambda, source))
-               .map(lambda -> createDiagnostic(lambda, source, ctx));
+                      .stream()
+                      .filter(lambda -> hasNestedOperations(lambda, source))
+                      .map(lambda -> createDiagnostic(lambda, source, ctx));
     }
 
     private boolean hasNestedOperations(CstNode lambda, String source) {
@@ -87,14 +91,13 @@ public class CstNestedOperationsRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(CstNode lambda, String source, LintContext ctx) {
-        return Diagnostic.diagnostic(
-        RULE_ID,
-        ctx.severityFor(RULE_ID),
-        ctx.fileName(),
-        startLine(lambda),
-        startColumn(lambda),
-        "Nested monadic operations in lambda - extract to named method",
-        "Lambda bodies should be simple. Extract complex chains to a named method "
-        + "for better readability and testability.");
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(lambda),
+                                     startColumn(lambda),
+                                     "Nested monadic operations in lambda - extract to named method",
+                                     "Lambda bodies should be simple. Extract complex chains to a named method "
+                                     + "for better readability and testability.");
     }
 }

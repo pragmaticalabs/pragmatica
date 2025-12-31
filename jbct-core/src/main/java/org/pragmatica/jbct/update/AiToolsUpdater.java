@@ -47,8 +47,7 @@ public final class AiToolsUpdater {
      */
     public static AiToolsUpdater aiToolsUpdater() {
         var userHome = System.getProperty("user.home");
-        return new AiToolsUpdater(
-        HttpClients.httpOperations(), Path.of(userHome, ".claude"), Path.of(userHome, ".jbct"));
+        return new AiToolsUpdater(HttpClients.httpOperations(), Path.of(userHome, ".claude"), Path.of(userHome, ".jbct"));
     }
 
     /**
@@ -65,12 +64,12 @@ public final class AiToolsUpdater {
      */
     public Result<Option<String>> checkForUpdate() {
         return getLatestCommitSha()
-               .map(latestSha -> {
-                        var currentSha = getCurrentVersion();
-                        return currentSha.filter(sha -> sha.equals(latestSha))
-                                         .map(_ -> Option.<String>none())
-                                         .or(() -> Option.option(latestSha));
-                    });
+                                 .map(latestSha -> {
+                                          var currentSha = getCurrentVersion();
+                                          return currentSha.filter(sha -> sha.equals(latestSha))
+                                                           .map(_ -> Option.<String>none())
+                                                           .or(() -> Option.option(latestSha));
+                                      });
     }
 
     /**
@@ -90,15 +89,15 @@ public final class AiToolsUpdater {
      */
     public Result<List<Path>> update(boolean force) {
         return getLatestCommitSha()
-               .flatMap(latestSha -> {
-                            var currentSha = getCurrentVersion();
-                            var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha))
-                                                                 .isPresent();
-                            if (isUpToDate) {
-                            return Result.success(List.<Path>of());
-                        }
-                            return downloadFiles(latestSha);
-                        });
+                                 .flatMap(latestSha -> {
+                                              var currentSha = getCurrentVersion();
+                                              var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha))
+                                                                                   .isPresent();
+                                              if (isUpToDate) {
+                                                  return Result.success(List.<Path>of());
+                                              }
+                                              return downloadFiles(latestSha);
+                                          });
     }
 
     private Result<String> getLatestCommitSha() {
@@ -115,11 +114,10 @@ public final class AiToolsUpdater {
                    .flatMap(body -> {
                                 var matcher = SHA_PATTERN.matcher(body);
                                 if (matcher.find()) {
-                                return Result.success(matcher.group(1));
-                            }
-                                return new org.pragmatica.http.HttpError.InvalidResponse(
-        "Could not parse commit SHA from response",
-        org.pragmatica.lang.Option.none()).result();
+                                    return Result.success(matcher.group(1));
+                                }
+                                return new org.pragmatica.http.HttpError.InvalidResponse("Could not parse commit SHA from response",
+                                                                                         org.pragmatica.lang.Option.none()).result();
                             });
     }
 
@@ -135,13 +133,13 @@ public final class AiToolsUpdater {
             for (var file : SKILL_FILES) {
                 var targetPath = claudeDir.resolve(file);
                 downloadFile(file, targetPath)
-                .onSuccess(downloadedFiles::add);
+                            .onSuccess(downloadedFiles::add);
             }
             // Download agent files
             for (var file : AGENT_FILES) {
                 var targetPath = agentsDir.resolve(file);
                 downloadFile(file, targetPath)
-                .onSuccess(downloadedFiles::add);
+                            .onSuccess(downloadedFiles::add);
             }
             // Save version
             saveCurrentVersion(commitSha);
@@ -165,13 +163,13 @@ public final class AiToolsUpdater {
                    .flatMap(HttpResult::toResult)
                    .flatMap(content -> {
                                 try{
-                                Files.createDirectories(targetPath.getParent());
-                                Files.writeString(targetPath, content);
-                                return Result.success(targetPath);
-                            } catch (IOException e) {
-                                return Causes.cause("Failed to write " + targetPath + ": " + e.getMessage())
-                                             .result();
-                            }
+                                    Files.createDirectories(targetPath.getParent());
+                                    Files.writeString(targetPath, content);
+                                    return Result.success(targetPath);
+                                } catch (IOException e) {
+                                    return Causes.cause("Failed to write " + targetPath + ": " + e.getMessage())
+                                                 .result();
+                                }
                             });
     }
 

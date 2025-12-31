@@ -48,7 +48,7 @@ public class CstLinter {
      */
     public Result<List<Diagnostic>> lint(SourceFile source) {
         return parse(source)
-               .map(cst -> analyzeWithRules(cst, source));
+                    .map(cst -> analyzeWithRules(cst, source));
     }
 
     /**
@@ -56,7 +56,7 @@ public class CstLinter {
      */
     public Result<Boolean> check(SourceFile source) {
         return lint(source)
-               .map(this::passesLintRules);
+                   .map(this::passesLintRules);
     }
 
     private boolean passesLintRules(List<Diagnostic> diagnostics) {
@@ -110,8 +110,7 @@ public class CstLinter {
     }
 
     private static List<CstLintRule> defaultRules() {
-        return List.of(
-        // Return kinds (JBCT-RET-*)
+        return List.of(// Return kinds (JBCT-RET-*)
         new CstReturnKindRule(),
         // JBCT-RET-01
         new CstNestedWrapperRule(),

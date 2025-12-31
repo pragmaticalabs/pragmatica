@@ -24,8 +24,7 @@ public class CstParsingUtilitiesRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-UTIL-01";
 
     // Map of JDK parsing patterns to Pragmatica alternatives
-    private static final List<ParsingPattern>PATTERNS = List.of(
-    // Number parsing
+    private static final List<ParsingPattern>PATTERNS = List.of(// Number parsing
     new ParsingPattern("Integer\\.parseInt", "Number.parseInt", "org.pragmatica.lang.utils.Number"),
     new ParsingPattern("Integer\\.parseUnsignedInt", "Number.parseInt", "org.pragmatica.lang.utils.Number"),
     new ParsingPattern("Long\\.parseLong", "Number.parseLong", "org.pragmatica.lang.utils.Number"),
@@ -91,15 +90,15 @@ public class CstParsingUtilitiesRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         return findAll(root, RuleId.MethodDecl.class)
-               .stream()
-               .flatMap(method -> findJdkParsing(method, source, ctx));
+                      .stream()
+                      .flatMap(method -> findJdkParsing(method, source, ctx));
     }
 
     private Stream<Diagnostic> findJdkParsing(CstNode method, String source, LintContext ctx) {
@@ -137,15 +136,14 @@ public class CstParsingUtilitiesRule implements CstLintRule {
     }
 
     private Diagnostic createDiagnostic(CstNode node, ParsingPattern pattern, LintContext ctx) {
-        return Diagnostic.diagnostic(
-        RULE_ID,
-        ctx.severityFor(RULE_ID),
-        ctx.fileName(),
-        startLine(node),
-        startColumn(node),
-        "Use " + pattern.pragmaticaMethod() + "() instead of JDK parsing",
-        "Pragmatica parsing utilities return Result<T> for composable error handling. " + "Import from " + pattern.importPath()
-        + ".");
+        return Diagnostic.diagnostic(RULE_ID,
+                                     ctx.severityFor(RULE_ID),
+                                     ctx.fileName(),
+                                     startLine(node),
+                                     startColumn(node),
+                                     "Use " + pattern.pragmaticaMethod() + "() instead of JDK parsing",
+                                     "Pragmatica parsing utilities return Result<T> for composable error handling. "
+                                     + "Import from " + pattern.importPath() + ".");
     }
 
     private record ParsingPattern(String jdkPattern, String pragmaticaMethod, String importPath) {}

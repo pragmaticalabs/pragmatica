@@ -20,8 +20,10 @@ public class CstReturnKindRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-01";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";
 
-    private static final Set<String>FORBIDDEN_TYPES = Set.of(
-    "Optional", "CompletableFuture", "Future", "CompletionStage");
+    private static final Set<String>FORBIDDEN_TYPES = Set.of("Optional",
+                                                             "CompletableFuture",
+                                                             "Future",
+                                                             "CompletionStage");
 
     @Override
     public String ruleId() {
@@ -31,24 +33,24 @@ public class CstReturnKindRule implements CstLintRule {
     @Override
     public Stream<Diagnostic> analyze(CstNode root, String source, LintContext ctx) {
         var packageName = findFirst(root, RuleId.PackageDecl.class)
-                          .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
-                          .map(qn -> text(qn, source))
-                          .or("");
+                                   .flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
+                                   .map(qn -> text(qn, source))
+                                   .or("");
         if (!ctx.isBusinessPackage(packageName)) {
             return Stream.empty();
         }
         return findAll(root, RuleId.MethodDecl.class)
-               .stream()
-               .filter(method -> !isPrivateMethod(method, root, source))
-               .flatMap(method -> checkMethod(method, source, ctx));
+                      .stream()
+                      .filter(method -> !isPrivateMethod(method, root, source))
+                      .flatMap(method -> checkMethod(method, source, ctx));
     }
 
     private boolean isPrivateMethod(CstNode method, CstNode root, String source) {
         // Find the ClassMember ancestor which contains the Modifier
         return findAncestor(root, method, RuleId.ClassMember.class)
-               .map(cm -> text(cm, source)
-                          .contains("private "))
-               .or(false);
+                           .map(cm -> text(cm, source)
+                                          .contains("private "))
+                           .or(false);
     }
 
     private Stream<Diagnostic> checkMethod(CstNode method, String source, LintContext ctx) {
@@ -59,10 +61,10 @@ public class CstReturnKindRule implements CstLintRule {
         }
         var typeText = text(returnType.getOrThrow("Return type expected"),
                             source)
-                       .trim();
+                           .trim();
         var methodName = childByRule(method, RuleId.Identifier.class)
-                         .map(id -> text(id, source))
-                         .or("(unknown)");
+                                    .map(id -> text(id, source))
+                                    .or("(unknown)");
         // Check for void
         if (typeText.equals("void")) {
             return Stream.of(createVoidDiagnostic(method, methodName, ctx));

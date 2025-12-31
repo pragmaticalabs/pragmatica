@@ -16,22 +16,20 @@ import java.util.stream.Collectors;
  * Unified configuration for JBCT tools.
  * Combines formatter and linter configuration with project settings.
  */
-public record JbctConfig(
- FormatterConfig formatter,
- LintConfig lint,
- List<String> sourceDirectories,
- List<String> businessPackages,
- List<String> slicePackages) {
+public record JbctConfig(FormatterConfig formatter,
+                         LintConfig lint,
+                         List<String> sourceDirectories,
+                         List<String> businessPackages,
+                         List<String> slicePackages) {
     /**
      * Default configuration.
      * Note: slicePackages is empty by default - must be configured for JBCT-SLICE-01 rule.
      */
-    public static final JbctConfig DEFAULT = new JbctConfig(
-    FormatterConfig.DEFAULT,
-    LintConfig.DEFAULT,
-    List.of("src/main/java"),
-    List.of("**.usecase.**", "**.domain.**"),
-    List.of());
+    public static final JbctConfig DEFAULT = new JbctConfig(FormatterConfig.DEFAULT,
+                                                            LintConfig.DEFAULT,
+                                                            List.of("src/main/java"),
+                                                            List.of("**.usecase.**", "**.domain.**"),
+                                                            List.of());
 
     /**
      * Create config from parsed TOML document.
@@ -79,8 +77,7 @@ public record JbctConfig(
                 }
             }
         }
-        var lintConfig = new LintConfig(
-        Map.copyOf(ruleSeverities), Set.copyOf(disabledRules), failOnWarning);
+        var lintConfig = new LintConfig(Map.copyOf(ruleSeverities), Set.copyOf(disabledRules), failOnWarning);
         // Project section
         var sourceDirectories = toml.getStringList("project", "sourceDirectories")
                                     .or(List.of("src/main/java"));
@@ -185,7 +182,7 @@ public record JbctConfig(
                     .contains(entry.getKey())) {
                 sb.append(entry.getKey())
                   .append(" = \"off\"\n");
-            }else {
+            } else {
                 sb.append(entry.getKey())
                   .append(" = \"")
                   .append(entry.getValue()
