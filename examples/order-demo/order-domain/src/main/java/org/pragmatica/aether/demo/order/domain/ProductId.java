@@ -15,7 +15,7 @@ public record ProductId(String value) {
 
     public static Result<ProductId> productId(String raw) {
         return Verify.ensure(raw, Verify.Is::notBlank)
-                     .flatMap(Verify.ensureFn(INVALID_PRODUCT_ID, Verify.Is::matches, PRODUCT_ID_PATTERN))
+                     .flatMap(v -> Verify.ensure(v, Verify.Is::matches, PRODUCT_ID_PATTERN, INVALID_PRODUCT_ID))
                      .map(ProductId::new);
     }
 }

@@ -16,7 +16,7 @@ public record OrderId(String value) {
 
     public static Result<OrderId> orderId(String raw) {
         return Verify.ensure(raw, Verify.Is::notBlank)
-                     .flatMap(Verify.ensureFn(INVALID_ORDER_ID, Verify.Is::matches, ORDER_ID_PATTERN))
+                     .flatMap(v -> Verify.ensure(v, Verify.Is::matches, ORDER_ID_PATTERN, INVALID_ORDER_ID))
                      .map(OrderId::new);
     }
 

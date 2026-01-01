@@ -15,7 +15,7 @@ public record CustomerId(String value) {
 
     public static Result<CustomerId> customerId(String raw) {
         return Verify.ensure(raw, Verify.Is::notBlank)
-                     .flatMap(Verify.ensureFn(INVALID_CUSTOMER_ID, Verify.Is::matches, CUSTOMER_ID_PATTERN))
+                     .flatMap(v -> Verify.ensure(v, Verify.Is::matches, CUSTOMER_ID_PATTERN, INVALID_CUSTOMER_ID))
                      .map(CustomerId::new);
     }
 }
