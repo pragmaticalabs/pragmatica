@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Aether (v0.6.2) is a clusterized runtime environment built on Pragmatica Lite that transforms monolithic applications
+Aether (v0.6.4) is a clusterized runtime environment built on Pragmatica Lite that transforms monolithic applications
 into distributed systems transparently. The runtime absorbs complexity instead of adding weight to applications.
 
 ## Core Concept

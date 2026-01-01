@@ -41,7 +41,7 @@ import picocli.CommandLine.Parameters;
  */
 @Command(name = "aether",
  mixinStandardHelpOptions = true,
- version = "Aether 0.6.3",
+ version = "Aether 0.6.4",
  description = "Command-line interface for Aether cluster management",
  subcommands = {AetherCli.StatusCommand.class,
  AetherCli.NodesCommand.class,
@@ -52,7 +52,8 @@ import picocli.CommandLine.Parameters;
  AetherCli.ScaleCommand.class,
  AetherCli.UndeployCommand.class,
  AetherCli.BlueprintCommand.class,
- AetherCli.ArtifactCommand.class})
+ AetherCli.ArtifactCommand.class,
+ AetherCli.UpdateCommand.class})
 public class AetherCli implements Runnable {
     @Option(names = {"-c", "--connect"},
     description = "Node address to connect to (host:port)",
@@ -84,7 +85,7 @@ public class AetherCli implements Runnable {
     }
 
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v0.6.3 - Connected to " + nodeAddress);
+        System.out.println("Aether v0.6.4 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
@@ -439,6 +440,177 @@ public class AetherCli implements Runnable {
                     System.err.println("Error reading blueprint file: " + e.getMessage());
                     return 1;
                 }
+            }
+        }
+    }
+
+    @Command(name = "update",
+    description = "Rolling update management",
+    subcommands = {UpdateCommand.StartCommand.class,
+    UpdateCommand.StatusCommand.class,
+    UpdateCommand.ListCommand.class,
+    UpdateCommand.RoutingCommand.class,
+    UpdateCommand.ApproveCommand.class,
+    UpdateCommand.CompleteCommand.class,
+    UpdateCommand.RollbackCommand.class,
+    UpdateCommand.HealthCommand.class})
+    static class UpdateCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "start", description = "Start a rolling update")
+        static class StartCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private UpdateCommand updateParent;
+
+            @Parameters(index = "0", description = "Artifact base (group:artifact)")
+            private String artifactBase;
+
+            @Parameters(index = "1", description = "New version to deploy")
+            private String version;
+
+            @Option(names = {"-n", "--instances"}, description = "Number of new version instances", defaultValue = "1")
+            private int instances;
+
+            @Option(names = {"--error-rate"}, description = "Max error rate threshold (0.0-1.0)", defaultValue = "0.01")
+            private double errorRate;
+
+            @Option(names = {"--latency"}, description = "Max latency threshold in ms", defaultValue = "500")
+            private long latencyMs;
+
+            @Option(names = {"--manual-approval"}, description = "Require manual approval for routing changes")
+            private boolean manualApproval;
+
+            @Option(names = {"--cleanup"}, description = "Cleanup policy: IMMEDIATE, GRACE_PERIOD, MANUAL", defaultValue = "GRACE_PERIOD")
+            private String cleanupPolicy;
+
+            @Override
+            public Integer call() {
+                var body = "{\"artifactBase\":\"" + artifactBase + "\"," + "\"version\":\"" + version + "\","
+                           + "\"instances\":" + instances + "," + "\"maxErrorRate\":" + errorRate + ","
+                           + "\"maxLatencyMs\":" + latencyMs + "," + "\"requireManualApproval\":" + manualApproval
+                           + "," + "\"cleanupPolicy\":\"" + cleanupPolicy + "\"}";
+                var response = updateParent.parent.postToNode("/rolling-update/start", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "status", description = "Get rolling update status")
+        static class StatusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private UpdateCommand updateParent;
+
+            @Parameters(index = "0", description = "Update ID")
+            private String updateId;
+
+            @Override
+            public Integer call() {
+                var response = updateParent.parent.fetchFromNode("/rolling-update/" + updateId);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "list", description = "List active rolling updates")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private UpdateCommand updateParent;
+
+            @Override
+            public Integer call() {
+                var response = updateParent.parent.fetchFromNode("/rolling-updates");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "routing", description = "Adjust traffic routing between versions")
+        static class RoutingCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private UpdateCommand updateParent;
+
+            @Parameters(index = "0", description = "Update ID")
+            private String updateId;
+
+            @Option(names = {"-r", "--ratio"}, description = "Traffic ratio new:old (e.g., 1:3)", required = true)
+            private String ratio;
+
+            @Override
+            public Integer call() {
+                var body = "{\"routing\":\"" + ratio + "\"}";
+                var response = updateParent.parent.postToNode("/rolling-update/" + updateId + "/routing", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "approve", description = "Manually approve current routing configuration")
+        static class ApproveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private UpdateCommand updateParent;
+
+            @Parameters(index = "0", description = "Update ID")
+            private String updateId;
+
+            @Override
+            public Integer call() {
+                var response = updateParent.parent.postToNode("/rolling-update/" + updateId + "/approve", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "complete", description = "Complete rolling update (all traffic to new version)")
+        static class CompleteCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private UpdateCommand updateParent;
+
+            @Parameters(index = "0", description = "Update ID")
+            private String updateId;
+
+            @Override
+            public Integer call() {
+                var response = updateParent.parent.postToNode("/rolling-update/" + updateId + "/complete", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "rollback", description = "Rollback to old version")
+        static class RollbackCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private UpdateCommand updateParent;
+
+            @Parameters(index = "0", description = "Update ID")
+            private String updateId;
+
+            @Override
+            public Integer call() {
+                var response = updateParent.parent.postToNode("/rolling-update/" + updateId + "/rollback", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "health", description = "Show version health metrics")
+        static class HealthCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private UpdateCommand updateParent;
+
+            @Parameters(index = "0", description = "Update ID")
+            private String updateId;
+
+            @Override
+            public Integer call() {
+                var response = updateParent.parent.fetchFromNode("/rolling-update/" + updateId + "/health");
+                System.out.println(formatJson(response));
+                return 0;
             }
         }
     }

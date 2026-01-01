@@ -1,14 +1,17 @@
 package org.pragmatica.aether.endpoint;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
-import org.pragmatica.consensus.NodeId;
+import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 
@@ -52,6 +55,38 @@ public interface EndpointRegistry {
      * Returns empty if no endpoints available.
      */
     Option<Endpoint> selectEndpoint(Artifact artifact, MethodName methodName);
+
+    /**
+     * Select an endpoint with version-aware weighted routing.
+     *
+     * <p>Used during rolling updates to route traffic according to the
+     * configured ratio between old and new versions.
+     *
+     * <p>Algorithm:
+     * <ol>
+     *   <li>Find all endpoints for the artifact base (any version)</li>
+     *   <li>Group by version (old vs new)</li>
+     *   <li>Scale routing ratio to available instance counts</li>
+     *   <li>Use weighted round-robin to select endpoint</li>
+     * </ol>
+     *
+     * @param artifactBase the artifact (version-agnostic)
+     * @param methodName the method to invoke
+     * @param routing the version routing configuration
+     * @param oldVersion the old version
+     * @param newVersion the new version
+     * @return selected endpoint, or empty if none available
+     */
+    Option<Endpoint> selectEndpointWithRouting(ArtifactBase artifactBase,
+                                               MethodName methodName,
+                                               VersionRouting routing,
+                                               Version oldVersion,
+                                               Version newVersion);
+
+    /**
+     * Find all endpoints for a given artifact base (any version).
+     */
+    List<Endpoint> findEndpointsForBase(ArtifactBase artifactBase, MethodName methodName);
 
     /**
      * Get all registered endpoints (for monitoring/debugging).
@@ -138,8 +173,89 @@ public interface EndpointRegistry {
             }
 
             @Override
+            public Option<Endpoint> selectEndpointWithRouting(ArtifactBase artifactBase,
+                                                              MethodName methodName,
+                                                              VersionRouting routing,
+                                                              Version oldVersion,
+                                                              Version newVersion) {
+                // Find all endpoints for this artifact base
+                var allEndpoints = findEndpointsForBase(artifactBase, methodName);
+                if (allEndpoints.isEmpty()) {
+                    return Option.none();
+                }
+                // Group by version
+                var oldEndpoints = allEndpoints.stream()
+                                               .filter(e -> e.artifact()
+                                                             .version()
+                                                             .equals(oldVersion))
+                                               .sorted(Comparator.comparing(e -> e.nodeId()
+                                                                                  .id()))
+                                               .toList();
+                var newEndpoints = allEndpoints.stream()
+                                               .filter(e -> e.artifact()
+                                                             .version()
+                                                             .equals(newVersion))
+                                               .sorted(Comparator.comparing(e -> e.nodeId()
+                                                                                  .id()))
+                                               .toList();
+                // Handle edge cases
+                if (routing.isAllOld() || newEndpoints.isEmpty()) {
+                    return selectFromList(oldEndpoints,
+                                          artifactBase.asString() + "/old/" + methodName.name());
+                }
+                if (routing.isAllNew() || oldEndpoints.isEmpty()) {
+                    return selectFromList(newEndpoints,
+                                          artifactBase.asString() + "/new/" + methodName.name());
+                }
+                // Scale routing to available instances
+                var scaled = routing.scaleToInstances(newEndpoints.size(), oldEndpoints.size());
+                if (scaled == null) {
+                    // Cannot satisfy ratio, fall back to old version
+                    log.warn("Cannot satisfy routing {} with {} new and {} old instances, falling back to old",
+                             routing,
+                             newEndpoints.size(),
+                             oldEndpoints.size());
+                    return selectFromList(oldEndpoints,
+                                          artifactBase.asString() + "/old/" + methodName.name());
+                }
+                // Weighted round-robin: cycle through scaled[0] new + scaled[1] old
+                int totalWeight = scaled[0] + scaled[1];
+                var lookupKey = artifactBase.asString() + "/weighted/" + methodName.name();
+                var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
+                var position = (counter.getAndIncrement() & 0x7FFFFFFF) % totalWeight;
+                if (position < scaled[0]) {
+                    // Route to new version
+                    var index = position % newEndpoints.size();
+                    return Option.option(newEndpoints.get(index));
+                }else {
+                    // Route to old version
+                    var index = (position - scaled[0]) % oldEndpoints.size();
+                    return Option.option(oldEndpoints.get(index));
+                }
+            }
+
+            @Override
+            public List<Endpoint> findEndpointsForBase(ArtifactBase artifactBase, MethodName methodName) {
+                return endpoints.values()
+                                .stream()
+                                .filter(e -> artifactBase.matches(e.artifact()) &&
+                e.methodName()
+                 .equals(methodName))
+                                .toList();
+            }
+
+            @Override
             public List<Endpoint> allEndpoints() {
                 return List.copyOf(endpoints.values());
+            }
+
+            private Option<Endpoint> selectFromList(List<Endpoint> available, String lookupKey) {
+                if (available.isEmpty()) {
+                    return Option.none();
+                }
+                var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
+                var index = (counter.getAndIncrement() & 0x7FFFFFFF) % available.size();
+                return Option.option(available.get(index));
             }
         }
         return new endpointRegistry(

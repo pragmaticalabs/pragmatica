@@ -194,8 +194,35 @@ Pure event-driven component that:
 - Maintains local cache of all cluster endpoints
 - Provides endpoint discovery for remote slice calls
 - Supports round-robin load balancing for endpoint selection
+- Supports weighted routing for rolling updates via `selectEndpointWithRouting()`
 
 **Note**: Slices automatically publish/unpublish endpoints via consensus - no manual coordination needed.
+
+### RollingUpdateManager
+
+**Status**: ✅ Implemented (interface)
+**Location**: `node/src/main/java/org/pragmatica/aether/update/RollingUpdateManager.java`
+
+Manages rolling update operations with two-stage deployment model:
+
+- **Stage 1 - Deploy**: Deploy new version instances with 0% traffic
+- **Stage 2 - Route**: Gradually shift traffic via ratio-based routing
+
+Key operations:
+- `startUpdate()` - Start rolling update, deploy new version instances
+- `adjustRouting()` - Change traffic ratio (e.g., 1:3 = 25% new)
+- `approveRouting()` - Manual approval for routing changes
+- `completeUpdate()` - Finalize update, cleanup old version
+- `rollback()` - Revert to old version
+
+**State Machine**:
+```
+PENDING → DEPLOYING → DEPLOYED → ROUTING → VALIDATING → COMPLETING → COMPLETED
+                                    ↓                         ↓
+                              ROLLING_BACK              ROLLED_BACK
+                                    ↓
+                                 FAILED
+```
 
 ## Deployment Flow
 
@@ -275,6 +302,35 @@ endpoints/{group-id}:{artifact-id}:{version}/{method-name}:{instance} → {
   "instance": 1,
   "state": "ACTIVE",
   "timestamp": 1234567890
+}
+```
+
+### Rolling Update Schema
+
+```
+version-routing/{group-id}:{artifact-id} → {
+  "oldVersion": "1.0.0",
+  "newVersion": "2.0.0",
+  "newWeight": 1,
+  "oldWeight": 3,
+  "updatedAt": 1234567890
+}
+
+rolling-update/{update-id} → {
+  "updateId": "abc123",
+  "artifactBase": "org.example:order-processor",
+  "oldVersion": "1.0.0",
+  "newVersion": "2.0.0",
+  "state": "ROUTING",
+  "newWeight": 1,
+  "oldWeight": 3,
+  "newInstances": 3,
+  "maxErrorRate": 0.01,
+  "maxLatencyMs": 500,
+  "requireManualApproval": false,
+  "cleanupPolicy": "GRACE_PERIOD",
+  "createdAt": 1234567890,
+  "updatedAt": 1234567890
 }
 ```
 
@@ -368,10 +424,16 @@ See [metrics-and-control.md](metrics-and-control.md) for message definitions:
 4. HTTP Router for external requests ✅
 5. Management API ✅
 
-### Phase 3: AI Integration (Current)
+### Phase 3: AI Integration ✅
 
 1. Decision tree controller (Layer 1) ✅
-2. CLI polish and agent API documentation (in progress)
+2. CLI polish and agent API documentation ✅
+3. Rolling updates with weighted routing ✅
+
+### Phase 4: Container & Testing (Current)
+
+1. Docker container infrastructure ✅
+2. E2E testing with Testcontainers ✅
 3. SLM integration (Layer 2) - planned
 4. LLM integration (Layer 3) - planned
 

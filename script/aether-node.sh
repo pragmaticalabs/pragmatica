@@ -32,7 +32,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-JAR_FILE="$PROJECT_DIR/node/target/node-0.6.3-SNAPSHOT.jar"
+JAR_FILE="$PROJECT_DIR/node/target/node-0.6.4-SNAPSHOT.jar"
 
 if [ ! -f "$JAR_FILE" ]; then
     echo "Node JAR not found. Building..."

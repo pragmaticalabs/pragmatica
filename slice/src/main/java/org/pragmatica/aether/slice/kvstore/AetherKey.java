@@ -1,11 +1,12 @@
 package org.pragmatica.aether.slice.kvstore;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.cluster.state.kvstore.StructuredPattern;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
@@ -237,11 +238,96 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Version routing key format:
+    /// ```
+    /// version-routing/{groupId}:{artifactId}
+    /// ```
+    /// Stores routing configuration between old and new versions during rolling updates.
+    record VersionRoutingKey(ArtifactBase artifactBase) implements AetherKey {
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.VersionRoutingPattern versionRoutingPattern -> versionRoutingPattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return "version-routing/" + artifactBase.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static VersionRoutingKey versionRoutingKey(ArtifactBase artifactBase) {
+            return new VersionRoutingKey(artifactBase);
+        }
+
+        public static Result<VersionRoutingKey> versionRoutingKey(String key) {
+            if (!key.startsWith("version-routing/")) {
+                return VERSION_ROUTING_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
+            }
+            var artifactBasePart = key.substring(16);
+            // Remove "version-routing/"
+            return ArtifactBase.artifactBase(artifactBasePart)
+                               .map(VersionRoutingKey::new);
+        }
+    }
+
+    /// Rolling update key format:
+    /// ```
+    /// rolling-update/{updateId}
+    /// ```
+    /// Stores rolling update state for tracking update progress.
+    record RollingUpdateKey(String updateId) implements AetherKey {
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.RollingUpdatePattern rollingUpdatePattern -> rollingUpdatePattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return "rolling-update/" + updateId;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static RollingUpdateKey rollingUpdateKey(String updateId) {
+            return new RollingUpdateKey(updateId);
+        }
+
+        public static Result<RollingUpdateKey> parse(String key) {
+            if (!key.startsWith("rolling-update/")) {
+                return ROLLING_UPDATE_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            var updateId = key.substring(15);
+            // Remove "rolling-update/"
+            if (updateId.isEmpty()) {
+                return ROLLING_UPDATE_KEY_FORMAT_ERROR.apply(key)
+                                                      .result();
+            }
+            return Result.success(new RollingUpdateKey(updateId));
+        }
+    }
+
     Fn1<Cause, String>BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint key format: %s");
     Fn1<Cause, String>APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
     Fn1<Cause, String>SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");
     Fn1<Cause, String>ENDPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid endpoint key format: %s");
     Fn1<Cause, String>ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid route key format: %s");
+    Fn1<Cause, String>VERSION_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid version-routing key format: %s");
+    Fn1<Cause, String>ROLLING_UPDATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid rolling-update key format: %s");
 
     /// Aether KV-Store structured patterns for key matching
     sealed interface AetherKeyPattern extends StructuredPattern {
@@ -276,6 +362,20 @@ public sealed interface AetherKey extends StructuredKey {
         /// Pattern for route keys: routes/*
         record RoutePattern() implements AetherKeyPattern {
             public boolean matches(RouteKey key) {
+                return true;
+            }
+        }
+
+        /// Pattern for version-routing keys: version-routing/*
+        record VersionRoutingPattern() implements AetherKeyPattern {
+            public boolean matches(VersionRoutingKey key) {
+                return true;
+            }
+        }
+
+        /// Pattern for rolling-update keys: rolling-update/*
+        record RollingUpdatePattern() implements AetherKeyPattern {
+            public boolean matches(RollingUpdateKey key) {
                 return true;
             }
         }

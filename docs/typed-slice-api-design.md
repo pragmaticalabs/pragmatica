@@ -905,7 +905,7 @@ impl.interface=org.example.inventory.InventoryService
 generated.timestamp=2025-01-15T10:30:00Z
 
 # Processor version
-processor.version=0.6.2
+processor.version=0.6.4
 ```
 
 ---

@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>aether</artifactId>
-    <version>0.6.3</version>
+    <version>0.6.4</version>
     <packaging>pom</packaging>
     <name>Pragmatica Aether Distributed Runtime</name>
     <description>AI-driven distributed runtime environment for Java applications</description>
@@ -29,6 +29,7 @@
         <module>examples/order-demo</module>
         <module>forge</module>
         <module>infra-services</module>
+        <module>e2e-tests</module>
     </modules>
 
     <properties>
@@ -40,13 +41,14 @@
         <junit.version>5.13.4</junit.version>
         <assertj-core.version>3.26.3</assertj-core.version>
         <mockito.version>5.14.2</mockito.version>
-        <pragmatica.version>0.9.2</pragmatica.version>
+        <pragmatica.version>0.9.3</pragmatica.version>
         <awaitility.version>4.2.1</awaitility.version>
         <tinylog.version>2.7.0</tinylog.version>
         <netty.version>4.2.9.Final</netty.version>
         <kryo.version>5.6.2</kryo.version>
         <fury-core.version>0.10.2</fury-core.version>
         <jbct.version>0.4.2</jbct.version>
+        <micrometer.version>1.16.1</micrometer.version>
     </properties>
 
     <dependencyManagement>
@@ -110,6 +112,21 @@
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>serialization-fury</artifactId>
                 <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>micrometer</artifactId>
+                <version>${pragmatica.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.micrometer</groupId>
+                <artifactId>micrometer-core</artifactId>
+                <version>${micrometer.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.micrometer</groupId>
+                <artifactId>micrometer-registry-prometheus</artifactId>
+                <version>${micrometer.version}</version>
             </dependency>
 
             <!-- Internal -->

@@ -20,6 +20,13 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.NewBatch;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous.SyncRequest;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Decision;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.Propose;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.SyncResponse;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound1;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound2;
 import org.pragmatica.cluster.topology.ip.TcpTopologyManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
@@ -92,6 +99,15 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         router.addRoute(NodeRemoved.class, leaderManager::nodeRemoved);
         router.addRoute(NodeDown.class, leaderManager::nodeDown);
         router.addRoute(QuorumStateNotification.class, leaderManager::watchQuorumState);
+        router.addRoute(QuorumStateNotification.class, consensus::quorumState);
+        // Rabia protocol message routes
+        router.addRoute(Propose.class, consensus::processPropose);
+        router.addRoute(VoteRound1.class, consensus::processVoteRound1);
+        router.addRoute(VoteRound2.class, consensus::processVoteRound2);
+        router.addRoute(Decision.class, consensus::processDecision);
+        router.addRoute(SyncResponse.class, consensus::processSyncResponse);
+        router.addRoute(SyncRequest.class, consensus::handleSyncRequest);
+        router.addRoute(NewBatch.class, consensus::handleNewBatch);
         // NetworkManagementOperation routes
         router.addRoute(ConnectNode.class, network::connect);
         router.addRoute(DisconnectNode.class, network::disconnect);

@@ -211,6 +211,61 @@ Apply it:
 aether blueprint apply order-system.toml
 ```
 
+#### update
+
+Rolling update management for zero-downtime deployments:
+
+```bash
+# Start a rolling update
+aether update start <group:artifact> <version> [options]
+
+# Options:
+#   -n, --instances <n>      Number of new version instances (default: 1)
+#   --error-rate <rate>      Max error rate threshold 0.0-1.0 (default: 0.01)
+#   --latency <ms>           Max latency threshold in ms (default: 500)
+#   --manual-approval        Require manual approval for routing changes
+#   --cleanup <policy>       IMMEDIATE, GRACE_PERIOD, MANUAL (default: GRACE_PERIOD)
+
+# Get update status
+aether update status <updateId>
+
+# List active updates
+aether update list
+
+# Adjust traffic routing (ratio new:old)
+aether update routing <updateId> -r <ratio>
+
+# Manually approve routing configuration
+aether update approve <updateId>
+
+# Complete update (all traffic to new version)
+aether update complete <updateId>
+
+# Rollback to old version
+aether update rollback <updateId>
+
+# View version health metrics
+aether update health <updateId>
+```
+
+Example rolling update workflow:
+```bash
+# Start update: deploy 3 instances of v2.0.0 with 0% traffic
+aether update start org.example:order-processor 2.0.0 -n 3
+
+# Gradually shift traffic
+aether update routing abc123 -r 1:3    # 25% new, 75% old
+aether update routing abc123 -r 1:1    # 50% new, 50% old
+aether update routing abc123 -r 3:1    # 75% new, 25% old
+aether update routing abc123 -r 1:0    # 100% new
+
+# Complete and cleanup old version
+aether update complete abc123
+
+# Or rollback if issues detected
+aether update rollback abc123
+```
+
 ### REPL Mode
 
 Start interactive mode by omitting the command:
@@ -218,7 +273,7 @@ Start interactive mode by omitting the command:
 ```bash
 ./script/aether.sh --connect localhost:8080
 
-Aether v0.6.2 - Connected to localhost:8080
+Aether v0.6.4 - Connected to localhost:8080
 Type 'help' for available commands, 'exit' to quit.
 
 aether> status

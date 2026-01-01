@@ -20,8 +20,7 @@ public interface CustomClasses {
         concreteSubtypes(KVCommand.class)
         .forEach(consumer);
         consumer.accept(HashMap.class);
-        consumer.accept(RabiaPersistence.SavedState.empty()
-                                        .getClass());
+        consumer.accept(RabiaPersistence.SavedState.class);
         consumer.accept(NodeId.class);
         consumer.accept(BatchId.class);
         consumer.accept(CorrelationId.class);

@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Pragmatica Aether Distributed Runtime** (v0.6.3) is an AI-driven distributed runtime environment for Java that enables predictive scaling,
+**Pragmatica Aether Distributed Runtime** (v0.6.4) is an AI-driven distributed runtime environment for Java that enables predictive scaling,
 intelligent orchestration, and seamless multi-cloud deployment without requiring changes to business logic.
 
 **See [docs/vision-and-goals.md](docs/vision-and-goals.md) for complete vision and design principles.**
@@ -95,7 +95,7 @@ Maven-style coordinates for slices:
 
 ```java
 // Format: groupId:artifactId:version[-qualifier]
-Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.6.3")
+Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.6.4")
 ```
 
 **Components**:

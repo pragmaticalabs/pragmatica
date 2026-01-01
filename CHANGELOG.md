@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.4] - 2026-01-01
+
+### Added
+- **Docker container infrastructure** - Separate Dockerfiles for aether-node and aether-forge with Alpine base
+- **docker-compose.yml** - 3-node cluster configuration with health checks and optional Forge profile
+- **E2E testing module** - Testcontainers-based E2E tests for cluster formation, deployment, and chaos scenarios
+- **AetherNodeContainer** - Testcontainer wrapper with API helpers for E2E tests
+- **AetherCluster** - Multi-node cluster helper for managing N-node clusters in tests
+- **CI workflow enhancements** - E2E tests job (main or `[e2e]` tag) and Docker build/push to ghcr.io
+- **Rolling update system** - Two-stage deployment model (deploy then route) for zero-downtime updates
+  - `ArtifactBase` - Version-agnostic artifact identifier for rolling updates
+  - `RollingUpdateState` - State machine with 10 states (PENDING → COMPLETED/ROLLED_BACK/FAILED)
+  - `VersionRouting` - Ratio-based traffic routing between versions (e.g., 1:3 = 25% new)
+  - `HealthThresholds` - Configurable error rate and latency thresholds for auto-progression
+  - `CleanupPolicy` - IMMEDIATE, GRACE_PERIOD (5min), or MANUAL cleanup of old versions
+  - `RollingUpdateManager` - Interface for start/adjust/approve/complete/rollback operations
+- **Weighted endpoint routing** - `EndpointRegistry.selectEndpointWithRouting()` with weighted round-robin
+- **Rolling update API endpoints** - REST API for rolling update management
+  - `POST /rolling-update/start` - Start new rolling update
+  - `GET /rolling-updates` - List active updates
+  - `GET /rolling-update/{id}` - Get update status
+  - `POST /rolling-update/{id}/routing` - Adjust traffic ratio
+  - `POST /rolling-update/{id}/approve` - Manual approval
+  - `POST /rolling-update/{id}/complete` - Complete update
+  - `POST /rolling-update/{id}/rollback` - Rollback to old version
+  - `GET /rolling-update/{id}/health` - Version health metrics
+- **Rolling update CLI commands** - `aether update` command group
+  - `update start <artifact> <version>` - Start rolling update with health thresholds
+  - `update status <id>` - Get update status
+  - `update list` - List active updates
+  - `update routing <id> -r <ratio>` - Adjust traffic routing
+  - `update approve/complete/rollback <id>` - Update lifecycle operations
+  - `update health <id>` - View version health metrics
+- **KV schema extensions** - `VersionRoutingKey`, `RollingUpdateKey`, `VersionRoutingValue`, `RollingUpdateValue`
+- **Observability metrics** - Micrometer integration with Prometheus endpoint
+  - `GET /metrics/prometheus` - Prometheus-format metrics scrape endpoint
+  - `ObservabilityRegistry` - Central registry for metrics with JVM/process metrics
+  - `AetherMetrics` - Pre-configured metrics for slice invocations, consensus, deployments
+  - JVM metrics - memory, GC, threads, classloaders via Micrometer binders
+
+### Changed
+- **pragmatica-lite 0.9.3** - Updated with consensus observability support
+
+### Fixed
+- **RabiaNode protocol message routing** - Added routes for RabiaProtocolMessage types (Propose, Vote, Decision, SyncRequest/Response, NewBatch) to RabiaEngine
+- **TestCluster QuorumStateNotification** - Added missing route for QuorumStateNotification to RabiaEngine in test infrastructure
+
 ## [0.6.3] - 2026-01-01
 
 ### Added

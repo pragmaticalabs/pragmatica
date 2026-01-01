@@ -1,0 +1,107 @@
+version: "3.9"
+
+# Aether Cluster Local Development Environment
+# Usage:
+#   docker-compose up --build                    # Start 3-node cluster
+#   docker-compose --profile forge up --build   # Start with Forge simulator
+
+services:
+  # Three-node Aether cluster
+  aether-node-1:
+    build:
+      context: ..
+      dockerfile: docker/aether-node/Dockerfile
+    container_name: aether-node-1
+    hostname: aether-node-1
+    environment:
+      NODE_ID: "node-1"
+      CLUSTER_PORT: "8090"
+      MANAGEMENT_PORT: "8080"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+    ports:
+      - "8080:8080"   # Management API
+      - "8090:8090"   # Cluster port
+    networks:
+      - aether-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  aether-node-2:
+    build:
+      context: ..
+      dockerfile: docker/aether-node/Dockerfile
+    container_name: aether-node-2
+    hostname: aether-node-2
+    environment:
+      NODE_ID: "node-2"
+      CLUSTER_PORT: "8090"
+      MANAGEMENT_PORT: "8080"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+    ports:
+      - "8081:8080"
+      - "8091:8090"
+    networks:
+      - aether-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    depends_on:
+      aether-node-1:
+        condition: service_healthy
+
+  aether-node-3:
+    build:
+      context: ..
+      dockerfile: docker/aether-node/Dockerfile
+    container_name: aether-node-3
+    hostname: aether-node-3
+    environment:
+      NODE_ID: "node-3"
+      CLUSTER_PORT: "8090"
+      MANAGEMENT_PORT: "8080"
+      PEERS: "node-1:aether-node-1:8090,node-2:aether-node-2:8090,node-3:aether-node-3:8090"
+      JAVA_OPTS: "-Xmx256m -XX:+UseZGC -XX:+ZGenerational"
+    ports:
+      - "8082:8080"
+      - "8092:8090"
+    networks:
+      - aether-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+    depends_on:
+      aether-node-2:
+        condition: service_healthy
+
+  # Forge simulator (optional, standalone)
+  aether-forge:
+    build:
+      context: ..
+      dockerfile: docker/aether-forge/Dockerfile
+    container_name: aether-forge
+    profiles:
+      - forge
+    environment:
+      FORGE_PORT: "8888"
+      CLUSTER_SIZE: "3"
+      LOAD_RATE: "500"
+    ports:
+      - "8888:8888"
+    networks:
+      - aether-network
+
+networks:
+  aether-network:
+    driver: bridge

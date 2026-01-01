@@ -1,6 +1,7 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -85,6 +86,7 @@ class ManagementServerImpl implements ManagementServer {
     private final MultiThreadIoEventLoopGroup workerGroup;
     private final AlertManager alertManager;
     private final DashboardMetricsPublisher metricsPublisher;
+    private final ObservabilityRegistry observability;
     private final Option<SslContext> sslContext;
     private Channel serverChannel;
 
@@ -95,6 +97,7 @@ class ManagementServerImpl implements ManagementServer {
         this.workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         this.alertManager = new AlertManager();
         this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager);
+        this.observability = ObservabilityRegistry.prometheus();
         this.sslContext = tls.map(TlsContextFactory::create)
                              .flatMap(result -> result.fold(_ -> Option.empty(),
                                                             Option::some));
@@ -117,7 +120,8 @@ class ManagementServerImpl implements ManagementServer {
                                                                                                                   true));
                                                                      p.addLast(new DashboardWebSocketHandler(metricsPublisher));
                                                                      p.addLast(new HttpRequestHandler(nodeSupplier,
-                                                                                                      alertManager));
+                                                                                                      alertManager,
+                                                                                                      observability));
                                                                  }
         });
                                    bootstrap.bind(port)
@@ -169,13 +173,18 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private static final String CONTENT_TYPE_HTML = "text/html; charset=UTF-8";
     private static final String CONTENT_TYPE_CSS = "text/css; charset=UTF-8";
     private static final String CONTENT_TYPE_JS = "application/javascript; charset=UTF-8";
+    private static final String CONTENT_TYPE_PROMETHEUS = "text/plain; version=0.0.4; charset=utf-8";
 
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
+    private final ObservabilityRegistry observability;
 
-    HttpRequestHandler(Supplier<AetherNode> nodeSupplier, AlertManager alertManager) {
+    HttpRequestHandler(Supplier<AetherNode> nodeSupplier,
+                       AlertManager alertManager,
+                       ObservabilityRegistry observability) {
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
+        this.observability = observability;
     }
 
     @Override
@@ -212,6 +221,16 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         // Handle repository requests
         if (uri.startsWith("/repository/")) {
             handleRepositoryGet(ctx, node, uri);
+            return;
+        }
+        // Handle rolling update paths
+        if (uri.startsWith("/rolling-update/") || uri.equals("/rolling-updates")) {
+            handleRollingUpdateGet(ctx, node, uri);
+            return;
+        }
+        // Handle Prometheus metrics endpoint
+        if (uri.equals("/metrics/prometheus")) {
+            sendPrometheus(ctx, observability.scrape());
             return;
         }
         var response = switch (uri) {
@@ -291,6 +310,11 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         // For other endpoints, read as string
         var body = request.content()
                           .toString(CharsetUtil.UTF_8);
+        // Handle rolling update POST paths
+        if (uri.startsWith("/rolling-update")) {
+            handleRollingUpdatePost(ctx, node, uri, body);
+            return;
+        }
         switch (uri) {
             case"/deploy" -> handleDeploy(ctx, node, body);
             case"/scale" -> handleScale(ctx, node, body);
@@ -447,6 +471,87 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                        .onFailure(cause -> sendJsonError(ctx,
                                                          HttpResponseStatus.BAD_REQUEST,
                                                          cause.message()));
+    }
+
+    // ===== Rolling Update Handlers =====
+    private void handleRollingUpdateGet(ChannelHandlerContext ctx, AetherNode node, String uri) {
+        if (uri.equals("/rolling-updates")) {
+            // List all active rolling updates
+            sendJson(ctx, buildRollingUpdatesResponse(node));
+        }else if (uri.startsWith("/rolling-update/") && uri.endsWith("/health")) {
+            // GET /rolling-update/{id}/health
+            var updateId = extractUpdateId(uri, "/health");
+            sendJson(ctx, buildRollingUpdateHealthResponse(node, updateId));
+        }else if (uri.startsWith("/rolling-update/")) {
+            // GET /rolling-update/{id}
+            var updateId = uri.substring("/rolling-update/".length());
+            sendJson(ctx, buildRollingUpdateResponse(node, updateId));
+        }else {
+            sendError(ctx, HttpResponseStatus.NOT_FOUND);
+        }
+    }
+
+    private void handleRollingUpdatePost(ChannelHandlerContext ctx, AetherNode node, String uri, String body) {
+        if (uri.equals("/rolling-update/start")) {
+            handleRollingUpdateStart(ctx, node, body);
+        }else if (uri.endsWith("/routing")) {
+            var updateId = extractUpdateId(uri, "/routing");
+            handleRollingUpdateRouting(ctx, node, updateId, body);
+        }else if (uri.endsWith("/approve")) {
+            var updateId = extractUpdateId(uri, "/approve");
+            handleRollingUpdateApprove(ctx, node, updateId);
+        }else if (uri.endsWith("/complete")) {
+            var updateId = extractUpdateId(uri, "/complete");
+            handleRollingUpdateComplete(ctx, node, updateId);
+        }else if (uri.endsWith("/rollback")) {
+            var updateId = extractUpdateId(uri, "/rollback");
+            handleRollingUpdateRollback(ctx, node, updateId);
+        }else {
+            sendError(ctx, HttpResponseStatus.NOT_FOUND);
+        }
+    }
+
+    private String extractUpdateId(String uri, String suffix) {
+        var path = uri.substring("/rolling-update/".length());
+        return path.substring(0,
+                              path.length() - suffix.length());
+    }
+
+    private void handleRollingUpdateStart(ChannelHandlerContext ctx, AetherNode node, String body) {
+        // Parse: {"artifact": "group:artifact", "version": "1.0.0", "instances": 3, ...}
+        // For now, return placeholder response since RollingUpdateManager implementation is pending
+        sendJson(ctx,
+                 "{\"status\":\"not_implemented\",\"message\":\"Rolling update start requires RollingUpdateManager implementation\"}");
+    }
+
+    private void handleRollingUpdateRouting(ChannelHandlerContext ctx, AetherNode node, String updateId, String body) {
+        // Parse: {"newWeight": 1, "oldWeight": 3}
+        sendJson(ctx, "{\"status\":\"not_implemented\",\"updateId\":\"" + updateId + "\"}");
+    }
+
+    private void handleRollingUpdateApprove(ChannelHandlerContext ctx, AetherNode node, String updateId) {
+        sendJson(ctx, "{\"status\":\"not_implemented\",\"updateId\":\"" + updateId + "\"}");
+    }
+
+    private void handleRollingUpdateComplete(ChannelHandlerContext ctx, AetherNode node, String updateId) {
+        sendJson(ctx, "{\"status\":\"not_implemented\",\"updateId\":\"" + updateId + "\"}");
+    }
+
+    private void handleRollingUpdateRollback(ChannelHandlerContext ctx, AetherNode node, String updateId) {
+        sendJson(ctx, "{\"status\":\"not_implemented\",\"updateId\":\"" + updateId + "\"}");
+    }
+
+    private String buildRollingUpdatesResponse(AetherNode node) {
+        // Return list of active rolling updates
+        return "{\"updates\":[],\"message\":\"Rolling update listing requires RollingUpdateManager implementation\"}";
+    }
+
+    private String buildRollingUpdateResponse(AetherNode node, String updateId) {
+        return "{\"updateId\":\"" + updateId + "\",\"status\":\"not_found\"}";
+    }
+
+    private String buildRollingUpdateHealthResponse(AetherNode node, String updateId) {
+        return "{\"updateId\":\"" + updateId + "\",\"health\":\"unknown\"}";
     }
 
     private String buildHealthResponse(AetherNode node) {
@@ -659,6 +764,18 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf);
         response.headers()
                 .set(HttpHeaderNames.CONTENT_TYPE, CONTENT_TYPE_JSON);
+        response.headers()
+                .setInt(HttpHeaderNames.CONTENT_LENGTH,
+                        buf.readableBytes());
+        ctx.writeAndFlush(response)
+           .addListener(ChannelFutureListener.CLOSE);
+    }
+
+    private void sendPrometheus(ChannelHandlerContext ctx, String content) {
+        var buf = Unpooled.copiedBuffer(content, CharsetUtil.UTF_8);
+        var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf);
+        response.headers()
+                .set(HttpHeaderNames.CONTENT_TYPE, CONTENT_TYPE_PROMETHEUS);
         response.headers()
                 .setInt(HttpHeaderNames.CONTENT_LENGTH,
                         buf.readableBytes());

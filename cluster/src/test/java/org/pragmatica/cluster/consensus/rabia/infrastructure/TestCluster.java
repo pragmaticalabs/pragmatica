@@ -4,6 +4,7 @@ import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.consensus.rabia.RabiaEngine;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.cluster.net.local.LocalNetwork;
 import org.pragmatica.cluster.net.local.LocalNetwork.FaultInjector;
 import org.pragmatica.cluster.node.rabia.CustomClasses;
@@ -105,6 +106,7 @@ public class TestCluster {
         var engine = new RabiaEngine<>(topologyManager, network, store, ProtocolConfig.testConfig());
 
         router.addRoute(KVStoreLocalIO.Request.Find.class, store::find);
+        router.addRoute(QuorumStateNotification.class, engine::quorumState);
 
         network.addNode(id, createHandler(engine));
         stores.put(id, store);
