@@ -88,7 +88,6 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         router.addRoute(NodeDown.class, leaderManager::nodeDown);
         router.addRoute(QuorumStateNotification.class, leaderManager::watchQuorumState);
         network.configure(router);
-        consensus.configure(router);
         return new rabiaNode <>(config, router, stateMachine, network, topologyManager, consensus, leaderManager);
     }
 }

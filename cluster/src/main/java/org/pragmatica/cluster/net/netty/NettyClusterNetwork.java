@@ -91,7 +91,6 @@ public class NettyClusterNetwork implements ClusterNetwork {
         schedulePing();
     }
 
-    @Override
     public void configure(MessageRouter.MutableRouter router) {
         router.addRoute(ConnectNode.class, this::connect);
         router.addRoute(DisconnectNode.class, this::disconnect);

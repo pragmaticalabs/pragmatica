@@ -35,7 +35,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         this.deserializer = deserializer;
     }
 
-    @Override
     public void configure(MutableRouter router) {
         router.addRoute(Find.class, this::find);
     }
