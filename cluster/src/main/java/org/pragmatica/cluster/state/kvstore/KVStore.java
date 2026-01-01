@@ -15,7 +15,6 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
-import org.pragmatica.messaging.MessageRouter.MutableRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
@@ -33,10 +32,6 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         this.router = router;
         this.serializer = serializer;
         this.deserializer = deserializer;
-    }
-
-    public void configure(MutableRouter router) {
-        router.addRoute(Find.class, this::find);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

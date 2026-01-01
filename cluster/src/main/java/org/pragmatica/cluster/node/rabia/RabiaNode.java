@@ -4,6 +4,11 @@ import org.pragmatica.consensus.rabia.RabiaEngine;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkManagementOperation.ConnectNode;
+import org.pragmatica.consensus.net.NetworkManagementOperation.DisconnectNode;
+import org.pragmatica.consensus.net.NetworkManagementOperation.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkMessage.Ping;
+import org.pragmatica.consensus.net.NetworkMessage.Pong;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.net.netty.NettyClusterNetwork;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -87,7 +92,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         router.addRoute(NodeRemoved.class, leaderManager::nodeRemoved);
         router.addRoute(NodeDown.class, leaderManager::nodeDown);
         router.addRoute(QuorumStateNotification.class, leaderManager::watchQuorumState);
-        network.configure(router);
+        // NetworkManagementOperation routes
+        router.addRoute(ConnectNode.class, network::connect);
+        router.addRoute(DisconnectNode.class, network::disconnect);
+        router.addRoute(ListConnectedNodes.class, network::listNodes);
+        router.addRoute(Ping.class, network::handlePing);
+        router.addRoute(Pong.class, network::handlePong);
         return new rabiaNode <>(config, router, stateMachine, network, topologyManager, consensus, leaderManager);
     }
 }

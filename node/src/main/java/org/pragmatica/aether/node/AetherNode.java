@@ -38,6 +38,7 @@ import org.pragmatica.cluster.node.rabia.NodeConfig;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.cluster.state.kvstore.KVStoreLocalIO;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -366,7 +367,7 @@ public interface AetherNode {
         router.addRoute(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest);
         router.addRoute(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse);
         // KVStore local operations
-        kvStore.configure(router);
+        router.addRoute(KVStoreLocalIO.Request.Find.class, kvStore::find);
     }
 
     /**

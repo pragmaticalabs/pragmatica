@@ -104,7 +104,7 @@ public class TestCluster {
         var topologyManager = new TestTopologyManager(size, nodeInfo(id, nodeAddress("localhost", 8090)));
         var engine = new RabiaEngine<>(topologyManager, network, store, ProtocolConfig.testConfig());
 
-        store.configure(router);
+        router.addRoute(KVStoreLocalIO.Request.Find.class, store::find);
 
         network.addNode(id, createHandler(engine));
         stores.put(id, store);

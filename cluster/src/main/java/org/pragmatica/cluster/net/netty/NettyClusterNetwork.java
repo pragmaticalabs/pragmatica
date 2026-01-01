@@ -91,14 +91,6 @@ public class NettyClusterNetwork implements ClusterNetwork {
         schedulePing();
     }
 
-    public void configure(MessageRouter.MutableRouter router) {
-        router.addRoute(ConnectNode.class, this::connect);
-        router.addRoute(DisconnectNode.class, this::disconnect);
-        router.addRoute(ListConnectedNodes.class, this::listNodes);
-        router.addRoute(Ping.class, this::handlePing);
-        router.addRoute(Pong.class, this::handlePong);
-    }
-
     private void schedulePing() {
         SharedScheduler.schedule(this::pingNodes,
                                  topologyManager.pingInterval()
