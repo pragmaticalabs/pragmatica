@@ -38,7 +38,7 @@ class AetherNodeIT {
     private static final Logger log = LoggerFactory.getLogger(AetherNodeIT.class);
 
     private static final int CLUSTER_SIZE = 3;
-    private static final int BASE_PORT = 4040;
+    private static final int BASE_PORT = 14040;
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private static final Duration AWAIT_DURATION = Duration.ofSeconds(10);
 

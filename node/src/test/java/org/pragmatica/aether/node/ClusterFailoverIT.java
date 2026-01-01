@@ -44,7 +44,7 @@ class ClusterFailoverIT {
     private static final Logger log = LoggerFactory.getLogger(ClusterFailoverIT.class);
 
     private static final int CLUSTER_SIZE = 5;
-    private static final int BASE_PORT = 5050;
+    private static final int BASE_PORT = 15050;
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(30).seconds();
     private static final Duration AWAIT_DURATION = Duration.ofSeconds(30);
     private static final Duration SHORT_AWAIT = Duration.ofSeconds(10);
