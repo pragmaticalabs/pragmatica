@@ -5,7 +5,6 @@ import org.pragmatica.aether.artifact.Artifact;
 import java.net.URL;
 
 public record Location(Artifact artifact, URL url) {
-
     public static Location location(Artifact artifact, URL url) {
         return new Location(artifact, url);
     }

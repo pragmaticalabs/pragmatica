@@ -7,7 +7,6 @@ import java.util.Set;
  * Chaos events that can be injected into the system for resilience testing.
  */
 public sealed interface ChaosEvent {
-
     /**
      * Type identifier for the event.
      */
@@ -122,7 +121,9 @@ public sealed interface ChaosEvent {
 
         @Override
         public String description() {
-            var target = nodeId != null ? " on node " + nodeId : " on all nodes";
+            var target = nodeId != null
+                         ? " on node " + nodeId
+                         : " on all nodes";
             return "Crash slice " + sliceArtifact + target;
         }
 
@@ -208,7 +209,9 @@ public sealed interface ChaosEvent {
 
         @Override
         public String description() {
-            var target = sliceArtifact != null ? sliceArtifact : "all slices";
+            var target = sliceArtifact != null
+                         ? sliceArtifact
+                         : "all slices";
             return String.format("Inject %.0f%% failure rate for %s", failureRate * 100, target);
         }
 
@@ -241,7 +244,9 @@ public sealed interface ChaosEvent {
 
         @Override
         public String description() {
-            return description != null ? description : name;
+            return description != null
+                   ? description
+                   : name;
         }
 
         public static CustomChaos custom(String name, String description, Runnable action, Duration duration) {

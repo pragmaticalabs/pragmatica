@@ -24,7 +24,6 @@ import static org.pragmatica.aether.slice.repository.Location.location;
  * </pre>
  */
 public interface LocalRepository extends Repository {
-
     /**
      * Create a LocalRepository using the detected Maven local repository location.
      * Detection order: maven.repo.local property → user settings.xml → global settings.xml → default ~/.m2/repository
@@ -38,34 +37,38 @@ public interface LocalRepository extends Repository {
      */
     static LocalRepository localRepository(Path localRepo) {
         record repository(Path localRepo) implements LocalRepository {
-
             @Override
             public Promise<Location> locate(Artifact artifact) {
-                return resolveLocation(artifact).async();
+                return resolveLocation(artifact)
+                       .async();
             }
 
             private Result<Location> resolveLocation(Artifact artifact) {
                 var jarPath = resolvePath(artifact, "jar");
-
                 if (!Files.exists(jarPath)) {
-                    return ARTIFACT_NOT_FOUND.apply(artifact.asString() + " at " + jarPath).result();
+                    return ARTIFACT_NOT_FOUND.apply(artifact.asString() + " at " + jarPath)
+                                             .result();
                 }
-
-                return Result.lift(Causes::fromThrowable, () -> jarPath.toUri().toURL()).map(url -> location(artifact,
-                                                                                                             url));
+                return Result.lift(Causes::fromThrowable,
+                                   () -> jarPath.toUri()
+                                                .toURL())
+                             .map(url -> location(artifact, url));
             }
 
             private Path resolvePath(Artifact artifact, String packaging) {
                 var version = artifact.version();
-                var artifactId = artifact.artifactId().id();
-                return localRepo.resolve(artifact.groupId().id().replace('.', '/'))
+                var artifactId = artifact.artifactId()
+                                         .id();
+                return localRepo.resolve(artifact.groupId()
+                                                 .id()
+                                                 .replace('.', '/'))
                                 .resolve(artifactId)
                                 .resolve(version.bareVersion())
                                 .resolve(artifactId + "-" + version.withQualifier() + "." + packaging);
             }
 
-            private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND = Causes.forOneValue(
-                    "Artifact not found in local repository: %s");
+            private static final Fn1<Cause, String>ARTIFACT_NOT_FOUND = Causes.forOneValue(
+            "Artifact not found in local repository: %s");
         }
         return new repository(localRepo);
     }

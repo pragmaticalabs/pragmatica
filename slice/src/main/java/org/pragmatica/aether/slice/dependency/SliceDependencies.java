@@ -26,7 +26,6 @@ import java.util.List;
  * </pre>
  */
 public interface SliceDependencies {
-
     /**
      * Load dependencies from META-INF/dependencies/{sliceClassName} resource.
      *
@@ -38,24 +37,21 @@ public interface SliceDependencies {
     static Result<List<DependencyDescriptor>> load(String sliceClassName, ClassLoader classLoader) {
         var resourcePath = "META-INF/dependencies/" + sliceClassName;
         var resource = classLoader.getResourceAsStream(resourcePath);
-
         if (resource == null) {
             // No dependencies file means no dependencies - this is valid
             return Result.success(List.of());
         }
-
-        return Result.lift(Causes::fromThrowable, () -> {
-            try (var reader = new BufferedReader(new InputStreamReader(resource))) {
-                var dependencies = new ArrayList<DependencyDescriptor>();
-                String line;
-
-                while ((line = reader.readLine()) != null) {
-                    DependencyDescriptor.parse(line).onSuccess(dependencies::add);
-                    // Ignore empty lines and comments (they return failure)
-                }
-
-                return dependencies;
-            }
-        });
+        return Result.lift(Causes::fromThrowable,
+                           () -> {
+                               try (var reader = new BufferedReader(new InputStreamReader(resource))) {
+                               var dependencies = new ArrayList<DependencyDescriptor>();
+                               String line;
+                               while ((line = reader.readLine()) != null) {
+                               DependencyDescriptor.parse(line)
+                                                   .onSuccess(dependencies::add);
+                           }
+                               return dependencies;
+                           }
+                           });
     }
 }

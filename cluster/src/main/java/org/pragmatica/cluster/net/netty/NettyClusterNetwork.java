@@ -1,32 +1,27 @@
 package org.pragmatica.cluster.net.netty;
 
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelHandler;
-import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
-import io.netty.handler.codec.LengthFieldPrepender;
-import org.pragmatica.cluster.consensus.ProtocolMessage;
-import org.pragmatica.cluster.net.ClusterNetwork;
-import org.pragmatica.cluster.net.NetworkManagementOperation;
-import org.pragmatica.cluster.net.NetworkManagementOperation.ListConnectedNodes;
-import org.pragmatica.cluster.net.NetworkMessage.Ping;
-import org.pragmatica.cluster.net.NetworkMessage.Pong;
-import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.cluster.net.NodeInfo;
-import org.pragmatica.cluster.topology.QuorumStateNotification;
-import org.pragmatica.cluster.topology.TopologyChangeNotification;
-import org.pragmatica.cluster.topology.TopologyManager;
+import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkManagementOperation.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkMessage.Ping;
+import org.pragmatica.consensus.net.NetworkMessage.Pong;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.utils.SharedScheduler;
-import org.pragmatica.message.Message;
-import org.pragmatica.message.MessageRouter;
-import org.pragmatica.net.Server;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.pragmatica.messaging.Message;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.Server;
+import org.pragmatica.net.tcp.ServerConfig;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -39,8 +34,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
-import static org.pragmatica.cluster.net.NetworkManagementOperation.ConnectNode;
-import static org.pragmatica.cluster.net.NetworkManagementOperation.DisconnectNode;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelHandler;
+import io.netty.handler.codec.LengthFieldBasedFrameDecoder;
+import io.netty.handler.codec.LengthFieldPrepender;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.consensus.net.NetworkManagementOperation.ConnectNode;
+import static org.pragmatica.consensus.net.NetworkManagementOperation.DisconnectNode;
 import static org.pragmatica.cluster.net.netty.NettyClusterNetwork.ViewChangeOperation.*;
 
 /**
@@ -63,15 +65,17 @@ public class NettyClusterNetwork implements ClusterNetwork {
     private final Executor executor;
 
     enum ViewChangeOperation {
-        ADD, REMOVE, SHUTDOWN
+        ADD,
+        REMOVE,
+        SHUTDOWN
     }
 
     public NettyClusterNetwork(TopologyManager topologyManager,
                                Serializer serializer,
                                Deserializer deserializer,
                                MessageRouter router) {
-
-        var processors = Runtime.getRuntime().availableProcessors();
+        var processors = Runtime.getRuntime()
+                                .availableProcessors();
         this.executor = Executors.newFixedThreadPool(processors > 1
                                                      ? processors
                                                      : 2);
@@ -79,51 +83,43 @@ public class NettyClusterNetwork implements ClusterNetwork {
         this.topologyManager = topologyManager;
         this.router = router;
         this.handlers = () -> List.of(
-                new LengthFieldBasedFrameDecoder(1048576, 0, LENGTH_FIELD_LEN, 0, INITIAL_BYTES_TO_STRIP),
-                new LengthFieldPrepender(LENGTH_FIELD_LEN),
-                new Decoder(deserializer),
-                new Encoder(serializer),
-                new Handler(this::peerConnected, this::peerDisconnected, router::route));
-
+        new LengthFieldBasedFrameDecoder(1048576, 0, LENGTH_FIELD_LEN, 0, INITIAL_BYTES_TO_STRIP),
+        new LengthFieldPrepender(LENGTH_FIELD_LEN),
+        new Decoder(deserializer),
+        new Encoder(serializer),
+        new Handler(this::peerConnected, this::peerDisconnected, router::route));
         schedulePing();
     }
 
-    @Override
-    public void configure(MessageRouter.MutableRouter router) {
-        router.addRoute(ConnectNode.class, this::connect);
-        router.addRoute(DisconnectNode.class, this::disconnect);
-        router.addRoute(ListConnectedNodes.class, this::listNodes);
-
-        router.addRoute(Ping.class, this::handlePing);
-        router.addRoute(Pong.class, this::handlePong);
-    }
-
     private void schedulePing() {
-        SharedScheduler.schedule(this::pingNodes, topologyManager.pingInterval().randomize(SCALE));
+        SharedScheduler.schedule(this::pingNodes,
+                                 topologyManager.pingInterval()
+                                                .randomize(SCALE));
     }
 
     private Option<NodeId> randomNode() {
         if (!isRunning.get() || peerLinks.isEmpty()) {
             return Option.none();
         }
-
         var ids = new ArrayList<>(peerLinks.keySet());
         Collections.shuffle(ids);
-
         return Option.some(ids.getFirst());
     }
 
     private void pingNodes() {
         randomNode()
-                .onPresent(peerId -> sendToChannel(peerId, new Ping(self.id()), peerLinks.get(peerId)));
-
+        .onPresent(peerId -> sendToChannel(peerId,
+                                           new Ping(self.id()),
+                                           peerLinks.get(peerId)));
         schedulePing();
     }
 
     @Override
     public void handlePing(Ping ping) {
         log.debug("Node {} received ping from {}", self.id(), ping.sender());
-        sendToChannel(ping.sender(), new Pong(self.id()), peerLinks.get(ping.sender()));
+        sendToChannel(ping.sender(),
+                      new Pong(self.id()),
+                      peerLinks.get(ping.sender()));
     }
 
     @Override
@@ -142,7 +138,8 @@ public class NettyClusterNetwork implements ClusterNetwork {
                        .onPresent(nodeId -> peerLinks.put(nodeId, channel))
                        .onPresent(nodeId -> log.debug("Node {} connected", nodeId))
                        .onPresent(nodeId -> processViewChange(ADD, nodeId))
-                       .onEmpty(() -> log.warn("Unknown node {}, disconnecting", channel.remoteAddress()))
+                       .onEmpty(() -> log.warn("Unknown node {}, disconnecting",
+                                               channel.remoteAddress()))
                        .onEmpty(() -> channel.close()
                                              .addListener(_ -> log.info("Host {} disconnected",
                                                                         channel.remoteAddress())));
@@ -158,43 +155,50 @@ public class NettyClusterNetwork implements ClusterNetwork {
     @Override
     public Promise<Unit> start() {
         if (isRunning.compareAndSet(false, true)) {
-            return Server.server("NettyClusterNetwork", self.address().port(), handlers)
+            var serverConfig = ServerConfig.serverConfig("NettyClusterNetwork",
+                                                         self.address()
+                                                             .port());
+            // Apply TLS if configured
+            var effectiveConfig = topologyManager.tls()
+                                                 .map(serverConfig::withTls)
+                                                 .or(serverConfig);
+            return Server.server(effectiveConfig, handlers)
                          .onSuccess(NettyClusterNetwork.this.server::set)
                          .onFailure(_ -> isRunning.set(false))
                          .mapToUnit();
         }
-
         return Promise.unitPromise();
     }
 
     @Override
     public Promise<Unit> stop() {
         if (isRunning.compareAndSet(true, false)) {
-            log.info("Stopping {}: notifying view change", server.get().name());
+            log.info("Stopping {}: notifying view change",
+                     server.get()
+                           .name());
             processViewChange(SHUTDOWN, self.id());
-
             return server.get()
                          .stop(() -> {
-                             log.info("Stopping {}: closing peer connections", server.get().name());
-
-                             var promises = new ArrayList<Promise<Unit>>();
-                             for (var link : peerLinks.values()) {
-                                 var promise = Promise.<Unit>promise();
-                                 link.close()
-                                     .addListener(future -> {
-                                         if (future.isSuccess()) {
-                                             promise.succeed(Unit.unit());
-                                         } else {
-                                             promise.fail(Causes.fromThrowable(future.cause()));
-                                         }
-                                     });
-                                 promises.add(promise);
-                             }
-                             return Promise.allOf(promises)
-                                           .mapToUnit();
-                         });
+                                   log.info("Stopping {}: closing peer connections",
+                                            server.get()
+                                                  .name());
+                                   var promises = new ArrayList<Promise<Unit>>();
+                                   for (var link : peerLinks.values()) {
+                                   var promise = Promise.<Unit>promise();
+                                   link.close()
+                                       .addListener(future -> {
+                                                        if (future.isSuccess()) {
+                                                        promise.succeed(Unit.unit());
+                                                    }else {
+                                                        promise.fail(Causes.fromThrowable(future.cause()));
+                                                    }
+                                                    });
+                                   promises.add(promise);
+                               }
+                                   return Promise.allOf(promises)
+                                                 .mapToUnit();
+                               });
         }
-
         return Promise.unitPromise();
     }
 
@@ -204,24 +208,22 @@ public class NettyClusterNetwork implements ClusterNetwork {
             log.error("Attempt to connect {} while node is not running", connectNode.node());
             return;
         }
-
-        if (connectNode.node().equals(self.id())) {
+        if (connectNode.node()
+                       .equals(self.id())) {
             return;
         }
-
         topologyManager.get(connectNode.node())
                        .onPresent(this::connectPeer)
-                       .onEmpty(() -> log.error("Unknown {}", connectNode.node()));
+                       .onEmpty(() -> log.error("Unknown {}",
+                                                connectNode.node()));
     }
 
     private void connectPeer(NodeInfo nodeInfo) {
         var peerId = nodeInfo.id();
-
         if (peerLinks.containsKey(peerId)) {
             log.warn("Node {} already connected", peerId);
             return;
         }
-
         // Executed asynchronously to avoid blocking the main thread
         server.get()
               .connectTo(nodeInfo.address())
@@ -229,31 +231,33 @@ public class NettyClusterNetwork implements ClusterNetwork {
                   peerLinks.put(peerId, channel);
                   processViewChange(ADD, peerId);
               })
-              .onFailure(cause -> log.warn("Node {} failed to connect to {}: {}", peerId, nodeInfo.id(), cause));
+              .onFailure(cause -> log.warn("Node {} failed to connect to {}: {}",
+                                           peerId,
+                                           nodeInfo.id(),
+                                           cause));
     }
 
     @Override
     public void disconnect(DisconnectNode disconnectNode) {
         var channel = peerLinks.remove(disconnectNode.nodeId());
-
         if (channel == null) {
             return;
         }
-
         processViewChange(REMOVE, disconnectNode.nodeId());
-
         // Executed asynchronously to avoid blocking the main thread
         channel.close()
                .addListener(future -> {
-                   if (future.isSuccess()) {
-                       log.info("Node {} disconnected from node {}", self.id(), disconnectNode.nodeId());
-                   } else {
-                       log.warn("Node {} failed to disconnect from node {}: ",
-                                self.id(),
-                                disconnectNode.nodeId(),
-                                future.cause());
-                   }
-               });
+                                if (future.isSuccess()) {
+                                log.info("Node {} disconnected from node {}",
+                                         self.id(),
+                                         disconnectNode.nodeId());
+                            }else {
+                                log.warn("Node {} failed to disconnect from node {}: ",
+                                         self.id(),
+                                         disconnectNode.nodeId(),
+                                         future.cause());
+                            }
+                            });
     }
 
     @Override
@@ -266,21 +270,18 @@ public class NettyClusterNetwork implements ClusterNetwork {
             log.warn("Node {} is not connected", peerId);
             return;
         }
-
         if (!channel.isActive()) {
             peerLinks.remove(peerId);
             processViewChange(REMOVE, peerId);
             log.warn("Node {} is not active", peerId);
             return;
         }
-
         channel.writeAndFlush(message);
     }
 
     @Override
     public <M extends ProtocolMessage> void broadcast(M message) {
-        peerLinks.forEach((peerId, channel) ->
-                                  executor.execute(() -> sendToChannel(peerId, message, channel)));
+        peerLinks.forEach((peerId, channel) -> executor.execute(() -> sendToChannel(peerId, message, channel)));
     }
 
     private void processViewChange(ViewChangeOperation operation, NodeId peerId) {
@@ -302,7 +303,6 @@ public class NettyClusterNetwork implements ClusterNetwork {
                 yield TopologyChangeNotification.nodeDown(peerId);
             }
         };
-
         router.route(viewChange);
     }
 

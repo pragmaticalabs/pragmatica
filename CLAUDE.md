@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-**Pragmatica Aether Distributed Runtime** (v0.6.2) is an AI-driven distributed runtime environment for Java that enables predictive scaling,
+**Pragmatica Aether Distributed Runtime** (v0.6.3) is an AI-driven distributed runtime environment for Java that enables predictive scaling,
 intelligent orchestration, and seamless multi-cloud deployment without requiring changes to business logic.
 
 **See [docs/vision-and-goals.md](docs/vision-and-goals.md) for complete vision and design principles.**
@@ -24,13 +24,11 @@ intelligent orchestration, and seamless multi-cloud deployment without requiring
 - **slice-api/** - Slice interface definitions (`Slice`, `SliceMethod`, `SliceRoute`)
 - **slice/** - Slice management (`SliceStore`, `SliceState`, `Artifact` types, KV schema)
 - **node/** - Runtime node implementation (`NodeDeploymentManager`, `ManagementServer`, metrics, controller)
-- **cluster/** - Consensus layer (Rabia protocol, `KVStore`, `LeaderManager`)
-- **common/** - Shared utilities and types
+- **cluster/** - Cluster networking and KVStore (`NettyClusterNetwork`, `KVStore`)
 - **example-slice/** - Reference implementation (`StringProcessorSlice`)
 - **forge/** - Aether Forge: Standalone simulator CLI with visual dashboard for load/chaos testing
 - **examples/order-demo/** - Complete order domain demo (5 slices)
 - **cli/** - Command-line interface for cluster management
-- **mcp/** - (deprecated) Model Context Protocol - replaced by direct agent API
 
 ### Module Dependencies
 
@@ -97,7 +95,7 @@ Maven-style coordinates for slices:
 
 ```java
 // Format: groupId:artifactId:version[-qualifier]
-Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.6.2")
+Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.6.3")
 ```
 
 **Components**:
@@ -305,7 +303,7 @@ public record Email(String value) {
         return Verify.ensure(raw, Verify.Is::notNull)
             .map(String::trim)
             .map(String::toLowerCase)
-            .flatMap(Verify.ensureFn(INVALID_EMAIL, Verify.Is::matches, EMAIL_PATTERN))
+            .flatMap(v -> Verify.ensure(v, Verify.Is::matches, EMAIL_PATTERN, INVALID_EMAIL))
             .map(Email::new);
     }
 }
@@ -796,7 +794,7 @@ cd example-slice && mvn test
 - **SliceInvoker**: `node/src/main/java/org/pragmatica/aether/invoke/SliceInvoker.java`
 - **ManagementServer**: `node/src/main/java/org/pragmatica/aether/api/ManagementServer.java`
 - **AetherCli**: `cli/src/main/java/org/pragmatica/aether/cli/AetherCli.java`
-- **Rabia Consensus**: `cluster/src/main/java/org/pragmatica/cluster/consensus/rabia/`
+- **Rabia Consensus**: pragmatica-lite `consensus` module (`org.pragmatica.consensus.rabia`)
 - **KVStore**: `cluster/src/main/java/org/pragmatica/cluster/state/kvstore/`
 - **ForgeServer**: `forge/src/main/java/org/pragmatica/aether/forge/ForgeServer.java` - Aether Forge main entry
 - **ForgeCluster**: `forge/src/main/java/org/pragmatica/aether/forge/ForgeCluster.java` - Forge cluster management

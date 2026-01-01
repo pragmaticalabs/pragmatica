@@ -6,8 +6,8 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
-import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.cluster.net.NodeInfo;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
@@ -31,9 +31,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.artifact.Artifact.artifact;
-import static org.pragmatica.cluster.net.NodeId.nodeId;
-import static org.pragmatica.cluster.net.NodeInfo.nodeInfo;
-import static org.pragmatica.net.NodeAddress.nodeAddress;
+import static org.pragmatica.consensus.NodeId.nodeId;
+import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
+import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /**
  * Integration tests for 5-node cluster failover scenarios.

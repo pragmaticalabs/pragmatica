@@ -1,7 +1,7 @@
 package org.pragmatica.aether.controller;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Promise;
 
 import java.util.List;
@@ -14,7 +14,6 @@ import java.util.Map;
  * Implementations can range from simple decision trees to AI-powered systems.
  */
 public interface ClusterController {
-
     /**
      * Evaluate current cluster state and produce control decisions.
      *
@@ -27,31 +26,33 @@ public interface ClusterController {
      * Context provided to the controller for decision-making.
      */
     record ControlContext(
-            Map<NodeId, Map<String, Double>> metrics,
-            Map<Artifact, Blueprint> blueprints,
-            List<NodeId> activeNodes
-    ) {
+    Map<NodeId, Map<String, Double>> metrics,
+    Map<Artifact, Blueprint> blueprints,
+    List<NodeId> activeNodes) {
         /**
          * Get average value of a metric across all nodes.
          */
         public double avgMetric(String metricName) {
-            var values = metrics.values().stream()
+            var values = metrics.values()
+                                .stream()
                                 .map(m -> m.get(metricName))
                                 .filter(v -> v != null)
                                 .mapToDouble(Double::doubleValue)
                                 .toArray();
-
             if (values.length == 0) {
                 return 0.0;
             }
-            return java.util.Arrays.stream(values).average().orElse(0.0);
+            return java.util.Arrays.stream(values)
+                       .average()
+                       .orElse(0.0);
         }
 
         /**
          * Get max value of a metric across all nodes.
          */
         public double maxMetric(String metricName) {
-            return metrics.values().stream()
+            return metrics.values()
+                          .stream()
                           .map(m -> m.get(metricName))
                           .filter(v -> v != null)
                           .mapToDouble(Double::doubleValue)
@@ -63,7 +64,8 @@ public interface ClusterController {
          * Get total calls for a method across all nodes.
          */
         public double totalCalls(String methodName) {
-            return metrics.values().stream()
+            return metrics.values()
+                          .stream()
                           .map(m -> m.get("method." + methodName + ".calls"))
                           .filter(v -> v != null)
                           .mapToDouble(Double::doubleValue)

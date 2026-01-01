@@ -1,10 +1,10 @@
-package org.pragmatica.cluster.consensus.rabia;
+package org.pragmatica.consensus.rabia;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster;
-import org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.StringKey;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.rabia.infrastructure.TestCluster;
+import org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.net.local.LocalNetwork;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.lang.io.TimeSpan;
@@ -19,7 +19,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.StringKey.key;
+import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
 
 /**
  * Test Suite 2: Message Semantics

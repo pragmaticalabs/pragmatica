@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.6.2</version>
+        <version>0.6.3</version>
     </parent>
 
     <artifactId>forge</artifactId>
@@ -23,10 +23,6 @@
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>cluster</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>common</artifactId>
         </dependency>
 
         <!-- Pragmatica -->

@@ -1,10 +1,5 @@
 package org.pragmatica.aether.cli;
 
-import picocli.CommandLine;
-import picocli.CommandLine.Command;
-import picocli.CommandLine.Option;
-import picocli.CommandLine.Parameters;
-
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -15,6 +10,11 @@ import java.net.http.HttpResponse;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.Callable;
+
+import picocli.CommandLine;
+import picocli.CommandLine.Command;
+import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
 
 /**
  * Aether cluster management CLI.
@@ -40,26 +40,23 @@ import java.util.concurrent.Callable;
  * </pre>
  */
 @Command(name = "aether",
-         mixinStandardHelpOptions = true,
-         version = "Aether 0.6.2",
-         description = "Command-line interface for Aether cluster management",
-         subcommands = {
-                 AetherCli.StatusCommand.class,
-                 AetherCli.NodesCommand.class,
-                 AetherCli.SlicesCommand.class,
-                 AetherCli.MetricsCommand.class,
-                 AetherCli.HealthCommand.class,
-                 AetherCli.DeployCommand.class,
-                 AetherCli.ScaleCommand.class,
-                 AetherCli.UndeployCommand.class,
-                 AetherCli.BlueprintCommand.class,
-                 AetherCli.ArtifactCommand.class
-         })
+ mixinStandardHelpOptions = true,
+ version = "Aether 0.6.3",
+ description = "Command-line interface for Aether cluster management",
+ subcommands = {AetherCli.StatusCommand.class,
+ AetherCli.NodesCommand.class,
+ AetherCli.SlicesCommand.class,
+ AetherCli.MetricsCommand.class,
+ AetherCli.HealthCommand.class,
+ AetherCli.DeployCommand.class,
+ AetherCli.ScaleCommand.class,
+ AetherCli.UndeployCommand.class,
+ AetherCli.BlueprintCommand.class,
+ AetherCli.ArtifactCommand.class})
 public class AetherCli implements Runnable {
-
     @Option(names = {"-c", "--connect"},
-            description = "Node address to connect to (host:port)",
-            defaultValue = "localhost:8080")
+    description = "Node address to connect to (host:port)",
+    defaultValue = "localhost:8080")
     private String nodeAddress;
 
     private final HttpClient httpClient = HttpClient.newHttpClient();
@@ -67,14 +64,13 @@ public class AetherCli implements Runnable {
     public static void main(String[] args) {
         var cli = new AetherCli();
         var cmd = new CommandLine(cli);
-
         if (args.length == 0 || (args.length == 2 && (args[0].equals("-c") || args[0].equals("--connect")))) {
             // REPL mode when no command specified (only --connect option)
             if (args.length == 2) {
                 cli.nodeAddress = args[1];
             }
             cli.runRepl(cmd);
-        } else {
+        }else {
             // Batch mode
             int exitCode = cmd.execute(args);
             System.exit(exitCode);
@@ -88,26 +84,25 @@ public class AetherCli implements Runnable {
     }
 
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v0.6.2 - Connected to " + nodeAddress);
+        System.out.println("Aether v0.6.3 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
-
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
             String line;
             while (true) {
                 System.out.print("aether> ");
                 System.out.flush();
                 line = reader.readLine();
-
-                if (line == null || line.trim().equalsIgnoreCase("exit") || line.trim().equalsIgnoreCase("quit")) {
+                if (line == null || line.trim()
+                                        .equalsIgnoreCase("exit") || line.trim()
+                                                                         .equalsIgnoreCase("quit")) {
                     System.out.println("Goodbye!");
                     break;
                 }
-
-                if (line.trim().isEmpty()) {
+                if (line.trim()
+                        .isEmpty()) {
                     continue;
                 }
-
                 // Parse and execute command
                 String[] replArgs = parseReplCommand(line.trim());
                 if (replArgs.length > 0) {
@@ -116,7 +111,6 @@ public class AetherCli implements Runnable {
                     fullArgs[0] = "--connect";
                     fullArgs[1] = nodeAddress;
                     System.arraycopy(replArgs, 0, fullArgs, 2, replArgs.length);
-
                     cmd.execute(fullArgs);
                 }
             }
@@ -131,18 +125,16 @@ public class AetherCli implements Runnable {
     }
 
     String fetchFromNode(String path) {
-        try {
+        try{
             var uri = URI.create("http://" + nodeAddress + path);
             var request = HttpRequest.newBuilder()
                                      .uri(uri)
                                      .GET()
                                      .build();
-
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
             if (response.statusCode() == 200) {
                 return response.body();
-            } else {
+            }else {
                 return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
             }
         } catch (Exception e) {
@@ -151,19 +143,17 @@ public class AetherCli implements Runnable {
     }
 
     String postToNode(String path, String body) {
-        try {
+        try{
             var uri = URI.create("http://" + nodeAddress + path);
             var request = HttpRequest.newBuilder()
                                      .uri(uri)
                                      .header("Content-Type", "application/json")
                                      .POST(HttpRequest.BodyPublishers.ofString(body))
                                      .build();
-
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
             if (response.statusCode() == 200) {
                 return response.body();
-            } else {
+            }else {
                 return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
             }
         } catch (Exception e) {
@@ -172,19 +162,20 @@ public class AetherCli implements Runnable {
     }
 
     String putToNode(String path, byte[] content, String contentType) {
-        try {
+        try{
             var uri = URI.create("http://" + nodeAddress + path);
             var request = HttpRequest.newBuilder()
                                      .uri(uri)
                                      .header("Content-Type", contentType)
                                      .PUT(HttpRequest.BodyPublishers.ofByteArray(content))
                                      .build();
-
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-
             if (response.statusCode() == 200 || response.statusCode() == 201) {
-                return response.body().isEmpty() ? "{\"status\":\"ok\"}" : response.body();
-            } else {
+                return response.body()
+                               .isEmpty()
+                       ? "{\"status\":\"ok\"}"
+                       : response.body();
+            }else {
                 return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
             }
         } catch (Exception e) {
@@ -193,7 +184,6 @@ public class AetherCli implements Runnable {
     }
 
     // ===== Subcommands =====
-
     @Command(name = "status", description = "Show cluster status")
     static class StatusCommand implements Callable<Integer> {
         @CommandLine.ParentCommand
@@ -317,12 +307,10 @@ public class AetherCli implements Runnable {
     }
 
     @Command(name = "artifact",
-             description = "Artifact repository management",
-             subcommands = {
-                     ArtifactCommand.DeployArtifactCommand.class,
-                     ArtifactCommand.ListArtifactsCommand.class,
-                     ArtifactCommand.VersionsCommand.class
-             })
+    description = "Artifact repository management",
+    subcommands = {ArtifactCommand.DeployArtifactCommand.class,
+    ArtifactCommand.ListArtifactsCommand.class,
+    ArtifactCommand.VersionsCommand.class})
     static class ArtifactCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -351,27 +339,20 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                try {
+                try{
                     if (!Files.exists(jarPath)) {
                         System.err.println("File not found: " + jarPath);
                         return 1;
                     }
-
                     byte[] content = Files.readAllBytes(jarPath);
                     var coordinates = groupId + ":" + artifactId + ":" + version;
-                    var repoPath = "/repository/" +
-                                   groupId.replace('.', '/') + "/" +
-                                   artifactId + "/" +
-                                   version + "/" +
-                                   artifactId + "-" + version + ".jar";
-
+                    var repoPath = "/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version + "/" + artifactId
+                                   + "-" + version + ".jar";
                     var response = artifactParent.parent.putToNode(repoPath, content, "application/java-archive");
-
                     if (response.startsWith("{\"error\":")) {
                         System.out.println("Failed to deploy: " + response);
                         return 1;
                     }
-
                     System.out.println("Deployed " + coordinates);
                     System.out.println("  File: " + jarPath);
                     System.out.println("  Size: " + content.length + " bytes");
@@ -420,10 +401,8 @@ public class AetherCli implements Runnable {
     }
 
     @Command(name = "blueprint",
-             description = "Blueprint management",
-             subcommands = {
-                     BlueprintCommand.ApplyCommand.class
-             })
+    description = "Blueprint management",
+    subcommands = {BlueprintCommand.ApplyCommand.class})
     static class BlueprintCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -443,20 +422,17 @@ public class AetherCli implements Runnable {
 
             @Override
             public Integer call() {
-                try {
+                try{
                     if (!Files.exists(blueprintPath)) {
                         System.err.println("Blueprint file not found: " + blueprintPath);
                         return 1;
                     }
-
                     var content = Files.readString(blueprintPath);
                     var response = blueprintParent.parent.postToNode("/blueprint", content);
-
                     if (response.contains("\"error\":")) {
                         System.out.println("Failed to apply blueprint: " + response);
                         return 1;
                     }
-
                     System.out.println(formatJson(response));
                     return 0;
                 } catch (IOException e) {
@@ -472,48 +448,44 @@ public class AetherCli implements Runnable {
         if (json == null || json.isEmpty()) {
             return json;
         }
-
         var sb = new StringBuilder();
         int indent = 0;
         boolean inString = false;
-
-        for (int i = 0; i < json.length(); i++) {
+        for (int i = 0; i < json.length(); i++ ) {
             char c = json.charAt(i);
-
             if (c == '"' && (i == 0 || json.charAt(i - 1) != '\\')) {
                 inString = !inString;
                 sb.append(c);
-            } else if (!inString) {
+            }else if (!inString) {
                 switch (c) {
-                    case '{', '[' -> {
+                    case'{', '[' -> {
                         sb.append(c);
                         sb.append('\n');
-                        indent++;
+                        indent++ ;
                         sb.append("  ".repeat(indent));
                     }
-                    case '}', ']' -> {
+                    case'}', ']' -> {
                         sb.append('\n');
-                        indent--;
+                        indent-- ;
                         sb.append("  ".repeat(indent));
                         sb.append(c);
                     }
-                    case ',' -> {
+                    case',' -> {
                         sb.append(c);
                         sb.append('\n');
                         sb.append("  ".repeat(indent));
                     }
-                    case ':' -> sb.append(": ");
+                    case':' -> sb.append(": ");
                     default -> {
                         if (!Character.isWhitespace(c)) {
                             sb.append(c);
                         }
                     }
                 }
-            } else {
+            }else {
                 sb.append(c);
             }
         }
-
         return sb.toString();
     }
 }

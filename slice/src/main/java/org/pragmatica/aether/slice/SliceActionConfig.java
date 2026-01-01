@@ -30,19 +30,29 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  *                            pragmatica-lite, slice-api, and serialization classes.
  *                            If empty, uses Application ClassLoader (no isolation).
  */
-public record SliceActionConfig(TimeSpan loadingTimeout, TimeSpan activatingTimeout, TimeSpan deactivatingTimeout,
-                                TimeSpan unloadingTimeout, TimeSpan startStopTimeout, List<Repository> repositories,
-                                SerializerFactoryProvider serializerProvider, Option<Path> frameworkJarsPath) {
+public record SliceActionConfig(TimeSpan loadingTimeout,
+                                TimeSpan activatingTimeout,
+                                TimeSpan deactivatingTimeout,
+                                TimeSpan unloadingTimeout,
+                                TimeSpan startStopTimeout,
+                                List<Repository> repositories,
+                                SerializerFactoryProvider serializerProvider,
+                                Option<Path> frameworkJarsPath) {
     public static SliceActionConfig defaultConfiguration() {
         return defaultConfiguration(null);
     }
 
     public static SliceActionConfig defaultConfiguration(SerializerFactoryProvider serializerProvider) {
-        return new SliceActionConfig(timeSpan(2).minutes(),
-                                     timeSpan(1).minutes(),
-                                     timeSpan(30).seconds(),
-                                     timeSpan(2).minutes(),
-                                     timeSpan(5).seconds(),
+        return new SliceActionConfig(timeSpan(2)
+                                     .minutes(),
+                                     timeSpan(1)
+                                     .minutes(),
+                                     timeSpan(30)
+                                     .seconds(),
+                                     timeSpan(2)
+                                     .minutes(),
+                                     timeSpan(5)
+                                     .seconds(),
                                      List.of(localRepository()),
                                      serializerProvider,
                                      Option.empty());
@@ -55,12 +65,18 @@ public record SliceActionConfig(TimeSpan loadingTimeout, TimeSpan activatingTime
      * @param frameworkJarsPath  Path to directory containing framework JARs
      * @return Configuration with isolation enabled
      */
-    public static SliceActionConfig withIsolation(SerializerFactoryProvider serializerProvider, Path frameworkJarsPath) {
-        return new SliceActionConfig(timeSpan(2).minutes(),
-                                     timeSpan(1).minutes(),
-                                     timeSpan(30).seconds(),
-                                     timeSpan(2).minutes(),
-                                     timeSpan(5).seconds(),
+    public static SliceActionConfig withIsolation(SerializerFactoryProvider serializerProvider,
+                                                  Path frameworkJarsPath) {
+        return new SliceActionConfig(timeSpan(2)
+                                     .minutes(),
+                                     timeSpan(1)
+                                     .minutes(),
+                                     timeSpan(30)
+                                     .seconds(),
+                                     timeSpan(2)
+                                     .minutes(),
+                                     timeSpan(5)
+                                     .seconds(),
                                      List.of(localRepository()),
                                      serializerProvider,
                                      Option.option(frameworkJarsPath));
@@ -72,10 +88,11 @@ public record SliceActionConfig(TimeSpan loadingTimeout, TimeSpan activatingTime
             case SliceState.ACTIVATING -> Result.success(activatingTimeout);
             case SliceState.DEACTIVATING -> Result.success(deactivatingTimeout);
             case SliceState.UNLOADING -> Result.success(unloadingTimeout);
-            default -> NO_TIMEOUT_CONFIGURED.apply(state).result();
+            default -> NO_TIMEOUT_CONFIGURED.apply(state)
+                                            .result();
         };
     }
 
-    private static final Fn1<Cause, SliceState> NO_TIMEOUT_CONFIGURED = Causes.forOneValue(
-            "No timeout configured for state: %s");
+    private static final Fn1<Cause, SliceState>NO_TIMEOUT_CONFIGURED = Causes.forOneValue(
+    "No timeout configured for state: %s");
 }

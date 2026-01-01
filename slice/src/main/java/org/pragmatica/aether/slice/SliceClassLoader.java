@@ -25,7 +25,6 @@ import java.net.URLClassLoader;
  * @see SharedLibraryClassLoader
  */
 public class SliceClassLoader extends URLClassLoader {
-
     private static final String JAVA_PREFIX = "java.";
     private static final String JAVAX_PREFIX = "javax.";
     private static final String JDK_PREFIX = "jdk.";
@@ -42,22 +41,20 @@ public class SliceClassLoader extends URLClassLoader {
     }
 
     @Override
-    protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+    protected Class< ? > loadClass(String name, boolean resolve) throws ClassNotFoundException {
         synchronized (getClassLoadingLock(name)) {
             // Check if already loaded
             var loaded = findLoadedClass(name);
             if (loaded != null) {
                 return loaded;
             }
-
             // Parent-first for JDK classes (mandatory - cannot be overridden)
             if (isJdkClass(name)) {
                 return super.loadClass(name, resolve);
             }
-
             // Child-first for everything else (slice isolation)
             // This allows slice code and conflict overrides to shadow parent classes
-            try {
+            try{
                 var clazz = findClass(name);
                 if (resolve) {
                     resolveClass(clazz);
@@ -75,10 +72,7 @@ public class SliceClassLoader extends URLClassLoader {
      * These classes cannot be overridden in child classloaders.
      */
     private boolean isJdkClass(String name) {
-        return name.startsWith(JAVA_PREFIX)
-               || name.startsWith(JAVAX_PREFIX)
-               || name.startsWith(JDK_PREFIX)
-               || name.startsWith(SUN_PREFIX);
+        return name.startsWith(JAVA_PREFIX) || name.startsWith(JAVAX_PREFIX) || name.startsWith(JDK_PREFIX) || name.startsWith(SUN_PREFIX);
     }
 
     @Override

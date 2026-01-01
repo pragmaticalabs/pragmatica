@@ -6,8 +6,7 @@ import org.pragmatica.aether.demo.order.domain.OrderStatus;
 import java.time.Instant;
 
 public record CancelOrderResponse(
-    OrderId orderId,
-    OrderStatus status,
-    String reason,
-    Instant cancelledAt
-) {}
+ OrderId orderId,
+ OrderStatus status,
+ String reason,
+ Instant cancelledAt) {}

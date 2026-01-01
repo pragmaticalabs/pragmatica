@@ -8,15 +8,15 @@ import org.pragmatica.aether.metrics.deployment.DeploymentMetrics.DeploymentStat
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsEntry;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPing;
-import org.pragmatica.cluster.net.ClusterNetwork;
-import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.cluster.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyChangeNotification;
 
-import org.pragmatica.cluster.net.NetworkManagementOperation;
-import org.pragmatica.cluster.net.NetworkMessage;
+import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 
 import java.util.List;
 import java.util.Map;
@@ -371,12 +371,12 @@ class DeploymentMetricsCollectorTest {
         final List<SentMessage> sentMessages = new CopyOnWriteArrayList<>();
 
         @Override
-        public <M extends org.pragmatica.cluster.consensus.ProtocolMessage> void send(NodeId target, M message) {
+        public <M extends org.pragmatica.consensus.ProtocolMessage> void send(NodeId target, M message) {
             sentMessages.add(new SentMessage(target, message));
         }
 
         @Override
-        public <M extends org.pragmatica.cluster.consensus.ProtocolMessage> void broadcast(M message) {
+        public <M extends org.pragmatica.consensus.ProtocolMessage> void broadcast(M message) {
             // Not used in these tests
         }
 
@@ -405,7 +405,6 @@ class DeploymentMetricsCollectorTest {
             return Promise.success(Unit.unit());
         }
 
-        @Override
         public void configure(MessageRouter.MutableRouter router) {}
     }
 }

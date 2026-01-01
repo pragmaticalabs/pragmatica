@@ -10,11 +10,12 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
@@ -26,7 +27,7 @@ public final class LocalSliceInvoker implements SliceInvoker {
     private static final Logger log = LoggerFactory.getLogger(LocalSliceInvoker.class);
 
     private final Map<Artifact, Slice> slices = new ConcurrentHashMap<>();
-    private final Map<String, SliceMethod<?, ?>> methodCache = new ConcurrentHashMap<>();
+    private final Map<String, SliceMethod< ? , ? >> methodCache = new ConcurrentHashMap<>();
 
     public static LocalSliceInvoker localSliceInvoker() {
         return new LocalSliceInvoker();
@@ -35,7 +36,8 @@ public final class LocalSliceInvoker implements SliceInvoker {
     public void register(Artifact artifact, Slice slice) {
         slices.put(artifact, slice);
         for (var method : slice.methods()) {
-            var key = artifact.asString() + ":" + method.name().name();
+            var key = artifact.asString() + ":" + method.name()
+                                                       .name();
             methodCache.put(key, method);
         }
         log.info("Registered slice: {}", artifact.asString());
@@ -44,7 +46,7 @@ public final class LocalSliceInvoker implements SliceInvoker {
     @Override
     public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
         return invokeAndWait(slice, method, request, Object.class)
-            .map(_ -> unit());
+               .map(_ -> unit());
     }
 
     @Override
@@ -52,22 +54,26 @@ public final class LocalSliceInvoker implements SliceInvoker {
     public <R> Promise<R> invokeAndWait(Artifact slice, MethodName method, Object request, Class<R> responseType) {
         var key = slice.asString() + ":" + method.name();
         var sliceMethod = (SliceMethod<R, Object>) methodCache.get(key);
-
         if (sliceMethod == null) {
             log.warn("Slice method not found: {}.{}", slice.asString(), method.name());
-            return Causes.cause("Slice method not found: " + slice.asString() + "." + method.name()).promise();
+            return Causes.cause("Slice method not found: " + slice.asString() + "." + method.name())
+                         .promise();
         }
-
-        try {
+        try{
             return sliceMethod.apply(request);
         } catch (Exception e) {
             log.error("Error invoking {}.{}: {}", slice.asString(), method.name(), e.getMessage());
-            return Causes.fromThrowable(e).promise();
+            return Causes.fromThrowable(e)
+                         .promise();
         }
     }
 
     @Override
-    public <R> Promise<R> invokeWithRetry(Artifact slice, MethodName method, Object request, Class<R> responseType, int maxRetries) {
+    public <R> Promise<R> invokeWithRetry(Artifact slice,
+                                          MethodName method,
+                                          Object request,
+                                          Class<R> responseType,
+                                          int maxRetries) {
         // No retry needed for local calls
         return invokeAndWait(slice, method, request, responseType);
     }
@@ -78,9 +84,7 @@ public final class LocalSliceInvoker implements SliceInvoker {
     }
 
     @Override
-    public void onInvokeResponse(InvokeResponse response) {
-        // Not used for local invocations
-    }
+    public void onInvokeResponse(InvokeResponse response) {}
 
     @Override
     public Promise<Unit> stop() {
@@ -91,7 +95,7 @@ public final class LocalSliceInvoker implements SliceInvoker {
 
     @Override
     public int pendingCount() {
-        return 0; // Local invocations are synchronous
+        return 0;
     }
 
     public int sliceCount() {

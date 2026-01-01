@@ -5,16 +5,17 @@ import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.SliceBridge;
-import org.pragmatica.cluster.net.ClusterNetwork;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
-import org.pragmatica.message.MessageReceiver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Server-side component that handles incoming slice invocation requests.
@@ -24,7 +25,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * the response back.
  */
 public interface InvocationHandler {
-
     /**
      * Handle incoming invocation request.
      */
@@ -70,14 +70,14 @@ public interface InvocationHandler {
      *
      * @param metricsCollector The metrics collector to use
      */
-    static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network,
-                                                InvocationMetricsCollector metricsCollector) {
+    static InvocationHandler invocationHandler(NodeId self,
+                                               ClusterNetwork network,
+                                               InvocationMetricsCollector metricsCollector) {
         return new InvocationHandlerImpl(self, network, Option.option(metricsCollector));
     }
 }
 
 class InvocationHandlerImpl implements InvocationHandler {
-
     private static final Logger log = LoggerFactory.getLogger(InvocationHandlerImpl.class);
 
     private final NodeId self;
@@ -118,10 +118,10 @@ class InvocationHandlerImpl implements InvocationHandler {
     @Override
     public void onInvokeRequest(InvokeRequest request) {
         log.debug("Received invocation request [{}]: {}.{}",
-                  request.correlationId(), request.targetSlice(), request.method());
-
+                  request.correlationId(),
+                  request.targetSlice(),
+                  request.method());
         var bridge = localSlices.get(request.targetSlice());
-
         if (bridge == null) {
             log.warn("Slice not found for invocation: {}", request.targetSlice());
             if (request.expectResponse()) {
@@ -129,7 +129,6 @@ class InvocationHandlerImpl implements InvocationHandler {
             }
             return;
         }
-
         // Invoke the slice method
         invokeSliceMethod(request, bridge);
     }
@@ -137,55 +136,52 @@ class InvocationHandlerImpl implements InvocationHandler {
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
-
         // SliceBridge uses byte[] directly - no ByteBuf conversion needed
-        bridge.invoke(request.method().name(), request.payload())
+        bridge.invoke(request.method()
+                             .name(),
+                      request.payload())
               .onSuccess(responseData -> {
-                  var durationNs = System.nanoTime() - startTime;
-                  var responseBytes = responseData.length;
-
-                  if (request.expectResponse()) {
-                      sendSuccessResponse(request, responseData);
-                  }
-
-                  // Record success metrics
-                  metricsCollector.onPresent(mc ->
-                      mc.recordSuccess(request.targetSlice(), request.method(),
-                                       durationNs, requestBytes, responseBytes));
-              })
+                             var durationNs = System.nanoTime() - startTime;
+                             var responseBytes = responseData.length;
+                             if (request.expectResponse()) {
+                             sendSuccessResponse(request, responseData);
+                         }
+                             // Record success metrics
+        metricsCollector.onPresent(mc -> mc.recordSuccess(request.targetSlice(),
+                                                          request.method(),
+                                                          durationNs,
+                                                          requestBytes,
+                                                          responseBytes));
+                         })
               .onFailure(cause -> {
-                  var durationNs = System.nanoTime() - startTime;
-                  log.error("Invocation failed [{}]: {}",
-                            request.correlationId(), cause.message());
-                  if (request.expectResponse()) {
-                      sendErrorResponse(request, cause.message());
-                  }
-
-                  // Record failure metrics
-                  metricsCollector.onPresent(mc ->
-                      mc.recordFailure(request.targetSlice(), request.method(),
-                                       durationNs, requestBytes, cause.getClass().getSimpleName()));
-              });
+                             var durationNs = System.nanoTime() - startTime;
+                             log.error("Invocation failed [{}]: {}",
+                                       request.correlationId(),
+                                       cause.message());
+                             if (request.expectResponse()) {
+                             sendErrorResponse(request,
+                                               cause.message());
+                         }
+                             // Record failure metrics
+        metricsCollector.onPresent(mc -> mc.recordFailure(request.targetSlice(),
+                                                          request.method(),
+                                                          durationNs,
+                                                          requestBytes,
+                                                          cause.getClass()
+                                                               .getSimpleName()));
+                         });
     }
 
     private void sendSuccessResponse(InvokeRequest request, byte[] payload) {
         var response = new InvokeResponse(
-                self,
-                request.correlationId(),
-                true,
-                payload
-        );
+        self, request.correlationId(), true, payload);
         network.send(request.sender(), response);
         log.debug("Sent success response [{}]", request.correlationId());
     }
 
     private void sendErrorResponse(InvokeRequest request, String errorMessage) {
         var response = new InvokeResponse(
-                self,
-                request.correlationId(),
-                false,
-                errorMessage.getBytes(StandardCharsets.UTF_8)
-        );
+        self, request.correlationId(), false, errorMessage.getBytes(StandardCharsets.UTF_8));
         network.send(request.sender(), response);
         log.debug("Sent error response [{}]: {}", request.correlationId(), errorMessage);
     }

@@ -129,7 +129,7 @@ Responds to MetricsPing with MetricsPong every 1 second via MessageRouter.
 ### ClusterEventBus
 
 **Status**: ⚡ Integrated (via MessageRouter)
-**Location**: Events flow through `common/` MessageRouter
+**Location**: Events flow through pragmatica-lite MessageRouter
 **Runs On**: All nodes
 
 Distributes cluster events to interested components:

@@ -2,20 +2,23 @@ package org.pragmatica.cluster.net;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.topology.TopologyManagementMessage;
-import org.pragmatica.cluster.topology.TopologyManager;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.TopologyManagementMessage;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.topology.ip.TopologyConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.message.MessageRouter;
-import org.pragmatica.net.NodeAddress;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.NodeAddress;
 
 import java.net.InetSocketAddress;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.pragmatica.cluster.net.NodeId.randomNodeId;
-import static org.pragmatica.cluster.net.NodeInfo.nodeInfo;
+import static org.pragmatica.consensus.NodeId.randomNodeId;
+import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.cluster.topology.ip.TcpTopologyManager.tcpTopologyManager;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 

@@ -13,12 +13,10 @@ import java.util.List;
  * }</pre>
  */
 public record SliceRoute(
-    String httpMethod,
-    String pathPattern,
-    String methodName,
-    List<RouteBinding> bindings
-) {
-
+ String httpMethod,
+ String pathPattern,
+ String methodName,
+ List<RouteBinding> bindings) {
     /**
      * Create a GET route.
      */
@@ -61,8 +59,11 @@ public record SliceRoute(
         String paramName();
 
         record Body(String paramName) implements RouteBinding {}
+
         record PathVar(String paramName) implements RouteBinding {}
+
         record QueryVar(String paramName) implements RouteBinding {}
+
         record Header(String paramName, String headerName) implements RouteBinding {}
     }
 

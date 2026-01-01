@@ -21,12 +21,9 @@ import java.util.function.Function;
  * acceptable for ambient runtime services that are set once at startup.
  */
 public final class SliceRuntime {
-
     private static volatile SliceInvokerFacade sliceInvoker;
 
-    private SliceRuntime() {
-        // Static utility class
-    }
+    private SliceRuntime() {}
 
     /**
      * Get the SliceInvoker for inter-slice communication.
@@ -37,8 +34,8 @@ public final class SliceRuntime {
     public static SliceInvokerFacade sliceInvoker() {
         var invoker = sliceInvoker;
         if (invoker == null) {
-            throw new IllegalStateException("SliceInvoker not configured. " +
-                "This typically means the slice is being used outside of the Aether runtime.");
+            throw new IllegalStateException("SliceInvoker not configured. "
+                                            + "This typically means the slice is being used outside of the Aether runtime.");
         }
         return invoker;
     }
@@ -88,11 +85,9 @@ public final class SliceRuntime {
          * @param <R>            Response type
          * @return Promise resolving to the response
          */
-        <R> org.pragmatica.lang.Promise<R> invokeAndWait(
-            String sliceArtifact,
-            String methodName,
-            Object request,
-            Class<R> responseType
-        );
+        <R> org.pragmatica.lang.Promise<R> invokeAndWait(String sliceArtifact,
+                                                         String methodName,
+                                                         Object request,
+                                                         Class<R> responseType);
     }
 }

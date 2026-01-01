@@ -8,14 +8,16 @@ import java.util.List;
 
 public interface Slice {
     default Promise<Unit> start() {
-        return Result.unitResult().async();
+        return Result.unitResult()
+                     .async();
     }
 
     default Promise<Unit> stop() {
-        return Result.unitResult().async();
+        return Result.unitResult()
+                     .async();
     }
 
-    List<SliceMethod<?, ?>> methods();
+    List<SliceMethod< ? , ? >> methods();
 
     /**
      * HTTP routes this slice handles.

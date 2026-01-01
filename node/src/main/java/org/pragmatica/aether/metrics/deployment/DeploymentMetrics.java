@@ -2,7 +2,7 @@ package org.pragmatica.aether.metrics.deployment;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsEntry;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.NodeId;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -12,28 +12,30 @@ import java.util.Map;
  * Tracks timestamps for each state transition to calculate latencies.
  */
 public record DeploymentMetrics(
-    Artifact artifact,
-    NodeId nodeId,
-    long startTime,           // T0: Blueprint change / LOAD command issued
-    long loadTime,            // T1: LOAD state received by node
-    long loadedTime,          // T2: LOADED state committed
-    long activateTime,        // T3: ACTIVATE state committed
-    long activeTime,          // T4: ACTIVE state committed (0 if not reached)
-    DeploymentStatus status
-) {
-
+ Artifact artifact,
+ NodeId nodeId,
+ long startTime,
+ // T0: Blueprint change / LOAD command issued
+long loadTime,
+ // T1: LOAD state received by node
+long loadedTime,
+ // T2: LOADED state committed
+long activateTime,
+ // T3: ACTIVATE state committed
+long activeTime,
+ // T4: ACTIVE state committed (0 if not reached)
+DeploymentStatus status) {
     public enum DeploymentStatus {
         IN_PROGRESS,
         SUCCESS,
         FAILED_LOADING,
         FAILED_ACTIVATING;
-
         public static DeploymentStatus fromString(String value) {
             return switch (value) {
-                case "IN_PROGRESS" -> IN_PROGRESS;
-                case "SUCCESS" -> SUCCESS;
-                case "FAILED_LOADING" -> FAILED_LOADING;
-                case "FAILED_ACTIVATING" -> FAILED_ACTIVATING;
+                case"IN_PROGRESS" -> IN_PROGRESS;
+                case"SUCCESS" -> SUCCESS;
+                case"FAILED_LOADING" -> FAILED_LOADING;
+                case"FAILED_ACTIVATING" -> FAILED_ACTIVATING;
                 default -> IN_PROGRESS;
             };
         }
@@ -44,7 +46,9 @@ public record DeploymentMetrics(
      * Returns -1 if deployment not yet complete.
      */
     public long fullDeploymentTime() {
-        return activeTime > 0 ? activeTime - startTime : -1;
+        return activeTime > 0
+               ? activeTime - startTime
+               : - 1;
     }
 
     /**
@@ -52,7 +56,9 @@ public record DeploymentMetrics(
      * Returns -1 if deployment not yet complete.
      */
     public long netDeploymentTime() {
-        return activeTime > 0 && loadedTime > 0 ? activeTime - loadedTime : -1;
+        return activeTime > 0 && loadedTime > 0
+               ? activeTime - loadedTime
+               : - 1;
     }
 
     /**
@@ -60,7 +66,6 @@ public record DeploymentMetrics(
      */
     public Map<String, Long> transitionLatencies() {
         var latencies = new LinkedHashMap<String, Long>();
-
         if (loadTime > 0 && startTime > 0) {
             latencies.put("START_TO_LOAD", loadTime - startTime);
         }
@@ -73,7 +78,6 @@ public record DeploymentMetrics(
         if (activeTime > 0 && activateTime > 0) {
             latencies.put("ACTIVATE_TO_ACTIVE", activeTime - activateTime);
         }
-
         return latencies;
     }
 
@@ -82,15 +86,7 @@ public record DeploymentMetrics(
      */
     public DeploymentMetricsEntry toEntry() {
         return new DeploymentMetricsEntry(
-            artifact.asString(),
-            nodeId.id(),
-            startTime,
-            loadTime,
-            loadedTime,
-            activateTime,
-            activeTime,
-            status.name()
-        );
+        artifact.asString(), nodeId.id(), startTime, loadTime, loadedTime, activateTime, activeTime, status.name());
     }
 
     /**
@@ -99,19 +95,16 @@ public record DeploymentMetrics(
      */
     public static DeploymentMetrics fromEntry(DeploymentMetricsEntry entry) {
         return Artifact.artifact(entry.artifact())
-            .fold(
-                _ -> null,
-                artifact -> new DeploymentMetrics(
-                    artifact,
-                    NodeId.nodeId(entry.nodeId()),
-                    entry.startTime(),
-                    entry.loadTime(),
-                    entry.loadedTime(),
-                    entry.activateTime(),
-                    entry.activeTime(),
-                    DeploymentStatus.fromString(entry.status())
-                )
-            );
+                       .fold(_ -> null,
+                             artifact -> new DeploymentMetrics(
+        artifact,
+        NodeId.nodeId(entry.nodeId()),
+        entry.startTime(),
+        entry.loadTime(),
+        entry.loadedTime(),
+        entry.activateTime(),
+        entry.activeTime(),
+        DeploymentStatus.fromString(entry.status())));
     }
 
     /**
@@ -119,8 +112,7 @@ public record DeploymentMetrics(
      */
     public static DeploymentMetrics started(Artifact artifact, NodeId nodeId, long timestamp) {
         return new DeploymentMetrics(
-            artifact, nodeId, timestamp, 0, 0, 0, 0, DeploymentStatus.IN_PROGRESS
-        );
+        artifact, nodeId, timestamp, 0, 0, 0, 0, DeploymentStatus.IN_PROGRESS);
     }
 
     /**
@@ -128,8 +120,7 @@ public record DeploymentMetrics(
      */
     public DeploymentMetrics withLoadTime(long timestamp) {
         return new DeploymentMetrics(
-            artifact, nodeId, startTime, timestamp, loadedTime, activateTime, activeTime, status
-        );
+        artifact, nodeId, startTime, timestamp, loadedTime, activateTime, activeTime, status);
     }
 
     /**
@@ -137,8 +128,7 @@ public record DeploymentMetrics(
      */
     public DeploymentMetrics withLoadedTime(long timestamp) {
         return new DeploymentMetrics(
-            artifact, nodeId, startTime, loadTime, timestamp, activateTime, activeTime, status
-        );
+        artifact, nodeId, startTime, loadTime, timestamp, activateTime, activeTime, status);
     }
 
     /**
@@ -146,8 +136,7 @@ public record DeploymentMetrics(
      */
     public DeploymentMetrics withActivateTime(long timestamp) {
         return new DeploymentMetrics(
-            artifact, nodeId, startTime, loadTime, loadedTime, timestamp, activeTime, status
-        );
+        artifact, nodeId, startTime, loadTime, loadedTime, timestamp, activeTime, status);
     }
 
     /**
@@ -155,8 +144,7 @@ public record DeploymentMetrics(
      */
     public DeploymentMetrics completed(long timestamp) {
         return new DeploymentMetrics(
-            artifact, nodeId, startTime, loadTime, loadedTime, activateTime, timestamp, DeploymentStatus.SUCCESS
-        );
+        artifact, nodeId, startTime, loadTime, loadedTime, activateTime, timestamp, DeploymentStatus.SUCCESS);
     }
 
     /**
@@ -164,8 +152,7 @@ public record DeploymentMetrics(
      */
     public DeploymentMetrics failedLoading(long timestamp) {
         return new DeploymentMetrics(
-            artifact, nodeId, startTime, loadTime, timestamp, 0, 0, DeploymentStatus.FAILED_LOADING
-        );
+        artifact, nodeId, startTime, loadTime, timestamp, 0, 0, DeploymentStatus.FAILED_LOADING);
     }
 
     /**
@@ -173,7 +160,6 @@ public record DeploymentMetrics(
      */
     public DeploymentMetrics failedActivating(long timestamp) {
         return new DeploymentMetrics(
-            artifact, nodeId, startTime, loadTime, loadedTime, activateTime, timestamp, DeploymentStatus.FAILED_ACTIVATING
-        );
+        artifact, nodeId, startTime, loadTime, loadedTime, activateTime, timestamp, DeploymentStatus.FAILED_ACTIVATING);
     }
 }

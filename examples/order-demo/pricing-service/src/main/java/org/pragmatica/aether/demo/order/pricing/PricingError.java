@@ -3,7 +3,6 @@ package org.pragmatica.aether.demo.order.pricing;
 import org.pragmatica.lang.Cause;
 
 public sealed interface PricingError extends Cause {
-
     record PriceNotFound(String productId) implements PricingError {
         @Override
         public String message() {

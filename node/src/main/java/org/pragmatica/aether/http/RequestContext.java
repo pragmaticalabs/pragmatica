@@ -9,13 +9,12 @@ import java.util.Map;
  * Context for an incoming HTTP request containing all relevant data.
  */
 public record RequestContext(
-        HttpMethod method,
-        String path,
-        Map<String, String> pathVariables,
-        Map<String, List<String>> queryParams,
-        Map<String, String> headers,
-        byte[] body
-) {
+ HttpMethod method,
+ String path,
+ Map<String, String> pathVariables,
+ Map<String, List<String>> queryParams,
+ Map<String, String> headers,
+ byte[] body) {
     public Option<String> queryParam(String name) {
         var values = queryParams.get(name);
         return values != null && !values.isEmpty()

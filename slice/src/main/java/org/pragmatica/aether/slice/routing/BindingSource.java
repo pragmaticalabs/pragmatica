@@ -71,7 +71,7 @@ public sealed interface BindingSource {
         }
     }
 
-    Fn1<Cause, String> INVALID_BINDING_SOURCE = Causes.forOneValue("Invalid binding source format: %s");
+    Fn1<Cause, String>INVALID_BINDING_SOURCE = Causes.forOneValue("Invalid binding source format: %s");
 
     static Result<BindingSource> parse(String input) {
         if (input.equals("body")) {
@@ -83,27 +83,26 @@ public sealed interface BindingSource {
         if (input.equals("key")) {
             return Result.success(new Key());
         }
-
         var dotIndex = input.indexOf('.');
-        if (dotIndex == -1) {
-            return INVALID_BINDING_SOURCE.apply(input).result();
+        if (dotIndex == - 1) {
+            return INVALID_BINDING_SOURCE.apply(input)
+                                         .result();
         }
-
         var prefix = input.substring(0, dotIndex);
         var suffix = input.substring(dotIndex + 1);
-
         if (suffix.isEmpty()) {
-            return INVALID_BINDING_SOURCE.apply(input).result();
+            return INVALID_BINDING_SOURCE.apply(input)
+                                         .result();
         }
-
         return switch (prefix) {
-            case "path" -> Result.success(new PathVar(suffix));
-            case "query" -> Result.success(new QueryVar(suffix));
-            case "header" -> Result.success(new Header(suffix));
-            case "cookie" -> Result.success(new Cookie(suffix));
-            case "request" -> Result.success(new RequestField(suffix));
-            case "metadata" -> Result.success(new Metadata(suffix));
-            default -> INVALID_BINDING_SOURCE.apply(input).result();
+            case"path" -> Result.success(new PathVar(suffix));
+            case"query" -> Result.success(new QueryVar(suffix));
+            case"header" -> Result.success(new Header(suffix));
+            case"cookie" -> Result.success(new Cookie(suffix));
+            case"request" -> Result.success(new RequestField(suffix));
+            case"metadata" -> Result.success(new Metadata(suffix));
+            default -> INVALID_BINDING_SOURCE.apply(input)
+                                             .result();
         };
     }
 }

@@ -3,7 +3,6 @@ package org.pragmatica.aether.demo.order.usecase.cancelorder;
 import org.pragmatica.lang.Cause;
 
 public sealed interface CancelOrderError extends Cause {
-
     record InvalidRequest(String details) implements CancelOrderError {
         @Override
         public String message() {

@@ -19,30 +19,33 @@ import org.pragmatica.lang.Option;
  * @param errorType     Error type if failed (class name of the Cause)
  */
 public record SlowInvocation(
-        MethodName methodName,
-        long timestampNs,
-        long durationNs,
-        int requestBytes,
-        int responseBytes,
-        boolean success,
-        Option<String> errorType
-) {
+ MethodName methodName,
+ long timestampNs,
+ long durationNs,
+ int requestBytes,
+ int responseBytes,
+ boolean success,
+ Option<String> errorType) {
     /**
      * Create a successful slow invocation record.
      */
-    public static SlowInvocation success(MethodName method, long timestampNs, long durationNs,
-                                          int requestBytes, int responseBytes) {
-        return new SlowInvocation(method, timestampNs, durationNs, requestBytes, responseBytes,
-                                  true, Option.empty());
+    public static SlowInvocation success(MethodName method,
+                                         long timestampNs,
+                                         long durationNs,
+                                         int requestBytes,
+                                         int responseBytes) {
+        return new SlowInvocation(method, timestampNs, durationNs, requestBytes, responseBytes, true, Option.empty());
     }
 
     /**
      * Create a failed slow invocation record.
      */
-    public static SlowInvocation failure(MethodName method, long timestampNs, long durationNs,
-                                          int requestBytes, String errorType) {
-        return new SlowInvocation(method, timestampNs, durationNs, requestBytes, 0,
-                                  false, Option.option(errorType));
+    public static SlowInvocation failure(MethodName method,
+                                         long timestampNs,
+                                         long durationNs,
+                                         int requestBytes,
+                                         String errorType) {
+        return new SlowInvocation(method, timestampNs, durationNs, requestBytes, 0, false, Option.option(errorType));
     }
 
     /**

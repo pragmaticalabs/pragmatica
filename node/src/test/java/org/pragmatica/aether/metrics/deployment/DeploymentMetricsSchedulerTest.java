@@ -4,18 +4,18 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.cluster.consensus.ProtocolMessage;
-import org.pragmatica.cluster.leader.LeaderNotification;
+import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPing;
-import org.pragmatica.cluster.net.ClusterNetwork;
-import org.pragmatica.cluster.net.NetworkManagementOperation;
-import org.pragmatica.cluster.net.NetworkMessage;
-import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.cluster.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkMessage;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 
 import java.util.List;
 import java.util.Map;
@@ -256,7 +256,6 @@ class DeploymentMetricsSchedulerTest {
             return Promise.success(Unit.unit());
         }
 
-        @Override
         public void configure(MessageRouter.MutableRouter router) {}
     }
 

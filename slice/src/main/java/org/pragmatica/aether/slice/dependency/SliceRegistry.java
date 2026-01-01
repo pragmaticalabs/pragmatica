@@ -23,11 +23,10 @@ import java.util.concurrent.ConcurrentMap;
  * - Thread-safe concurrent access
  */
 public interface SliceRegistry {
-
     /**
      * Create a new empty registry.
      */
-    static SliceRegistry create() {
+    static SliceRegistry sliceRegistry() {
         return new SliceRegistryImpl(new ConcurrentHashMap<>());
     }
 
@@ -92,12 +91,12 @@ public interface SliceRegistry {
     Option<Slice> findByArtifactKey(String groupId, String artifactId, VersionPattern versionPattern);
 
     record SliceRegistryImpl(ConcurrentMap<Artifact, Slice> registry) implements SliceRegistry {
-
         @Override
         public Result<Unit> register(Artifact artifact, Slice slice) {
             var existing = registry.putIfAbsent(artifact, slice);
             if (existing != null) {
-                return ALREADY_REGISTERED.apply(artifact.asString()).result();
+                return ALREADY_REGISTERED.apply(artifact.asString())
+                                         .result();
             }
             return Result.unitResult();
         }
@@ -106,7 +105,8 @@ public interface SliceRegistry {
         public Result<Unit> unregister(Artifact artifact) {
             var removed = registry.remove(artifact);
             if (removed == null) {
-                return NOT_FOUND.apply(artifact.asString()).result();
+                return NOT_FOUND.apply(artifact.asString())
+                                .result();
             }
             return Result.unitResult();
         }
@@ -120,8 +120,10 @@ public interface SliceRegistry {
         public Option<Slice> find(String className, VersionPattern versionPattern) {
             return registry.entrySet()
                            .stream()
-                           .filter(entry -> matchesClassName(entry.getKey(), className))
-                           .filter(entry -> versionPattern.matches(entry.getKey().version()))
+                           .filter(entry -> matchesClassName(entry.getKey(),
+                                                             className))
+                           .filter(entry -> versionPattern.matches(entry.getKey()
+                                                                        .version()))
                            .map(entry -> entry.getValue())
                            .findFirst()
                            .map(Option::option)
@@ -137,9 +139,16 @@ public interface SliceRegistry {
         public Option<Slice> findByArtifactKey(String groupId, String artifactId, VersionPattern versionPattern) {
             return registry.entrySet()
                            .stream()
-                           .filter(entry -> entry.getKey().groupId().id().equals(groupId))
-                           .filter(entry -> entry.getKey().artifactId().id().equals(artifactId))
-                           .filter(entry -> versionPattern.matches(entry.getKey().version()))
+                           .filter(entry -> entry.getKey()
+                                                 .groupId()
+                                                 .id()
+                                                 .equals(groupId))
+                           .filter(entry -> entry.getKey()
+                                                 .artifactId()
+                                                 .id()
+                                                 .equals(artifactId))
+                           .filter(entry -> versionPattern.matches(entry.getKey()
+                                                                        .version()))
                            .map(entry -> entry.getValue())
                            .findFirst()
                            .map(Option::option)
@@ -151,7 +160,9 @@ public interface SliceRegistry {
             // Convention: artifact ID is typically the class name or last part of package
             // For exact matching, we'd need to load the class, but that's expensive
             // So we use a simple string match on the artifact ID
-            return artifact.artifactId().id().equals(extractSimpleName(className));
+            return artifact.artifactId()
+                           .id()
+                           .equals(extractSimpleName(className));
         }
 
         private String extractSimpleName(String className) {
@@ -161,8 +172,8 @@ public interface SliceRegistry {
                    : className;
         }
 
-        private static final Fn1<Cause, String> ALREADY_REGISTERED = Causes.forOneValue("Artifact already registered: %s");
+        private static final Fn1<Cause, String>ALREADY_REGISTERED = Causes.forOneValue("Artifact already registered: %s");
 
-        private static final Fn1<Cause, String> NOT_FOUND = Causes.forOneValue("Artifact not found in registry: %s");
+        private static final Fn1<Cause, String>NOT_FOUND = Causes.forOneValue("Artifact not found in registry: %s");
     }
 }

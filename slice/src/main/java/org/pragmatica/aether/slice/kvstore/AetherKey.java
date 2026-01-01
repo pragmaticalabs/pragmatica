@@ -3,7 +3,7 @@ package org.pragmatica.aether.slice.kvstore;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.cluster.state.kvstore.StructuredPattern;
 import org.pragmatica.lang.Cause;
@@ -14,7 +14,6 @@ import org.pragmatica.lang.utils.Causes;
 
 /// Aether KV-Store structured keys for cluster state management
 public sealed interface AetherKey extends StructuredKey {
-
     /// String representation of the key
     String asString();
 
@@ -44,11 +43,13 @@ public sealed interface AetherKey extends StructuredKey {
 
         public static Result<BlueprintKey> blueprintKey(String key) {
             if (!key.startsWith("blueprint/")) {
-                return BLUEPRINT_KEY_FORMAT_ERROR.apply(key).result();
+                return BLUEPRINT_KEY_FORMAT_ERROR.apply(key)
+                                                 .result();
             }
-
-            var artifactPart = key.substring(10); // Remove "blueprint/"
-            return Artifact.artifact(artifactPart).map(BlueprintKey::new);
+            var artifactPart = key.substring(10);
+            // Remove "blueprint/"
+            return Artifact.artifact(artifactPart)
+                           .map(BlueprintKey::new);
         }
     }
 
@@ -77,11 +78,13 @@ public sealed interface AetherKey extends StructuredKey {
 
         public static Result<AppBlueprintKey> appBlueprintKey(String key) {
             if (!key.startsWith("app-blueprint/")) {
-                return APP_BLUEPRINT_KEY_FORMAT_ERROR.apply(key).result();
+                return APP_BLUEPRINT_KEY_FORMAT_ERROR.apply(key)
+                                                     .result();
             }
-
-            var blueprintIdPart = key.substring(14); // Remove "app-blueprint/"
-            return BlueprintId.blueprintId(blueprintIdPart).map(AppBlueprintKey::new);
+            var blueprintIdPart = key.substring(14);
+            // Remove "app-blueprint/"
+            return BlueprintId.blueprintId(blueprintIdPart)
+                              .map(AppBlueprintKey::new);
         }
 
         public static AppBlueprintKey appBlueprintKey(BlueprintId blueprintId) {
@@ -118,20 +121,21 @@ public sealed interface AetherKey extends StructuredKey {
 
         public static Result<SliceNodeKey> sliceNodeKey(String key) {
             var parts = key.split("/");
-
             if (parts.length != 3) {
-                return SLICE_KEY_FORMAT_ERROR.apply(key).result();
+                return SLICE_KEY_FORMAT_ERROR.apply(key)
+                                             .result();
             }
-
             if (!"slices".equals(parts[0])) {
-                return SLICE_KEY_FORMAT_ERROR.apply(key).result();
+                return SLICE_KEY_FORMAT_ERROR.apply(key)
+                                             .result();
             }
-
             if (parts[1].isEmpty()) {
-                return SLICE_KEY_FORMAT_ERROR.apply(key).result();
+                return SLICE_KEY_FORMAT_ERROR.apply(key)
+                                             .result();
             }
-
-            return Artifact.artifact(parts[2]).map(artifact -> new SliceNodeKey(artifact, NodeId.nodeId(parts[1])));
+            return Artifact.artifact(parts[2])
+                           .map(artifact -> new SliceNodeKey(artifact,
+                                                             NodeId.nodeId(parts[1])));
         }
     }
 
@@ -160,29 +164,29 @@ public sealed interface AetherKey extends StructuredKey {
 
         public static Result<EndpointKey> endpointKey(String key) {
             if (!key.startsWith("endpoints/")) {
-                return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();
+                return ENDPOINT_KEY_FORMAT_ERROR.apply(key)
+                                                .result();
             }
-
-            var content = key.substring(10); // Remove "endpoints/"
+            var content = key.substring(10);
+            // Remove "endpoints/"
             var slashIndex = content.indexOf('/');
-            if (slashIndex == -1) {
-                return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            if (slashIndex == - 1) {
+                return ENDPOINT_KEY_FORMAT_ERROR.apply(key)
+                                                .result();
             }
-
             var artifactPart = content.substring(0, slashIndex);
             var endpointPart = content.substring(slashIndex + 1);
-
             var colonIndex = endpointPart.lastIndexOf(':');
-            if (colonIndex == -1) {
-                return ENDPOINT_KEY_FORMAT_ERROR.apply(key).result();
+            if (colonIndex == - 1) {
+                return ENDPOINT_KEY_FORMAT_ERROR.apply(key)
+                                                .result();
             }
-
             var methodNamePart = endpointPart.substring(0, colonIndex);
             var instancePart = endpointPart.substring(colonIndex + 1);
-
             return Result.all(Artifact.artifact(artifactPart),
                               MethodName.methodName(methodNamePart),
-                              Number.parseInt(instancePart)).map(EndpointKey::new);
+                              Number.parseInt(instancePart))
+                         .map(EndpointKey::new);
         }
     }
 
@@ -216,28 +220,28 @@ public sealed interface AetherKey extends StructuredKey {
 
         public static Result<RouteKey> routeKey(String key) {
             if (!key.startsWith("routes/")) {
-                return ROUTE_KEY_FORMAT_ERROR.apply(key).result();
+                return ROUTE_KEY_FORMAT_ERROR.apply(key)
+                                             .result();
             }
-
-            var content = key.substring(7); // Remove "routes/"
+            var content = key.substring(7);
+            // Remove "routes/"
             var colonIndex = content.indexOf(':');
-            if (colonIndex == -1) {
-                return ROUTE_KEY_FORMAT_ERROR.apply(key).result();
+            if (colonIndex == - 1) {
+                return ROUTE_KEY_FORMAT_ERROR.apply(key)
+                                             .result();
             }
-
             var method = content.substring(0, colonIndex);
             var hashPart = content.substring(colonIndex + 1);
-
             return Number.parseInt(hashPart)
-                .map(hash -> new RouteKey(method, hash));
+                         .map(hash -> new RouteKey(method, hash));
         }
     }
 
-    Fn1<Cause, String> BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint key format: %s");
-    Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
-    Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");
-    Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid endpoint key format: %s");
-    Fn1<Cause, String> ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid route key format: %s");
+    Fn1<Cause, String>BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint key format: %s");
+    Fn1<Cause, String>APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
+    Fn1<Cause, String>SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");
+    Fn1<Cause, String>ENDPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid endpoint key format: %s");
+    Fn1<Cause, String>ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid route key format: %s");
 
     /// Aether KV-Store structured patterns for key matching
     sealed interface AetherKeyPattern extends StructuredPattern {

@@ -1,31 +1,35 @@
 package org.pragmatica.cluster.node.rabia;
 
-import org.pragmatica.cluster.consensus.rabia.RabiaEngine;
-import org.pragmatica.cluster.leader.LeaderManager;
-import org.pragmatica.cluster.net.ClusterNetwork;
-import org.pragmatica.cluster.net.NetworkManagementOperation;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.rabia.RabiaEngine;
+import org.pragmatica.consensus.leader.LeaderManager;
+import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkManagementOperation.ConnectNode;
+import org.pragmatica.consensus.net.NetworkManagementOperation.DisconnectNode;
+import org.pragmatica.consensus.net.NetworkManagementOperation.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkMessage.Ping;
+import org.pragmatica.consensus.net.NetworkMessage.Pong;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.net.netty.NettyClusterNetwork;
 import org.pragmatica.cluster.node.ClusterNode;
-import org.pragmatica.cluster.state.Command;
-import org.pragmatica.cluster.state.StateMachine;
-import org.pragmatica.cluster.topology.QuorumStateNotification;
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
-import org.pragmatica.cluster.topology.TopologyManagementMessage;
-import org.pragmatica.cluster.topology.TopologyManager;
+import org.pragmatica.consensus.Command;
+import org.pragmatica.consensus.StateMachine;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
+import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
+import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.topology.TopologyManagementMessage;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.topology.ip.TcpTopologyManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.message.MessageRouter;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.util.List;
 
 public interface RabiaNode<C extends Command> extends ClusterNode<C> {
-
     @SuppressWarnings("unused")
     MessageRouter router();
 
@@ -36,44 +40,48 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                       StateMachine<C> stateMachine,
                                                       Serializer serializer,
                                                       Deserializer deserializer) {
-        record rabiaNode<C extends Command>(NodeConfig config,
-                                            MessageRouter router,
-                                            StateMachine<C> stateMachine,
-                                            ClusterNetwork network,
-                                            TopologyManager topologyManager,
-                                            RabiaEngine<C> consensus,
-                                            LeaderManager leaderManager) implements RabiaNode<C> {
+        record rabiaNode <C extends Command>(NodeConfig config,
+                                             MessageRouter router,
+                                             StateMachine<C> stateMachine,
+                                             ClusterNetwork network,
+                                             TopologyManager topologyManager,
+                                             RabiaEngine<C> consensus,
+                                             LeaderManager leaderManager) implements RabiaNode<C> {
             @Override
             public NodeId self() {
-                return config().topology().self();
+                return config()
+                       .topology()
+                       .self();
             }
 
             @Override
             public Promise<Unit> start() {
-                return network().start()
-                                .onSuccessRunAsync(topologyManager()::start)
-                                .flatMap(consensus()::start);
+                return network()
+                       .start()
+                       .onSuccessRunAsync(topologyManager()::start)
+                       .flatMap(consensus()::start);
             }
 
             @Override
             public Promise<Unit> stop() {
-                return consensus().stop()
-                                  .onResultRun(topologyManager()::stop)
-                                  .flatMap(network()::stop);
+                return consensus()
+                       .stop()
+                       .onResultRun(topologyManager()::stop)
+                       .flatMap(network()::stop);
             }
 
             @Override
             public <R> Promise<List<R>> apply(List<C> commands) {
-                return consensus().apply(commands);
+                return consensus()
+                       .apply(commands);
             }
         }
-
         var topologyManager = TcpTopologyManager.tcpTopologyManager(config.topology(), router);
-        var leaderManager = LeaderManager.leaderManager(config.topology().self(), router);
+        var leaderManager = LeaderManager.leaderManager(config.topology()
+                                                              .self(),
+                                                        router);
         var network = new NettyClusterNetwork(topologyManager, serializer, deserializer, router);
-        var consensus = new RabiaEngine<>(topologyManager, network, stateMachine,
-                                          config.protocol());
-
+        var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol());
         // TODO: Migrate to ImmutableRouter - all routes need centralized assembly
         router.addRoute(TopologyManagementMessage.AddNode.class, topologyManager::handleAddNodeMessage);
         router.addRoute(TopologyManagementMessage.RemoveNode.class, topologyManager::handleRemoveNodeMessage);
@@ -84,9 +92,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         router.addRoute(NodeRemoved.class, leaderManager::nodeRemoved);
         router.addRoute(NodeDown.class, leaderManager::nodeDown);
         router.addRoute(QuorumStateNotification.class, leaderManager::watchQuorumState);
-        network.configure(router);
-        consensus.configure(router);
-
-        return new rabiaNode<>(config, router, stateMachine, network, topologyManager, consensus, leaderManager);
+        // NetworkManagementOperation routes
+        router.addRoute(ConnectNode.class, network::connect);
+        router.addRoute(DisconnectNode.class, network::disconnect);
+        router.addRoute(ListConnectedNodes.class, network::listNodes);
+        router.addRoute(Ping.class, network::handlePing);
+        router.addRoute(Pong.class, network::handlePong);
+        return new rabiaNode <>(config, router, stateMachine, network, topologyManager, consensus, leaderManager);
     }
 }

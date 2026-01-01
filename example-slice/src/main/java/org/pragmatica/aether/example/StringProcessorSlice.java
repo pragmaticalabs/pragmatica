@@ -13,9 +13,8 @@ import java.util.List;
  * which return successfully resolved Promise instances.
  */
 public record StringProcessorSlice() implements Slice {
-
     @Override
-    public List<SliceMethod<?, ?>> methods() {
+    public List<SliceMethod< ? , ? >> methods() {
         return List.of();
     }
 }

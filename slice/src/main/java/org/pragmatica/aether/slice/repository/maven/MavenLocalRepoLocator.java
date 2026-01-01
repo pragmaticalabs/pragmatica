@@ -9,11 +9,10 @@ import java.io.File;
 public sealed interface MavenLocalRepoLocator {
     static String findLocalRepository() {
         var userHome = System.getProperty("user.home");
-
         return checkSystemProperty()
-                .orElse(() -> checkUserLevelSettings(userHome))
-                .orElse(() -> checkGlobalSettings(userHome))
-                .or(() -> defaultRepository(userHome));
+               .orElse(() -> checkUserLevelSettings(userHome))
+               .orElse(() -> checkGlobalSettings(userHome))
+               .or(() -> defaultRepository(userHome));
     }
 
     private static String defaultRepository(String userHome) {
@@ -29,35 +28,33 @@ public sealed interface MavenLocalRepoLocator {
     }
 
     private static Option<String> checkUserLevelSettings(String userHome) {
-        return getLocalRepoFromSettings(fromM2Home(userHome, "settings.xml")).map(userRepo -> expandPath(userRepo,
-                                                                                                         userHome));
+        return getLocalRepoFromSettings(fromM2Home(userHome, "settings.xml"))
+               .map(userRepo -> expandPath(userRepo, userHome));
     }
 
     private static Option<String> checkSystemProperty() {
-        return Option.option(System.getProperty("maven.repo.local")).filter(Verify.Is::notEmpty);
+        return Option.option(System.getProperty("maven.repo.local"))
+                     .filter(Verify.Is::notEmpty);
     }
 
     private static Option<String> getLocalRepoFromSettings(String settingsPath) {
         var file = new File(settingsPath);
-
         if (!file.exists()) {
             return Option.empty();
         }
-
-        try {
+        try{
             var dbf = DocumentBuilderFactory.newInstance();
             dbf.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-
             var db = dbf.newDocumentBuilder();
             var doc = db.parse(file);
             var nodes = doc.getElementsByTagName("localRepository");
-
             if (nodes.getLength() > 0) {
-                return Option.option(nodes.item(0).getTextContent().trim()).filter(Verify.Is::notEmpty);
+                return Option.option(nodes.item(0)
+                                          .getTextContent()
+                                          .trim())
+                             .filter(Verify.Is::notEmpty);
             }
-        } catch (Exception ignored) {
-        }
-
+        } catch (Exception ignored) {}
         return Option.empty();
     }
 

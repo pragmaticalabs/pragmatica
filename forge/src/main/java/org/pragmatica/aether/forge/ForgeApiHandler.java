@@ -1,11 +1,5 @@
 package org.pragmatica.aether.forge;
 
-import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandler.Sharable;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.handler.codec.http.*;
 import org.pragmatica.aether.forge.ForgeCluster.ClusterStatus;
 import org.pragmatica.aether.forge.ForgeMetrics.MetricsSnapshot;
 import org.pragmatica.aether.forge.simulator.BackendSimulation;
@@ -15,8 +9,7 @@ import org.pragmatica.aether.forge.simulator.SimulatorConfig;
 import org.pragmatica.aether.forge.simulator.SimulatorMode;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.pragmatica.aether.forge.simulator.DataGenerator;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
@@ -27,7 +20,14 @@ import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
-import org.pragmatica.aether.forge.simulator.DataGenerator;
+import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelHandler.Sharable;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.SimpleChannelInboundHandler;
+import io.netty.handler.codec.http.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static io.netty.handler.codec.http.HttpResponseStatus.*;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
@@ -58,7 +58,10 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
     private volatile long simulatedReleases = 0;
     private volatile long simulatedStockOuts = 0;
 
-    private ForgeApiHandler(ForgeCluster cluster, LoadGenerator loadGenerator, ForgeMetrics metrics, LocalSliceInvoker sliceInvoker) {
+    private ForgeApiHandler(ForgeCluster cluster,
+                            LoadGenerator loadGenerator,
+                            ForgeMetrics metrics,
+                            LocalSliceInvoker sliceInvoker) {
         this.cluster = cluster;
         this.loadGenerator = loadGenerator;
         this.metrics = metrics;
@@ -66,7 +69,10 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
         this.chaosController = ChaosController.chaosController(this::executeChaosEvent);
     }
 
-    public static ForgeApiHandler forgeApiHandler(ForgeCluster cluster, LoadGenerator loadGenerator, ForgeMetrics metrics, LocalSliceInvoker sliceInvoker) {
+    public static ForgeApiHandler forgeApiHandler(ForgeCluster cluster,
+                                                  LoadGenerator loadGenerator,
+                                                  ForgeMetrics metrics,
+                                                  LocalSliceInvoker sliceInvoker) {
         return new ForgeApiHandler(cluster, loadGenerator, metrics, sliceInvoker);
     }
 
@@ -80,16 +86,14 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                 cluster.crashNode(kill.nodeId());
             }
             case ChaosEvent.LatencySpike spike -> {
-                addEvent("CHAOS", "Adding " + spike.latencyMs() + "ms latency to " + spike.nodeId());
-                // Latency injection would be implemented via BackendSimulation config update
+                addEvent("CHAOS",
+                         "Adding " + spike.latencyMs() + "ms latency to " + spike.nodeId());
             }
             case ChaosEvent.SliceCrash crash -> {
                 addEvent("CHAOS", "Crashing slice " + crash.sliceArtifact());
-                // Slice crash would trigger slice deactivation
             }
             case ChaosEvent.InvocationFailure failure -> {
                 addEvent("CHAOS", "Injecting " + (int)(failure.failureRate() * 100) + "% failure rate");
-                // Would update simulation config
             }
             default -> addEvent("CHAOS", "Executing: " + event.description());
         }
@@ -103,85 +107,95 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
         var path = request.uri();
         var method = request.method();
-
         log.debug("API request: {} {}", method, path);
-
-        try {
+        try{
             if (path.equals("/api/status") && method == HttpMethod.GET) {
                 handleStatus(ctx);
-            } else if (path.equals("/api/add-node") && method == HttpMethod.POST) {
+            }else if (path.equals("/api/add-node") && method == HttpMethod.POST) {
                 handleAddNode(ctx);
-            } else if (path.startsWith("/api/kill/") && method == HttpMethod.POST) {
-                handleKillNode(ctx, path.substring("/api/kill/".length()));
-            } else if (path.startsWith("/api/crash/") && method == HttpMethod.POST) {
-                handleCrashNode(ctx, path.substring("/api/crash/".length()));
-            } else if (path.equals("/api/rolling-restart") && method == HttpMethod.POST) {
+            }else if (path.startsWith("/api/kill/") && method == HttpMethod.POST) {
+                handleKillNode(ctx,
+                               path.substring("/api/kill/".length()));
+            }else if (path.startsWith("/api/crash/") && method == HttpMethod.POST) {
+                handleCrashNode(ctx,
+                                path.substring("/api/crash/".length()));
+            }else if (path.equals("/api/rolling-restart") && method == HttpMethod.POST) {
                 handleRollingRestart(ctx);
-            } else if (path.startsWith("/api/load/set/") && method == HttpMethod.POST) {
-                handleSetLoad(ctx, path.substring("/api/load/set/".length()));
-            } else if (path.equals("/api/load/ramp") && method == HttpMethod.POST) {
+            }else if (path.startsWith("/api/load/set/") && method == HttpMethod.POST) {
+                handleSetLoad(ctx,
+                              path.substring("/api/load/set/".length()));
+            }else if (path.equals("/api/load/ramp") && method == HttpMethod.POST) {
                 handleRampLoad(ctx, request);
-            } else if (path.equals("/api/events") && method == HttpMethod.GET) {
+            }else if (path.equals("/api/events") && method == HttpMethod.GET) {
                 handleEvents(ctx);
-            } else if (path.equals("/api/reset-metrics") && method == HttpMethod.POST) {
+            }else if (path.equals("/api/reset-metrics") && method == HttpMethod.POST) {
                 handleResetMetrics(ctx);
-            } else if (path.equals("/api/node-metrics") && method == HttpMethod.GET) {
+            }else if (path.equals("/api/node-metrics") && method == HttpMethod.GET) {
                 handleNodeMetrics(ctx);
-            } else if (path.equals("/api/orders") && method == HttpMethod.POST) {
+            }else if (path.equals("/api/orders") && method == HttpMethod.POST) {
                 handlePlaceOrder(ctx, request);
-            } else if (path.startsWith("/api/orders/") && method == HttpMethod.GET) {
-                handleGetOrderStatus(ctx, path.substring("/api/orders/".length()));
-            } else if (path.startsWith("/api/orders/") && method == HttpMethod.DELETE) {
-                handleCancelOrder(ctx, path.substring("/api/orders/".length()), request);
-            } else if (path.startsWith("/api/inventory/") && method == HttpMethod.GET) {
-                handleCheckStock(ctx, path.substring("/api/inventory/".length()));
-            } else if (path.startsWith("/api/pricing/") && method == HttpMethod.GET) {
-                handleGetPrice(ctx, path.substring("/api/pricing/".length()));
-            } else if (path.equals("/api/simulator/metrics") && method == HttpMethod.GET) {
+            }else if (path.startsWith("/api/orders/") && method == HttpMethod.GET) {
+                handleGetOrderStatus(ctx,
+                                     path.substring("/api/orders/".length()));
+            }else if (path.startsWith("/api/orders/") && method == HttpMethod.DELETE) {
+                handleCancelOrder(ctx,
+                                  path.substring("/api/orders/".length()),
+                                  request);
+            }else if (path.startsWith("/api/inventory/") && method == HttpMethod.GET) {
+                handleCheckStock(ctx,
+                                 path.substring("/api/inventory/".length()));
+            }else if (path.startsWith("/api/pricing/") && method == HttpMethod.GET) {
+                handleGetPrice(ctx,
+                               path.substring("/api/pricing/".length()));
+            }else if (path.equals("/api/simulator/metrics") && method == HttpMethod.GET) {
                 handleSimulatorMetrics(ctx);
-            } else if (path.startsWith("/api/simulator/rate/") && method == HttpMethod.POST) {
-                handleSimulatorRate(ctx, path.substring("/api/simulator/rate/".length()), request);
-            } else if (path.equals("/api/simulator/entrypoints") && method == HttpMethod.GET) {
+            }else if (path.startsWith("/api/simulator/rate/") && method == HttpMethod.POST) {
+                handleSimulatorRate(ctx,
+                                    path.substring("/api/simulator/rate/".length()),
+                                    request);
+            }else if (path.equals("/api/simulator/entrypoints") && method == HttpMethod.GET) {
                 handleSimulatorEntryPoints(ctx);
-            } else if (path.equals("/api/simulator/config") && method == HttpMethod.GET) {
+            }else if (path.equals("/api/simulator/config") && method == HttpMethod.GET) {
                 handleGetConfig(ctx);
-            } else if (path.equals("/api/simulator/config") && method == HttpMethod.PUT) {
+            }else if (path.equals("/api/simulator/config") && method == HttpMethod.PUT) {
                 handlePutConfig(ctx, request);
-            } else if (path.equals("/api/simulator/config/multiplier") && method == HttpMethod.POST) {
+            }else if (path.equals("/api/simulator/config/multiplier") && method == HttpMethod.POST) {
                 handleSetMultiplier(ctx, request);
-            } else if (path.equals("/api/simulator/config/enabled") && method == HttpMethod.POST) {
+            }else if (path.equals("/api/simulator/config/enabled") && method == HttpMethod.POST) {
                 handleSetEnabled(ctx, request);
-            } else if (path.equals("/api/inventory/mode") && method == HttpMethod.GET) {
+            }else if (path.equals("/api/inventory/mode") && method == HttpMethod.GET) {
                 handleGetInventoryMode(ctx);
-            } else if (path.equals("/api/inventory/mode") && method == HttpMethod.POST) {
+            }else if (path.equals("/api/inventory/mode") && method == HttpMethod.POST) {
                 handleSetInventoryMode(ctx, request);
-            } else if (path.equals("/api/inventory/metrics") && method == HttpMethod.GET) {
+            }else if (path.equals("/api/inventory/metrics") && method == HttpMethod.GET) {
                 handleInventoryMetrics(ctx);
-            } else if (path.equals("/api/inventory/stock") && method == HttpMethod.GET) {
+            }else if (path.equals("/api/inventory/stock") && method == HttpMethod.GET) {
                 handleInventoryStock(ctx);
-            } else if (path.equals("/api/inventory/reset") && method == HttpMethod.POST) {
+            }else if (path.equals("/api/inventory/reset") && method == HttpMethod.POST) {
                 handleInventoryReset(ctx);
-            } else if (path.equals("/api/chaos/status") && method == HttpMethod.GET) {
+            }else if (path.equals("/api/chaos/status") && method == HttpMethod.GET) {
                 handleChaosStatus(ctx);
-            } else if (path.equals("/api/chaos/enable") && method == HttpMethod.POST) {
+            }else if (path.equals("/api/chaos/enable") && method == HttpMethod.POST) {
                 handleChaosEnable(ctx, request);
-            } else if (path.equals("/api/chaos/inject") && method == HttpMethod.POST) {
+            }else if (path.equals("/api/chaos/inject") && method == HttpMethod.POST) {
                 handleChaosInject(ctx, request);
-            } else if (path.startsWith("/api/chaos/stop/") && method == HttpMethod.POST) {
-                handleChaosStop(ctx, path.substring("/api/chaos/stop/".length()));
-            } else if (path.equals("/api/chaos/stop-all") && method == HttpMethod.POST) {
+            }else if (path.startsWith("/api/chaos/stop/") && method == HttpMethod.POST) {
+                handleChaosStop(ctx,
+                                path.substring("/api/chaos/stop/".length()));
+            }else if (path.equals("/api/chaos/stop-all") && method == HttpMethod.POST) {
                 handleChaosStopAll(ctx);
-            } else if (path.equals("/api/simulator/mode") && method == HttpMethod.GET) {
+            }else if (path.equals("/api/simulator/mode") && method == HttpMethod.GET) {
                 handleGetMode(ctx);
-            } else if (path.equals("/api/simulator/modes") && method == HttpMethod.GET) {
+            }else if (path.equals("/api/simulator/modes") && method == HttpMethod.GET) {
                 handleGetModes(ctx);
-            } else if (path.startsWith("/api/simulator/mode/") && method == HttpMethod.PUT) {
-                handleSetMode(ctx, path.substring("/api/simulator/mode/".length()));
-            } else if (path.startsWith("/repository/") && method == HttpMethod.GET) {
+            }else if (path.startsWith("/api/simulator/mode/") && method == HttpMethod.PUT) {
+                handleSetMode(ctx,
+                              path.substring("/api/simulator/mode/".length()));
+            }else if (path.startsWith("/repository/") && method == HttpMethod.GET) {
                 handleRepositoryGet(ctx, path);
-            } else if (path.startsWith("/repository/") && (method == HttpMethod.PUT || method == HttpMethod.POST)) {
+            }else if (path.startsWith("/repository/") && (method == HttpMethod.PUT || method == HttpMethod.POST)) {
                 handleRepositoryPut(ctx, path, request);
-            } else {
+            }else {
                 sendResponse(ctx, NOT_FOUND, "{\"error\": \"Not found\"}");
             }
         } catch (Exception e) {
@@ -194,79 +208,102 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
         var clusterStatus = cluster.status();
         var metricsSnapshot = metrics.currentMetrics();
         var loadStatus = new LoadStatus(
-                loadGenerator.currentRate(),
-                loadGenerator.targetRate(),
-                loadGenerator.isRunning()
-        );
-
-        var response = new StatusResponse(clusterStatus, metricsSnapshot, loadStatus, uptimeSeconds(), sliceInvoker.sliceCount());
+        loadGenerator.currentRate(), loadGenerator.targetRate(), loadGenerator.isRunning());
+        var response = new StatusResponse(clusterStatus,
+                                          metricsSnapshot,
+                                          loadStatus,
+                                          uptimeSeconds(),
+                                          sliceInvoker.sliceCount());
         sendResponse(ctx, OK, toJson(response));
     }
 
     private void handleAddNode(ChannelHandlerContext ctx) {
         addEvent("ADD_NODE", "Adding new node to cluster");
-
         cluster.addNode()
                .onSuccess(nodeId -> {
-                   addEvent("NODE_JOINED", "Node " + nodeId.id() + " joined the cluster");
-                   sendResponse(ctx, OK, "{\"success\": true, \"nodeId\": \"" + nodeId.id() + "\", \"state\": \"joining\"}");
-               })
+                              addEvent("NODE_JOINED",
+                                       "Node " + nodeId.id() + " joined the cluster");
+                              sendResponse(ctx,
+                                           OK,
+                                           "{\"success\": true, \"nodeId\": \"" + nodeId.id()
+                                           + "\", \"state\": \"joining\"}");
+                          })
                .onFailure(cause -> {
-                   addEvent("ADD_NODE_FAILED", "Failed to add node: " + cause.message());
-                   sendResponse(ctx, INTERNAL_SERVER_ERROR, "{\"success\": false, \"error\": \"" + escapeJson(cause.message()) + "\"}");
-               });
+                              addEvent("ADD_NODE_FAILED",
+                                       "Failed to add node: " + cause.message());
+                              sendResponse(ctx,
+                                           INTERNAL_SERVER_ERROR,
+                                           "{\"success\": false, \"error\": \"" + escapeJson(cause.message()) + "\"}");
+                          });
     }
 
     private void handleKillNode(ChannelHandlerContext ctx, String nodeId) {
-        var wasLeader = cluster.currentLeader().fold(() -> false, l -> l.equals(nodeId));
-
-        addEvent("KILL_NODE", "Killing node " + nodeId + (wasLeader ? " (leader)" : ""));
-
+        var wasLeader = cluster.currentLeader()
+                               .fold(() -> false,
+                                     l -> l.equals(nodeId));
+        addEvent("KILL_NODE", "Killing node " + nodeId + (wasLeader
+                                                          ? " (leader)"
+                                                          : ""));
         cluster.killNode(nodeId)
                .onSuccess(_ -> {
-                   var newLeader = cluster.currentLeader().fold(() -> "none", l -> l);
-                   addEvent("NODE_KILLED", "Node " + nodeId + " killed" + (wasLeader ? ", new leader: " + newLeader : ""));
-                   sendResponse(ctx, OK, "{\"success\": true, \"newLeader\": \"" + newLeader + "\"}");
-               })
+                              var newLeader = cluster.currentLeader()
+                                                     .fold(() -> "none",
+                                                           l -> l);
+                              addEvent("NODE_KILLED",
+                                       "Node " + nodeId + " killed" + (wasLeader
+                                                                       ? ", new leader: " + newLeader
+                                                                       : ""));
+                              sendResponse(ctx, OK, "{\"success\": true, \"newLeader\": \"" + newLeader + "\"}");
+                          })
                .onFailure(cause -> {
-                   addEvent("KILL_FAILED", "Failed to kill node " + nodeId);
-                   sendResponse(ctx, INTERNAL_SERVER_ERROR, "{\"success\": false, \"error\": \"" + escapeJson(cause.message()) + "\"}");
-               });
+                              addEvent("KILL_FAILED", "Failed to kill node " + nodeId);
+                              sendResponse(ctx,
+                                           INTERNAL_SERVER_ERROR,
+                                           "{\"success\": false, \"error\": \"" + escapeJson(cause.message()) + "\"}");
+                          });
     }
 
     private void handleCrashNode(ChannelHandlerContext ctx, String nodeId) {
-        var wasLeader = cluster.currentLeader().fold(() -> false, l -> l.equals(nodeId));
-
-        addEvent("CRASH_NODE", "Crashing node " + nodeId + " abruptly" + (wasLeader ? " (leader)" : ""));
-
+        var wasLeader = cluster.currentLeader()
+                               .fold(() -> false,
+                                     l -> l.equals(nodeId));
+        addEvent("CRASH_NODE", "Crashing node " + nodeId + " abruptly" + (wasLeader
+                                                                          ? " (leader)"
+                                                                          : ""));
         cluster.crashNode(nodeId)
                .onSuccess(_ -> {
-                   var newLeader = cluster.currentLeader().fold(() -> "none", l -> l);
-                   addEvent("NODE_CRASHED", "Node " + nodeId + " crashed");
-                   sendResponse(ctx, OK, "{\"success\": true, \"newLeader\": \"" + newLeader + "\"}");
-               })
+                              var newLeader = cluster.currentLeader()
+                                                     .fold(() -> "none",
+                                                           l -> l);
+                              addEvent("NODE_CRASHED", "Node " + nodeId + " crashed");
+                              sendResponse(ctx, OK, "{\"success\": true, \"newLeader\": \"" + newLeader + "\"}");
+                          })
                .onFailure(cause -> {
-                   addEvent("CRASH_FAILED", "Failed to crash node " + nodeId);
-                   sendResponse(ctx, INTERNAL_SERVER_ERROR, "{\"success\": false, \"error\": \"" + escapeJson(cause.message()) + "\"}");
-               });
+                              addEvent("CRASH_FAILED", "Failed to crash node " + nodeId);
+                              sendResponse(ctx,
+                                           INTERNAL_SERVER_ERROR,
+                                           "{\"success\": false, \"error\": \"" + escapeJson(cause.message()) + "\"}");
+                          });
     }
 
     private void handleRollingRestart(ChannelHandlerContext ctx) {
         addEvent("ROLLING_RESTART", "Starting rolling restart of all nodes");
-
         cluster.rollingRestart()
                .onSuccess(_ -> {
-                   addEvent("ROLLING_RESTART_COMPLETE", "Rolling restart completed successfully");
-                   sendResponse(ctx, OK, "{\"success\": true}");
-               })
+                              addEvent("ROLLING_RESTART_COMPLETE", "Rolling restart completed successfully");
+                              sendResponse(ctx, OK, "{\"success\": true}");
+                          })
                .onFailure(cause -> {
-                   addEvent("ROLLING_RESTART_FAILED", "Rolling restart failed: " + cause.message());
-                   sendResponse(ctx, INTERNAL_SERVER_ERROR, "{\"success\": false, \"error\": \"" + escapeJson(cause.message()) + "\"}");
-               });
+                              addEvent("ROLLING_RESTART_FAILED",
+                                       "Rolling restart failed: " + cause.message());
+                              sendResponse(ctx,
+                                           INTERNAL_SERVER_ERROR,
+                                           "{\"success\": false, \"error\": \"" + escapeJson(cause.message()) + "\"}");
+                          });
     }
 
     private void handleSetLoad(ChannelHandlerContext ctx, String rateStr) {
-        try {
+        try{
             var rate = Integer.parseInt(rateStr);
             loadGenerator.setRate(rate);
             addEvent("LOAD_SET", "Load set to " + rate + " req/sec");
@@ -277,15 +314,17 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
     }
 
     private void handleRampLoad(ChannelHandlerContext ctx, FullHttpRequest request) {
-        try {
-            var body = request.content().toString(StandardCharsets.UTF_8);
+        try{
+            var body = request.content()
+                              .toString(StandardCharsets.UTF_8);
             // Simple parsing - expect {"targetRate": 5000, "durationMs": 30000}
             var targetRate = extractInt(body, "targetRate", 5000);
             var durationMs = extractLong(body, "durationMs", 30000);
-
             loadGenerator.rampUp(targetRate, durationMs);
             addEvent("LOAD_RAMP", "Ramping load to " + targetRate + " req/sec over " + (durationMs / 1000) + "s");
-            sendResponse(ctx, OK, "{\"success\": true, \"targetRate\": " + targetRate + ", \"durationMs\": " + durationMs + "}");
+            sendResponse(ctx,
+                         OK,
+                         "{\"success\": true, \"targetRate\": " + targetRate + ", \"durationMs\": " + durationMs + "}");
         } catch (Exception e) {
             sendResponse(ctx, BAD_REQUEST, "{\"success\": false, \"error\": \"" + escapeJson(e.getMessage()) + "\"}");
         }
@@ -298,9 +337,15 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
             if (!first) eventsJson.append(",");
             first = false;
             eventsJson.append("{")
-                      .append("\"timestamp\":\"").append(event.timestamp).append("\",")
-                      .append("\"type\":\"").append(event.type).append("\",")
-                      .append("\"message\":\"").append(escapeJson(event.message)).append("\"")
+                      .append("\"timestamp\":\"")
+                      .append(event.timestamp)
+                      .append("\",")
+                      .append("\"type\":\"")
+                      .append(event.type)
+                      .append("\",")
+                      .append("\"message\":\"")
+                      .append(escapeJson(event.message))
+                      .append("\"")
                       .append("}");
         }
         eventsJson.append("]");
@@ -322,11 +367,21 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
             if (!first) json.append(",");
             first = false;
             json.append("{")
-                .append("\"nodeId\":\"").append(m.nodeId()).append("\",")
-                .append("\"isLeader\":").append(m.isLeader()).append(",")
-                .append("\"cpuUsage\":").append(String.format("%.3f", m.cpuUsage())).append(",")
-                .append("\"heapUsedMb\":").append(m.heapUsedMb()).append(",")
-                .append("\"heapMaxMb\":").append(m.heapMaxMb())
+                .append("\"nodeId\":\"")
+                .append(m.nodeId())
+                .append("\",")
+                .append("\"isLeader\":")
+                .append(m.isLeader())
+                .append(",")
+                .append("\"cpuUsage\":")
+                .append(String.format("%.3f",
+                                      m.cpuUsage()))
+                .append(",")
+                .append("\"heapUsedMb\":")
+                .append(m.heapUsedMb())
+                .append(",")
+                .append("\"heapMaxMb\":")
+                .append(m.heapMaxMb())
                 .append("}");
         }
         json.append("]");
@@ -337,7 +392,8 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      * Handle simulator metrics request - returns per-entry-point metrics.
      */
     private void handleSimulatorMetrics(ChannelHandlerContext ctx) {
-        var snapshots = loadGenerator.entryPointMetrics().snapshot();
+        var snapshots = loadGenerator.entryPointMetrics()
+                                     .snapshot();
         var json = new StringBuilder("{\"entryPoints\":[");
         var first = true;
         for (var snapshot : snapshots) {
@@ -355,15 +411,14 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      * Body: {"rate": 500}
      */
     private void handleSimulatorRate(ChannelHandlerContext ctx, String entryPoint, FullHttpRequest request) {
-        try {
-            var body = request.content().toString(StandardCharsets.UTF_8);
-            var rate = extractInt(body, "rate", -1);
-
+        try{
+            var body = request.content()
+                              .toString(StandardCharsets.UTF_8);
+            var rate = extractInt(body, "rate", - 1);
             if (rate < 0) {
                 sendResponse(ctx, BAD_REQUEST, "{\"success\":false,\"error\":\"Missing or invalid rate\"}");
                 return;
             }
-
             loadGenerator.setRate(entryPoint, rate);
             addEvent("RATE_SET", "Set " + entryPoint + " rate to " + rate + " req/sec");
             sendResponse(ctx, OK, "{\"success\":true,\"entryPoint\":\"" + entryPoint + "\",\"rate\":" + rate + "}");
@@ -383,7 +438,11 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
             if (!first) json.append(",");
             first = false;
             var rate = loadGenerator.currentRate(ep);
-            json.append("{\"name\":\"").append(ep).append("\",\"rate\":").append(rate).append("}");
+            json.append("{\"name\":\"")
+                .append(ep)
+                .append("\",\"rate\":")
+                .append(rate)
+                .append("}");
         }
         json.append("]}");
         sendResponse(ctx, OK, json.toString());
@@ -400,12 +459,12 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      * Handle replace simulator config.
      */
     private void handlePutConfig(ChannelHandlerContext ctx, FullHttpRequest request) {
-        try {
-            var body = request.content().toString(StandardCharsets.UTF_8);
+        try{
+            var body = request.content()
+                              .toString(StandardCharsets.UTF_8);
             var newConfig = SimulatorConfig.parseJson(body);
             config = newConfig;
             applyLoadGeneratorSettings(newConfig);
-
             addEvent("CONFIG_UPDATE", "Simulator configuration updated");
             sendResponse(ctx, OK, "{\"success\":true}");
         } catch (Exception e) {
@@ -417,8 +476,9 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      * Handle set global rate multiplier.
      */
     private void handleSetMultiplier(ChannelHandlerContext ctx, FullHttpRequest request) {
-        try {
-            var body = request.content().toString(StandardCharsets.UTF_8);
+        try{
+            var body = request.content()
+                              .toString(StandardCharsets.UTF_8);
             var pattern = java.util.regex.Pattern.compile("\"multiplier\"\\s*:\\s*([\\d.]+)");
             var matcher = pattern.matcher(body);
             if (matcher.find()) {
@@ -426,10 +486,9 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                 var newConfig = config.withGlobalMultiplier(multiplier);
                 config = newConfig;
                 applyLoadGeneratorSettings(newConfig);
-
                 addEvent("MULTIPLIER_SET", "Global rate multiplier set to " + multiplier);
                 sendResponse(ctx, OK, "{\"success\":true,\"multiplier\":" + multiplier + "}");
-            } else {
+            }else {
                 sendResponse(ctx, BAD_REQUEST, "{\"success\":false,\"error\":\"Missing multiplier\"}");
             }
         } catch (Exception e) {
@@ -441,8 +500,9 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      * Handle enable/disable load generator.
      */
     private void handleSetEnabled(ChannelHandlerContext ctx, FullHttpRequest request) {
-        try {
-            var body = request.content().toString(StandardCharsets.UTF_8);
+        try{
+            var body = request.content()
+                              .toString(StandardCharsets.UTF_8);
             var pattern = java.util.regex.Pattern.compile("\"enabled\"\\s*:\\s*(true|false)");
             var matcher = pattern.matcher(body);
             if (matcher.find()) {
@@ -450,10 +510,11 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                 var newConfig = config.withLoadGeneratorEnabled(enabled);
                 config = newConfig;
                 applyLoadGeneratorSettings(newConfig);
-
-                addEvent("LOAD_GENERATOR", "Load generator " + (enabled ? "enabled" : "disabled"));
+                addEvent("LOAD_GENERATOR", "Load generator " + (enabled
+                                                                ? "enabled"
+                                                                : "disabled"));
                 sendResponse(ctx, OK, "{\"success\":true,\"enabled\":" + enabled + "}");
-            } else {
+            }else {
                 sendResponse(ctx, BAD_REQUEST, "{\"success\":false,\"error\":\"Missing enabled\"}");
             }
         } catch (Exception e) {
@@ -465,7 +526,9 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      * Handle get inventory mode - simulated.
      */
     private void handleGetInventoryMode(ChannelHandlerContext ctx) {
-        sendResponse(ctx, OK, "{\"mode\":\"" + (infiniteInventoryMode ? "infinite" : "realistic") + "\"}");
+        sendResponse(ctx, OK, "{\"mode\":\"" + (infiniteInventoryMode
+                                                ? "infinite"
+                                                : "realistic") + "\"}");
     }
 
     /**
@@ -473,16 +536,23 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      * Body: {"mode": "infinite"} or {"mode": "realistic"}
      */
     private void handleSetInventoryMode(ChannelHandlerContext ctx, FullHttpRequest request) {
-        try {
-            var body = request.content().toString(StandardCharsets.UTF_8);
+        try{
+            var body = request.content()
+                              .toString(StandardCharsets.UTF_8);
             var pattern = java.util.regex.Pattern.compile("\"mode\"\\s*:\\s*\"(\\w+)\"");
             var matcher = pattern.matcher(body);
             if (matcher.find()) {
                 var mode = matcher.group(1);
                 infiniteInventoryMode = "infinite".equalsIgnoreCase(mode);
-                addEvent("INVENTORY_MODE", "Inventory mode set to " + (infiniteInventoryMode ? "infinite" : "realistic"));
-                sendResponse(ctx, OK, "{\"success\":true,\"mode\":\"" + (infiniteInventoryMode ? "infinite" : "realistic") + "\"}");
-            } else {
+                addEvent("INVENTORY_MODE", "Inventory mode set to " + (infiniteInventoryMode
+                                                                       ? "infinite"
+                                                                       : "realistic"));
+                sendResponse(ctx,
+                             OK,
+                             "{\"success\":true,\"mode\":\"" + (infiniteInventoryMode
+                                                                ? "infinite"
+                                                                : "realistic") + "\"}");
+            }else {
                 sendResponse(ctx, BAD_REQUEST, "{\"success\":false,\"error\":\"Missing mode\"}");
             }
         } catch (Exception e) {
@@ -495,10 +565,12 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      */
     private void handleInventoryMetrics(ChannelHandlerContext ctx) {
         var json = String.format(
-            "{\"totalReservations\":%d,\"totalReleases\":%d,\"stockOuts\":%d,\"infiniteMode\":%b,\"refillRate\":%d}",
-            simulatedReservations, simulatedReleases, simulatedStockOuts,
-            infiniteInventoryMode, 100
-        );
+        "{\"totalReservations\":%d,\"totalReleases\":%d,\"stockOuts\":%d,\"infiniteMode\":%b,\"refillRate\":%d}",
+        simulatedReservations,
+        simulatedReleases,
+        simulatedStockOuts,
+        infiniteInventoryMode,
+        100);
         sendResponse(ctx, OK, json);
     }
 
@@ -523,22 +595,29 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
     }
 
     // ==================== Chaos API Handlers ====================
-
     /**
      * Get chaos controller status.
      */
     private void handleChaosStatus(ChannelHandlerContext ctx) {
-        sendResponse(ctx, OK, chaosController.status().toJson());
+        sendResponse(ctx,
+                     OK,
+                     chaosController.status()
+                                    .toJson());
     }
 
     /**
      * Enable or disable chaos injection.
      */
     private void handleChaosEnable(ChannelHandlerContext ctx, FullHttpRequest request) {
-        var body = request.content().toString(StandardCharsets.UTF_8);
+        var body = request.content()
+                          .toString(StandardCharsets.UTF_8);
         var enabled = extractBoolean(body, "enabled", false);
         chaosController.setEnabled(enabled);
-        addEvent("CHAOS_" + (enabled ? "ENABLED" : "DISABLED"), "Chaos controller " + (enabled ? "enabled" : "disabled"));
+        addEvent("CHAOS_" + (enabled
+                             ? "ENABLED"
+                             : "DISABLED"), "Chaos controller " + (enabled
+                                                                   ? "enabled"
+                                                                   : "disabled"));
         sendResponse(ctx, OK, "{\"success\":true,\"enabled\":" + enabled + "}");
     }
 
@@ -547,21 +626,21 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      * Body format: {"type":"NODE_KILL","nodeId":"node-1","durationSeconds":30}
      */
     private void handleChaosInject(ChannelHandlerContext ctx, FullHttpRequest request) {
-        try {
-            var body = request.content().toString(StandardCharsets.UTF_8);
+        try{
+            var body = request.content()
+                              .toString(StandardCharsets.UTF_8);
             var type = extractString(body, "type", "");
             var durationSeconds = extractLong(body, "durationSeconds", 60);
             var duration = Duration.ofSeconds(durationSeconds);
-
             ChaosEvent event = switch (type.toUpperCase()) {
-                case "NODE_KILL" -> {
+                case"NODE_KILL" -> {
                     var nodeId = extractString(body, "nodeId", null);
                     if (nodeId == null || nodeId.isBlank()) {
                         throw new IllegalArgumentException("nodeId is required for NODE_KILL");
                     }
                     yield ChaosEvent.NodeKill.kill(nodeId, duration);
                 }
-                case "LATENCY_SPIKE" -> {
+                case"LATENCY_SPIKE" -> {
                     var nodeId = extractString(body, "nodeId", null);
                     if (nodeId == null || nodeId.isBlank()) {
                         throw new IllegalArgumentException("nodeId is required for LATENCY_SPIKE");
@@ -569,7 +648,7 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                     var latencyMs = extractLong(body, "latencyMs", 500);
                     yield ChaosEvent.LatencySpike.addLatency(nodeId, latencyMs, duration);
                 }
-                case "SLICE_CRASH" -> {
+                case"SLICE_CRASH" -> {
                     var artifact = extractString(body, "artifact", null);
                     if (artifact == null || artifact.isBlank()) {
                         throw new IllegalArgumentException("artifact is required for SLICE_CRASH");
@@ -577,12 +656,12 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                     var nodeId = extractString(body, "nodeId", null);
                     yield ChaosEvent.SliceCrash.crashSlice(artifact, nodeId, duration);
                 }
-                case "INVOCATION_FAILURE" -> {
+                case"INVOCATION_FAILURE" -> {
                     var artifact = extractString(body, "artifact", null);
                     var failureRate = extractDouble(body, "failureRate", 0.5);
                     yield ChaosEvent.InvocationFailure.forSlice(artifact, failureRate, duration);
                 }
-                case "CPU_SPIKE" -> {
+                case"CPU_SPIKE" -> {
                     var nodeId = extractString(body, "nodeId", null);
                     if (nodeId == null || nodeId.isBlank()) {
                         throw new IllegalArgumentException("nodeId is required for CPU_SPIKE");
@@ -590,7 +669,7 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                     var level = extractDouble(body, "level", 0.8);
                     yield ChaosEvent.CpuSpike.onNode(nodeId, level, duration);
                 }
-                case "MEMORY_PRESSURE" -> {
+                case"MEMORY_PRESSURE" -> {
                     var nodeId = extractString(body, "nodeId", null);
                     if (nodeId == null || nodeId.isBlank()) {
                         throw new IllegalArgumentException("nodeId is required for MEMORY_PRESSURE");
@@ -600,16 +679,17 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                 }
                 default -> throw new IllegalArgumentException("Unknown chaos type: " + type);
             };
-
             chaosController.injectChaos(event)
-                .onSuccess(eventId -> sendResponse(ctx, OK,
-                    "{\"success\":true,\"eventId\":\"" + eventId + "\",\"type\":\"" + type + "\"}"))
-                .onFailure(cause -> sendResponse(ctx, BAD_REQUEST,
-                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}"));
-
+                           .onSuccess(eventId -> sendResponse(ctx,
+                                                              OK,
+                                                              "{\"success\":true,\"eventId\":\"" + eventId
+                                                              + "\",\"type\":\"" + type + "\"}"))
+                           .onFailure(cause -> sendResponse(ctx,
+                                                            BAD_REQUEST,
+                                                            "{\"success\":false,\"error\":\"" + escapeJson(cause.message())
+                                                            + "\"}"));
         } catch (Exception e) {
-            sendResponse(ctx, BAD_REQUEST,
-                "{\"success\":false,\"error\":\"" + escapeJson(e.getMessage()) + "\"}");
+            sendResponse(ctx, BAD_REQUEST, "{\"success\":false,\"error\":\"" + escapeJson(e.getMessage()) + "\"}");
         }
     }
 
@@ -632,7 +712,6 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
     }
 
     // ==================== Mode API Handlers ====================
-
     /**
      * Get current simulator mode.
      */
@@ -652,9 +731,11 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      */
     private void handleSetMode(ChannelHandlerContext ctx, String modeName) {
         SimulatorMode.simulatorMode(modeName)
-            .onSuccess(newMode -> applyMode(ctx, newMode))
-            .onFailure(cause -> sendResponse(ctx, BAD_REQUEST,
-                "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}"));
+                     .onSuccess(newMode -> applyMode(ctx, newMode))
+                     .onFailure(cause -> sendResponse(ctx,
+                                                      BAD_REQUEST,
+                                                      "{\"success\":false,\"error\":\"" + escapeJson(cause.message())
+                                                      + "\"}"));
     }
 
     /**
@@ -663,7 +744,6 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
     private void applyMode(ChannelHandlerContext ctx, SimulatorMode newMode) {
         String oldModeName;
         SimulatorConfig newConfig;
-
         // Synchronized update of mode and config
         synchronized (modeLock) {
             oldModeName = currentMode.name();
@@ -671,44 +751,40 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
             newConfig = newMode.applyTo(config);
             config = newConfig;
         }
-
         // These operations are idempotent and can be outside the lock
         chaosController.setEnabled(newMode.chaosEnabled());
         applyLoadGeneratorSettings(newConfig);
-
         addEvent("MODE_CHANGED", "Simulator mode changed from " + oldModeName + " to " + newMode.displayName());
-        sendResponse(ctx, OK, String.format(
-            "{\"success\":true,\"previousMode\":\"%s\",\"currentMode\":\"%s\"}",
-            oldModeName, newMode.name()
-        ));
+        sendResponse(ctx,
+                     OK,
+                     String.format(
+        "{\"success\":true,\"previousMode\":\"%s\",\"currentMode\":\"%s\"}", oldModeName, newMode.name()));
     }
 
     // ==================== Simulated Order API Handlers ====================
     // These handlers return simulated responses for load testing when no slices are loaded
-
     /**
      * Handle order placement - returns simulated response.
      */
     private void handlePlaceOrder(ChannelHandlerContext ctx, FullHttpRequest request) {
         applySimulation("place-order")
-            .onSuccess(_ -> {
-                var random = java.util.concurrent.ThreadLocalRandom.current();
-                var orderId = String.format("ORD-%08d", random.nextInt(100_000_000));
-
-                // Track order ID for subsequent queries
-                DataGenerator.OrderIdGenerator.trackOrderId(orderId);
-
-                var total = 10.00 + random.nextDouble() * 990.00;  // $10-$1000
-                var json = String.format(
-                    "{\"success\":true,\"orderId\":\"%s\",\"status\":\"CONFIRMED\",\"total\":\"USD %.2f\"}",
-                    orderId, total
-                );
-                sendResponse(ctx, OK, json);
-            })
-            .onFailure(cause -> {
-                sendResponse(ctx, INTERNAL_SERVER_ERROR,
-                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
-            });
+        .onSuccess(_ -> {
+                       var random = java.util.concurrent.ThreadLocalRandom.current();
+                       var orderId = String.format("ORD-%08d",
+                                                   random.nextInt(100_000_000));
+                       // Track order ID for subsequent queries
+        DataGenerator.OrderIdGenerator.trackOrderId(orderId);
+                       var total = 10.00 + random.nextDouble() * 990.00;
+                       // $10-$1000
+        var json = String.format(
+        "{\"success\":true,\"orderId\":\"%s\",\"status\":\"CONFIRMED\",\"total\":\"USD %.2f\"}", orderId, total);
+                       sendResponse(ctx, OK, json);
+                   })
+        .onFailure(cause -> {
+                       sendResponse(ctx,
+                                    INTERNAL_SERVER_ERROR,
+                                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
+                   });
     }
 
     /**
@@ -716,44 +792,47 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      */
     private void handleGetOrderStatus(ChannelHandlerContext ctx, String orderId) {
         applySimulation("get-order-status")
-            .onSuccess(_ -> {
-                var random = java.util.concurrent.ThreadLocalRandom.current();
-                var statuses = List.of("CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED");
-                var status = statuses.get(random.nextInt(statuses.size()));
-                var total = 10.00 + random.nextDouble() * 990.00;
-                var itemCount = 1 + random.nextInt(5);
-
-                var json = String.format(
-                    "{\"success\":true,\"orderId\":\"%s\",\"status\":\"%s\",\"total\":\"USD %.2f\",\"itemCount\":%d}",
-                    orderId, status, total, itemCount
-                );
-                sendResponse(ctx, OK, json);
-            })
-            .onFailure(cause -> {
-                sendResponse(ctx, NOT_FOUND,
-                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
-            });
+        .onSuccess(_ -> {
+                       var random = java.util.concurrent.ThreadLocalRandom.current();
+                       var statuses = List.of("CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED");
+                       var status = statuses.get(random.nextInt(statuses.size()));
+                       var total = 10.00 + random.nextDouble() * 990.00;
+                       var itemCount = 1 + random.nextInt(5);
+                       var json = String.format(
+        "{\"success\":true,\"orderId\":\"%s\",\"status\":\"%s\",\"total\":\"USD %.2f\",\"itemCount\":%d}",
+        orderId,
+        status,
+        total,
+        itemCount);
+                       sendResponse(ctx, OK, json);
+                   })
+        .onFailure(cause -> {
+                       sendResponse(ctx,
+                                    NOT_FOUND,
+                                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
+                   });
     }
 
     /**
      * Handle cancel order - returns simulated response.
      */
     private void handleCancelOrder(ChannelHandlerContext ctx, String orderId, FullHttpRequest request) {
-        var body = request.content().toString(StandardCharsets.UTF_8);
+        var body = request.content()
+                          .toString(StandardCharsets.UTF_8);
         var reason = extractString(body, "reason", "User requested cancellation");
-
         applySimulation("cancel-order")
-            .onSuccess(_ -> {
-                var json = String.format(
-                    "{\"success\":true,\"orderId\":\"%s\",\"status\":\"CANCELLED\",\"reason\":\"%s\"}",
-                    orderId, escapeJson(reason)
-                );
-                sendResponse(ctx, OK, json);
-            })
-            .onFailure(cause -> {
-                sendResponse(ctx, BAD_REQUEST,
-                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
-            });
+        .onSuccess(_ -> {
+                       var json = String.format(
+        "{\"success\":true,\"orderId\":\"%s\",\"status\":\"CANCELLED\",\"reason\":\"%s\"}",
+        orderId,
+        escapeJson(reason));
+                       sendResponse(ctx, OK, json);
+                   })
+        .onFailure(cause -> {
+                       sendResponse(ctx,
+                                    BAD_REQUEST,
+                                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
+                   });
     }
 
     /**
@@ -761,19 +840,21 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      */
     private void handleCheckStock(ChannelHandlerContext ctx, String productId) {
         applySimulation("inventory-service")
-            .onSuccess(_ -> {
-                var random = java.util.concurrent.ThreadLocalRandom.current();
-                var available = random.nextInt(1000);
-                var json = String.format(
-                    "{\"success\":true,\"productId\":\"%s\",\"available\":%d,\"sufficient\":%b}",
-                    productId, available, available > 0
-                );
-                sendResponse(ctx, OK, json);
-            })
-            .onFailure(cause -> {
-                sendResponse(ctx, NOT_FOUND,
-                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
-            });
+        .onSuccess(_ -> {
+                       var random = java.util.concurrent.ThreadLocalRandom.current();
+                       var available = random.nextInt(1000);
+                       var json = String.format(
+        "{\"success\":true,\"productId\":\"%s\",\"available\":%d,\"sufficient\":%b}",
+        productId,
+        available,
+        available > 0);
+                       sendResponse(ctx, OK, json);
+                   })
+        .onFailure(cause -> {
+                       sendResponse(ctx,
+                                    NOT_FOUND,
+                                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
+                   });
     }
 
     /**
@@ -781,19 +862,19 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      */
     private void handleGetPrice(ChannelHandlerContext ctx, String productId) {
         applySimulation("pricing-service")
-            .onSuccess(_ -> {
-                var random = java.util.concurrent.ThreadLocalRandom.current();
-                var price = 5.00 + random.nextDouble() * 495.00;  // $5-$500
-                var json = String.format(
-                    "{\"success\":true,\"productId\":\"%s\",\"price\":\"USD %.2f\"}",
-                    productId, price
-                );
-                sendResponse(ctx, OK, json);
-            })
-            .onFailure(cause -> {
-                sendResponse(ctx, NOT_FOUND,
-                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
-            });
+        .onSuccess(_ -> {
+                       var random = java.util.concurrent.ThreadLocalRandom.current();
+                       var price = 5.00 + random.nextDouble() * 495.00;
+                       // $5-$500
+        var json = String.format(
+        "{\"success\":true,\"productId\":\"%s\",\"price\":\"USD %.2f\"}", productId, price);
+                       sendResponse(ctx, OK, json);
+                   })
+        .onFailure(cause -> {
+                       sendResponse(ctx,
+                                    NOT_FOUND,
+                                    "{\"success\":false,\"error\":\"" + escapeJson(cause.message()) + "\"}");
+                   });
     }
 
     /**
@@ -801,7 +882,8 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      */
     private Promise<Unit> applySimulation(String sliceName) {
         var sliceConfig = config.sliceConfig(sliceName);
-        return sliceConfig.buildSimulation().apply();
+        return sliceConfig.buildSimulation()
+                          .apply();
     }
 
     /**
@@ -810,13 +892,14 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
      */
     private void applyLoadGeneratorSettings(SimulatorConfig cfg) {
         for (var entryPoint : loadGenerator.entryPoints()) {
-            var rate = cfg.loadGeneratorEnabled() ? cfg.effectiveRate(entryPoint) : 0;
+            var rate = cfg.loadGeneratorEnabled()
+                       ? cfg.effectiveRate(entryPoint)
+                       : 0;
             loadGenerator.setRate(entryPoint, rate);
         }
     }
 
     // ==================== Repository API Handlers ====================
-
     /**
      * Handle GET /repository/** - retrieve artifact from DHT.
      */
@@ -827,24 +910,34 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
             return;
         }
         var node = nodes.getFirst();
-        node.mavenProtocolHandler().handleGet(path)
+        node.mavenProtocolHandler()
+            .handleGet(path)
             .onSuccess(response -> {
-                if (response.statusCode() == 200) {
-                    var content = Unpooled.wrappedBuffer(response.content());
-                    var httpResponse = new DefaultFullHttpResponse(HTTP_1_1, OK, content);
-                    httpResponse.headers().set(HttpHeaderNames.CONTENT_TYPE, response.contentType());
-                    httpResponse.headers().set(HttpHeaderNames.CONTENT_LENGTH, response.content().length);
-                    httpResponse.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-                    ctx.writeAndFlush(httpResponse).addListener(ChannelFutureListener.CLOSE);
-                } else if (response.statusCode() == 404) {
-                    sendResponse(ctx, NOT_FOUND, "{\"error\": \"Artifact not found\"}");
-                } else {
-                    sendResponse(ctx, HttpResponseStatus.valueOf(response.statusCode()),
-                        new String(response.content(), StandardCharsets.UTF_8));
-                }
-            })
-            .onFailure(cause -> sendResponse(ctx, INTERNAL_SERVER_ERROR,
-                "{\"error\": \"" + escapeJson(cause.message()) + "\"}"));
+                           if (response.statusCode() == 200) {
+                           var content = Unpooled.wrappedBuffer(response.content());
+                           var httpResponse = new DefaultFullHttpResponse(HTTP_1_1, OK, content);
+                           httpResponse.headers()
+                                       .set(HttpHeaderNames.CONTENT_TYPE,
+                                            response.contentType());
+                           httpResponse.headers()
+                                       .set(HttpHeaderNames.CONTENT_LENGTH,
+                                            response.content().length);
+                           httpResponse.headers()
+                                       .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+                           ctx.writeAndFlush(httpResponse)
+                              .addListener(ChannelFutureListener.CLOSE);
+                       }else if (response.statusCode() == 404) {
+                           sendResponse(ctx, NOT_FOUND, "{\"error\": \"Artifact not found\"}");
+                       }else {
+                           sendResponse(ctx,
+                                        HttpResponseStatus.valueOf(response.statusCode()),
+                                        new String(response.content(),
+                                                   StandardCharsets.UTF_8));
+                       }
+                       })
+            .onFailure(cause -> sendResponse(ctx,
+                                             INTERNAL_SERVER_ERROR,
+                                             "{\"error\": \"" + escapeJson(cause.message()) + "\"}"));
     }
 
     /**
@@ -860,27 +953,31 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
         var byteBuf = request.content();
         var content = new byte[byteBuf.readableBytes()];
         byteBuf.readBytes(content);
-
-        node.mavenProtocolHandler().handlePut(path, content)
+        node.mavenProtocolHandler()
+            .handlePut(path, content)
             .onSuccess(response -> {
-                var json = String.format("{\"success\":true,\"path\":\"%s\",\"size\":%d}",
-                    escapeJson(path), content.length);
-                sendResponse(ctx, OK, json);
-                addEvent("ARTIFACT_DEPLOYED", "Deployed " + path + " (" + content.length + " bytes)");
-            })
-            .onFailure(cause -> sendResponse(ctx, INTERNAL_SERVER_ERROR,
-                "{\"error\": \"" + escapeJson(cause.message()) + "\"}"));
+                           var json = String.format("{\"success\":true,\"path\":\"%s\",\"size\":%d}",
+                                                    escapeJson(path),
+                                                    content.length);
+                           sendResponse(ctx, OK, json);
+                           addEvent("ARTIFACT_DEPLOYED",
+                                    "Deployed " + path + " (" + content.length + " bytes)");
+                       })
+            .onFailure(cause -> sendResponse(ctx,
+                                             INTERNAL_SERVER_ERROR,
+                                             "{\"error\": \"" + escapeJson(cause.message()) + "\"}"));
     }
 
     public void addEvent(String type, String message) {
-        var event = new ForgeEvent(Instant.now().toString(), type, message);
+        var event = new ForgeEvent(Instant.now()
+                                          .toString(),
+                                   type,
+                                   message);
         events.addLast(event);
-
         // Trim in a thread-safe manner - over-deletion is acceptable
         while (events.size() > MAX_EVENTS) {
             events.pollFirst();
         }
-
         log.info("[EVENT] {}: {}", type, message);
     }
 
@@ -891,13 +988,19 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
     private void sendResponse(ChannelHandlerContext ctx, HttpResponseStatus status, String json) {
         var content = Unpooled.copiedBuffer(json, StandardCharsets.UTF_8);
         var response = new DefaultFullHttpResponse(HTTP_1_1, status, content);
-        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json");
-        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, content.readableBytes());
-        response.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-        response.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, DELETE, OPTIONS");
-        response.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type");
-
-        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
+        response.headers()
+                .set(HttpHeaderNames.CONTENT_TYPE, "application/json");
+        response.headers()
+                .set(HttpHeaderNames.CONTENT_LENGTH,
+                     content.readableBytes());
+        response.headers()
+                .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+        response.headers()
+                .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, DELETE, OPTIONS");
+        response.headers()
+                .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type");
+        ctx.writeAndFlush(response)
+           .addListener(ChannelFutureListener.CLOSE);
     }
 
     private String toJson(StatusResponse response) {
@@ -907,35 +1010,30 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
             if (!first) nodes.append(",");
             first = false;
             nodes.append("{")
-                 .append("\"id\":\"").append(node.id()).append("\",")
-                 .append("\"port\":").append(node.port()).append(",")
-                 .append("\"state\":\"").append(node.state()).append("\",")
-                 .append("\"isLeader\":").append(node.isLeader())
+                 .append("\"id\":\"")
+                 .append(node.id())
+                 .append("\",")
+                 .append("\"port\":")
+                 .append(node.port())
+                 .append(",")
+                 .append("\"state\":\"")
+                 .append(node.state())
+                 .append("\",")
+                 .append("\"isLeader\":")
+                 .append(node.isLeader())
                  .append("}");
         }
         nodes.append("]");
-
-        return "{" +
-               "\"cluster\":{" +
-               "\"nodes\":" + nodes + "," +
-               "\"leaderId\":\"" + response.cluster.leaderId() + "\"," +
-               "\"nodeCount\":" + response.cluster.nodes().size() +
-               "}," +
-               "\"metrics\":{" +
-               "\"requestsPerSecond\":" + String.format("%.1f", response.metrics.requestsPerSecond()) + "," +
-               "\"successRate\":" + String.format("%.2f", response.metrics.successRate()) + "," +
-               "\"avgLatencyMs\":" + String.format("%.2f", response.metrics.avgLatencyMs()) + "," +
-               "\"totalSuccess\":" + response.metrics.totalSuccess() + "," +
-               "\"totalFailures\":" + response.metrics.totalFailures() +
-               "}," +
-               "\"load\":{" +
-               "\"currentRate\":" + response.load.currentRate + "," +
-               "\"targetRate\":" + response.load.targetRate + "," +
-               "\"running\":" + response.load.running +
-               "}," +
-               "\"uptimeSeconds\":" + response.uptimeSeconds + "," +
-               "\"sliceCount\":" + response.sliceCount +
-               "}";
+        return "{" + "\"cluster\":{" + "\"nodes\":" + nodes + "," + "\"leaderId\":\"" + response.cluster.leaderId()
+               + "\"," + "\"nodeCount\":" + response.cluster.nodes()
+                                                    .size() + "}," + "\"metrics\":{" + "\"requestsPerSecond\":" + String.format("%.1f",
+                                                                                                                                response.metrics.requestsPerSecond())
+               + "," + "\"successRate\":" + String.format("%.2f", response.metrics.successRate()) + ","
+               + "\"avgLatencyMs\":" + String.format("%.2f", response.metrics.avgLatencyMs()) + ","
+               + "\"totalSuccess\":" + response.metrics.totalSuccess() + "," + "\"totalFailures\":" + response.metrics.totalFailures()
+               + "}," + "\"load\":{" + "\"currentRate\":" + response.load.currentRate + "," + "\"targetRate\":" + response.load.targetRate
+               + "," + "\"running\":" + response.load.running + "}," + "\"uptimeSeconds\":" + response.uptimeSeconds
+               + "," + "\"sliceCount\":" + response.sliceCount + "}";
     }
 
     private String escapeJson(String str) {
@@ -949,7 +1047,8 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
 
     private int extractInt(String json, String key, int defaultValue) {
         var pattern = "\"" + key + "\"\\s*:\\s*(\\d+)";
-        var matcher = java.util.regex.Pattern.compile(pattern).matcher(json);
+        var matcher = java.util.regex.Pattern.compile(pattern)
+                          .matcher(json);
         if (matcher.find()) {
             return Integer.parseInt(matcher.group(1));
         }
@@ -958,7 +1057,8 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
 
     private long extractLong(String json, String key, long defaultValue) {
         var pattern = "\"" + key + "\"\\s*:\\s*(\\d+)";
-        var matcher = java.util.regex.Pattern.compile(pattern).matcher(json);
+        var matcher = java.util.regex.Pattern.compile(pattern)
+                          .matcher(json);
         if (matcher.find()) {
             return Long.parseLong(matcher.group(1));
         }
@@ -967,7 +1067,8 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
 
     private String extractString(String json, String key, String defaultValue) {
         var pattern = "\"" + key + "\"\\s*:\\s*\"([^\"]*)\"";
-        var matcher = java.util.regex.Pattern.compile(pattern).matcher(json);
+        var matcher = java.util.regex.Pattern.compile(pattern)
+                          .matcher(json);
         if (matcher.find()) {
             return matcher.group(1);
         }
@@ -976,7 +1077,8 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
 
     private boolean extractBoolean(String json, String key, boolean defaultValue) {
         var pattern = "\"" + key + "\"\\s*:\\s*(true|false)";
-        var matcher = java.util.regex.Pattern.compile(pattern).matcher(json);
+        var matcher = java.util.regex.Pattern.compile(pattern)
+                          .matcher(json);
         if (matcher.find()) {
             return Boolean.parseBoolean(matcher.group(1));
         }
@@ -985,7 +1087,8 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
 
     private double extractDouble(String json, String key, double defaultValue) {
         var pattern = "\"" + key + "\"\\s*:\\s*([\\d.]+)";
-        var matcher = java.util.regex.Pattern.compile(pattern).matcher(json);
+        var matcher = java.util.regex.Pattern.compile(pattern)
+                          .matcher(json);
         if (matcher.find()) {
             return Double.parseDouble(matcher.group(1));
         }
@@ -998,7 +1101,13 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
         ctx.close();
     }
 
-    private record StatusResponse(ClusterStatus cluster, MetricsSnapshot metrics, LoadStatus load, long uptimeSeconds, int sliceCount) {}
+    private record StatusResponse(ClusterStatus cluster,
+                                  MetricsSnapshot metrics,
+                                  LoadStatus load,
+                                  long uptimeSeconds,
+                                  int sliceCount) {}
+
     private record LoadStatus(int currentRate, int targetRate, boolean running) {}
+
     private record ForgeEvent(String timestamp, String type, String message) {}
 }

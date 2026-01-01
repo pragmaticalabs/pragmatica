@@ -8,7 +8,6 @@ import java.util.concurrent.atomic.LongAdder;
  * Thread-safe and designed for high-frequency updates.
  */
 public final class ForgeMetrics {
-
     // Rolling window counters (reset every second)
     private final LongAdder successCount = new LongAdder();
     private final LongAdder failureCount = new LongAdder();
@@ -63,34 +62,27 @@ public final class ForgeMetrics {
         var now = System.currentTimeMillis();
         var elapsed = now - lastSnapshotTime;
         if (elapsed <= 0) elapsed = 1;
-
         var currentSuccess = totalSuccess.get();
         var currentFailure = totalFailures.get();
-
         var successDelta = currentSuccess - lastSuccessSnapshot;
         var failureDelta = currentFailure - lastFailureSnapshot;
         var totalDelta = successDelta + failureDelta;
-
         // Calculate rates
         requestsPerSecond = (totalDelta * 1000.0) / elapsed;
-
         if (totalDelta > 0) {
             successRate = (successDelta * 100.0) / totalDelta;
-        } else {
+        }else {
             successRate = 100.0;
         }
-
         // Calculate average latency from recent requests
         var count = requestCount.sumThenReset();
         var latency = totalLatencyNanos.sumThenReset();
         if (count > 0) {
             avgLatencyMs = (latency / count) / 1_000_000.0;
         }
-
         // Reset window counters
         successCount.reset();
         failureCount.reset();
-
         // Update snapshot markers
         lastSuccessSnapshot = currentSuccess;
         lastFailureSnapshot = currentFailure;
@@ -102,12 +94,7 @@ public final class ForgeMetrics {
      */
     public MetricsSnapshot currentMetrics() {
         return new MetricsSnapshot(
-                requestsPerSecond,
-                successRate,
-                avgLatencyMs,
-                totalSuccess.get(),
-                totalFailures.get()
-        );
+        requestsPerSecond, successRate, avgLatencyMs, totalSuccess.get(), totalFailures.get());
     }
 
     /**
@@ -132,12 +119,11 @@ public final class ForgeMetrics {
      * Metrics snapshot for dashboard.
      */
     public record MetricsSnapshot(
-            double requestsPerSecond,
-            double successRate,
-            double avgLatencyMs,
-            long totalSuccess,
-            long totalFailures
-    ) {
+    double requestsPerSecond,
+    double successRate,
+    double avgLatencyMs,
+    long totalSuccess,
+    long totalFailures) {
         public long totalRequests() {
             return totalSuccess + totalFailures;
         }

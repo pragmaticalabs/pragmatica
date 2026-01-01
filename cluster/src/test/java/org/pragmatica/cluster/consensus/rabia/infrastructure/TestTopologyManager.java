@@ -1,8 +1,8 @@
-package org.pragmatica.cluster.consensus.rabia.infrastructure;
+package org.pragmatica.consensus.rabia.infrastructure;
 
-import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.cluster.net.NodeInfo;
-import org.pragmatica.cluster.topology.TopologyManager;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 

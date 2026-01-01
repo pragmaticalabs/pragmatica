@@ -16,44 +16,40 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 // TODO: rework timeout handling, perhaps use existing values as defaults
 public enum SliceState {
     LOAD,
-    LOADING(timeSpan(2).minutes()),
+    LOADING(timeSpan(2)
+            .minutes()),
     LOADED,
     ACTIVATE,
-    ACTIVATING(timeSpan(1).minutes()),
+    ACTIVATING(timeSpan(1)
+               .minutes()),
     ACTIVE,
     DEACTIVATE,
     DEACTIVATING(
-            timeSpan(30).seconds()),
+    timeSpan(30)
+    .seconds()),
     FAILED,
     UNLOAD,
-    UNLOADING(timeSpan(2).minutes());
-
+    UNLOADING(timeSpan(2)
+              .minutes());
     private final Option<TimeSpan> timeout;
-
     SliceState() {
         this(Option.none());
     }
-
     SliceState(TimeSpan timeout) {
         this(Option.some(timeout));
     }
-
     SliceState(Option<TimeSpan> timeout) {
         this.timeout = timeout;
     }
-
     public Option<TimeSpan> timeout() {
         return timeout;
     }
-
     public boolean hasTimeout() {
         return timeout.isPresent();
     }
-
     public boolean isTransitional() {
         return hasTimeout();
     }
-
     public Set<SliceState> validTransitions() {
         return switch (this) {
             case LOAD -> Set.of(LOADING);
@@ -68,11 +64,10 @@ public enum SliceState {
             case UNLOADING -> Set.of();
         };
     }
-
     public boolean canTransitionTo(SliceState target) {
-        return validTransitions().contains(target);
+        return validTransitions()
+               .contains(target);
     }
-
     public Result<SliceState> nextState() {
         return switch (this) {
             case LOAD -> Result.success(LOADING);
@@ -87,9 +82,7 @@ public enum SliceState {
             case UNLOADING -> TERMINAL_STATE_ERROR.result();
         };
     }
-
-    private static final Map<String, SliceState> STRING_TO_STATE;
-
+    private static final Map<String, SliceState>STRING_TO_STATE;
     static {
         var map = new HashMap<String, SliceState>();
         map.put("LOAD", LOAD);
@@ -105,12 +98,10 @@ public enum SliceState {
         map.put("UNLOADING", UNLOADING);
         STRING_TO_STATE = Map.copyOf(map);
     }
-
     public static Result<SliceState> sliceState(String stateString) {
         return Option.option(STRING_TO_STATE.get(stateString.toUpperCase()))
                      .toResult(UNKNOWN_STATE.apply(stateString));
     }
-
-    private static final Fn1<Cause, String> UNKNOWN_STATE = Causes.forOneValue("Unknown slice state [{}]");
+    private static final Fn1<Cause, String>UNKNOWN_STATE = Causes.forOneValue("Unknown slice state [{}]");
     private static final Cause TERMINAL_STATE_ERROR = Causes.cause("Cannot transition from UNLOADING terminal state");
 }

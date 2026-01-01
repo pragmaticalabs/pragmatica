@@ -228,7 +228,7 @@ class RouteRegistryTest {
             1
         );
         var endpointValue = new AetherValue.EndpointValue(
-            org.pragmatica.cluster.net.NodeId.randomNodeId()
+            org.pragmatica.consensus.NodeId.randomNodeId()
         );
 
         registry.onValuePut(new ValuePut<>(
@@ -261,8 +261,8 @@ class RouteRegistryTest {
         List<List<KVCommand<AetherKey>>> appliedCommands = new java.util.ArrayList<>();
 
         @Override
-        public org.pragmatica.cluster.net.NodeId self() {
-            return org.pragmatica.cluster.net.NodeId.randomNodeId();
+        public org.pragmatica.consensus.NodeId self() {
+            return org.pragmatica.consensus.NodeId.randomNodeId();
         }
 
         @Override

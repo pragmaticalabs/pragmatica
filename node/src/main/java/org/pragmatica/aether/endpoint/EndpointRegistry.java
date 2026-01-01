@@ -6,19 +6,20 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.lang.Option;
-import org.pragmatica.message.MessageReceiver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Passive KV-Store watcher that maintains a local cache of all cluster endpoints.
@@ -35,7 +36,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Slices automatically publish/unpublish endpoints via consensus.
  */
 public interface EndpointRegistry {
-
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
@@ -62,11 +62,10 @@ public interface EndpointRegistry {
      * Endpoint representation with location information.
      */
     record Endpoint(
-            Artifact artifact,
-            MethodName methodName,
-            int instanceNumber,
-            NodeId nodeId
-    ) {
+    Artifact artifact,
+    MethodName methodName,
+    int instanceNumber,
+    NodeId nodeId) {
         public EndpointKey toKey() {
             return new EndpointKey(artifact, methodName, instanceNumber);
         }
@@ -77,25 +76,22 @@ public interface EndpointRegistry {
      */
     static EndpointRegistry endpointRegistry() {
         record endpointRegistry(
-                Map<EndpointKey, Endpoint> endpoints,
-                Map<String, AtomicInteger> roundRobinCounters
-        ) implements EndpointRegistry {
-
+        Map<EndpointKey, Endpoint> endpoints,
+        Map<String, AtomicInteger> roundRobinCounters) implements EndpointRegistry {
             private static final Logger log = LoggerFactory.getLogger(endpointRegistry.class);
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                var key = valuePut.cause().key();
-                var value = valuePut.cause().value();
-
+                var key = valuePut.cause()
+                                  .key();
+                var value = valuePut.cause()
+                                    .value();
                 if (key instanceof EndpointKey endpointKey && value instanceof EndpointValue endpointValue) {
                     var endpoint = new Endpoint(
-                            endpointKey.artifact(),
-                            endpointKey.methodName(),
-                            endpointKey.instanceNumber(),
-                            endpointValue.nodeId()
-                    );
-
+                    endpointKey.artifact(),
+                    endpointKey.methodName(),
+                    endpointKey.instanceNumber(),
+                    endpointValue.nodeId());
                     endpoints.put(endpointKey, endpoint);
                     log.debug("Registered endpoint: {}", endpoint);
                 }
@@ -103,8 +99,8 @@ public interface EndpointRegistry {
 
             @Override
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                var key = valueRemove.cause().key();
-
+                var key = valueRemove.cause()
+                                     .key();
                 if (key instanceof EndpointKey endpointKey) {
                     var removed = endpoints.remove(endpointKey);
                     if (removed != null) {
@@ -115,27 +111,29 @@ public interface EndpointRegistry {
 
             @Override
             public List<Endpoint> findEndpoints(Artifact artifact, MethodName methodName) {
-                return endpoints.values().stream()
-                                .filter(e -> e.artifact().equals(artifact) && e.methodName().equals(methodName))
+                return endpoints.values()
+                                .stream()
+                                .filter(e -> e.artifact()
+                                              .equals(artifact) && e.methodName()
+                                                                    .equals(methodName))
                                 .toList();
             }
 
             @Override
             public Option<Endpoint> selectEndpoint(Artifact artifact, MethodName methodName) {
                 // Sort endpoints to ensure consistent round-robin order across calls
-                var available = findEndpoints(artifact, methodName).stream()
-                        .sorted(Comparator.comparing(e -> e.nodeId().id()))
-                        .toList();
-
+                var available = findEndpoints(artifact, methodName)
+                                .stream()
+                                .sorted(Comparator.comparing(e -> e.nodeId()
+                                                                   .id()))
+                                .toList();
                 if (available.isEmpty()) {
                     return Option.none();
                 }
-
                 var lookupKey = artifact.asString() + "/" + methodName.name();
                 var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
                 // Use bitmask to ensure positive value (handles Integer.MIN_VALUE edge case)
                 var index = (counter.getAndIncrement() & 0x7FFFFFFF) % available.size();
-
                 return Option.option(available.get(index));
             }
 
@@ -144,10 +142,7 @@ public interface EndpointRegistry {
                 return List.copyOf(endpoints.values());
             }
         }
-
         return new endpointRegistry(
-                new ConcurrentHashMap<>(),
-                new ConcurrentHashMap<>()
-        );
+        new ConcurrentHashMap<>(), new ConcurrentHashMap<>());
     }
 }

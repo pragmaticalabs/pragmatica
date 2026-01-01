@@ -17,7 +17,6 @@ import org.pragmatica.lang.utils.Causes;
  * - Caret: "^1.2.3" (minor-level: >=1.2.3, <2.0.0)
  */
 public sealed interface VersionPattern {
-
     boolean matches(Version version);
 
     String asString();
@@ -37,23 +36,20 @@ public sealed interface VersionPattern {
 
     /// Version range with inclusive/exclusive bounds
     record Range(
-            Version from,
-            boolean fromInclusive,
-            Version to,
-            boolean toInclusive
-    ) implements VersionPattern {
+    Version from,
+    boolean fromInclusive,
+    Version to,
+    boolean toInclusive) implements VersionPattern {
         @Override
         public boolean matches(Version version) {
             int fromCmp = compareVersions(version, from);
             int toCmp = compareVersions(version, to);
-
             boolean fromMatch = fromInclusive
                                 ? fromCmp >= 0
                                 : fromCmp > 0;
             boolean toMatch = toInclusive
                               ? toCmp <= 0
                               : toCmp < 0;
-
             return fromMatch && toMatch;
         }
 
@@ -88,30 +84,28 @@ public sealed interface VersionPattern {
         }
 
         public enum Operator {
-            GT(">"), GTE(">="), LT("<"), LTE("<=");
-
+            GT(">"),
+            GTE(">="),
+            LT("<"),
+            LTE("<=");
             private final String symbol;
-
             Operator(String symbol) {
                 this.symbol = symbol;
             }
-
             public String symbol() {
                 return symbol;
             }
-
             public static Result<Operator> fromSymbol(String symbol) {
                 return switch (symbol) {
-                    case ">" -> Result.success(GT);
-                    case ">=" -> Result.success(GTE);
-                    case "<" -> Result.success(LT);
-                    case "<=" -> Result.success(LTE);
-                    default -> INVALID_OPERATOR.apply(symbol).result();
+                    case">" -> Result.success(GT);
+                    case">=" -> Result.success(GTE);
+                    case"<" -> Result.success(LT);
+                    case"<=" -> Result.success(LTE);
+                    default -> INVALID_OPERATOR.apply(symbol)
+                                               .result();
                 };
             }
-
-            private static final Fn1<Cause, String> INVALID_OPERATOR =
-                    Causes.forOneValue("Invalid comparison operator: %s");
+            private static final Fn1<Cause, String>INVALID_OPERATOR = Causes.forOneValue("Invalid comparison operator: %s");
         }
     }
 
@@ -122,10 +116,9 @@ public sealed interface VersionPattern {
             if (compareVersions(other, version) < 0) {
                 return false;
             }
-
             // Must have same major and minor
             return other.major() == version.major() &&
-                   other.minor() == version.minor();
+            other.minor() == version.minor();
         }
 
         @Override
@@ -141,7 +134,6 @@ public sealed interface VersionPattern {
             if (compareVersions(other, version) < 0) {
                 return false;
             }
-
             // Must have same major
             return other.major() == version.major();
         }
@@ -164,75 +156,70 @@ public sealed interface VersionPattern {
             return Integer.compare(v1.patch(), v2.patch());
         }
         // Qualifier comparison: lexicographic
-        return v1.qualifier().compareTo(v2.qualifier());
+        return v1.qualifier()
+                 .compareTo(v2.qualifier());
     }
 
     /// Parse version pattern from string
     static Result<VersionPattern> parse(String pattern) {
         var trimmed = pattern.trim();
-
         if (trimmed.isEmpty()) {
             return EMPTY_PATTERN.result();
         }
-
         // Range pattern: [1.0.0,2.0.0)
         if (isRangePattern(trimmed)) {
             return parseRange(trimmed);
         }
-
         // Tilde pattern: ~1.2.3
         if (trimmed.startsWith("~")) {
             return parseTilde(trimmed);
         }
-
         // Caret pattern: ^1.2.3
         if (trimmed.startsWith("^")) {
             return parseCaret(trimmed);
         }
-
         // Comparison pattern: >=1.5.0, >1.0.0, <=2.0.0, <3.0.0
         if (isComparisonPattern(trimmed)) {
             return parseComparison(trimmed);
         }
-
         // Exact version: 1.2.3
         return parseExact(trimmed);
     }
 
     private static boolean isRangePattern(String pattern) {
         return (pattern.startsWith("[") || pattern.startsWith("(")) &&
-               (pattern.endsWith("]") || pattern.endsWith(")"));
+        (pattern.endsWith("]") || pattern.endsWith(")"));
     }
 
     private static boolean isComparisonPattern(String pattern) {
         return pattern.startsWith(">=") || pattern.startsWith(">") ||
-               pattern.startsWith("<=") || pattern.startsWith("<");
+        pattern.startsWith("<=") || pattern.startsWith("<");
     }
 
     private static Result<VersionPattern> parseRange(String pattern) {
         var fromInclusive = pattern.startsWith("[");
         var toInclusive = pattern.endsWith("]");
-
         var content = pattern.substring(1, pattern.length() - 1);
         var parts = content.split(",");
-
         if (parts.length != 2) {
-            return INVALID_RANGE_FORMAT.apply(pattern).result();
+            return INVALID_RANGE_FORMAT.apply(pattern)
+                                       .result();
         }
-
         return Version.version(parts[0].trim())
                       .flatMap(from -> Version.version(parts[1].trim())
                                               .map(to -> new Range(from, fromInclusive, to, toInclusive)));
     }
 
     private static Result<VersionPattern> parseTilde(String pattern) {
-        var versionStr = pattern.substring(1).trim();
+        var versionStr = pattern.substring(1)
+                                .trim();
         return Version.version(versionStr)
                       .map(Tilde::new);
     }
 
     private static Result<VersionPattern> parseCaret(String pattern) {
-        var versionStr = pattern.substring(1).trim();
+        var versionStr = pattern.substring(1)
+                                .trim();
         return Version.version(versionStr)
                       .map(Caret::new);
     }
@@ -241,26 +228,29 @@ public sealed interface VersionPattern {
         // Extract operator
         String opStr;
         String versionStr;
-
         if (pattern.startsWith(">=")) {
             opStr = ">=";
-            versionStr = pattern.substring(2).trim();
-        } else if (pattern.startsWith("<=")) {
+            versionStr = pattern.substring(2)
+                                .trim();
+        }else if (pattern.startsWith("<=")) {
             opStr = "<=";
-            versionStr = pattern.substring(2).trim();
-        } else if (pattern.startsWith(">")) {
+            versionStr = pattern.substring(2)
+                                .trim();
+        }else if (pattern.startsWith(">")) {
             opStr = ">";
-            versionStr = pattern.substring(1).trim();
-        } else if (pattern.startsWith("<")) {
+            versionStr = pattern.substring(1)
+                                .trim();
+        }else if (pattern.startsWith("<")) {
             opStr = "<";
-            versionStr = pattern.substring(1).trim();
-        } else {
-            return INVALID_COMPARISON_FORMAT.apply(pattern).result();
+            versionStr = pattern.substring(1)
+                                .trim();
+        }else {
+            return INVALID_COMPARISON_FORMAT.apply(pattern)
+                                            .result();
         }
-
         return Comparison.Operator.fromSymbol(opStr)
-                                  .flatMap(operator -> Version.version(versionStr)
-                                                              .map(version -> new Comparison(operator, version)));
+                         .flatMap(operator -> Version.version(versionStr)
+                                                     .map(version -> new Comparison(operator, version)));
     }
 
     private static Result<VersionPattern> parseExact(String pattern) {
@@ -270,6 +260,6 @@ public sealed interface VersionPattern {
 
     // Error constants
     Cause EMPTY_PATTERN = Causes.cause("Version pattern cannot be empty");
-    Fn1<Cause, String> INVALID_RANGE_FORMAT = Causes.forOneValue("Invalid range format: %s");
-    Fn1<Cause, String> INVALID_COMPARISON_FORMAT = Causes.forOneValue("Invalid comparison format: %s");
+    Fn1<Cause, String>INVALID_RANGE_FORMAT = Causes.forOneValue("Invalid range format: %s");
+    Fn1<Cause, String>INVALID_COMPARISON_FORMAT = Causes.forOneValue("Invalid comparison format: %s");
 }

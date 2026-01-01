@@ -1,7 +1,7 @@
 package org.pragmatica.cluster.metrics;
 
-import org.pragmatica.cluster.consensus.ProtocolMessage;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.NodeId;
 
 import java.util.Map;
 
@@ -11,7 +11,6 @@ import java.util.Map;
  * nodes respond with their metrics.
  */
 public sealed interface MetricsMessage extends ProtocolMessage {
-
     /**
      * Metrics ping sent by leader to all nodes.
      * Contains sender's metrics, nodes respond with their own.

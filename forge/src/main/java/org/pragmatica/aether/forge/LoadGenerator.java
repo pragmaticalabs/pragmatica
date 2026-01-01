@@ -3,8 +3,6 @@ package org.pragmatica.aether.forge;
 import org.pragmatica.aether.forge.simulator.DataGenerator;
 import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
 import org.pragmatica.aether.forge.simulator.SimulatorConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -21,6 +19,9 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Generates continuous HTTP load against the cluster for demo purposes.
@@ -52,12 +53,14 @@ public final class LoadGenerator {
                                     .connectTimeout(REQUEST_TIMEOUT)
                                     .executor(Executors.newVirtualThreadPerTaskExecutor())
                                     .build();
-
         // Initialize entry points from config
         initializeEntryPoints(config);
     }
 
-    public static LoadGenerator loadGenerator(int port, ForgeMetrics metrics, EntryPointMetrics entryPointMetrics, SimulatorConfig config) {
+    public static LoadGenerator loadGenerator(int port,
+                                              ForgeMetrics metrics,
+                                              EntryPointMetrics entryPointMetrics,
+                                              SimulatorConfig config) {
         return new LoadGenerator(port, metrics, entryPointMetrics, config);
     }
 
@@ -75,48 +78,29 @@ public final class LoadGenerator {
     private void initializeEntryPoints(SimulatorConfig config) {
         // POST /api/orders - place order
         var placeOrderConfig = config.entryPointConfig("placeOrder");
-        generators.put("placeOrder", new EntryPointGenerator(
-            "placeOrder",
-            placeOrderConfig.buildGenerator("placeOrder"),
-            "POST",
-            "/api/orders"
-        ));
-
+        generators.put("placeOrder",
+                       new EntryPointGenerator(
+        "placeOrder", placeOrderConfig.buildGenerator("placeOrder"), "POST", "/api/orders"));
         // GET /api/orders/{id} - get order status
         var getOrderConfig = config.entryPointConfig("getOrderStatus");
-        generators.put("getOrderStatus", new EntryPointGenerator(
-            "getOrderStatus",
-            getOrderConfig.buildGenerator("getOrderStatus"),
-            "GET",
-            "/api/orders/{id}"
-        ));
-
+        generators.put("getOrderStatus",
+                       new EntryPointGenerator(
+        "getOrderStatus", getOrderConfig.buildGenerator("getOrderStatus"), "GET", "/api/orders/{id}"));
         // DELETE /api/orders/{id} - cancel order
         var cancelConfig = config.entryPointConfig("cancelOrder");
-        generators.put("cancelOrder", new EntryPointGenerator(
-            "cancelOrder",
-            cancelConfig.buildGenerator("cancelOrder"),
-            "DELETE",
-            "/api/orders/{id}"
-        ));
-
+        generators.put("cancelOrder",
+                       new EntryPointGenerator(
+        "cancelOrder", cancelConfig.buildGenerator("cancelOrder"), "DELETE", "/api/orders/{id}"));
         // GET /api/inventory/{productId} - check stock
         var checkStockConfig = config.entryPointConfig("checkStock");
-        generators.put("checkStock", new EntryPointGenerator(
-            "checkStock",
-            checkStockConfig.buildGenerator("checkStock"),
-            "GET",
-            "/api/inventory/{id}"
-        ));
-
+        generators.put("checkStock",
+                       new EntryPointGenerator(
+        "checkStock", checkStockConfig.buildGenerator("checkStock"), "GET", "/api/inventory/{id}"));
         // GET /api/pricing/{productId} - get price
         var getPriceConfig = config.entryPointConfig("getPrice");
-        generators.put("getPrice", new EntryPointGenerator(
-            "getPrice",
-            getPriceConfig.buildGenerator("getPrice"),
-            "GET",
-            "/api/pricing/{id}"
-        ));
+        generators.put("getPrice",
+                       new EntryPointGenerator(
+        "getPrice", getPriceConfig.buildGenerator("getPrice"), "GET", "/api/pricing/{id}"));
     }
 
     /**
@@ -125,11 +109,11 @@ public final class LoadGenerator {
     public void updateConfig(SimulatorConfig newConfig) {
         this.config.set(newConfig);
         initializeEntryPoints(newConfig);
-
         // Update rates from new config
         for (var entry : generators.entrySet()) {
             var rate = newConfig.effectiveRate(entry.getKey());
-            entry.getValue().setRate(rate);
+            entry.getValue()
+                 .setRate(rate);
             entryPointMetrics.setRate(entry.getKey(), rate);
         }
     }
@@ -149,20 +133,15 @@ public final class LoadGenerator {
             log.warn("Load generator already running");
             return;
         }
-
         // Set default rate for placeOrder (main entry point)
         setRate("placeOrder", defaultRequestsPerSecond);
-
         log.info("Starting load generator at {} req/sec (placeOrder)", defaultRequestsPerSecond);
-
         scheduler = Executors.newScheduledThreadPool(generators.size() + 1);
-
         // Start a generation thread for each entry point
         for (var generator : generators.values()) {
             var thread = new Thread(() -> generateLoad(generator), "load-" + generator.name);
             thread.start();
         }
-
         // Rate sync scheduler (sync rates to metrics)
         scheduler.scheduleAtFixedRate(this::syncRatesToMetrics, 100, 100, TimeUnit.MILLISECONDS);
     }
@@ -173,13 +152,13 @@ public final class LoadGenerator {
     public void stop() {
         log.info("Stopping load generator");
         running.set(false);
-
         if (scheduler != null) {
             scheduler.shutdownNow();
-            try {
+            try{
                 scheduler.awaitTermination(2, TimeUnit.SECONDS);
             } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+                Thread.currentThread()
+                      .interrupt();
             }
         }
     }
@@ -193,7 +172,7 @@ public final class LoadGenerator {
             log.info("Setting {} rate to {} req/sec", entryPoint, requestsPerSecond);
             generator.setRate(requestsPerSecond);
             entryPointMetrics.setRate(entryPoint, requestsPerSecond);
-        } else {
+        }else {
             log.warn("Unknown entry point: {}", entryPoint);
         }
     }
@@ -221,7 +200,9 @@ public final class LoadGenerator {
      */
     public int currentRate() {
         var generator = generators.get("placeOrder");
-        return generator != null ? generator.currentRate() : 0;
+        return generator != null
+               ? generator.currentRate()
+               : 0;
     }
 
     /**
@@ -229,7 +210,9 @@ public final class LoadGenerator {
      */
     public int currentRate(String entryPoint) {
         var generator = generators.get(entryPoint);
-        return generator != null ? generator.currentRate() : 0;
+        return generator != null
+               ? generator.currentRate()
+               : 0;
     }
 
     /**
@@ -237,7 +220,9 @@ public final class LoadGenerator {
      */
     public int targetRate() {
         var generator = generators.get("placeOrder");
-        return generator != null ? generator.targetRate() : 0;
+        return generator != null
+               ? generator.targetRate()
+               : 0;
     }
 
     /**
@@ -263,28 +248,25 @@ public final class LoadGenerator {
 
     private void generateLoad(EntryPointGenerator generator) {
         while (running.get()) {
-            try {
+            try{
                 var rate = generator.currentRate();
                 if (rate <= 0) {
                     Thread.sleep(100);
                     continue;
                 }
-
                 var intervalMicros = 1_000_000 / rate;
                 var startNanos = System.nanoTime();
-
                 sendRequest(generator);
-
                 // Sleep for remaining interval
                 var elapsedMicros = (System.nanoTime() - startNanos) / 1000;
                 var sleepMicros = intervalMicros - elapsedMicros;
                 if (sleepMicros > 0) {
-                    Thread.sleep(sleepMicros / 1000, (int) ((sleepMicros % 1000) * 1000));
+                    Thread.sleep(sleepMicros / 1000, (int)((sleepMicros % 1000) * 1000));
                 }
-
                 generator.adjustRate();
             } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+                Thread.currentThread()
+                      .interrupt();
                 break;
             } catch (Exception e) {
                 log.debug("Error generating load for {}: {}", generator.name, e.getMessage());
@@ -295,37 +277,34 @@ public final class LoadGenerator {
     private void sendRequest(EntryPointGenerator generator) {
         var startTime = System.nanoTime();
         var requestData = generator.generateRequest();
-
         var uri = URI.create("http://localhost:" + port + requestData.path());
         var requestBuilder = HttpRequest.newBuilder()
                                         .uri(uri)
                                         .timeout(REQUEST_TIMEOUT);
-
         switch (generator.method) {
-            case "POST" -> requestBuilder
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(requestData.body()));
-            case "DELETE" -> requestBuilder.DELETE();
+            case"POST" -> requestBuilder.header("Content-Type", "application/json")
+                                        .POST(HttpRequest.BodyPublishers.ofString(requestData.body()));
+            case"DELETE" -> requestBuilder.DELETE();
             default -> requestBuilder.GET();
         }
-
-        httpClient.sendAsync(requestBuilder.build(), HttpResponse.BodyHandlers.ofString())
+        httpClient.sendAsync(requestBuilder.build(),
+                             HttpResponse.BodyHandlers.ofString())
                   .thenAccept(response -> {
-                      var latencyNanos = System.nanoTime() - startTime;
-                      if (response.statusCode() >= 200 && response.statusCode() < 300) {
-                          metrics.recordSuccess(latencyNanos);
-                          entryPointMetrics.recordSuccess(generator.name, latencyNanos);
-                      } else {
-                          metrics.recordFailure(latencyNanos);
-                          entryPointMetrics.recordFailure(generator.name, latencyNanos);
-                      }
-                  })
+                                  var latencyNanos = System.nanoTime() - startTime;
+                                  if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                                  metrics.recordSuccess(latencyNanos);
+                                  entryPointMetrics.recordSuccess(generator.name, latencyNanos);
+                              }else {
+                                  metrics.recordFailure(latencyNanos);
+                                  entryPointMetrics.recordFailure(generator.name, latencyNanos);
+                              }
+                              })
                   .exceptionally(e -> {
-                      var latencyNanos = System.nanoTime() - startTime;
-                      metrics.recordFailure(latencyNanos);
-                      entryPointMetrics.recordFailure(generator.name, latencyNanos);
-                      return null;
-                  });
+                                     var latencyNanos = System.nanoTime() - startTime;
+                                     metrics.recordFailure(latencyNanos);
+                                     entryPointMetrics.recordFailure(generator.name, latencyNanos);
+                                     return null;
+                                 });
     }
 
     private void syncRatesToMetrics() {
@@ -364,28 +343,21 @@ public final class LoadGenerator {
         RequestData generateRequest() {
             var random = ThreadLocalRandom.current();
             var data = dataGenerator.generate(random);
-
             return switch (data) {
                 case DataGenerator.OrderRequestGenerator.OrderRequestData order ->
-                    new RequestData("/api/orders", order.toJson());
-
+                new RequestData("/api/orders", order.toJson());
                 case String orderId when name.equals("getOrderStatus") ->
-                    new RequestData("/api/orders/" + orderId, "");
-
+                new RequestData("/api/orders/" + orderId, "");
                 case String orderId when name.equals("cancelOrder") ->
-                    new RequestData("/api/orders/" + orderId, "");
-
+                new RequestData("/api/orders/" + orderId, "");
                 case DataGenerator.StockCheckGenerator.StockCheckData stock ->
-                    new RequestData("/api/inventory/" + stock.productId(), "");
-
+                new RequestData("/api/inventory/" + stock.productId(), "");
                 case DataGenerator.PriceCheckGenerator.PriceCheckData price ->
-                    new RequestData("/api/pricing/" + price.productId(), "");
-
+                new RequestData("/api/pricing/" + price.productId(), "");
                 case String productId ->
-                    new RequestData(pathPattern.replace("{id}", productId), "");
-
+                new RequestData(pathPattern.replace("{id}", productId), "");
                 default ->
-                    new RequestData(pathPattern, "");
+                new RequestData(pathPattern, "");
             };
         }
 
@@ -396,7 +368,6 @@ public final class LoadGenerator {
 
         void rampUp(int target, long durationMs) {
             targetRate.set(target);
-            // Rate adjustment happens in adjustRate()
         }
 
         int currentRate() {
@@ -410,22 +381,20 @@ public final class LoadGenerator {
         void adjustRate() {
             var current = currentRate.get();
             var target = targetRate.get();
-
             if (current == target) {
                 return;
             }
-
             // Adjust by 10% toward target
             var delta = (target - current) / 10;
             if (delta == 0) {
-                delta = target > current ? 1 : -1;
+                delta = target > current
+                        ? 1
+                        : - 1;
             }
-
             var newRate = current + delta;
             if ((delta > 0 && newRate > target) || (delta < 0 && newRate < target)) {
                 newRate = target;
             }
-
             currentRate.set(newRate);
         }
     }

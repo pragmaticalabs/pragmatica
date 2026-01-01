@@ -20,35 +20,40 @@ import java.util.stream.Stream;
  * Default DependencyLoader implementation using Repository.
  */
 public interface RepositoryDependencyLoader {
-
     static DependencyLoader repositoryDependencyLoader(Repository repository) {
-        return artifact -> repository.locate(artifact).flatMap(location -> loadDependenciesFromJar(artifact, location));
+        return artifact -> repository.locate(artifact)
+                                     .flatMap(location -> loadDependenciesFromJar(artifact, location));
     }
 
     private static Promise<Set<Artifact>> loadDependenciesFromJar(Artifact artifact, Location location) {
-        return SliceManifest.read(location.url()).flatMap(manifest -> validateManifest(artifact, manifest)).flatMap(
-                manifest -> loadDependencies(manifest, location.url())).async();
+        return SliceManifest.read(location.url())
+                            .flatMap(manifest -> validateManifest(artifact, manifest))
+                            .flatMap(manifest -> loadDependencies(manifest,
+                                                                  location.url()))
+                            .async();
     }
 
     private static Result<SliceManifest.SliceManifestInfo> validateManifest(Artifact expected,
                                                                             SliceManifest.SliceManifestInfo manifest) {
-        if (!manifest.artifact().equals(expected)) {
-            return ExpanderError.ArtifactMismatch.cause(expected, manifest.artifact()).result();
+        if (!manifest.artifact()
+                     .equals(expected)) {
+            return ExpanderError.ArtifactMismatch.cause(expected,
+                                                        manifest.artifact())
+                                .result();
         }
         return Result.success(manifest);
     }
 
     private static Result<Set<Artifact>> loadDependencies(SliceManifest.SliceManifestInfo manifest, URL jarUrl) {
         var classLoader = new SliceClassLoader(new URL[]{jarUrl}, RepositoryDependencyLoader.class.getClassLoader());
-
-        return SliceDependencies.load(manifest.sliceClassName(), classLoader)
+        return SliceDependencies.load(manifest.sliceClassName(),
+                                      classLoader)
                                 .flatMap(RepositoryDependencyLoader::convertToArtifacts);
     }
 
     private static Result<Set<Artifact>> convertToArtifacts(List<DependencyDescriptor> descriptors) {
         return Result.allOf(toArtifacts(descriptors))
                      .map(Set::copyOf);
-
     }
 
     private static Stream<Result<Artifact>> toArtifacts(List<DependencyDescriptor> descriptors) {

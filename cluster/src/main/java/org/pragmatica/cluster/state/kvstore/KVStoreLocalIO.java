@@ -1,6 +1,6 @@
 package org.pragmatica.cluster.state.kvstore;
 
-import org.pragmatica.message.Message;
+import org.pragmatica.messaging.Message;
 
 import java.util.List;
 import java.util.Map;
@@ -9,7 +9,8 @@ public sealed interface KVStoreLocalIO extends Message.Local {
     sealed interface Request extends KVStoreLocalIO {
         record Find(StructuredPattern pattern) implements Request {
             public <K extends StructuredKey, V> boolean matches(Map.Entry<K, V> entry) {
-                return entry.getKey().matches(pattern);
+                return entry.getKey()
+                            .matches(pattern);
             }
         }
     }

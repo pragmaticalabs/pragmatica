@@ -6,7 +6,6 @@ import org.pragmatica.lang.Cause;
  * Errors that can occur during HTTP request processing.
  */
 public sealed interface HttpRouterError extends Cause {
-
     record RouteNotFound(String path) implements HttpRouterError {
         @Override
         public String message() {

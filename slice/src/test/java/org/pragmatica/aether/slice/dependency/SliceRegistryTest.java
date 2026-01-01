@@ -21,7 +21,7 @@ class SliceRegistryTest {
 
     @Test
     void register_and_lookup_slice() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         var artifact = Artifact.artifact("org.example:test-slice:1.0.0").unwrap();
         var slice = new TestSlice();
 
@@ -35,7 +35,7 @@ class SliceRegistryTest {
 
     @Test
     void register_fails_for_duplicate_artifact() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         var artifact = Artifact.artifact("org.example:test-slice:1.0.0").unwrap();
         var slice1 = new TestSlice();
         var slice2 = new TestSlice();
@@ -50,7 +50,7 @@ class SliceRegistryTest {
 
     @Test
     void lookup_returns_none_for_missing_artifact() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         var artifact = Artifact.artifact("org.example:missing:1.0.0").unwrap();
 
         registry.lookup(artifact)
@@ -61,7 +61,7 @@ class SliceRegistryTest {
 
     @Test
     void unregister_removes_slice() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         var artifact = Artifact.artifact("org.example:test-slice:1.0.0").unwrap();
         var slice = new TestSlice();
 
@@ -79,7 +79,7 @@ class SliceRegistryTest {
 
     @Test
     void unregister_fails_for_missing_artifact() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         var artifact = Artifact.artifact("org.example:missing:1.0.0").unwrap();
 
         registry.unregister(artifact)
@@ -89,7 +89,7 @@ class SliceRegistryTest {
 
     @Test
     void find_by_class_name_and_exact_version() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         var artifact = Artifact.artifact("org.example:test-slice:1.2.3").unwrap();
         var slice = new TestSlice();
 
@@ -105,7 +105,7 @@ class SliceRegistryTest {
 
     @Test
     void find_by_class_name_and_version_range() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         var artifact = Artifact.artifact("org.example:test-slice:1.5.0").unwrap();
         var slice = new TestSlice();
 
@@ -121,7 +121,7 @@ class SliceRegistryTest {
 
     @Test
     void find_returns_none_when_version_doesnt_match() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         var artifact = Artifact.artifact("org.example:test-slice:2.0.0").unwrap();
         var slice = new TestSlice();
 
@@ -138,7 +138,7 @@ class SliceRegistryTest {
 
     @Test
     void find_returns_none_when_class_name_doesnt_match() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         var artifact = Artifact.artifact("org.example:test-slice:1.0.0").unwrap();
         var slice = new TestSlice();
 
@@ -155,7 +155,7 @@ class SliceRegistryTest {
 
     @Test
     void allArtifacts_returns_all_registered() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         var artifact1 = Artifact.artifact("org.example:slice1:1.0.0").unwrap();
         var artifact2 = Artifact.artifact("org.example:slice2:2.0.0").unwrap();
         var slice = new TestSlice();
@@ -170,7 +170,7 @@ class SliceRegistryTest {
 
     @Test
     void allArtifacts_returns_empty_for_empty_registry() {
-        var registry = SliceRegistry.create();
+        var registry = SliceRegistry.sliceRegistry();
         assertThat(registry.allArtifacts()).isEmpty();
     }
 }

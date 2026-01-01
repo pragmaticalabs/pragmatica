@@ -2,8 +2,6 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URL;
@@ -13,6 +11,9 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * ClassLoader for framework classes shared by all slices.
@@ -55,7 +56,6 @@ import java.util.stream.Stream;
  * @see SliceClassLoader
  */
 public class FrameworkClassLoader extends URLClassLoader {
-
     private static final Logger log = LoggerFactory.getLogger(FrameworkClassLoader.class);
 
     private final List<String> loadedJars = new ArrayList<>();
@@ -84,24 +84,24 @@ public class FrameworkClassLoader extends URLClassLoader {
      */
     public static Result<FrameworkClassLoader> fromDirectory(Path frameworkDir) {
         if (!Files.isDirectory(frameworkDir)) {
-            return Causes.cause("Framework directory does not exist: " + frameworkDir).result();
+            return Causes.cause("Framework directory does not exist: " + frameworkDir)
+                         .result();
         }
-
         try (Stream<Path> jarStream = Files.list(frameworkDir)) {
-            var jarUrls = jarStream
-                    .filter(path -> path.toString().endsWith(".jar"))
-                    .map(FrameworkClassLoader::toUrl)
-                    .filter(Result::isSuccess)
-                    .map(Result::unwrap)
-                    .toArray(URL[]::new);
-
+            var jarUrls = jarStream.filter(path -> path.toString()
+                                                       .endsWith(".jar"))
+                                   .map(FrameworkClassLoader::toUrl)
+                                   .filter(Result::isSuccess)
+                                   .map(Result::unwrap)
+                                   .toArray(URL[]::new);
             if (jarUrls.length == 0) {
-                return Causes.cause("No JAR files found in framework directory: " + frameworkDir).result();
+                return Causes.cause("No JAR files found in framework directory: " + frameworkDir)
+                             .result();
             }
-
             return Result.success(new FrameworkClassLoader(jarUrls));
         } catch (IOException e) {
-            return Causes.cause("Failed to scan framework directory: " + e.getMessage()).result();
+            return Causes.cause("Failed to scan framework directory: " + e.getMessage())
+                         .result();
         }
     }
 
@@ -114,21 +114,19 @@ public class FrameworkClassLoader extends URLClassLoader {
     public static Result<FrameworkClassLoader> fromJars(Path... jarPaths) {
         var urls = new ArrayList<URL>();
         var errors = new ArrayList<String>();
-
         for (var jarPath : jarPaths) {
             if (!Files.exists(jarPath)) {
                 errors.add("JAR not found: " + jarPath);
                 continue;
             }
             toUrl(jarPath)
-                    .onSuccess(urls::add)
-                    .onFailure(cause -> errors.add(cause.message()));
+            .onSuccess(urls::add)
+            .onFailure(cause -> errors.add(cause.message()));
         }
-
         if (!errors.isEmpty()) {
-            return Causes.cause("Failed to load framework JARs: " + String.join(", ", errors)).result();
+            return Causes.cause("Failed to load framework JARs: " + String.join(", ", errors))
+                         .result();
         }
-
         return Result.success(new FrameworkClassLoader(urls.toArray(URL[]::new)));
     }
 
@@ -150,14 +148,16 @@ public class FrameworkClassLoader extends URLClassLoader {
 
     private static Result<URL> toUrl(Path path) {
         return Result.lift(
-                Causes::fromThrowable,
-                () -> path.toUri().toURL()
-        );
+        Causes::fromThrowable,
+        () -> path.toUri()
+                  .toURL());
     }
 
     private static String extractJarName(URL url) {
         var path = url.getPath();
         var lastSlash = path.lastIndexOf('/');
-        return lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+        return lastSlash >= 0
+               ? path.substring(lastSlash + 1)
+               : path;
     }
 }

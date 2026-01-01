@@ -9,7 +9,6 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 public interface SliceStore {
-
     /**
      * Create a new SliceStore instance with shared library classloader.
      *

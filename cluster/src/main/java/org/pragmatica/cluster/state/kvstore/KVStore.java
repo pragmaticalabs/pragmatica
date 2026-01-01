@@ -1,6 +1,6 @@
 package org.pragmatica.cluster.state.kvstore;
 
-import org.pragmatica.cluster.state.StateMachine;
+import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Get;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Put;
 import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
@@ -13,11 +13,10 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.message.MessageReceiver;
-import org.pragmatica.message.MessageRouter;
-import org.pragmatica.message.MessageRouter.MutableRouter;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.util.HashMap;
 import java.util.Map;
@@ -35,55 +34,44 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         this.deserializer = deserializer;
     }
 
-    @Override
-    public void configure(MutableRouter router) {
-        router.addRoute(Find.class, this::find);
-    }
-
     @SuppressWarnings({"unchecked", "rawtypes"})
     @Override
     public Option<V> process(KVCommand command) {
         return switch (command) {
-            case Get<?> get -> handleGet((Get<K>) get);
-            case Put<?, ?> put -> handlePut((Put<K, V>) put);
-            case Remove<?> remove -> handleRemove((Remove<K>) remove);
+            case Get< ? > get -> handleGet((Get<K>) get);
+            case Put< ? , ? > put -> handlePut((Put<K, V>) put);
+            case Remove< ? > remove -> handleRemove((Remove<K>) remove);
         };
     }
 
     private Option<V> handleGet(Get<K> get) {
         var value = Option.option(storage.get(get.key()));
-
         router.route(new ValueGet<>(get, value));
-
         return value;
     }
 
     private Option<V> handlePut(Put<K, V> put) {
         var oldValue = Option.option(storage.put(put.key(), put.value()));
-
         router.route(new ValuePut<>(put, oldValue));
-
         return oldValue;
     }
 
     private Option<V> handleRemove(Remove<K> remove) {
         var oldValue = Option.option(storage.remove(remove.key()));
-
         router.route(new ValueRemove<>(remove, oldValue));
-
         return oldValue;
     }
 
     @Override
-    public Result<byte[]> makeSnapshot() {
-        return Result.lift(Causes::fromThrowable,
-                           () -> serializer.encode(new HashMap<>(storage)));
+    public Result<byte[] > makeSnapshot() {
+        return Result.lift(Causes::fromThrowable, () -> serializer.encode(new HashMap<>(storage)));
     }
 
     @SuppressWarnings("unchecked")
     @Override
     public Result<Unit> restoreSnapshot(byte[] snapshot) {
-        return Result.lift(Causes::fromThrowable, () -> deserializer.decode(snapshot))
+        return Result.lift(Causes::fromThrowable,
+                           () -> deserializer.decode(snapshot))
                      .map(map -> (Map<K, V>) map)
                      .onSuccessRun(this::notifyRemoveAll)
                      .onSuccessRun(storage::clear)

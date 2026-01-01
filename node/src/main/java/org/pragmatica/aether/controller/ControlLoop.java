@@ -8,22 +8,23 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintValue;
-import org.pragmatica.cluster.leader.LeaderNotification.LeaderChange;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.topology.TopologyChangeNotification;
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
-import org.pragmatica.message.MessageReceiver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.pragmatica.consensus.topology.TopologyChangeNotification;
+import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
+import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Control loop that runs the ClusterController periodically on the leader node.
@@ -36,7 +37,6 @@ import java.util.stream.Collectors;
  * </ul>
  */
 public interface ControlLoop {
-
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);
 
@@ -59,10 +59,10 @@ public interface ControlLoop {
     void stop();
 
     static ControlLoop controlLoop(NodeId self,
-                                    ClusterController controller,
-                                    MetricsCollector metricsCollector,
-                                    ClusterNode<KVCommand<AetherKey>> cluster,
-                                    long intervalMs) {
+                                   ClusterController controller,
+                                   MetricsCollector metricsCollector,
+                                   ClusterNode<KVCommand<AetherKey>> cluster,
+                                   long intervalMs) {
         return new ControlLoopImpl(self, controller, metricsCollector, cluster, intervalMs);
     }
 
@@ -70,15 +70,14 @@ public interface ControlLoop {
      * Create with default 5-second interval.
      */
     static ControlLoop controlLoop(NodeId self,
-                                    ClusterController controller,
-                                    MetricsCollector metricsCollector,
-                                    ClusterNode<KVCommand<AetherKey>> cluster) {
+                                   ClusterController controller,
+                                   MetricsCollector metricsCollector,
+                                   ClusterNode<KVCommand<AetherKey>> cluster) {
         return controlLoop(self, controller, metricsCollector, cluster, 5000);
     }
 }
 
 class ControlLoopImpl implements ControlLoop {
-
     private static final Logger log = LoggerFactory.getLogger(ControlLoopImpl.class);
 
     private final NodeId self;
@@ -88,12 +87,13 @@ class ControlLoopImpl implements ControlLoop {
     private final long intervalMs;
 
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-        var thread = new Thread(r, "control-loop");
-        thread.setDaemon(true);
-        return thread;
-    });
+                                                                                                      var thread = new Thread(r,
+                                                                                                                              "control-loop");
+                                                                                                      thread.setDaemon(true);
+                                                                                                      return thread;
+                                                                                                  });
 
-    private final AtomicReference<ScheduledFuture<?>> evaluationTask = new AtomicReference<>();
+    private final AtomicReference<ScheduledFuture< ? >> evaluationTask = new AtomicReference<>();
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
     private final ConcurrentHashMap<Artifact, ClusterController.Blueprint> blueprints = new ConcurrentHashMap<>();
 
@@ -114,7 +114,7 @@ class ControlLoopImpl implements ControlLoop {
         if (leaderChange.localNodeIsLeader()) {
             log.info("Node {} became leader, starting control loop", self);
             startEvaluation();
-        } else {
+        }else {
             log.info("Node {} is no longer leader, stopping control loop", self);
             stopEvaluation();
         }
@@ -145,23 +145,21 @@ class ControlLoopImpl implements ControlLoop {
     public void stop() {
         stopEvaluation();
         scheduler.shutdown();
-        try {
+        try{
             if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
                 scheduler.shutdownNow();
             }
         } catch (InterruptedException e) {
             scheduler.shutdownNow();
-            Thread.currentThread().interrupt();
+            Thread.currentThread()
+                  .interrupt();
         }
     }
 
     private void startEvaluation() {
         stopEvaluation();
-
         var task = scheduler.scheduleAtFixedRate(
-                this::runEvaluation,
-                intervalMs, intervalMs, TimeUnit.MILLISECONDS
-        );
+        this::runEvaluation, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
         evaluationTask.set(task);
     }
 
@@ -173,33 +171,28 @@ class ControlLoopImpl implements ControlLoop {
     }
 
     private void runEvaluation() {
-        try {
+        try{
             if (blueprints.isEmpty()) {
                 log.trace("No blueprints registered, skipping evaluation");
                 return;
             }
-
             var context = new ControlContext(
-                    metricsCollector.allMetrics(),
-                    Map.copyOf(blueprints),
-                    topology.get()
-            );
-
+            metricsCollector.allMetrics(), Map.copyOf(blueprints), topology.get());
             controller.evaluate(context)
                       .onSuccess(this::applyDecisions)
-                      .onFailure(cause -> log.error("Controller evaluation failed: {}", cause.message()));
-
+                      .onFailure(cause -> log.error("Controller evaluation failed: {}",
+                                                    cause.message()));
         } catch (Exception e) {
             log.error("Control loop error: {}", e.getMessage(), e);
         }
     }
 
     private void applyDecisions(ClusterController.ControlDecisions decisions) {
-        if (decisions.changes().isEmpty()) {
+        if (decisions.changes()
+                     .isEmpty()) {
             log.trace("No scaling decisions");
             return;
         }
-
         for (var change : decisions.changes()) {
             applyChange(change);
         }
@@ -208,35 +201,31 @@ class ControlLoopImpl implements ControlLoop {
     private void applyChange(BlueprintChange change) {
         var artifact = change.artifact();
         var currentBlueprint = blueprints.get(artifact);
-
         if (currentBlueprint == null) {
             log.warn("Blueprint not found for {}, skipping change", artifact);
             return;
         }
-
         int newInstances = switch (change) {
             case BlueprintChange.ScaleUp(_, int additional) ->
-                    currentBlueprint.instances() + additional;
+            currentBlueprint.instances() + additional;
             case BlueprintChange.ScaleDown(_, int reduceBy) ->
-                    Math.max(1, currentBlueprint.instances() - reduceBy);
+            Math.max(1, currentBlueprint.instances() - reduceBy);
         };
-
         if (newInstances == currentBlueprint.instances()) {
             return;
         }
-
         log.info("Applying scaling decision: {} from {} to {} instances",
-                 artifact, currentBlueprint.instances(), newInstances);
-
+                 artifact,
+                 currentBlueprint.instances(),
+                 newInstances);
         // Update local blueprint
         blueprints.put(artifact, new ClusterController.Blueprint(artifact, newInstances));
-
         // Update blueprint in KVStore via consensus
         var key = new BlueprintKey(artifact);
         var value = new BlueprintValue(newInstances);
         var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-
         cluster.apply(List.of(command))
-               .onFailure(cause -> log.error("Failed to apply blueprint change: {}", cause.message()));
+               .onFailure(cause -> log.error("Failed to apply blueprint change: {}",
+                                             cause.message()));
     }
 }

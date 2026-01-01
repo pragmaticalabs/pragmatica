@@ -2,15 +2,14 @@ package org.pragmatica.aether.metrics.deployment;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.message.Message;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.messaging.Message;
 
 /**
  * Events emitted during slice deployment lifecycle for metrics collection.
  * These events are dispatched locally via MessageRouter.
  */
 public sealed interface DeploymentEvent extends Message.Local {
-
     /**
      * Emitted when a deployment is initiated (blueprint change triggers LOAD command).
      */
@@ -20,12 +19,11 @@ public sealed interface DeploymentEvent extends Message.Local {
      * Emitted on each state transition during deployment.
      */
     record StateTransition(
-        Artifact artifact,
-        NodeId nodeId,
-        SliceState from,
-        SliceState to,
-        long timestamp
-    ) implements DeploymentEvent {}
+    Artifact artifact,
+    NodeId nodeId,
+    SliceState from,
+    SliceState to,
+    long timestamp) implements DeploymentEvent {}
 
     /**
      * Emitted when deployment completes (reaches ACTIVE state).

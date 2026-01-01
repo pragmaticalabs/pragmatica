@@ -1,7 +1,7 @@
 package org.pragmatica.cluster.node;
 
-import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.cluster.state.Command;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.Command;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 

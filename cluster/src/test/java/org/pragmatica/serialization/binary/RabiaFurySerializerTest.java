@@ -1,20 +1,20 @@
 package org.pragmatica.serialization.binary;
 
 import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.consensus.rabia.Batch;
-import org.pragmatica.cluster.consensus.rabia.Phase;
-import org.pragmatica.cluster.consensus.rabia.RabiaProtocolMessage;
-import org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.StringKey;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.rabia.Batch;
+import org.pragmatica.consensus.rabia.Phase;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
+import org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.rabia.CustomClasses;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.StringKey.key;
-import static org.pragmatica.net.serialization.binary.fury.FuryDeserializer.furyDeserializer;
-import static org.pragmatica.net.serialization.binary.fury.FurySerializer.furySerializer;
+import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
+import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
+import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
 class RabiaFurySerializerTest {
     @Test

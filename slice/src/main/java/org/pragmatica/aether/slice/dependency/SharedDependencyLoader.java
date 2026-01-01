@@ -7,19 +7,19 @@ import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Handles loading of shared dependencies into SharedLibraryClassLoader
  * and creates SliceClassLoader with appropriate parent and conflict overrides.
  */
 public interface SharedDependencyLoader {
-
     Logger log = LoggerFactory.getLogger(SharedDependencyLoader.class);
 
     /**
@@ -33,63 +33,52 @@ public interface SharedDependencyLoader {
      * @param repository          Repository to locate artifacts
      * @return Promise that completes when all API JARs are loaded
      */
-    static Promise<Void> processApiDependencies(
-            List<ArtifactDependency> dependencies,
-            SharedLibraryClassLoader sharedLibraryLoader,
-            Repository repository
-    ) {
+    static Promise<Void> processApiDependencies(List<ArtifactDependency> dependencies,
+                                                SharedLibraryClassLoader sharedLibraryLoader,
+                                                Repository repository) {
         if (dependencies.isEmpty()) {
             return Promise.success(null);
         }
-
         return processApiSequentially(dependencies, sharedLibraryLoader, repository);
     }
 
-    private static Promise<Void> processApiSequentially(
-            List<ArtifactDependency> dependencies,
-            SharedLibraryClassLoader sharedLibraryLoader,
-            Repository repository
-    ) {
+    private static Promise<Void> processApiSequentially(List<ArtifactDependency> dependencies,
+                                                        SharedLibraryClassLoader sharedLibraryLoader,
+                                                        Repository repository) {
         if (dependencies.isEmpty()) {
             return Promise.success(null);
         }
-
         var dependency = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
-
         return loadApiIntoShared(dependency, sharedLibraryLoader, repository)
-                .flatMap(_ -> processApiSequentially(remaining, sharedLibraryLoader, repository));
+               .flatMap(_ -> processApiSequentially(remaining, sharedLibraryLoader, repository));
     }
 
-    private static Promise<Void> loadApiIntoShared(
-            ArtifactDependency dependency,
-            SharedLibraryClassLoader sharedLibraryLoader,
-            Repository repository
-    ) {
+    private static Promise<Void> loadApiIntoShared(ArtifactDependency dependency,
+                                                   SharedLibraryClassLoader sharedLibraryLoader,
+                                                   Repository repository) {
         // Check if already loaded using fold pattern
-        return sharedLibraryLoader.checkCompatibility(dependency).fold(
-                // Not loaded yet - load into shared
-                () -> toArtifact(dependency)
-                        .async()
-                        .flatMap(repository::locate)
-                        .map(location -> {
-                            var version = extractVersion(dependency.versionPattern());
-                            sharedLibraryLoader.addArtifact(
-                                    dependency.groupId(),
-                                    dependency.artifactId(),
-                                    version,
-                                    location.url()
-                            );
-                            log.debug("Loaded API dependency {} into SharedLibraryClassLoader",
-                                      dependency.asString());
-                            return null;
-                        }),
-                // Already loaded - API JARs don't have version conflicts (they're interfaces)
-                _ -> {
-                    log.debug("API dependency {} already loaded", dependency.asString());
-                    return Promise.success(null);
-                }
-        );
+        return sharedLibraryLoader.checkCompatibility(dependency)
+                                  .fold(() -> toArtifact(dependency)
+                                              .async()
+                                              .flatMap(repository::locate)
+                                              .map(location -> {
+                                                       var version = extractVersion(dependency.versionPattern());
+                                                       sharedLibraryLoader.addArtifact(
+        dependency.groupId(),
+        dependency.artifactId(),
+        version,
+        location.url());
+                                                       log.debug("Loaded API dependency {} into SharedLibraryClassLoader",
+                                                                 dependency.asString());
+                                                       return null;
+                                                   }),
+                                        // Already loaded - API JARs don't have version conflicts (they're interfaces)
+        _ -> {
+                                            log.debug("API dependency {} already loaded",
+                                                      dependency.asString());
+                                            return Promise.success(null);
+                                        });
     }
 
     /**
@@ -99,9 +88,8 @@ public interface SharedDependencyLoader {
      * @param conflictingJarUrls URLs of JARs that conflict with shared versions (loaded into slice)
      */
     record SharedDependencyResult(
-            SliceClassLoader sliceClassLoader,
-            List<URL> conflictingJarUrls
-    ) {}
+    SliceClassLoader sliceClassLoader,
+    List<URL> conflictingJarUrls) {}
 
     /**
      * Process shared dependencies for a slice.
@@ -117,114 +105,99 @@ public interface SharedDependencyLoader {
      * @param sliceJarUrl            URL of the slice JAR
      * @return SliceClassLoader configured with appropriate parent and conflict overrides
      */
-    static Promise<SharedDependencyResult> processSharedDependencies(
-            List<ArtifactDependency> dependencies,
-            SharedLibraryClassLoader sharedLibraryLoader,
-            Repository repository,
-            URL sliceJarUrl
-    ) {
+    static Promise<SharedDependencyResult> processSharedDependencies(List<ArtifactDependency> dependencies,
+                                                                     SharedLibraryClassLoader sharedLibraryLoader,
+                                                                     Repository repository,
+                                                                     URL sliceJarUrl) {
         var conflictUrls = new ArrayList<URL>();
-
         return processSequentially(dependencies, sharedLibraryLoader, repository, conflictUrls)
-                .map(_ -> {
-                    // Create slice classloader with slice JAR + any conflict JARs
-                    var urls = new ArrayList<URL>();
-                    urls.add(sliceJarUrl);
-                    urls.addAll(conflictUrls);
-
-                    var sliceLoader = new SliceClassLoader(
-                            urls.toArray(URL[]::new),
-                            sharedLibraryLoader
-                    );
-
-                    return new SharedDependencyResult(sliceLoader, List.copyOf(conflictUrls));
-                });
+               .map(_ -> {
+                        // Create slice classloader with slice JAR + any conflict JARs
+        var urls = new ArrayList<URL>();
+                        urls.add(sliceJarUrl);
+                        urls.addAll(conflictUrls);
+                        var sliceLoader = new SliceClassLoader(
+        urls.toArray(URL[]::new),
+        sharedLibraryLoader);
+                        return new SharedDependencyResult(sliceLoader,
+                                                          List.copyOf(conflictUrls));
+                    });
     }
 
-    private static Promise<Void> processSequentially(
-            List<ArtifactDependency> dependencies,
-            SharedLibraryClassLoader sharedLibraryLoader,
-            Repository repository,
-            List<URL> conflictUrls
-    ) {
+    private static Promise<Void> processSequentially(List<ArtifactDependency> dependencies,
+                                                     SharedLibraryClassLoader sharedLibraryLoader,
+                                                     Repository repository,
+                                                     List<URL> conflictUrls) {
         if (dependencies.isEmpty()) {
             return Promise.success(null);
         }
-
         var dependency = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
-
         return processSingleDependency(dependency, sharedLibraryLoader, repository, conflictUrls)
-                .flatMap(_ -> processSequentially(remaining, sharedLibraryLoader, repository, conflictUrls));
+               .flatMap(_ -> processSequentially(remaining, sharedLibraryLoader, repository, conflictUrls));
     }
 
-    private static Promise<Void> processSingleDependency(
-            ArtifactDependency dependency,
-            SharedLibraryClassLoader sharedLibraryLoader,
-            Repository repository,
-            List<URL> conflictUrls
-    ) {
+    private static Promise<Void> processSingleDependency(ArtifactDependency dependency,
+                                                         SharedLibraryClassLoader sharedLibraryLoader,
+                                                         Repository repository,
+                                                         List<URL> conflictUrls) {
         var compatResult = sharedLibraryLoader.checkCompatibility(dependency);
-
         return compatResult.fold(
-                // Not loaded yet - load into shared
-                () -> loadIntoShared(dependency, sharedLibraryLoader, repository),
-                // Already loaded - check compatibility
-                result -> switch (result) {
-                    case CompatibilityResult.Compatible(var loadedVersion) -> {
-                        log.debug("Shared dependency {} compatible with loaded version {}",
-                                  dependency.asString(), loadedVersion.withQualifier());
-                        yield Promise.success(null);
-                    }
-                    case CompatibilityResult.Conflict(var loadedVersion, var required) -> {
-                        log.info("Shared dependency {} conflicts with loaded version {}, will load into slice",
-                                 dependency.asString(), loadedVersion.withQualifier());
-                        yield loadConflictIntoSlice(dependency, repository, conflictUrls);
-                    }
-                }
-        );
+        // Not loaded yet - load into shared
+        () -> loadIntoShared(dependency, sharedLibraryLoader, repository),
+        // Already loaded - check compatibility
+        result -> switch (result) {
+            case CompatibilityResult.Compatible(var loadedVersion) -> {
+            log.debug("Shared dependency {} compatible with loaded version {}",
+                      dependency.asString(),
+                      loadedVersion.withQualifier());
+            yield Promise.success(null);
+        }
+            case CompatibilityResult.Conflict(var loadedVersion, var required) -> {
+            log.info("Shared dependency {} conflicts with loaded version {}, will load into slice",
+                     dependency.asString(),
+                     loadedVersion.withQualifier());
+            yield loadConflictIntoSlice(dependency, repository, conflictUrls);
+        }
+        });
     }
 
-    private static Promise<Void> loadIntoShared(
-            ArtifactDependency dependency,
-            SharedLibraryClassLoader sharedLibraryLoader,
-            Repository repository
-    ) {
+    private static Promise<Void> loadIntoShared(ArtifactDependency dependency,
+                                                SharedLibraryClassLoader sharedLibraryLoader,
+                                                Repository repository) {
         return toArtifact(dependency)
-                .async()
-                .flatMap(repository::locate)
-                .map(location -> {
-                    var version = extractVersion(dependency.versionPattern());
-                    sharedLibraryLoader.addArtifact(
-                            dependency.groupId(),
-                            dependency.artifactId(),
-                            version,
-                            location.url()
-                    );
-                    log.debug("Loaded shared dependency {} into SharedLibraryClassLoader",
-                              dependency.asString());
-                    return null;
-                });
+               .async()
+               .flatMap(repository::locate)
+               .map(location -> {
+                        var version = extractVersion(dependency.versionPattern());
+                        sharedLibraryLoader.addArtifact(
+        dependency.groupId(),
+        dependency.artifactId(),
+        version,
+        location.url());
+                        log.debug("Loaded shared dependency {} into SharedLibraryClassLoader",
+                                  dependency.asString());
+                        return null;
+                    });
     }
 
-    private static Promise<Void> loadConflictIntoSlice(
-            ArtifactDependency dependency,
-            Repository repository,
-            List<URL> conflictUrls
-    ) {
+    private static Promise<Void> loadConflictIntoSlice(ArtifactDependency dependency,
+                                                       Repository repository,
+                                                       List<URL> conflictUrls) {
         return toArtifact(dependency)
-                .async()
-                .flatMap(repository::locate)
-                .map(location -> {
-                    conflictUrls.add(location.url());
-                    log.debug("Added conflicting dependency {} to slice classloader",
-                              dependency.asString());
-                    return null;
-                });
+               .async()
+               .flatMap(repository::locate)
+               .map(location -> {
+                        conflictUrls.add(location.url());
+                        log.debug("Added conflicting dependency {} to slice classloader",
+                                  dependency.asString());
+                        return null;
+                    });
     }
 
     private static Result<Artifact> toArtifact(ArtifactDependency dependency) {
-        var versionStr = extractVersion(dependency.versionPattern()).withQualifier();
+        var versionStr = extractVersion(dependency.versionPattern())
+                         .withQualifier();
         return Artifact.artifact(dependency.groupId() + ":" + dependency.artifactId() + ":" + versionStr);
     }
 

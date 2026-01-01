@@ -33,7 +33,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * }</pre>
  */
 public final class InvocationMetricsCollector {
-
     /**
      * Maximum slow invocations to retain per method per snapshot interval.
      */
@@ -42,8 +41,7 @@ public final class InvocationMetricsCollector {
     private final ThresholdStrategy thresholdStrategy;
 
     // Per-method metrics: Map<sliceArtifact, Map<methodName, metrics>>
-    private final Map<Artifact, Map<MethodName, MethodMetricsWithSlowCalls>> metricsMap =
-            new ConcurrentHashMap<>();
+    private final Map<Artifact, Map<MethodName, MethodMetricsWithSlowCalls>> metricsMap = new ConcurrentHashMap<>();
 
     private InvocationMetricsCollector(ThresholdStrategy thresholdStrategy) {
         this.thresholdStrategy = thresholdStrategy;
@@ -74,22 +72,27 @@ public final class InvocationMetricsCollector {
      * @param responseBytes Size of serialized response (0 for fire-and-forget or failures)
      * @param errorType     Error type class name if failed
      */
-    public void record(Artifact artifact, MethodName method, long durationNs, boolean success,
-                       int requestBytes, int responseBytes, Option<String> errorType) {
+    public void record(Artifact artifact,
+                       MethodName method,
+                       long durationNs,
+                       boolean success,
+                       int requestBytes,
+                       int responseBytes,
+                       Option<String> errorType) {
         var methodMetrics = getOrCreateMetrics(artifact, method);
-
         // Tier 1: Always record to aggregated metrics
         methodMetrics.metrics.record(durationNs, success);
-
         // Update adaptive threshold
         thresholdStrategy.observe(method, durationNs);
-
         // Tier 2: Capture if slow
         if (thresholdStrategy.isSlow(method, durationNs)) {
             var slow = success
-                    ? SlowInvocation.success(method, System.nanoTime(), durationNs, requestBytes, responseBytes)
-                    : SlowInvocation.failure(method, System.nanoTime(), durationNs, requestBytes,
-                                             errorType.fold(() -> "Unknown", e -> e));
+                       ? SlowInvocation.success(method, System.nanoTime(), durationNs, requestBytes, responseBytes)
+                       : SlowInvocation.failure(method,
+                                                System.nanoTime(),
+                                                durationNs,
+                                                requestBytes,
+                                                errorType.fold(() -> "Unknown", e -> e));
             methodMetrics.addSlowInvocation(slow);
         }
     }
@@ -97,16 +100,22 @@ public final class InvocationMetricsCollector {
     /**
      * Convenience method for recording success.
      */
-    public void recordSuccess(Artifact artifact, MethodName method, long durationNs,
-                              int requestBytes, int responseBytes) {
+    public void recordSuccess(Artifact artifact,
+                              MethodName method,
+                              long durationNs,
+                              int requestBytes,
+                              int responseBytes) {
         record(artifact, method, durationNs, true, requestBytes, responseBytes, Option.empty());
     }
 
     /**
      * Convenience method for recording failure.
      */
-    public void recordFailure(Artifact artifact, MethodName method, long durationNs,
-                              int requestBytes, String errorType) {
+    public void recordFailure(Artifact artifact,
+                              MethodName method,
+                              long durationNs,
+                              int requestBytes,
+                              String errorType) {
         record(artifact, method, durationNs, false, requestBytes, 0, Option.option(errorType));
     }
 
@@ -117,17 +126,17 @@ public final class InvocationMetricsCollector {
      */
     public List<MethodSnapshot> snapshotAndReset() {
         var result = new ArrayList<MethodSnapshot>();
-
         metricsMap.forEach((artifact, methods) -> {
-            methods.forEach((method, collector) -> {
-                var metricsSnapshot = collector.metrics.snapshotAndReset();
-                var slowCalls = collector.drainSlowInvocations();
-                var threshold = thresholdStrategy.thresholdNs(method);
-
-                result.add(new MethodSnapshot(artifact, metricsSnapshot, slowCalls, threshold));
-            });
-        });
-
+                               methods.forEach((method, collector) -> {
+                                                   var metricsSnapshot = collector.metrics.snapshotAndReset();
+                                                   var slowCalls = collector.drainSlowInvocations();
+                                                   var threshold = thresholdStrategy.thresholdNs(method);
+                                                   result.add(new MethodSnapshot(artifact,
+                                                                                 metricsSnapshot,
+                                                                                 slowCalls,
+                                                                                 threshold));
+                                               });
+                           });
         return result;
     }
 
@@ -136,17 +145,17 @@ public final class InvocationMetricsCollector {
      */
     public List<MethodSnapshot> snapshot() {
         var result = new ArrayList<MethodSnapshot>();
-
         metricsMap.forEach((artifact, methods) -> {
-            methods.forEach((method, collector) -> {
-                var metricsSnapshot = collector.metrics.snapshot();
-                var slowCalls = collector.copySlowInvocations();
-                var threshold = thresholdStrategy.thresholdNs(method);
-
-                result.add(new MethodSnapshot(artifact, metricsSnapshot, slowCalls, threshold));
-            });
-        });
-
+                               methods.forEach((method, collector) -> {
+                                                   var metricsSnapshot = collector.metrics.snapshot();
+                                                   var slowCalls = collector.copySlowInvocations();
+                                                   var threshold = thresholdStrategy.thresholdNs(method);
+                                                   result.add(new MethodSnapshot(artifact,
+                                                                                 metricsSnapshot,
+                                                                                 slowCalls,
+                                                                                 threshold));
+                                               });
+                           });
         return result;
     }
 
@@ -165,9 +174,9 @@ public final class InvocationMetricsCollector {
     }
 
     private MethodMetricsWithSlowCalls getOrCreateMetrics(Artifact artifact, MethodName method) {
-        return metricsMap
-                .computeIfAbsent(artifact, _ -> new ConcurrentHashMap<>())
-                .computeIfAbsent(method, MethodMetricsWithSlowCalls::new);
+        return metricsMap.computeIfAbsent(artifact,
+                                          _ -> new ConcurrentHashMap<>())
+                         .computeIfAbsent(method, MethodMetricsWithSlowCalls::new);
     }
 
     /**
@@ -187,7 +196,7 @@ public final class InvocationMetricsCollector {
             var idx = writeIndex.getAndIncrement() % MAX_SLOW_INVOCATIONS_PER_METHOD;
             slowBuffer[idx] = slow;
             if (count < MAX_SLOW_INVOCATIONS_PER_METHOD) {
-                count++;
+                count++ ;
             }
         }
 
@@ -196,7 +205,7 @@ public final class InvocationMetricsCollector {
             // Reset
             writeIndex.set(0);
             count = 0;
-            for (int i = 0; i < MAX_SLOW_INVOCATIONS_PER_METHOD; i++) {
+            for (int i = 0; i < MAX_SLOW_INVOCATIONS_PER_METHOD; i++ ) {
                 slowBuffer[i] = null;
             }
             return result;
@@ -206,10 +215,9 @@ public final class InvocationMetricsCollector {
             var result = new ArrayList<SlowInvocation>(count);
             var currentCount = Math.min(count, MAX_SLOW_INVOCATIONS_PER_METHOD);
             var startIdx = writeIndex.get() >= MAX_SLOW_INVOCATIONS_PER_METHOD
-                    ? writeIndex.get() % MAX_SLOW_INVOCATIONS_PER_METHOD
-                    : 0;
-
-            for (int i = 0; i < currentCount; i++) {
+                           ? writeIndex.get() % MAX_SLOW_INVOCATIONS_PER_METHOD
+                           : 0;
+            for (int i = 0; i < currentCount; i++ ) {
                 var idx = (startIdx + i) % MAX_SLOW_INVOCATIONS_PER_METHOD;
                 var slow = slowBuffer[idx];
                 if (slow != null) {
@@ -224,11 +232,10 @@ public final class InvocationMetricsCollector {
      * Combined snapshot of method metrics and slow invocations.
      */
     public record MethodSnapshot(
-            Artifact artifact,
-            MethodMetrics.Snapshot metrics,
-            List<SlowInvocation> slowInvocations,
-            long currentThresholdNs
-    ) {
+    Artifact artifact,
+    MethodMetrics.Snapshot metrics,
+    List<SlowInvocation> slowInvocations,
+    long currentThresholdNs) {
         /**
          * Method name from the metrics.
          */

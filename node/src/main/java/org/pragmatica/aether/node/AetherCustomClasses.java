@@ -27,26 +27,24 @@ import static org.pragmatica.utility.HierarchyScanner.concreteSubtypes;
  * Registers Aether-specific classes for serialization.
  */
 public interface AetherCustomClasses {
-
-    static void configure(Consumer<Class<?>> consumer) {
+    static void configure(Consumer<Class< ? >> consumer) {
         // Include base Rabia classes
         CustomClasses.configure(consumer);
-
         // Aether key/value types
-        concreteSubtypes(AetherKey.class).forEach(consumer);
-        concreteSubtypes(AetherValue.class).forEach(consumer);
-        concreteSubtypes(AetherKey.AetherKeyPattern.class).forEach(consumer);
-
+        concreteSubtypes(AetherKey.class)
+        .forEach(consumer);
+        concreteSubtypes(AetherValue.class)
+        .forEach(consumer);
+        concreteSubtypes(AetherKey.AetherKeyPattern.class)
+        .forEach(consumer);
         // Artifact types
         consumer.accept(Artifact.class);
         consumer.accept(GroupId.class);
         consumer.accept(ArtifactId.class);
         consumer.accept(Version.class);
-
         // Slice types
         consumer.accept(SliceState.class);
         consumer.accept(MethodName.class);
-
         // Blueprint types
         consumer.accept(BlueprintId.class);
         consumer.accept(ExpandedBlueprint.class);
@@ -54,12 +52,13 @@ public interface AetherCustomClasses {
         consumer.accept(Route.class);
         consumer.accept(RouteTarget.class);
         consumer.accept(Binding.class);
-        concreteSubtypes(BindingSource.class).forEach(consumer);
-
+        concreteSubtypes(BindingSource.class)
+        .forEach(consumer);
         // Metrics types
-        concreteSubtypes(MetricsMessage.class).forEach(consumer);
-
+        concreteSubtypes(MetricsMessage.class)
+        .forEach(consumer);
         // Invocation types
-        concreteSubtypes(InvocationMessage.class).forEach(consumer);
+        concreteSubtypes(InvocationMessage.class)
+        .forEach(consumer);
     }
 }

@@ -1,6 +1,6 @@
 package org.pragmatica.cluster.state.kvstore;
 
-import org.pragmatica.cluster.state.Command;
+import org.pragmatica.consensus.Command;
 
 public sealed interface KVCommand<K extends StructuredKey> extends Command {
     K key();

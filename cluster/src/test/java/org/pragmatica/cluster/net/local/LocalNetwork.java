@@ -1,17 +1,17 @@
 package org.pragmatica.cluster.net.local;
 
-import org.pragmatica.cluster.consensus.ProtocolMessage;
-import org.pragmatica.cluster.consensus.rabia.RabiaProtocolMessage;
-import org.pragmatica.cluster.net.ClusterNetwork;
-import org.pragmatica.cluster.net.NetworkManagementOperation;
-import org.pragmatica.cluster.net.NetworkMessage;
-import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.cluster.topology.QuorumStateNotification;
-import org.pragmatica.cluster.topology.TopologyManager;
+import org.pragmatica.consensus.ProtocolMessage;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
+import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkMessage;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.utility.Sleep;
 
 import java.util.*;
@@ -251,10 +251,5 @@ public class LocalNetwork implements ClusterNetwork {
             messageLossRate = 0.0;
             messageDelay = TimeSpan.timeSpan(0).millis();
         }
-    }
-
-    @Override
-    public void configure(MessageRouter.MutableRouter router) {
-        // No configuration needed for test network
     }
 }

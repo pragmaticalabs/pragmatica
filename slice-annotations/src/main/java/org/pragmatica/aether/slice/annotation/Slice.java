@@ -56,7 +56,4 @@ import java.lang.annotation.Target;
  */
 @Retention(RetentionPolicy.RUNTIME)
 @Target(ElementType.TYPE)
-public @interface Slice {
-    // Marker annotation - no parameters needed
-    // All metadata derived from interface structure
-}
+public @interface Slice {}

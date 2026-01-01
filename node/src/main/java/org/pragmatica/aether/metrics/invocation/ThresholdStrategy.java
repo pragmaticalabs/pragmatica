@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicLong;
  * contribute to aggregated metrics.
  */
 public sealed interface ThresholdStrategy {
-
     /**
      * Determine if a duration qualifies as slow for the given method.
      *
@@ -30,9 +29,7 @@ public sealed interface ThresholdStrategy {
      * @param method     The method that was invoked
      * @param durationNs Duration in nanoseconds
      */
-    default void observe(MethodName method, long durationNs) {
-        // Default: no-op for non-adaptive strategies
-    }
+    default void observe(MethodName method, long durationNs) {}
 
     /**
      * Get the current threshold for a method (for monitoring).
@@ -43,7 +40,6 @@ public sealed interface ThresholdStrategy {
     long thresholdNs(MethodName method);
 
     // ========== Factory methods ==========
-
     /**
      * Fixed threshold strategy - same threshold for all methods.
      *
@@ -88,7 +84,8 @@ public sealed interface ThresholdStrategy {
      * Composite strategy - uses per-method thresholds with adaptive fallback.
      */
     static ThresholdStrategy composite(Map<MethodName, Long> methodThresholdsMs,
-                                        long defaultMinMs, long defaultMaxMs) {
+                                       long defaultMinMs,
+                                       long defaultMaxMs) {
         var adaptive = adaptive(defaultMinMs, defaultMaxMs);
         var methodThresholdsNs = new ConcurrentHashMap<MethodName, Long>();
         methodThresholdsMs.forEach((k, v) -> methodThresholdsNs.put(k, v * 1_000_000));
@@ -96,7 +93,6 @@ public sealed interface ThresholdStrategy {
     }
 
     // ========== Implementations ==========
-
     /**
      * Fixed threshold - same for all methods.
      */
@@ -156,7 +152,7 @@ public sealed interface ThresholdStrategy {
 
         private long computeThreshold(MethodStats stats) {
             var avgNs = stats.averageNs();
-            var threshold = (long) (avgNs * multiplier);
+            var threshold = (long)(avgNs * multiplier);
             return Math.max(minThresholdNs, Math.min(maxThresholdNs, threshold));
         }
 
@@ -164,16 +160,18 @@ public sealed interface ThresholdStrategy {
          * Per-method statistics using exponential moving average.
          */
         private static final class MethodStats {
-            private static final double ALPHA = 0.1; // Smoothing factor
+            private static final double ALPHA = 0.1;
 
+            // Smoothing factor
             private final AtomicLong count = new AtomicLong();
-            private volatile double ema = 0; // Exponential moving average
+            private volatile double ema = 0;
 
+            // Exponential moving average
             void update(long durationNs) {
                 var c = count.incrementAndGet();
                 if (c == 1) {
                     ema = durationNs;
-                } else {
+                }else {
                     // Thread-safe EMA update (approximate, but good enough for thresholds)
                     ema = ALPHA * durationNs + (1 - ALPHA) * ema;
                 }
@@ -230,9 +228,8 @@ public sealed interface ThresholdStrategy {
      * Composite strategy - per-method overrides with adaptive fallback.
      */
     record Composite(
-            Map<MethodName, Long> methodThresholdsNs,
-            ThresholdStrategy fallback
-    ) implements ThresholdStrategy {
+    Map<MethodName, Long> methodThresholdsNs,
+    ThresholdStrategy fallback) implements ThresholdStrategy {
         @Override
         public boolean isSlow(MethodName method, long durationNs) {
             var explicit = methodThresholdsNs.get(method);
@@ -252,7 +249,9 @@ public sealed interface ThresholdStrategy {
         @Override
         public long thresholdNs(MethodName method) {
             var explicit = methodThresholdsNs.get(method);
-            return explicit != null ? explicit : fallback.thresholdNs(method);
+            return explicit != null
+                   ? explicit
+                   : fallback.thresholdNs(method);
         }
     }
 }

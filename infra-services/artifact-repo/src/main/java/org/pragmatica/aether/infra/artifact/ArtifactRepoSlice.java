@@ -19,42 +19,38 @@ import java.util.List;
  * </ul>
  */
 public record ArtifactRepoSlice(
-    MavenProtocolHandler mavenHandler
-) implements Slice {
-
+ MavenProtocolHandler mavenHandler) implements Slice {
     public static ArtifactRepoSlice artifactRepoSlice(ArtifactStore store) {
         return new ArtifactRepoSlice(MavenProtocolHandler.mavenProtocolHandler(store));
     }
 
     @Override
-    public List<SliceMethod<?, ?>> methods() {
+    public List<SliceMethod< ? , ? >> methods() {
         return List.of(
-            new SliceMethod<>(
-                MethodName.methodName("get").unwrap(),
-                this::handleGet,
-                new TypeToken<MavenProtocolHandler.MavenResponse>() {},
-                new TypeToken<RepositoryRequest>() {}
-            ),
-            new SliceMethod<>(
-                MethodName.methodName("put").unwrap(),
-                this::handlePut,
-                new TypeToken<MavenProtocolHandler.MavenResponse>() {},
-                new TypeToken<RepositoryRequest>() {}
-            )
-        );
+        new SliceMethod<>(
+        MethodName.methodName("get")
+                  .unwrap(),
+        this::handleGet,
+        new TypeToken<MavenProtocolHandler.MavenResponse>() {},
+        new TypeToken<RepositoryRequest>() {}),
+        new SliceMethod<>(
+        MethodName.methodName("put")
+                  .unwrap(),
+        this::handlePut,
+        new TypeToken<MavenProtocolHandler.MavenResponse>() {},
+        new TypeToken<RepositoryRequest>() {}));
     }
 
     @Override
     public List<SliceRoute> routes() {
         return List.of(
-            SliceRoute.get("/repository/{path}", "get")
-                .withPathVar("path")
-                .build(),
-            SliceRoute.put("/repository/{path}", "put")
-                .withPathVar("path")
-                .withBody()
-                .build()
-        );
+        SliceRoute.get("/repository/{path}", "get")
+                  .withPathVar("path")
+                  .build(),
+        SliceRoute.put("/repository/{path}", "put")
+                  .withPathVar("path")
+                  .withBody()
+                  .build());
     }
 
     private Promise<MavenProtocolHandler.MavenResponse> handleGet(RepositoryRequest request) {
@@ -69,7 +65,6 @@ public record ArtifactRepoSlice(
      * Request for repository operations.
      */
     public record RepositoryRequest(
-        String path,
-        byte[] content
-    ) {}
+    String path,
+    byte[] content) {}
 }

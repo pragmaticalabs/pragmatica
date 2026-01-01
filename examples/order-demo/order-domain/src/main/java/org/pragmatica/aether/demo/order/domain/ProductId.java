@@ -10,11 +10,12 @@ import java.util.regex.Pattern;
 
 public record ProductId(String value) {
     private static final Pattern PRODUCT_ID_PATTERN = Pattern.compile("^PROD-[A-Z0-9]{6}$");
-    private static final Fn1<Cause, String> INVALID_PRODUCT_ID = Causes.forOneValue("Invalid product ID: {}");
+
+    private static final Fn1<Cause, String>INVALID_PRODUCT_ID = Causes.forOneValue("Invalid product ID: {}");
 
     public static Result<ProductId> productId(String raw) {
         return Verify.ensure(raw, Verify.Is::notBlank)
-                     .flatMap(Verify.ensureFn(INVALID_PRODUCT_ID, Verify.Is::matches, PRODUCT_ID_PATTERN))
+                     .flatMap(v -> Verify.ensure(v, Verify.Is::matches, PRODUCT_ID_PATTERN, INVALID_PRODUCT_ID))
                      .map(ProductId::new);
     }
 }

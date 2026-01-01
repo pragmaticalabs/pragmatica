@@ -1,10 +1,10 @@
-package org.pragmatica.cluster.consensus.rabia;
+package org.pragmatica.consensus.rabia;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster;
-import org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.StringKey;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.rabia.infrastructure.TestCluster;
+import org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
 import org.slf4j.Logger;
@@ -20,8 +20,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.StringKey.key;
-import static org.pragmatica.cluster.net.NodeId.nodeId;
+import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
+import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**

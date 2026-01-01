@@ -1,18 +1,18 @@
-package org.pragmatica.cluster.consensus.rabia.infrastructure;
+package org.pragmatica.consensus.rabia.infrastructure;
 
-import org.pragmatica.cluster.consensus.rabia.ProtocolConfig;
-import org.pragmatica.cluster.consensus.rabia.RabiaEngine;
-import org.pragmatica.cluster.consensus.rabia.RabiaProtocolMessage;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.rabia.ProtocolConfig;
+import org.pragmatica.consensus.rabia.RabiaEngine;
+import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.net.local.LocalNetwork;
 import org.pragmatica.cluster.net.local.LocalNetwork.FaultInjector;
 import org.pragmatica.cluster.node.rabia.CustomClasses;
-import org.pragmatica.cluster.state.Command;
+import org.pragmatica.consensus.Command;
 import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.message.MessageRouter;
-import org.pragmatica.net.serialization.Deserializer;
-import org.pragmatica.net.serialization.Serializer;
+import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -21,14 +21,14 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.cluster.consensus.rabia.RabiaProtocolMessage.Asynchronous;
-import static org.pragmatica.cluster.consensus.rabia.RabiaProtocolMessage.Synchronous;
-import static org.pragmatica.cluster.net.NodeId.randomNodeId;
-import static org.pragmatica.cluster.net.NodeInfo.nodeInfo;
+import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous;
+import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous;
+import static org.pragmatica.consensus.NodeId.randomNodeId;
+import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
-import static org.pragmatica.net.NodeAddress.nodeAddress;
-import static org.pragmatica.net.serialization.binary.fury.FuryDeserializer.furyDeserializer;
-import static org.pragmatica.net.serialization.binary.fury.FurySerializer.furySerializer;
+import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
+import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
+import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
 /// Holds a small Rabia cluster wired over a single LocalNetwork.
 public class TestCluster {
@@ -104,8 +104,7 @@ public class TestCluster {
         var topologyManager = new TestTopologyManager(size, nodeInfo(id, nodeAddress("localhost", 8090)));
         var engine = new RabiaEngine<>(topologyManager, network, store, ProtocolConfig.testConfig());
 
-        store.configure(router);
-        engine.configure(router);
+        router.addRoute(KVStoreLocalIO.Request.Find.class, store::find);
 
         network.addNode(id, createHandler(engine));
         stores.put(id, store);

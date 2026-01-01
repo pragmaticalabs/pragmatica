@@ -18,13 +18,14 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-import org.pragmatica.message.MessageReceiver;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Registry for HTTP routes stored in consensus KV-Store.
@@ -45,7 +46,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * </ul>
  */
 public interface RouteRegistry {
-
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
@@ -56,13 +56,11 @@ public interface RouteRegistry {
      * Register a route. Idempotent - succeeds if route already exists with same target.
      * Fails with RouteConflict if route exists with different target.
      */
-    Promise<Unit> register(
-        Artifact artifact,
-        String methodName,
-        String httpMethod,
-        String pathPattern,
-        List<Binding> bindings
-    );
+    Promise<Unit> register(Artifact artifact,
+                           String methodName,
+                           String httpMethod,
+                           String pathPattern,
+                           List<Binding> bindings);
 
     /**
      * Unregister all routes for a given artifact.
@@ -84,33 +82,34 @@ public interface RouteRegistry {
      * A registered route with its metadata.
      */
     record RegisteredRoute(
-        RouteKey key,
-        RouteValue value,
-        PathPattern compiledPattern
-    ) {}
+    RouteKey key,
+    RouteValue value,
+    PathPattern compiledPattern) {}
 
     /**
      * Route registration errors.
      */
     sealed interface RouteRegistryError extends Cause {
-        Fn1<Cause, String> ROUTE_CONFLICT_ERROR = Causes.forOneValue(
-            "Route conflict: %s"
-        );
+        Fn1<Cause, String>ROUTE_CONFLICT_ERROR = Causes.forOneValue(
+        "Route conflict: %s");
 
         record RouteConflict(
-            String httpMethod,
-            String pathPattern,
-            RouteValue existing,
-            RouteValue attempted
-        ) implements RouteRegistryError {
+        String httpMethod,
+        String pathPattern,
+        RouteValue existing,
+        RouteValue attempted) implements RouteRegistryError {
             @Override
             public String message() {
                 return String.format(
-                    "Route %s %s already registered to %s:%s, cannot register to %s:%s",
-                    httpMethod, pathPattern,
-                    existing.artifact().asString(), existing.methodName(),
-                    attempted.artifact().asString(), attempted.methodName()
-                );
+                "Route %s %s already registered to %s:%s, cannot register to %s:%s",
+                httpMethod,
+                pathPattern,
+                existing.artifact()
+                        .asString(),
+                existing.methodName(),
+                attempted.artifact()
+                         .asString(),
+                attempted.methodName());
             }
         }
     }
@@ -118,35 +117,31 @@ public interface RouteRegistry {
     /**
      * Create a new route registry.
      */
-    static RouteRegistry routeRegistry(
-        ClusterNode<KVCommand<AetherKey>> cluster,
-        KVStore<AetherKey, AetherValue> kvStore
-    ) {
+    static RouteRegistry routeRegistry(ClusterNode<KVCommand<AetherKey>> cluster,
+                                       KVStore<AetherKey, AetherValue> kvStore) {
         return new RouteRegistryImpl(cluster, kvStore);
     }
 }
 
 class RouteRegistryImpl implements RouteRegistry {
-
     private static final Logger log = LoggerFactory.getLogger(RouteRegistryImpl.class);
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
     private final KVStore<AetherKey, AetherValue> kvStore;
     private final Map<RouteKey, RegisteredRoute> routes = new ConcurrentHashMap<>();
 
-    RouteRegistryImpl(
-        ClusterNode<KVCommand<AetherKey>> cluster,
-        KVStore<AetherKey, AetherValue> kvStore
-    ) {
+    RouteRegistryImpl(ClusterNode<KVCommand<AetherKey>> cluster,
+                      KVStore<AetherKey, AetherValue> kvStore) {
         this.cluster = cluster;
         this.kvStore = kvStore;
     }
 
     @Override
     public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-        var key = valuePut.cause().key();
-        var value = valuePut.cause().value();
-
+        var key = valuePut.cause()
+                          .key();
+        var value = valuePut.cause()
+                            .value();
         if (key instanceof RouteKey routeKey && value instanceof RouteValue routeValue) {
             addRoute(routeKey, routeValue);
         }
@@ -154,8 +149,8 @@ class RouteRegistryImpl implements RouteRegistry {
 
     @Override
     public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-        var key = valueRemove.cause().key();
-
+        var key = valueRemove.cause()
+                             .key();
         if (key instanceof RouteKey routeKey) {
             routes.remove(routeKey);
             log.debug("Removed route: {} {}", routeKey.method(), routeKey.pathHash());
@@ -163,114 +158,110 @@ class RouteRegistryImpl implements RouteRegistry {
     }
 
     @Override
-    public Promise<Unit> register(
-        Artifact artifact,
-        String methodName,
-        String httpMethod,
-        String pathPattern,
-        List<Binding> bindings
-    ) {
+    public Promise<Unit> register(Artifact artifact,
+                                  String methodName,
+                                  String httpMethod,
+                                  String pathPattern,
+                                  List<Binding> bindings) {
         var routeKey = RouteKey.routeKey(httpMethod, pathPattern);
         var routeValue = new RouteValue(artifact, methodName, httpMethod, pathPattern, bindings);
-
         // Check if route already exists in local cache
         var existing = routes.get(routeKey);
         if (existing != null) {
             return validateExisting(existing.value(), routeValue);
         }
-
         // Check KV-Store directly (in case we missed a notification)
         return kvStore.get(routeKey)
-            .map(value -> (RouteValue) value)
-            .fold(
-                () -> submitRoute(routeKey, routeValue),
-                stored -> validateExisting(stored, routeValue)
-            );
+                      .map(value -> (RouteValue) value)
+                      .fold(() -> submitRoute(routeKey, routeValue),
+                            stored -> validateExisting(stored, routeValue));
     }
 
     private Promise<Unit> validateExisting(RouteValue existing, RouteValue attempted) {
         if (existing.matches(attempted)) {
-            log.debug("Route already registered (idempotent): {} {}",
-                attempted.httpMethod(), attempted.pathPattern());
+            log.debug("Route already registered (idempotent): {} {}", attempted.httpMethod(), attempted.pathPattern());
             return Promise.success(Unit.unit());
         }
-
         // Conflict - same path but different target
         return new RouteRegistryError.RouteConflict(
-            attempted.httpMethod(),
-            attempted.pathPattern(),
-            existing,
-            attempted
-        ).promise();
+        attempted.httpMethod(), attempted.pathPattern(), existing, attempted).promise();
     }
 
     private Promise<Unit> submitRoute(RouteKey key, RouteValue value) {
         log.info("Registering route: {} {} -> {}:{}",
-            value.httpMethod(), value.pathPattern(),
-            value.artifact().asString(), value.methodName());
-
+                 value.httpMethod(),
+                 value.pathPattern(),
+                 value.artifact()
+                      .asString(),
+                 value.methodName());
         var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-
         return cluster.apply(List.of(command))
-            .mapToUnit();
+                      .mapToUnit();
     }
 
     @Override
     public Promise<Unit> unregister(Artifact artifact) {
         // Find all routes belonging to this artifact
-        var routesToRemove = routes.values().stream()
-            .filter(r -> r.value().artifact().equals(artifact))
-            .toList();
-
+        var routesToRemove = routes.values()
+                                   .stream()
+                                   .filter(r -> r.value()
+                                                 .artifact()
+                                                 .equals(artifact))
+                                   .toList();
         if (routesToRemove.isEmpty()) {
             return Promise.success(Unit.unit());
         }
-
         log.info("Unregistering {} routes for artifact {}", routesToRemove.size(), artifact.asString());
-
         List<KVCommand<AetherKey>> commands = routesToRemove.stream()
-            .<KVCommand<AetherKey>>map(r -> new KVCommand.Remove<>(r.key()))
-            .toList();
-
+                                                            .<KVCommand<AetherKey>> map(r -> new KVCommand.Remove<>(r.key()))
+                                                            .toList();
         return cluster.apply(commands)
-            .map(_ -> {
-                log.info("Unregistered {} routes for artifact {}", routesToRemove.size(), artifact.asString());
-                return Unit.unit();
-            });
+                      .map(_ -> {
+                               log.info("Unregistered {} routes for artifact {}",
+                                        routesToRemove.size(),
+                                        artifact.asString());
+                               return Unit.unit();
+                           });
     }
 
     private void addRoute(RouteKey key, RouteValue value) {
-        try {
-            // Create the pattern from "METHOD:path"
-            var pattern = PathPattern.compile(value.httpMethod() + ":" + value.pathPattern());
-            var registered = new RegisteredRoute(key, value, pattern);
-
-            routes.put(key, registered);
-            log.debug("Added route: {} {} -> {}:{}",
-                value.httpMethod(), value.pathPattern(),
-                value.artifact().asString(), value.methodName());
-        } catch (Exception e) {
-            log.error("Failed to compile route pattern: {} {}",
-                value.httpMethod(), value.pathPattern(), e);
-        }
+        // Create the pattern from "METHOD:path"
+        PathPattern.compile(value.httpMethod() + ":" + value.pathPattern())
+                   .onSuccess(pattern -> {
+                                  var registered = new RegisteredRoute(key, value, pattern);
+                                  routes.put(key, registered);
+                                  log.debug("Added route: {} {} -> {}:{}",
+                                            value.httpMethod(),
+                                            value.pathPattern(),
+                                            value.artifact()
+                                                 .asString(),
+                                            value.methodName());
+                              })
+                   .onFailure(cause -> log.error("Failed to compile route pattern: {} {} - {}",
+                                                 value.httpMethod(),
+                                                 value.pathPattern(),
+                                                 cause.message()));
     }
 
     @Override
     public Option<MatchResult> match(HttpMethod method, String path) {
         for (var registered : routes.values()) {
-            var matchOpt = registered.compiledPattern().match(method, path);
+            var matchOpt = registered.compiledPattern()
+                                     .match(method, path);
             if (matchOpt.isPresent()) {
                 // Convert RouteValue to Route for MatchResult compatibility
                 var routeValue = registered.value();
                 var route = new Route(
-                    routeValue.httpMethod() + ":" + routeValue.pathPattern(),
-                    new org.pragmatica.aether.slice.routing.RouteTarget(
-                        routeValue.artifact().asString(),
-                        routeValue.methodName(),
-                        routeValue.bindings().stream().map(Binding::param).toList()
-                    ),
-                    routeValue.bindings()
-                );
+                routeValue.httpMethod() + ":" + routeValue.pathPattern(),
+                new org.pragmatica.aether.slice.routing.RouteTarget(
+                routeValue.artifact()
+                          .asString(),
+                routeValue.methodName(),
+                routeValue.bindings()
+                          .stream()
+                          .map(Binding::param)
+                          .toList()),
+                routeValue.bindings());
                 return matchOpt.map(vars -> MatchResult.matchResult(route, vars));
             }
         }

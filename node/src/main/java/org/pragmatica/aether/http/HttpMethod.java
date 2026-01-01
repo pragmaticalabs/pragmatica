@@ -1,5 +1,7 @@
 package org.pragmatica.aether.http;
 
+import org.pragmatica.lang.Option;
+
 import java.util.Locale;
 
 /**
@@ -13,17 +15,16 @@ public enum HttpMethod {
     PATCH,
     HEAD,
     OPTIONS;
-
-    public static HttpMethod fromString(String method) {
+    public static Option<HttpMethod> fromString(String method) {
         return switch (method.toUpperCase(Locale.ROOT)) {
-            case "GET" -> GET;
-            case "POST" -> POST;
-            case "PUT" -> PUT;
-            case "DELETE" -> DELETE;
-            case "PATCH" -> PATCH;
-            case "HEAD" -> HEAD;
-            case "OPTIONS" -> OPTIONS;
-            default -> throw new IllegalArgumentException("Unknown HTTP method: " + method);
+            case"GET" -> Option.some(GET);
+            case"POST" -> Option.some(POST);
+            case"PUT" -> Option.some(PUT);
+            case"DELETE" -> Option.some(DELETE);
+            case"PATCH" -> Option.some(PATCH);
+            case"HEAD" -> Option.some(HEAD);
+            case"OPTIONS" -> Option.some(OPTIONS);
+            default -> Option.none();
         };
     }
 }

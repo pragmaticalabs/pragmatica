@@ -35,28 +35,28 @@ import java.util.List;
  * </pre>
  */
 public interface BlueprintParser {
-    Fn1<Cause, String> FILE_ERROR = Causes.forOneValue("Failed to read file: %s");
+    Fn1<Cause, String>FILE_ERROR = Causes.forOneValue("Failed to read file: %s");
     Cause MISSING_ID = Causes.cause("Missing blueprint id");
-    Fn1<Cause, String> INVALID_SLICE = Causes.forOneValue("Invalid slice definition: %s");
-    Fn1<Cause, String> MISSING_ARTIFACT = Causes.forOneValue("Missing artifact for slice: %s");
-    Fn1<Cause, String> INVALID_ARTIFACT = Causes.forOneValue("Invalid artifact format: %s");
+    Fn1<Cause, String>INVALID_SLICE = Causes.forOneValue("Invalid slice definition: %s");
+    Fn1<Cause, String>MISSING_ARTIFACT = Causes.forOneValue("Missing artifact for slice: %s");
+    Fn1<Cause, String>INVALID_ARTIFACT = Causes.forOneValue("Invalid artifact format: %s");
 
     static Result<Blueprint> parse(String dsl) {
         if (dsl == null || dsl.isBlank()) {
             return MISSING_ID.result();
         }
-
         return TomlParser.parse(dsl)
-            .mapError(cause -> Causes.cause("TOML parse error: " + cause.message()))
-            .flatMap(BlueprintParser::parseDocument);
+                         .mapError(cause -> Causes.cause("TOML parse error: " + cause.message()))
+                         .flatMap(BlueprintParser::parseDocument);
     }
 
     static Result<Blueprint> parseFile(Path path) {
-        try {
+        try{
             var content = Files.readString(path);
             return parse(content);
         } catch (IOException e) {
-            return FILE_ERROR.apply(e.getMessage()).result();
+            return FILE_ERROR.apply(e.getMessage())
+                             .result();
         }
     }
 
@@ -66,14 +66,13 @@ public interface BlueprintParser {
         if (idOpt.isEmpty()) {
             return MISSING_ID.result();
         }
-
         return BlueprintId.blueprintId(idOpt.unwrap())
-            .flatMap(id -> parseSlices(doc).map(slices -> Blueprint.blueprint(id, slices)));
+                          .flatMap(id -> parseSlices(doc)
+                                         .map(slices -> Blueprint.blueprint(id, slices)));
     }
 
     private static Result<List<SliceSpec>> parseSlices(TomlDocument doc) {
         var slices = new ArrayList<SliceSpec>();
-
         // Find all sections starting with "slices."
         for (var sectionName : doc.sectionNames()) {
             if (sectionName.startsWith("slices.")) {
@@ -85,20 +84,19 @@ public interface BlueprintParser {
                 slices.add(result.unwrap());
             }
         }
-
         return Result.success(slices);
     }
 
     private static Result<SliceSpec> parseSliceSection(TomlDocument doc, String section, String sliceName) {
         var artifactOpt = doc.getString(section, "artifact");
         if (artifactOpt.isEmpty()) {
-            return MISSING_ARTIFACT.apply(sliceName).result();
+            return MISSING_ARTIFACT.apply(sliceName)
+                                   .result();
         }
-
-        var instanceCount = doc.getInt(section, "instances").or(1);
-
+        var instanceCount = doc.getInt(section, "instances")
+                               .or(1);
         return Artifact.artifact(artifactOpt.unwrap())
-            .mapError(_ -> INVALID_ARTIFACT.apply(artifactOpt.unwrap()))
-            .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instanceCount));
+                       .mapError(_ -> INVALID_ARTIFACT.apply(artifactOpt.unwrap()))
+                       .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instanceCount));
     }
 }

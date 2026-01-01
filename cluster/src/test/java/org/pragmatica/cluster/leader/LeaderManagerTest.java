@@ -1,25 +1,26 @@
-package org.pragmatica.cluster.leader;
+package org.pragmatica.consensus.leader;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.leader.LeaderNotification.LeaderChange;
-import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.cluster.topology.QuorumStateNotification;
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.cluster.topology.TopologyChangeNotification.NodeRemoved;
+import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
+import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
+import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
+import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.lang.Option;
-import org.pragmatica.message.MessageReceiver;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.messaging.MessageRouter;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.pragmatica.cluster.leader.LeaderNotification.leaderChange;
-import static org.pragmatica.cluster.topology.TopologyChangeNotification.nodeAdded;
-import static org.pragmatica.cluster.topology.TopologyChangeNotification.nodeRemoved;
+import static org.pragmatica.consensus.NodeId.nodeId;
+import static org.pragmatica.consensus.leader.LeaderNotification.leaderChange;
+import static org.pragmatica.consensus.topology.TopologyChangeNotification.nodeAdded;
+import static org.pragmatica.consensus.topology.TopologyChangeNotification.nodeRemoved;
 
 class LeaderManagerTest {
     record Watcher<T>(List<T> collected) {
@@ -29,8 +30,9 @@ class LeaderManagerTest {
         }
     }
 
-    private final NodeId self = NodeId.randomNodeId();
-    private final List<NodeId> nodes = List.of(NodeId.randomNodeId(), self, NodeId.randomNodeId());
+    // Use deterministic IDs to ensure predictable ordering (a < b < c)
+    private final NodeId self = NodeId.nodeId("node-b");
+    private final List<NodeId> nodes = List.of(NodeId.nodeId("node-a"), self, NodeId.nodeId("node-c"));
 
     private final MessageRouter.MutableRouter router = MessageRouter.mutable();
     private final Watcher<LeaderNotification> watcher = new Watcher<>(new ArrayList<>());
@@ -63,7 +65,8 @@ class LeaderManagerTest {
     void nodesAddedAndRemovedLeaderStaysStable() {
         var expected = simulateClusterStart();
 
-        sendNodeAdded(NodeId.randomNodeId());
+        // Use deterministic ID that sorts after existing nodes (a < b < c < d)
+        sendNodeAdded(nodeId("node-d"));
         sendNodeRemoved(nodes.getLast());
 
         // When quorum disappears, we should see disappearance of the leader
@@ -77,9 +80,10 @@ class LeaderManagerTest {
     void leaderRemovedAndReplacedWithNewOne() {
         var expected = simulateClusterStart();
 
-        sendNodeRemoved(self);
-        // Here should appear new leader, which is not a local node
-        expected.add(leaderChange(Option.option(nodes.getFirst()), false));
+        // Remove the leader (node-a, which is first in sorted order)
+        sendNodeRemoved(nodes.getFirst());
+        // New leader should be the next in sorted order (self = node-b)
+        expected.add(leaderChange(Option.option(self), true));
 
         // When quorum disappears, we should see disappearance of the leader
         expected.add(leaderChange(Option.none(), false));

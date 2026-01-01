@@ -2,15 +2,13 @@ package org.pragmatica.aether.forge;
 
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
-import org.pragmatica.cluster.net.NodeId;
-import org.pragmatica.cluster.net.NodeInfo;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -18,9 +16,12 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static org.pragmatica.cluster.net.NodeId.nodeId;
-import static org.pragmatica.cluster.net.NodeInfo.nodeInfo;
-import static org.pragmatica.net.NodeAddress.nodeAddress;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.consensus.NodeId.nodeId;
+import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
+import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /**
  * Manages a cluster of AetherNodes for Forge.
@@ -30,7 +31,8 @@ public final class ForgeCluster {
     private static final Logger log = LoggerFactory.getLogger(ForgeCluster.class);
 
     private static final int BASE_PORT = 5050;
-    private static final TimeSpan NODE_TIMEOUT = TimeSpan.timeSpan(10).seconds();
+    private static final TimeSpan NODE_TIMEOUT = TimeSpan.timeSpan(10)
+                                                        .seconds();
 
     private final Map<String, AetherNode> nodes = new ConcurrentHashMap<>();
     private final Map<String, NodeInfo> nodeInfos = new ConcurrentHashMap<>();
@@ -54,10 +56,9 @@ public final class ForgeCluster {
      */
     public Promise<Unit> start() {
         log.info("Starting Forge cluster with {} nodes", initialClusterSize);
-
         // Create node infos for initial cluster
         var initialNodes = new ArrayList<NodeInfo>();
-        for (int i = 1; i <= initialClusterSize; i++) {
+        for (int i = 1; i <= initialClusterSize; i++ ) {
             var nodeId = nodeId("node-" + i);
             var port = BASE_PORT + i - 1;
             var info = nodeInfo(nodeId, nodeAddress("localhost", port));
@@ -65,16 +66,16 @@ public final class ForgeCluster {
             nodeInfos.put(nodeId.id(), info);
         }
         nodeCounter.set(initialClusterSize);
-
         // Create and start all nodes
         var startPromises = new ArrayList<Promise<Unit>>();
-        for (int i = 0; i < initialClusterSize; i++) {
+        for (int i = 0; i < initialClusterSize; i++ ) {
             var nodeInfo = initialNodes.get(i);
             var node = createNode(nodeInfo.id(), BASE_PORT + i, initialNodes);
-            nodes.put(nodeInfo.id().id(), node);
+            nodes.put(nodeInfo.id()
+                              .id(),
+                      node);
             startPromises.add(node.start());
         }
-
         return Promise.allOf(startPromises)
                       .map(_ -> Unit.unit())
                       .onSuccess(_ -> log.info("Forge cluster started with {} nodes", initialClusterSize));
@@ -85,12 +86,11 @@ public final class ForgeCluster {
      */
     public Promise<Unit> stop() {
         log.info("Stopping Forge cluster");
-
         var stopPromises = nodes.values()
                                 .stream()
-                                .map(node -> node.stop().timeout(NODE_TIMEOUT))
+                                .map(node -> node.stop()
+                                                 .timeout(NODE_TIMEOUT))
                                 .toList();
-
         return Promise.allOf(stopPromises)
                       .map(_ -> Unit.unit())
                       .onSuccess(_ -> {
@@ -109,20 +109,16 @@ public final class ForgeCluster {
         var nodeId = nodeId("node-" + nodeNum);
         var port = BASE_PORT + nodeNum - 1;
         var info = nodeInfo(nodeId, nodeAddress("localhost", port));
-
         log.info("Adding new node {} on port {}", nodeId.id(), port);
-
         nodeInfos.put(nodeId.id(), info);
-
         // Get current topology including the new node
         var allNodes = new ArrayList<>(nodeInfos.values());
-
         var node = createNode(nodeId, port, allNodes);
         nodes.put(nodeId.id(), node);
-
         return node.start()
                    .map(_ -> nodeId)
-                   .onSuccess(_ -> log.info("Node {} joined the cluster", nodeId.id()));
+                   .onSuccess(_ -> log.info("Node {} joined the cluster",
+                                            nodeId.id()));
     }
 
     /**
@@ -134,9 +130,7 @@ public final class ForgeCluster {
             log.warn("Node {} not found", nodeIdStr);
             return Promise.success(Unit.unit());
         }
-
         log.info("Killing node {}", nodeIdStr);
-
         return node.stop()
                    .timeout(NODE_TIMEOUT)
                    .map(_ -> {
@@ -156,13 +150,12 @@ public final class ForgeCluster {
             log.warn("Node {} not found", nodeIdStr);
             return Promise.success(Unit.unit());
         }
-
         log.info("Crashing node {} abruptly", nodeIdStr);
-
         // For crash simulation, we still call stop() but don't wait long
         return node.stop()
-                   .timeout(TimeSpan.timeSpan(1).seconds())
-                   .recover(_ -> Unit.unit())  // Ignore timeout errors
+                   .timeout(TimeSpan.timeSpan(1)
+                                    .seconds())
+                   .recover(_ -> Unit.unit())
                    .map(_ -> {
                        nodes.remove(nodeIdStr);
                        nodeInfos.remove(nodeIdStr);
@@ -177,42 +170,41 @@ public final class ForgeCluster {
      */
     public Promise<Unit> rollingRestart() {
         log.info("Starting rolling restart");
-
         var nodeIds = new ArrayList<>(nodes.keySet());
         var currentTopology = new ArrayList<>(nodeInfos.values());
-
         // Chain restarts sequentially
         Promise<Unit> chain = Promise.success(Unit.unit());
-
         for (var nodeIdStr : nodeIds) {
             var nodeInfo = nodeInfos.get(nodeIdStr);
             if (nodeInfo == null) continue;
-
             chain = chain.flatMap(_ -> restartNode(nodeIdStr, nodeInfo, currentTopology));
         }
-
         return chain.onSuccess(_ -> log.info("Rolling restart completed"));
     }
 
     private Promise<Unit> restartNode(String nodeIdStr, NodeInfo nodeInfo, List<NodeInfo> topology) {
         log.info("Rolling restart: restarting {}", nodeIdStr);
-
         var node = nodes.get(nodeIdStr);
         if (node == null) {
             return Promise.success(Unit.unit());
         }
-
         return node.stop()
                    .timeout(NODE_TIMEOUT)
-                   .flatMap(_ -> Promise.promise(TimeSpan.timeSpan(300).millis(), () -> Result.success(Unit.unit())))
+                   .flatMap(_ -> Promise.promise(TimeSpan.timeSpan(300)
+                                                         .millis(),
+                                                 () -> Result.success(Unit.unit())))
                    .flatMap(_ -> {
-                       var port = nodeInfo.address().port();
-                       var newNode = createNode(nodeInfo.id(), port, topology);
-                       nodes.put(nodeIdStr, newNode);
-
-                       return newNode.start();
-                   })
-                   .flatMap(_ -> Promise.promise(TimeSpan.timeSpan(500).millis(), () -> Result.success(Unit.unit())))
+                                var port = nodeInfo.address()
+                                                   .port();
+                                var newNode = createNode(nodeInfo.id(),
+                                                         port,
+                                                         topology);
+                                nodes.put(nodeIdStr, newNode);
+                                return newNode.start();
+                            })
+                   .flatMap(_ -> Promise.promise(TimeSpan.timeSpan(500)
+                                                         .millis(),
+                                                 () -> Result.success(Unit.unit())))
                    .onSuccess(_ -> log.info("Node {} restarted", nodeIdStr));
     }
 
@@ -224,13 +216,11 @@ public final class ForgeCluster {
         if (nodes.isEmpty()) {
             return Option.none();
         }
-
         // Take snapshot and sort to ensure consistent leader detection
         var sortedNodes = nodeInfos.keySet()
                                    .stream()
                                    .sorted()
                                    .toList();
-
         return sortedNodes.isEmpty()
                ? Option.none()
                : Option.option(sortedNodes.getFirst());
@@ -243,17 +233,18 @@ public final class ForgeCluster {
         var nodeStatuses = nodes.entrySet()
                                 .stream()
                                 .map(entry -> new NodeStatus(
-                                        entry.getKey(),
-                                        nodeInfos.get(entry.getKey()).address().port(),
-                                        "healthy",
-                                        currentLeader().fold(
-                                                () -> false,
-                                                leaderId -> leaderId.equals(entry.getKey())
-                                        )
-                                ))
+        entry.getKey(),
+        nodeInfos.get(entry.getKey())
+                 .address()
+                 .port(),
+        "healthy",
+        currentLeader()
+        .fold(() -> false,
+              leaderId -> leaderId.equals(entry.getKey()))))
                                 .toList();
-
-        return new ClusterStatus(nodeStatuses, currentLeader().fold(() -> "none", leader -> leader));
+        return new ClusterStatus(nodeStatuses, currentLeader()
+                                              .fold(() -> "none",
+                                                    leader -> leader));
     }
 
     /**
@@ -286,24 +277,25 @@ public final class ForgeCluster {
      * Get per-node metrics for all nodes.
      */
     public List<NodeMetrics> nodeMetrics() {
-        return nodes.entrySet().stream()
+        return nodes.entrySet()
+                    .stream()
                     .map(entry -> {
-                        var nodeId = entry.getKey();
-                        var node = entry.getValue();
-                        var metrics = node.metricsCollector().collectLocal();
-
-                        var cpuUsage = metrics.getOrDefault("cpu.usage", 0.0);
-                        var heapUsed = metrics.getOrDefault("heap.used", 0.0);
-                        var heapMax = metrics.getOrDefault("heap.max", 1.0);
-
-                        return new NodeMetrics(
-                                nodeId,
-                                currentLeader().fold(() -> false, l -> l.equals(nodeId)),
-                                cpuUsage,
-                                (long) (heapUsed / 1024 / 1024),
-                                (long) (heapMax / 1024 / 1024)
-                        );
-                    })
+                             var nodeId = entry.getKey();
+                             var node = entry.getValue();
+                             var metrics = node.metricsCollector()
+                                               .collectLocal();
+                             var cpuUsage = metrics.getOrDefault("cpu.usage", 0.0);
+                             var heapUsed = metrics.getOrDefault("heap.used", 0.0);
+                             var heapMax = metrics.getOrDefault("heap.max", 1.0);
+                             return new NodeMetrics(
+        nodeId,
+        currentLeader()
+        .fold(() -> false,
+              l -> l.equals(nodeId)),
+        cpuUsage,
+        (long)(heapUsed / 1024 / 1024),
+        (long)(heapMax / 1024 / 1024));
+                         })
                     .toList();
     }
 
@@ -311,28 +303,25 @@ public final class ForgeCluster {
      * Status of a single node.
      */
     public record NodeStatus(
-            String id,
-            int port,
-            String state,
-            boolean isLeader
-    ) {}
+    String id,
+    int port,
+    String state,
+    boolean isLeader) {}
 
     /**
      * Status of the entire cluster.
      */
     public record ClusterStatus(
-            List<NodeStatus> nodes,
-            String leaderId
-    ) {}
+    List<NodeStatus> nodes,
+    String leaderId) {}
 
     /**
      * Per-node metrics for dashboard display.
      */
     public record NodeMetrics(
-            String nodeId,
-            boolean isLeader,
-            double cpuUsage,
-            long heapUsedMb,
-            long heapMaxMb
-    ) {}
+    String nodeId,
+    boolean isLeader,
+    double cpuUsage,
+    long heapUsedMb,
+    long heapMaxMb) {}
 }

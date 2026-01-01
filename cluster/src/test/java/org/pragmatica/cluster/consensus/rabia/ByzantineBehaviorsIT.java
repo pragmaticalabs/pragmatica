@@ -1,8 +1,8 @@
-package org.pragmatica.cluster.consensus.rabia;
+package org.pragmatica.consensus.rabia;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster;
+import org.pragmatica.consensus.rabia.infrastructure.TestCluster;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,7 +13,7 @@ import java.util.concurrent.TimeUnit;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.StringKey.key;
+import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Test Suite 4: Byzantine Behaviors

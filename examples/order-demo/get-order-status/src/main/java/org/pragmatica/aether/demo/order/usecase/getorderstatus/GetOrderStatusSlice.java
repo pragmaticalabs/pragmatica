@@ -15,7 +15,6 @@ import java.util.List;
  * Uses shared OrderRepository for cross-slice visibility.
  */
 public record GetOrderStatusSlice() implements Slice {
-
     private OrderRepository repository() {
         return OrderRepository.instance();
     }
@@ -25,52 +24,51 @@ public record GetOrderStatusSlice() implements Slice {
     }
 
     @Override
-    public List<SliceMethod<?, ?>> methods() {
+    public List<SliceMethod< ? , ? >> methods() {
         return List.of(
-            new SliceMethod<>(
-                MethodName.methodName("getOrderStatus").unwrap(),
-                this::execute,
-                new TypeToken<GetOrderStatusResponse>() {},
-                new TypeToken<GetOrderStatusRequest>() {}
-            )
-        );
+        new SliceMethod<>(
+        MethodName.methodName("getOrderStatus")
+                  .expect("Invalid method name: getOrderStatus"),
+        this::execute,
+        new TypeToken<GetOrderStatusResponse>() {},
+        new TypeToken<GetOrderStatusRequest>() {}));
     }
 
     @Override
     public List<SliceRoute> routes() {
         return List.of(
-            SliceRoute.get("/api/orders/{orderId}", "getOrderStatus")
-                .withPathVar("orderId")
-                .build()
-        );
+        SliceRoute.get("/api/orders/{orderId}", "getOrderStatus")
+                  .withPathVar("orderId")
+                  .build());
     }
 
     private Promise<GetOrderStatusResponse> execute(GetOrderStatusRequest request) {
         return ValidGetOrderStatusRequest.validGetOrderStatusRequest(request)
-                                          .async()
-                                          .flatMap(this::findOrder);
+                                         .async()
+                                         .flatMap(this::findOrder);
     }
 
     private Promise<GetOrderStatusResponse> findOrder(ValidGetOrderStatusRequest validRequest) {
-        return repository().findById(validRequest.orderId().value())
-            .fold(
-                () -> new GetOrderStatusError.OrderNotFound(validRequest.orderId().value()).<GetOrderStatusResponse>promise(),
-                order -> {
-                    var items = order.items().stream()
-                        .map(item -> new GetOrderStatusResponse.OrderItem(
-                            item.productId(), item.quantity(), item.unitPrice()
-                        ))
-                        .toList();
-
-                    return Promise.success(new GetOrderStatusResponse(
-                        order.orderId(),
-                        order.status(),
-                        order.total(),
-                        items,
-                        order.createdAt(),
-                        order.updatedAt()
-                    ));
-                }
-            );
+        return repository()
+               .findById(validRequest.orderId()
+                                     .value())
+               .fold(() -> new GetOrderStatusError.OrderNotFound(validRequest.orderId()
+                                                                             .value()).<GetOrderStatusResponse>promise(),
+                     order -> {
+                         var items = order.items()
+                                          .stream()
+                                          .map(item -> new GetOrderStatusResponse.OrderItem(
+        item.productId(),
+        item.quantity(),
+        item.unitPrice()))
+                                          .toList();
+                         return Promise.success(new GetOrderStatusResponse(
+        order.orderId(),
+        order.status(),
+        order.total(),
+        items,
+        order.createdAt(),
+        order.updatedAt()));
+                     });
     }
 }

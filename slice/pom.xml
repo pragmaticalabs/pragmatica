@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.6.2</version>
+        <version>0.6.3</version>
     </parent>
 
     <artifactId>slice</artifactId>
@@ -21,10 +21,13 @@
             <artifactId>toml</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>common</artifactId>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-kryo</artifactId>
         </dependency>
-
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>serialization-fury</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>cluster</artifactId>

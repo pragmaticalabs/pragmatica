@@ -45,16 +45,17 @@ import java.util.List;
  * @param slices List of slice dependencies (runtime, non-typed)
  */
 public record DependencyFile(
-        List<ArtifactDependency> api,
-        List<ArtifactDependency> shared,
-        List<ArtifactDependency> slices
-) {
-
+ List<ArtifactDependency> api,
+ List<ArtifactDependency> shared,
+ List<ArtifactDependency> slices) {
     private enum Section {
-        NONE,       // No section yet (for backward compatibility)
-        API,        // [api] section
-        SHARED,     // [shared] section
-        SLICES      // [slices] section
+        NONE,
+        // No section yet (for backward compatibility)
+        API,
+        // [api] section
+        SHARED,
+        // [shared] section
+        SLICES
     }
 
     /**
@@ -68,73 +69,61 @@ public record DependencyFile(
         var shared = new ArrayList<ArtifactDependency>();
         var slices = new ArrayList<ArtifactDependency>();
         var currentSection = Section.NONE;
-
         var lines = content.split("\n");
         for (var line : lines) {
             var trimmed = line.trim();
-
             // Skip empty lines and comments
             if (trimmed.isEmpty() || trimmed.startsWith("#")) {
                 continue;
             }
-
             // Check for section headers
             if (trimmed.equals("[api]")) {
                 currentSection = Section.API;
                 continue;
             }
-
             if (trimmed.equals("[shared]")) {
                 currentSection = Section.SHARED;
                 continue;
             }
-
             if (trimmed.equals("[slices]")) {
                 currentSection = Section.SLICES;
                 continue;
             }
-
             // Unknown section header
             if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-                return UNKNOWN_SECTION.apply(trimmed).result();
+                return UNKNOWN_SECTION.apply(trimmed)
+                                      .result();
             }
-
             // Parse dependency line - skip empty/comment lines, fail on real errors
             var parseResult = ArtifactDependency.parse(trimmed);
-
             // Use fold to handle success and failure cases
             final var currentSectionFinal = currentSection;
             var continueFlag = new boolean[]{false};
             var errorResult = new Result[]{null};
-
-            parseResult
-                .onSuccess(dependency -> {
-                    switch (currentSectionFinal) {
-                        case API -> api.add(dependency);
-                        case SHARED -> shared.add(dependency);
-                        case SLICES, NONE -> slices.add(dependency);
-                    }
-                })
-                .onFailure(cause -> {
-                    // Skip known non-error cases
-                    if (cause == ArtifactDependency.EMPTY_LINE ||
-                        cause == ArtifactDependency.COMMENT_LINE ||
-                        cause == ArtifactDependency.SECTION_HEADER) {
-                        continueFlag[0] = true;
-                    } else {
-                        errorResult[0] = cause.result();
-                    }
-                });
-
+            parseResult.onSuccess(dependency -> {
+                                      switch (currentSectionFinal) {
+                case API -> api.add(dependency);
+                case SHARED -> shared.add(dependency);
+                case SLICES, NONE -> slices.add(dependency);
+            }
+                                  })
+                       .onFailure(cause -> {
+                                      // Skip known non-error cases
+            if (cause == ArtifactDependency.EMPTY_LINE ||
+            cause == ArtifactDependency.COMMENT_LINE ||
+            cause == ArtifactDependency.SECTION_HEADER) {
+                                      continueFlag[0] = true;
+                                  }else {
+                                      errorResult[0] = cause.result();
+                                  }
+                                  });
             if (continueFlag[0]) {
                 continue;
             }
-
             if (errorResult[0] != null) {
                 return (Result<DependencyFile>) errorResult[0];
             }
         }
-
         return Result.success(new DependencyFile(List.copyOf(api), List.copyOf(shared), List.copyOf(slices)));
     }
 
@@ -145,16 +134,19 @@ public record DependencyFile(
      * @return Parsed dependency file or error
      */
     public static Result<DependencyFile> parse(InputStream inputStream) {
-        return Result.lift(Causes::fromThrowable, () -> {
-            try (var reader = new BufferedReader(new InputStreamReader(inputStream))) {
-                var content = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    content.append(line).append("\n");
-                }
-                return content.toString();
-            }
-        }).flatMap(DependencyFile::parse);
+        return Result.lift(Causes::fromThrowable,
+                           () -> {
+                               try (var reader = new BufferedReader(new InputStreamReader(inputStream))) {
+                               var content = new StringBuilder();
+                               String line;
+                               while ((line = reader.readLine()) != null) {
+                               content.append(line)
+                                      .append("\n");
+                           }
+                               return content.toString();
+                           }
+                           })
+                     .flatMap(DependencyFile::parse);
     }
 
     /**
@@ -167,12 +159,10 @@ public record DependencyFile(
     public static Result<DependencyFile> load(String sliceClassName, ClassLoader classLoader) {
         var resourcePath = "META-INF/dependencies/" + sliceClassName;
         var resource = classLoader.getResourceAsStream(resourcePath);
-
         if (resource == null) {
             // No dependencies file means no dependencies - this is valid
             return Result.success(new DependencyFile(List.of(), List.of(), List.of()));
         }
-
         return parse(resource);
     }
 
@@ -205,6 +195,5 @@ public record DependencyFile(
     }
 
     // Error constants
-    private static final Fn1<Cause, String> UNKNOWN_SECTION =
-            Causes.forOneValue("Unknown section in dependency file: %s. Valid sections: [api], [shared], [slices]");
+    private static final Fn1<Cause, String>UNKNOWN_SECTION = Causes.forOneValue("Unknown section in dependency file: %s. Valid sections: [api], [shared], [slices]");
 }

@@ -14,7 +14,6 @@ import java.util.concurrent.atomic.AtomicLong;
  * Designed for high-throughput concurrent access.
  */
 public final class EntryPointMetrics {
-
     /**
      * Histogram bucket boundaries in milliseconds.
      */
@@ -33,21 +32,24 @@ public final class EntryPointMetrics {
      * Record a successful invocation.
      */
     public void recordSuccess(String entryPoint, long latencyNanos) {
-        getOrCreate(entryPoint).recordSuccess(latencyNanos);
+        getOrCreate(entryPoint)
+        .recordSuccess(latencyNanos);
     }
 
     /**
      * Record a failed invocation.
      */
     public void recordFailure(String entryPoint, long latencyNanos) {
-        getOrCreate(entryPoint).recordFailure(latencyNanos);
+        getOrCreate(entryPoint)
+        .recordFailure(latencyNanos);
     }
 
     /**
      * Set the current rate for an entry point.
      */
     public void setRate(String entryPoint, int callsPerSecond) {
-        getOrCreate(entryPoint).currentRate.set(callsPerSecond);
+        getOrCreate(entryPoint).currentRate
+        .set(callsPerSecond);
     }
 
     /**
@@ -57,7 +59,6 @@ public final class EntryPointMetrics {
         var now = System.currentTimeMillis();
         var elapsedMs = now - lastSnapshotTime;
         lastSnapshotTime = now;
-
         var result = new ArrayList<EntryPointSnapshot>();
         stats.forEach((name, stat) -> result.add(stat.snapshotAndReset(name, elapsedMs)));
         return result;
@@ -69,7 +70,6 @@ public final class EntryPointMetrics {
     public List<EntryPointSnapshot> snapshot() {
         var now = System.currentTimeMillis();
         var elapsedMs = now - lastSnapshotTime;
-
         var result = new ArrayList<EntryPointSnapshot>();
         stats.forEach((name, stat) -> result.add(stat.snapshot(name, elapsedMs)));
         return result;
@@ -79,7 +79,8 @@ public final class EntryPointMetrics {
      * Reset all metrics.
      */
     public void reset() {
-        stats.values().forEach(EntryPointStats::reset);
+        stats.values()
+             .forEach(EntryPointStats::reset);
         lastSnapshotTime = System.currentTimeMillis();
     }
 
@@ -105,7 +106,7 @@ public final class EntryPointMetrics {
         final AtomicLong[] histogram = new AtomicLong[BUCKET_BOUNDARIES_MS.length + 1];
 
         EntryPointStats() {
-            for (int i = 0; i < histogram.length; i++) {
+            for (int i = 0; i < histogram.length; i++ ) {
                 histogram[i] = new AtomicLong();
             }
         }
@@ -135,7 +136,7 @@ public final class EntryPointMetrics {
         }
 
         private int findBucket(long latencyMs) {
-            for (int i = 0; i < BUCKET_BOUNDARIES_MS.length; i++) {
+            for (int i = 0; i < BUCKET_BOUNDARIES_MS.length; i++ ) {
                 if (latencyMs <= BUCKET_BOUNDARIES_MS[i]) {
                     return i;
                 }
@@ -157,29 +158,32 @@ public final class EntryPointMetrics {
             var windowCnt = windowCount.get();
             var windowLatency = windowLatencyNanos.get();
             var rate = currentRate.get();
-
-            var successRate = total > 0 ? (success * 100.0 / total) : 100.0;
-            var avgLatencyMs = windowCnt > 0 ? (windowLatency / windowCnt) / 1_000_000.0 : 0.0;
-            var rps = elapsedMs > 0 ? (windowCnt * 1000.0 / elapsedMs) : 0.0;
+            var successRate = total > 0
+                              ? (success * 100.0 / total)
+                              : 100.0;
+            var avgLatencyMs = windowCnt > 0
+                               ? (windowLatency / windowCnt) / 1_000_000.0
+                               : 0.0;
+            var rps = elapsedMs > 0
+                      ? (windowCnt * 1000.0 / elapsedMs)
+                      : 0.0;
             var p50 = estimatePercentile(50, total);
             var p99 = estimatePercentile(99, total);
-
             return new EntryPointSnapshot(
-                name, rate, total, success, failure, successRate, avgLatencyMs, rps, p50, p99
-            );
+            name, rate, total, success, failure, successRate, avgLatencyMs, rps, p50, p99);
         }
 
         private double estimatePercentile(int percentile, long total) {
             if (total == 0) return 0.0;
-
-            var targetCount = (long) (total * percentile / 100.0);
+            var targetCount = (long)(total * percentile / 100.0);
             long cumulative = 0;
-
-            for (int i = 0; i < histogram.length; i++) {
+            for (int i = 0; i < histogram.length; i++ ) {
                 cumulative += histogram[i].get();
                 if (cumulative >= targetCount) {
                     // Return bucket upper boundary
-                    return i < BUCKET_BOUNDARIES_MS.length ? BUCKET_BOUNDARIES_MS[i] : 10000.0;
+                    return i < BUCKET_BOUNDARIES_MS.length
+                           ? BUCKET_BOUNDARIES_MS[i]
+                           : 10000.0;
                 }
             }
             return 10000.0;
@@ -202,25 +206,31 @@ public final class EntryPointMetrics {
      * Snapshot of entry point metrics.
      */
     public record EntryPointSnapshot(
-        String name,
-        int rate,
-        long totalCalls,
-        long successCalls,
-        long failureCalls,
-        double successRate,
-        double avgLatencyMs,
-        double requestsPerSecond,
-        double p50LatencyMs,
-        double p99LatencyMs
-    ) {
+    String name,
+    int rate,
+    long totalCalls,
+    long successCalls,
+    long failureCalls,
+    double successRate,
+    double avgLatencyMs,
+    double requestsPerSecond,
+    double p50LatencyMs,
+    double p99LatencyMs) {
         public String toJson() {
             return String.format(
-                "{\"name\":\"%s\",\"rate\":%d,\"totalCalls\":%d,\"successCalls\":%d," +
-                "\"failureCalls\":%d,\"successRate\":%.2f,\"avgLatencyMs\":%.2f," +
-                "\"requestsPerSecond\":%.1f,\"p50LatencyMs\":%.1f,\"p99LatencyMs\":%.1f}",
-                name, rate, totalCalls, successCalls, failureCalls, successRate,
-                avgLatencyMs, requestsPerSecond, p50LatencyMs, p99LatencyMs
-            );
+            "{\"name\":\"%s\",\"rate\":%d,\"totalCalls\":%d,\"successCalls\":%d,"
+            + "\"failureCalls\":%d,\"successRate\":%.2f,\"avgLatencyMs\":%.2f,"
+            + "\"requestsPerSecond\":%.1f,\"p50LatencyMs\":%.1f,\"p99LatencyMs\":%.1f}",
+            name,
+            rate,
+            totalCalls,
+            successCalls,
+            failureCalls,
+            successRate,
+            avgLatencyMs,
+            requestsPerSecond,
+            p50LatencyMs,
+            p99LatencyMs);
         }
     }
 }

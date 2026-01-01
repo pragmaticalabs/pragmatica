@@ -14,7 +14,6 @@ import java.util.*;
  * A cycle exists if we encounter a node that is currently being visited (in the current DFS path).
  */
 public interface DependencyCycleDetector {
-
     /**
      * Check for circular dependencies in the dependency graph.
      * <p>
@@ -28,7 +27,6 @@ public interface DependencyCycleDetector {
         var visited = new HashSet<String>();
         var visiting = new HashSet<String>();
         var path = new ArrayList<String>();
-
         for (var node : dependencies.keySet()) {
             if (!visited.contains(node)) {
                 var cycleResult = dfs(node, dependencies, visited, visiting, path);
@@ -37,7 +35,6 @@ public interface DependencyCycleDetector {
                 }
             }
         }
-
         return Result.success(null);
     }
 
@@ -48,16 +45,14 @@ public interface DependencyCycleDetector {
                                     List<String> path) {
         visiting.add(node);
         path.add(node);
-
         var nodeDeps = dependencies.getOrDefault(node, List.of());
-
         for (var dep : nodeDeps) {
             if (visiting.contains(dep)) {
                 // Found a cycle
                 var cyclePath = buildCyclePath(path, dep);
-                return Causes.cause("Circular dependency detected: " + cyclePath).result();
+                return Causes.cause("Circular dependency detected: " + cyclePath)
+                             .result();
             }
-
             if (!visited.contains(dep)) {
                 var result = dfs(dep, dependencies, visited, visiting, path);
                 if (result.isFailure()) {
@@ -65,21 +60,20 @@ public interface DependencyCycleDetector {
                 }
             }
         }
-
         visiting.remove(node);
         visited.add(node);
         path.removeLast();
-
         return Result.success(null);
     }
 
     private static String buildCyclePath(List<String> path, String cycleStart) {
         var cycleIndex = path.indexOf(cycleStart);
         var cycle = new ArrayList<>(path.subList(cycleIndex, path.size()));
-        cycle.add(cycleStart); // Close the cycle
+        cycle.add(cycleStart);
+        // Close the cycle
         return String.join(" -> ", cycle);
     }
 
     // Error constants
-    Fn1<Cause, String> CIRCULAR_DEPENDENCY = Causes.forOneValue("Circular dependency detected: %s");
+    Fn1<Cause, String>CIRCULAR_DEPENDENCY = Causes.forOneValue("Circular dependency detected: %s");
 }

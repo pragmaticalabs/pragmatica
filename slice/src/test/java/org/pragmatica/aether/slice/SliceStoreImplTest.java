@@ -25,7 +25,7 @@ class SliceStoreImplTest {
 
     @BeforeEach
     void setUp() {
-        registry = SliceRegistry.create();
+        registry = SliceRegistry.sliceRegistry();
         sharedLoader = new SharedLibraryClassLoader(getClass().getClassLoader());
         artifact = Artifact.artifact("org.example:test-slice:1.0.0").unwrap();
     }

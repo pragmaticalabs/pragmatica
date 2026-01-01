@@ -21,7 +21,6 @@ import java.util.concurrent.atomic.AtomicLong;
  * </ul>
  */
 public final class MethodMetrics {
-
     // Histogram bucket thresholds in nanoseconds
     private static final long BUCKET_1MS = 1_000_000L;
     private static final long BUCKET_10MS = 10_000_000L;
@@ -40,7 +39,7 @@ public final class MethodMetrics {
     public MethodMetrics(MethodName methodName) {
         this.methodName = methodName;
         this.histogram = new AtomicInteger[HISTOGRAM_SIZE];
-        for (int i = 0; i < HISTOGRAM_SIZE; i++) {
+        for (int i = 0; i < HISTOGRAM_SIZE; i++ ) {
             histogram[i] = new AtomicInteger();
         }
     }
@@ -55,11 +54,12 @@ public final class MethodMetrics {
         count.incrementAndGet();
         if (success) {
             successCount.incrementAndGet();
-        } else {
+        }else {
             failureCount.incrementAndGet();
         }
         totalDurationNs.addAndGet(durationNs);
-        histogram[bucketFor(durationNs)].incrementAndGet();
+        histogram[bucketFor(durationNs)]
+        .incrementAndGet();
     }
 
     /**
@@ -73,18 +73,11 @@ public final class MethodMetrics {
         var snapshotFailure = failureCount.getAndSet(0);
         var snapshotDuration = totalDurationNs.getAndSet(0);
         var snapshotHistogram = new int[HISTOGRAM_SIZE];
-        for (int i = 0; i < HISTOGRAM_SIZE; i++) {
+        for (int i = 0; i < HISTOGRAM_SIZE; i++ ) {
             snapshotHistogram[i] = histogram[i].getAndSet(0);
         }
-
         return new Snapshot(
-                methodName,
-                snapshotCount,
-                snapshotSuccess,
-                snapshotFailure,
-                snapshotDuration,
-                snapshotHistogram
-        );
+        methodName, snapshotCount, snapshotSuccess, snapshotFailure, snapshotDuration, snapshotHistogram);
     }
 
     /**
@@ -92,18 +85,11 @@ public final class MethodMetrics {
      */
     public Snapshot snapshot() {
         var snapshotHistogram = new int[HISTOGRAM_SIZE];
-        for (int i = 0; i < HISTOGRAM_SIZE; i++) {
+        for (int i = 0; i < HISTOGRAM_SIZE; i++ ) {
             snapshotHistogram[i] = histogram[i].get();
         }
-
         return new Snapshot(
-                methodName,
-                count.get(),
-                successCount.get(),
-                failureCount.get(),
-                totalDurationNs.get(),
-                snapshotHistogram
-        );
+        methodName, count.get(), successCount.get(), failureCount.get(), totalDurationNs.get(), snapshotHistogram);
     }
 
     public MethodName methodName() {
@@ -130,25 +116,28 @@ public final class MethodMetrics {
      * Immutable snapshot of method metrics.
      */
     public record Snapshot(
-            MethodName methodName,
-            long count,
-            long successCount,
-            long failureCount,
-            long totalDurationNs,
-            int[] histogram
-    ) {
+    MethodName methodName,
+    long count,
+    long successCount,
+    long failureCount,
+    long totalDurationNs,
+    int[] histogram) {
         /**
          * Calculate average latency in nanoseconds.
          */
         public long averageLatencyNs() {
-            return count > 0 ? totalDurationNs / count : 0;
+            return count > 0
+                   ? totalDurationNs / count
+                   : 0;
         }
 
         /**
          * Calculate success rate (0.0 to 1.0).
          */
         public double successRate() {
-            return count > 0 ? (double) successCount / count : 1.0;
+            return count > 0
+                   ? (double) successCount / count
+                   : 1.0;
         }
 
         /**
@@ -160,17 +149,15 @@ public final class MethodMetrics {
          */
         public long estimatePercentileNs(int percentile) {
             if (count == 0) return 0;
-
             long target = (count * percentile) / 100;
             long cumulative = 0;
-
-            for (int i = 0; i < histogram.length; i++) {
+            for (int i = 0; i < histogram.length; i++ ) {
                 cumulative += histogram[i];
                 if (cumulative >= target) {
                     return bucketUpperBound(i);
                 }
             }
-            return BUCKET_1S; // Default to 1s if all in last bucket
+            return BUCKET_1S;
         }
 
         private static long bucketUpperBound(int bucket) {
@@ -179,7 +166,7 @@ public final class MethodMetrics {
                 case 1 -> BUCKET_10MS;
                 case 2 -> BUCKET_100MS;
                 case 3 -> BUCKET_1S;
-                default -> BUCKET_1S * 10; // 10s for overflow bucket
+                default -> BUCKET_1S * 10;
             };
         }
     }

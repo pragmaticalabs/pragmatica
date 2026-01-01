@@ -12,7 +12,6 @@ import java.util.Map;
  * Dispatches HTTP requests to slice methods.
  */
 public interface SliceDispatcher {
-
     /**
      * Dispatch a request to a slice method.
      *
@@ -39,7 +38,6 @@ public interface SliceDispatcher {
 }
 
 class SliceDispatcherImpl implements SliceDispatcher {
-
     private final SliceInvoker invoker;
     private final SliceDispatcher.ArtifactResolver artifactResolver;
 
@@ -53,33 +51,36 @@ class SliceDispatcherImpl implements SliceDispatcher {
         var target = route.target();
         var sliceId = target.sliceId();
         var methodName = target.methodName();
-
         var artifact = artifactResolver.resolve(sliceId);
         if (artifact == null) {
             return new HttpRouterError.SliceNotFound(sliceId).promise();
         }
-
         // Build request object from resolved params
         // For simplicity, if there's a single param (body), use it directly
         // Otherwise, we'd need to construct a request object
         Object request;
         if (resolvedParams.size() == 1) {
-            request = resolvedParams.values().iterator().next();
-        } else {
+            request = resolvedParams.values()
+                                    .iterator()
+                                    .next();
+        }else {
             // Empty or multiple params - use the map (empty map is safer than null)
             request = resolvedParams;
         }
-
         var finalRequest = request;
         return MethodName.methodName(methodName)
-                .async()
-                .flatMap(method -> {
-                    Promise<Object> invokePromise = invoker.invokeLocal(artifact, method, finalRequest, Object.class);
-                    return Promise.promise(promise -> {
-                        invokePromise
-                                .onSuccess(promise::succeed)
-                                .onFailure(cause -> promise.fail(new HttpRouterError.InvocationFailed(sliceId, methodName, cause)));
-                    });
-                });
+                         .async()
+                         .flatMap(method -> {
+                                      Promise<Object> invokePromise = invoker.invokeLocal(artifact,
+                                                                                          method,
+                                                                                          finalRequest,
+                                                                                          Object.class);
+                                      return Promise.promise(promise -> {
+                                                                 invokePromise.onSuccess(promise::succeed)
+                                                                              .onFailure(cause -> promise.fail(new HttpRouterError.InvocationFailed(sliceId,
+                                                                                                                                                    methodName,
+                                                                                                                                                    cause)));
+                                                             });
+                                  });
     }
 }

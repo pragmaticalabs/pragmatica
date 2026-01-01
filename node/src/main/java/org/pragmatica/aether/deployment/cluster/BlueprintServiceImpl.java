@@ -21,16 +21,13 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 
 public interface BlueprintServiceImpl {
-    static BlueprintService blueprintService(
-            ClusterNode<KVCommand<AetherKey>> cluster,
-            KVStore<AetherKey, AetherValue> store,
-            Repository repository
-                                            ) {
+    static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
+                                             KVStore<AetherKey, AetherValue> store,
+                                             Repository repository) {
         record blueprintService(
-                ClusterNode<KVCommand<AetherKey>> cluster,
-                KVStore<AetherKey, AetherValue> store,
-                Repository repository
-        ) implements BlueprintService {
+        ClusterNode<KVCommand<AetherKey>> cluster,
+        KVStore<AetherKey, AetherValue> store,
+        Repository repository) implements BlueprintService {
             @Override
             public Promise<ExpandedBlueprint> publish(String dsl) {
                 return BlueprintParser.parse(dsl)
@@ -61,13 +58,13 @@ public interface BlueprintServiceImpl {
             }
 
             private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {
-                return storeBlueprintWithKey(AppBlueprintKey.appBlueprintKey(expanded.id()), expanded);
+                return storeBlueprintWithKey(AppBlueprintKey.appBlueprintKey(expanded.id()),
+                                             expanded);
             }
 
             private Promise<ExpandedBlueprint> storeBlueprintWithKey(AppBlueprintKey key, ExpandedBlueprint expanded) {
                 var value = new AppBlueprintValue(expanded);
                 KVCommand<AetherKey> command = new Put<>(key, value);
-
                 return cluster.apply(List.of(command))
                               .map(_ -> expanded);
             }
@@ -85,7 +82,6 @@ public interface BlueprintServiceImpl {
                 };
             }
         }
-
         return new blueprintService(cluster, store, repository);
     }
 }

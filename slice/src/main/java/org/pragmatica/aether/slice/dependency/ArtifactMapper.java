@@ -25,7 +25,6 @@ import org.pragmatica.lang.utils.Causes;
  * </ul>
  */
 public interface ArtifactMapper {
-
     /**
      * Convert a fully qualified class name and version to artifact coordinates.
      *
@@ -37,18 +36,16 @@ public interface ArtifactMapper {
     static Result<Artifact> toArtifact(String className, String version) {
         var lastDot = className.lastIndexOf('.');
         if (lastDot <= 0) {
-            return INVALID_CLASS_NAME.apply(className).result();
+            return INVALID_CLASS_NAME.apply(className)
+                                     .result();
         }
-
         var groupId = className.substring(0, lastDot);
         var simpleName = className.substring(lastDot + 1);
-
         if (simpleName.isEmpty() || !Character.isUpperCase(simpleName.charAt(0))) {
-            return INVALID_CLASS_NAME.apply(className).result();
+            return INVALID_CLASS_NAME.apply(className)
+                                     .result();
         }
-
         var artifactId = toKebabCase(simpleName);
-
         return Artifact.artifact(groupId + ":" + artifactId + ":" + version);
     }
 
@@ -76,8 +73,10 @@ public interface ArtifactMapper {
      * @return class name (e.g., "org.example.UserService")
      */
     static String toClassName(Artifact artifact) {
-        var groupId = artifact.groupId().id();
-        var artifactId = artifact.artifactId().id();
+        var groupId = artifact.groupId()
+                              .id();
+        var artifactId = artifact.artifactId()
+                                 .id();
         var simpleName = toPascalCase(artifactId);
         return groupId + "." + simpleName;
     }
@@ -109,13 +108,10 @@ public interface ArtifactMapper {
         if (pascalCase == null || pascalCase.isEmpty()) {
             return pascalCase;
         }
-
         var result = new StringBuilder();
         var chars = pascalCase.toCharArray();
-
-        for (int i = 0; i < chars.length; i++) {
+        for (int i = 0; i < chars.length; i++ ) {
             var c = chars[i];
-
             if (Character.isUpperCase(c)) {
                 // Add hyphen before uppercase (except at start)
                 if (i > 0) {
@@ -123,17 +119,15 @@ public interface ArtifactMapper {
                     // (handles cases like "XMLParser" → "xml-parser")
                     var prevUpper = Character.isUpperCase(chars[i - 1]);
                     var nextLower = (i + 1 < chars.length) && Character.isLowerCase(chars[i + 1]);
-
                     if (!prevUpper || nextLower) {
                         result.append('-');
                     }
                 }
                 result.append(Character.toLowerCase(c));
-            } else {
+            }else {
                 result.append(c);
             }
         }
-
         return result.toString();
     }
 
@@ -150,21 +144,18 @@ public interface ArtifactMapper {
         if (kebabCase == null || kebabCase.isEmpty()) {
             return kebabCase;
         }
-
         var result = new StringBuilder();
         var capitalizeNext = true;
-
         for (var c : kebabCase.toCharArray()) {
             if (c == '-') {
                 capitalizeNext = true;
-            } else if (capitalizeNext) {
+            }else if (capitalizeNext) {
                 result.append(Character.toUpperCase(c));
                 capitalizeNext = false;
-            } else {
+            }else {
                 result.append(c);
             }
         }
-
         return result.toString();
     }
 
@@ -183,6 +174,6 @@ public interface ArtifactMapper {
         };
     }
 
-    Fn1<Cause, String> INVALID_CLASS_NAME = Causes.forOneValue(
-            "Invalid class name format: %s. Expected fully qualified name like 'org.example.ClassName'");
+    Fn1<Cause, String>INVALID_CLASS_NAME = Causes.forOneValue(
+    "Invalid class name format: %s. Expected fully qualified name like 'org.example.ClassName'");
 }

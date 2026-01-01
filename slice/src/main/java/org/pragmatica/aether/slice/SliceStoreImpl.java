@@ -10,14 +10,15 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URL;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Production implementation of SliceStore that manages slice lifecycle.
@@ -34,14 +35,15 @@ import java.util.concurrent.ConcurrentHashMap;
  * Thread-safe: Uses ConcurrentHashMap for entry tracking.
  */
 public interface SliceStoreImpl {
-
     enum EntryState {
-        LOADED, ACTIVE
+        LOADED,
+        ACTIVE
     }
 
-    record LoadedSliceEntry(Artifact artifact, Slice sliceInstance, SliceClassLoader classLoader,
+    record LoadedSliceEntry(Artifact artifact,
+                            Slice sliceInstance,
+                            SliceClassLoader classLoader,
                             EntryState state) implements SliceStore.LoadedSlice {
-
         @Override
         public Slice slice() {
             return sliceInstance;
@@ -58,10 +60,10 @@ public interface SliceStoreImpl {
         return new SliceStoreRecord(registry, repositories, sharedLibraryLoader, new ConcurrentHashMap<>());
     }
 
-    record SliceStoreRecord(SliceRegistry registry, List<Repository> repositories,
+    record SliceStoreRecord(SliceRegistry registry,
+                            List<Repository> repositories,
                             SharedLibraryClassLoader sharedLibraryLoader,
                             Map<Artifact, LoadedSliceEntry> entries) implements SliceStore {
-
         private static final Logger log = LoggerFactory.getLogger(SliceStoreRecord.class);
 
         @Override
@@ -71,25 +73,35 @@ public interface SliceStoreImpl {
                 log.debug("Slice {} already loaded", artifact);
                 return Promise.success(existing);
             }
-
             log.info("Loading slice {}", artifact);
-            return locateInRepositories(artifact).flatMap(location -> loadFromLocation(artifact));
+            return locateInRepositories(artifact)
+                   .flatMap(location -> loadFromLocation(artifact));
         }
 
         private Promise<LoadedSlice> loadFromLocation(Artifact artifact) {
-            return DependencyResolver.resolve(artifact, compositeRepository(), registry, sharedLibraryLoader)
-                    .map(slice -> {
-                        // Extract the classloader from the slice's class
-                        var sliceClassLoader = slice.getClass().getClassLoader();
-                        if (sliceClassLoader instanceof SliceClassLoader scl) {
-                            return createEntry(artifact, slice, scl);
-                        }
-                        // Fallback - create a minimal classloader entry
-                        log.warn("Slice {} loaded with unexpected classloader type: {}. Resource access may be limited.",
-                                 artifact, sliceClassLoader.getClass().getName());
-                        return createEntry(artifact, slice, new SliceClassLoader(new URL[0], sharedLibraryLoader));
-                    })
-                    .onFailure(cause -> log.error("Failed to load slice {}: {}", artifact, cause.message()));
+            return DependencyResolver.resolve(artifact,
+                                              compositeRepository(),
+                                              registry,
+                                              sharedLibraryLoader)
+                                     .map(slice -> {
+                                              // Extract the classloader from the slice's class
+            var sliceClassLoader = slice.getClass()
+                                        .getClassLoader();
+                                              if (sliceClassLoader instanceof SliceClassLoader scl) {
+                                              return createEntry(artifact, slice, scl);
+                                          }
+                                              // Fallback - create a minimal classloader entry
+            log.warn("Slice {} loaded with unexpected classloader type: {}. Resource access may be limited.",
+                     artifact,
+                     sliceClassLoader.getClass()
+                                     .getName());
+                                              return createEntry(artifact,
+                                                                 slice,
+                                                                 new SliceClassLoader(new URL[0], sharedLibraryLoader));
+                                          })
+                                     .onFailure(cause -> log.error("Failed to load slice {}: {}",
+                                                                   artifact,
+                                                                   cause.message()));
         }
 
         private LoadedSlice createEntry(Artifact artifact, Slice slice, SliceClassLoader classLoader) {
@@ -103,23 +115,24 @@ public interface SliceStoreImpl {
         public Promise<LoadedSlice> activateSlice(Artifact artifact) {
             var entry = entries.get(artifact);
             if (entry == null) {
-                return SLICE_NOT_LOADED.apply(artifact.asString()).promise();
+                return SLICE_NOT_LOADED.apply(artifact.asString())
+                                       .promise();
             }
-
             if (entry.state() == EntryState.ACTIVE) {
                 log.debug("Slice {} already active", artifact);
                 return Promise.success(entry);
             }
-
             if (entry.state() != EntryState.LOADED) {
-                return INVALID_STATE_TRANSITION.apply(entry.state() + " → ACTIVE").promise();
+                return INVALID_STATE_TRANSITION.apply(entry.state() + " → ACTIVE")
+                                               .promise();
             }
-
             log.info("Activating slice {}", artifact);
             return entry.sliceInstance()
                         .start()
                         .map(_ -> transitionToActive(artifact, entry))
-                        .onFailure(cause -> log.error("Failed to activate slice {}: {}", artifact, cause.message()));
+                        .onFailure(cause -> log.error("Failed to activate slice {}: {}",
+                                                      artifact,
+                                                      cause.message()));
         }
 
         private LoadedSlice transitionToActive(Artifact artifact, LoadedSliceEntry entry) {
@@ -133,23 +146,24 @@ public interface SliceStoreImpl {
         public Promise<LoadedSlice> deactivateSlice(Artifact artifact) {
             var entry = entries.get(artifact);
             if (entry == null) {
-                return SLICE_NOT_LOADED.apply(artifact.asString()).promise();
+                return SLICE_NOT_LOADED.apply(artifact.asString())
+                                       .promise();
             }
-
             if (entry.state() == EntryState.LOADED) {
                 log.debug("Slice {} already deactivated", artifact);
                 return Promise.success(entry);
             }
-
             if (entry.state() != EntryState.ACTIVE) {
-                return INVALID_STATE_TRANSITION.apply(entry.state() + " → LOADED").promise();
+                return INVALID_STATE_TRANSITION.apply(entry.state() + " → LOADED")
+                                               .promise();
             }
-
             log.info("Deactivating slice {}", artifact);
             return entry.sliceInstance()
                         .stop()
                         .map(_ -> transitionToLoaded(artifact, entry))
-                        .onFailure(cause -> log.error("Failed to deactivate slice {}: {}", artifact, cause.message()));
+                        .onFailure(cause -> log.error("Failed to deactivate slice {}: {}",
+                                                      artifact,
+                                                      cause.message()));
         }
 
         private LoadedSlice transitionToLoaded(Artifact artifact, LoadedSliceEntry entry) {
@@ -166,18 +180,16 @@ public interface SliceStoreImpl {
                 log.debug("Slice {} not loaded, nothing to unload", artifact);
                 return Promise.success(Unit.unit());
             }
-
             log.info("Unloading slice {}", artifact);
-
             Promise<Unit> deactivatePromise = entry.state() == EntryState.ACTIVE
                                               ? entry.sliceInstance()
                                                      .stop()
                                               : Promise.success(Unit.unit());
-
-            return deactivatePromise.map(_ -> cleanup(artifact, entry)).onFailure(cause -> log.error(
-                    "Failed to unload slice {}: {}",
-                    artifact,
-                    cause.message()));
+            return deactivatePromise.map(_ -> cleanup(artifact, entry))
+                                    .onFailure(cause -> log.error(
+            "Failed to unload slice {}: {}",
+            artifact,
+            cause.message()));
         }
 
         private Unit cleanup(Artifact artifact, LoadedSliceEntry entry) {
@@ -195,7 +207,10 @@ public interface SliceStoreImpl {
 
         @Override
         public List<LoadedSlice> loaded() {
-            return entries.values().stream().map(entry -> (LoadedSlice) entry).toList();
+            return entries.values()
+                          .stream()
+                          .map(entry -> (LoadedSlice) entry)
+                          .toList();
         }
 
         private Promise<Location> locateInRepositories(Artifact artifact) {
@@ -204,15 +219,15 @@ public interface SliceStoreImpl {
 
         private Promise<Location> locateInRepositories(Artifact artifact, List<Repository> remainingRepos) {
             if (remainingRepos.isEmpty()) {
-                return ARTIFACT_NOT_FOUND.apply(artifact.asString()).promise();
+                return ARTIFACT_NOT_FOUND.apply(artifact.asString())
+                                         .promise();
             }
-
             var repo = remainingRepos.getFirst();
             var rest = remainingRepos.subList(1, remainingRepos.size());
-
             return repo.locate(artifact)
                        .await()
-                       .fold(_ -> locateInRepositories(artifact, rest), location -> Promise.success(location));
+                       .fold(_ -> locateInRepositories(artifact, rest),
+                             location -> Promise.success(location));
         }
 
         private Repository compositeRepository() {
@@ -220,19 +235,19 @@ public interface SliceStoreImpl {
         }
 
         private void closeClassLoader(SliceClassLoader classLoader) {
-            try {
+            try{
                 classLoader.close();
             } catch (IOException e) {
                 log.warn("Failed to close ClassLoader: {}", e.getMessage());
             }
         }
 
-        private static final Fn1<Cause, String> SLICE_NOT_LOADED = Causes.forOneValue("Slice not loaded: %s");
+        private static final Fn1<Cause, String>SLICE_NOT_LOADED = Causes.forOneValue("Slice not loaded: %s");
 
-        private static final Fn1<Cause, String> INVALID_STATE_TRANSITION = Causes.forOneValue(
-                "Invalid state transition: %s");
+        private static final Fn1<Cause, String>INVALID_STATE_TRANSITION = Causes.forOneValue(
+        "Invalid state transition: %s");
 
-        private static final Fn1<Cause, String> ARTIFACT_NOT_FOUND = Causes.forOneValue(
-                "Artifact not found in any repository: %s");
+        private static final Fn1<Cause, String>ARTIFACT_NOT_FOUND = Causes.forOneValue(
+        "Artifact not found in any repository: %s");
     }
 }

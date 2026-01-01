@@ -4,7 +4,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.metrics.deployment.DeploymentMetrics.DeploymentStatus;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsEntry;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.NodeId;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

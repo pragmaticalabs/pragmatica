@@ -5,14 +5,15 @@ import org.pragmatica.aether.slice.dependency.ArtifactDependency;
 import org.pragmatica.aether.slice.dependency.CompatibilityResult;
 import org.pragmatica.aether.slice.dependency.VersionPattern;
 import org.pragmatica.lang.Option;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * ClassLoader for shared dependencies across all slices.
@@ -34,7 +35,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * @see CompatibilityResult
  */
 public class SharedLibraryClassLoader extends URLClassLoader {
-
     private static final Logger log = LoggerFactory.getLogger(SharedLibraryClassLoader.class);
 
     /**
@@ -72,11 +72,9 @@ public class SharedLibraryClassLoader extends URLClassLoader {
     public Option<CompatibilityResult> checkCompatibility(String groupId, String artifactId, VersionPattern required) {
         var key = artifactKey(groupId, artifactId);
         var loadedVersion = loadedArtifacts.get(key);
-
         if (loadedVersion == null) {
             return Option.empty();
         }
-
         return Option.some(CompatibilityResult.check(loadedVersion, required));
     }
 
@@ -93,16 +91,16 @@ public class SharedLibraryClassLoader extends URLClassLoader {
      */
     public synchronized void addArtifact(String groupId, String artifactId, Version version, URL jarUrl) {
         var key = artifactKey(groupId, artifactId);
-
         if (loadedArtifacts.containsKey(key)) {
             log.warn("Artifact {} already loaded with version {}, ignoring request to load version {}",
-                     key, loadedArtifacts.get(key).withQualifier(), version.withQualifier());
+                     key,
+                     loadedArtifacts.get(key)
+                                    .withQualifier(),
+                     version.withQualifier());
             return;
         }
-
         addURL(jarUrl);
         loadedArtifacts.put(key, version);
-
         log.debug("Added shared artifact {}:{} from {}", key, version.withQualifier(), jarUrl);
     }
 

@@ -4,7 +4,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.routing.Binding;
-import org.pragmatica.cluster.net.NodeId;
+import org.pragmatica.consensus.NodeId;
 
 import java.util.List;
 
@@ -26,21 +26,15 @@ public sealed interface AetherValue {
     /// Route definition for HTTP routing.
     /// Contains full route information for self-registration by slices.
     record RouteValue(
-        Artifact artifact,
-        String methodName,
-        String httpMethod,
-        String pathPattern,
-        List<Binding> bindings
-    ) implements AetherValue {
-
+    Artifact artifact,
+    String methodName,
+    String httpMethod,
+    String pathPattern,
+    List<Binding> bindings) implements AetherValue {
         /// Check if this route matches another route (same target).
         /// Used for idempotent registration validation.
         public boolean matches(RouteValue other) {
-            return artifact.equals(other.artifact)
-                && methodName.equals(other.methodName)
-                && httpMethod.equalsIgnoreCase(other.httpMethod)
-                && pathPattern.equals(other.pathPattern)
-                && bindings.equals(other.bindings);
+            return artifact.equals(other.artifact) && methodName.equals(other.methodName) && httpMethod.equalsIgnoreCase(other.httpMethod) && pathPattern.equals(other.pathPattern) && bindings.equals(other.bindings);
         }
     }
 }

@@ -4,9 +4,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.cluster.consensus.rabia.ProtocolConfig;
-import org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.StringKey;
-import org.pragmatica.cluster.net.NodeInfo;
+import org.pragmatica.consensus.rabia.ProtocolConfig;
+import org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.node.rabia.CustomClasses;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
@@ -15,7 +15,7 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.topology.ip.TopologyConfig;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.message.MessageRouter;
+import org.pragmatica.messaging.MessageRouter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,14 +25,14 @@ import java.util.List;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
-import static org.pragmatica.cluster.consensus.rabia.infrastructure.TestCluster.StringKey.key;
-import static org.pragmatica.cluster.net.NodeId.nodeId;
-import static org.pragmatica.cluster.net.NodeInfo.nodeInfo;
+import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
+import static org.pragmatica.consensus.NodeId.nodeId;
+import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.cluster.node.rabia.NodeConfig.nodeConfig;
 import static org.pragmatica.cluster.node.rabia.RabiaNode.rabiaNode;
-import static org.pragmatica.net.NodeAddress.nodeAddress;
-import static org.pragmatica.net.serialization.binary.fury.FuryDeserializer.furyDeserializer;
-import static org.pragmatica.net.serialization.binary.fury.FurySerializer.furySerializer;
+import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
+import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
+import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
 class RabiaNodeNettyIT {
     private static final Logger log = LoggerFactory.getLogger(RabiaNodeNettyIT.class);

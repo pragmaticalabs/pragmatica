@@ -9,7 +9,6 @@ import org.pragmatica.aether.artifact.Version;
  * SharedLibraryClassLoader to determine if the loaded version is compatible.
  */
 public sealed interface CompatibilityResult {
-
     /**
      * The loaded version is compatible with the requested pattern.
      * The slice can use the already-loaded version.

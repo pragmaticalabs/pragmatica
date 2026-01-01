@@ -16,7 +16,6 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Used to test system resilience and behavior under various conditions.
  */
 public sealed interface BackendSimulation {
-
     /**
      * Thread counter for unique naming.
      */
@@ -25,24 +24,27 @@ public sealed interface BackendSimulation {
     /**
      * Shared scheduler for latency simulation.
      */
-    ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(2, r -> {
-        var t = new Thread(r, "backend-simulation-" + THREAD_COUNTER.incrementAndGet());
-        t.setDaemon(true);
-        return t;
-    });
+    ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(2,
+                                                                          r -> {
+                                                                              var t = new Thread(r,
+                                                                                                 "backend-simulation-" + THREAD_COUNTER.incrementAndGet());
+                                                                              t.setDaemon(true);
+                                                                              return t;
+                                                                          });
 
     /**
      * Shutdown the scheduler. Should be called on application shutdown.
      */
     static void shutdown() {
         SCHEDULER.shutdown();
-        try {
+        try{
             if (!SCHEDULER.awaitTermination(5, TimeUnit.SECONDS)) {
                 SCHEDULER.shutdownNow();
             }
         } catch (InterruptedException e) {
             SCHEDULER.shutdownNow();
-            Thread.currentThread().interrupt();
+            Thread.currentThread()
+                  .interrupt();
         }
     }
 
@@ -69,12 +71,10 @@ public sealed interface BackendSimulation {
      * Simulates network/processing latency with optional jitter and spikes.
      */
     record LatencySimulation(
-        long baseLatencyMs,
-        long jitterMs,
-        double spikeChance,
-        long spikeLatencyMs
-    ) implements BackendSimulation {
-
+    long baseLatencyMs,
+    long jitterMs,
+    double spikeChance,
+    long spikeLatencyMs) implements BackendSimulation {
         public LatencySimulation {
             if (baseLatencyMs < 0) {
                 throw new IllegalArgumentException("baseLatencyMs must be >= 0");
@@ -94,27 +94,20 @@ public sealed interface BackendSimulation {
         public Promise<Unit> apply() {
             var random = ThreadLocalRandom.current();
             var delay = baseLatencyMs;
-
             if (jitterMs > 0) {
                 delay += random.nextLong(jitterMs);
             }
-
             if (spikeChance > 0 && random.nextDouble() < spikeChance) {
                 delay += spikeLatencyMs;
             }
-
             if (delay <= 0) {
                 return Promise.success(Unit.unit());
             }
-
             final var finalDelay = delay;
-            return Promise.<Unit>promise(p ->
-                SCHEDULER.schedule(
-                    () -> p.succeed(Unit.unit()),
-                    finalDelay,
-                    TimeUnit.MILLISECONDS
-                )
-            );
+            return Promise.<Unit>promise(p -> SCHEDULER.schedule(
+            () -> p.succeed(Unit.unit()),
+            finalDelay,
+            TimeUnit.MILLISECONDS));
         }
 
         public static LatencySimulation fixed(long latencyMs) {
@@ -134,10 +127,8 @@ public sealed interface BackendSimulation {
      * Simulates random failures at a configurable rate.
      */
     record FailureInjection(
-        double failureRate,
-        List<SimulatedError> errorTypes
-    ) implements BackendSimulation {
-
+    double failureRate,
+    List<SimulatedError> errorTypes) implements BackendSimulation {
         public FailureInjection {
             if (failureRate < 0 || failureRate > 1) {
                 throw new IllegalArgumentException("failureRate must be between 0 and 1");
@@ -151,12 +142,10 @@ public sealed interface BackendSimulation {
         @Override
         public Promise<Unit> apply() {
             var random = ThreadLocalRandom.current();
-
             if (random.nextDouble() < failureRate) {
                 var error = errorTypes.get(random.nextInt(errorTypes.size()));
                 return error.promise();
             }
-
             return Promise.success(Unit.unit());
         }
 
@@ -170,7 +159,6 @@ public sealed interface BackendSimulation {
      * Latency simulations are applied sequentially (delays add up).
      */
     record Composite(List<BackendSimulation> simulations) implements BackendSimulation {
-
         public Composite {
             if (simulations == null || simulations.isEmpty()) {
                 throw new IllegalArgumentException("simulations cannot be null or empty");
@@ -181,11 +169,9 @@ public sealed interface BackendSimulation {
         @Override
         public Promise<Unit> apply() {
             var result = Promise.success(Unit.unit());
-
             for (var simulation : simulations) {
                 result = result.flatMap(_ -> simulation.apply());
             }
-
             return result;
         }
 
@@ -198,7 +184,6 @@ public sealed interface BackendSimulation {
      * Simulated error types for failure injection.
      */
     sealed interface SimulatedError extends Cause {
-
         record ServiceUnavailable(String serviceName) implements SimulatedError {
             @Override
             public String message() {

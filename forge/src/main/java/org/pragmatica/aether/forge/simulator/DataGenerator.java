@@ -11,7 +11,6 @@ import java.util.concurrent.ThreadLocalRandom;
  * Each generator produces data appropriate for a specific entry point type.
  */
 public sealed interface DataGenerator {
-
     /**
      * Generate test data.
      *
@@ -100,11 +99,9 @@ public sealed interface DataGenerator {
      * Generates order request data for placeOrder entry point.
      */
     record OrderRequestGenerator(
-        ProductIdGenerator productGenerator,
-        CustomerIdGenerator customerGenerator,
-        IntRange quantityRange
-    ) implements DataGenerator {
-
+    ProductIdGenerator productGenerator,
+    CustomerIdGenerator customerGenerator,
+    IntRange quantityRange) implements DataGenerator {
         public OrderRequestGenerator {
             if (productGenerator == null || customerGenerator == null || quantityRange == null) {
                 throw new IllegalArgumentException("All generators must be non-null");
@@ -114,18 +111,12 @@ public sealed interface DataGenerator {
         @Override
         public OrderRequestData generate(Random random) {
             return new OrderRequestData(
-                customerGenerator.generate(random),
-                productGenerator.generate(random),
-                quantityRange.random(random)
-            );
+            customerGenerator.generate(random), productGenerator.generate(random), quantityRange.random(random));
         }
 
         public static OrderRequestGenerator withDefaults() {
             return new OrderRequestGenerator(
-                ProductIdGenerator.withDefaults(),
-                CustomerIdGenerator.withDefaults(),
-                IntRange.of(1, 5)
-            );
+            ProductIdGenerator.withDefaults(), CustomerIdGenerator.withDefaults(), IntRange.of(1, 5));
         }
 
         /**
@@ -134,9 +125,10 @@ public sealed interface DataGenerator {
         public record OrderRequestData(String customerId, String productId, int quantity) {
             public String toJson() {
                 return String.format(
-                    "{\"customerId\":\"%s\",\"items\":[{\"productId\":\"%s\",\"quantity\":%d}]}",
-                    customerId, productId, quantity
-                );
+                "{\"customerId\":\"%s\",\"items\":[{\"productId\":\"%s\",\"quantity\":%d}]}",
+                customerId,
+                productId,
+                quantity);
             }
         }
     }
@@ -147,7 +139,7 @@ public sealed interface DataGenerator {
      * Thread-safe for concurrent load generation.
      */
     record OrderIdGenerator(Queue<String> orderIdPool, int maxPoolSize) implements DataGenerator {
-        private static final Queue<String> SHARED_POOL = new ConcurrentLinkedQueue<>();
+        private static final Queue<String>SHARED_POOL = new ConcurrentLinkedQueue<>();
         private static final int DEFAULT_MAX_POOL_SIZE = 1000;
 
         public OrderIdGenerator {
