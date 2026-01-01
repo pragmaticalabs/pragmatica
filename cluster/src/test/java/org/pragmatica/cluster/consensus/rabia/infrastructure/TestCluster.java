@@ -105,7 +105,6 @@ public class TestCluster {
         var engine = new RabiaEngine<>(topologyManager, network, store, ProtocolConfig.testConfig());
 
         store.configure(router);
-        engine.configure(router);
 
         network.addNode(id, createHandler(engine));
         stores.put(id, store);
