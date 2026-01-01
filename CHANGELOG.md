@@ -6,6 +6,7 @@
 
 ### Changed
 - AI tools: update to JBCT v2.0.10 with Pragmatica Lite Core 0.9.3
+- Build: bump Pragmatica Lite to 0.9.3
 
 ### Fixed
 
