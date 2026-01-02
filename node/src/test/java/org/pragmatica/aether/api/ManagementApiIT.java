@@ -1,9 +1,9 @@
 package org.pragmatica.aether.api;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -31,19 +31,19 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /**
  * Integration tests for Management API endpoints.
- * Tests threshold persistence, strategy API, and other management features.
+ * Uses a shared 3-node cluster (Forge-style) for all tests.
  */
-@Disabled("Flaky test - resource contention with other tests")
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class ManagementApiIT {
     private static final Logger log = LoggerFactory.getLogger(ManagementApiIT.class);
 
     private static final int CLUSTER_SIZE = 3;
-    private static final int BASE_PORT = 15050;
-    private static final int BASE_MGMT_PORT = 18050;
+    private static final int BASE_PORT = 19050;
+    private static final int BASE_MGMT_PORT = 19150;
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
     private static final Duration AWAIT_DURATION = Duration.ofSeconds(10);
 
-    private static final List<NodeInfo> NODES = List.of(
+    private final List<NodeInfo> nodeInfos = List.of(
             nodeInfo(nodeId("mgmt-1"), nodeAddress("localhost", BASE_PORT)),
             nodeInfo(nodeId("mgmt-2"), nodeAddress("localhost", BASE_PORT + 1)),
             nodeInfo(nodeId("mgmt-3"), nodeAddress("localhost", BASE_PORT + 2))
@@ -54,9 +54,9 @@ class ManagementApiIT {
             .connectTimeout(Duration.ofSeconds(5))
             .build();
 
-    @BeforeEach
+    @BeforeAll
     void setUp() {
-        var configuredNodes = NODES.subList(0, CLUSTER_SIZE);
+        var configuredNodes = nodeInfos.subList(0, CLUSTER_SIZE);
 
         for (int i = 0; i < CLUSTER_SIZE; i++) {
             var nodeId = configuredNodes.get(i).id();
@@ -88,12 +88,11 @@ class ManagementApiIT {
                });
     }
 
-    @AfterEach
-    void tearDown() throws InterruptedException {
+    @AfterAll
+    void tearDown() {
         nodes.forEach(node -> node.stop().await(AWAIT_TIMEOUT));
         nodes.clear();
         log.info("All nodes stopped");
-        Thread.sleep(500);
     }
 
     @Test
