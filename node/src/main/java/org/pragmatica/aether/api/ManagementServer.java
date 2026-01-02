@@ -356,6 +356,7 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             case"/controller/evaluate" -> handleControllerEvaluate(ctx, node);
             case"/thresholds" -> handleSetThreshold(ctx, body);
             case"/alerts/clear" -> handleClearAlerts(ctx);
+            case"/invocation-metrics/strategy" -> handleSetStrategy(ctx, node, body);
             default -> sendError(ctx, HttpResponseStatus.NOT_FOUND);
         }
     }
@@ -1190,6 +1191,25 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private void handleClearAlerts(ChannelHandlerContext ctx) {
         alertManager.clearAlerts();
         sendJson(ctx, "{\"status\":\"alerts_cleared\"}");
+    }
+
+    private static final Pattern STRATEGY_TYPE_PATTERN = Pattern.compile("\"type\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern THRESHOLD_MS_PATTERN = Pattern.compile("\"thresholdMs\"\\s*:\\s*(\\d+)");
+    private static final Pattern MIN_MS_PATTERN = Pattern.compile("\"minMs\"\\s*:\\s*(\\d+)");
+    private static final Pattern MAX_MS_PATTERN = Pattern.compile("\"maxMs\"\\s*:\\s*(\\d+)");
+
+    private void handleSetStrategy(ChannelHandlerContext ctx, AetherNode node, String body) {
+        var typeMatch = STRATEGY_TYPE_PATTERN.matcher(body);
+        if (!typeMatch.find()) {
+            sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, "Missing 'type' field");
+            return;
+        }
+        var type = typeMatch.group(1);
+        // Note: Runtime strategy change is not currently supported by InvocationMetricsCollector
+        // Return current strategy with a message that runtime change is not supported
+        sendJsonError(ctx,
+                      HttpResponseStatus.NOT_IMPLEMENTED,
+                      "Runtime strategy change not supported. Strategy must be set at node startup.");
     }
 
     private String buildAlertsResponse() {

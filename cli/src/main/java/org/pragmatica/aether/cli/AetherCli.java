@@ -41,7 +41,7 @@ import picocli.CommandLine.Parameters;
  */
 @Command(name = "aether",
  mixinStandardHelpOptions = true,
- version = "Aether 0.6.5",
+ version = "Aether 0.7.0",
  description = "Command-line interface for Aether cluster management",
  subcommands = {AetherCli.StatusCommand.class,
  AetherCli.NodesCommand.class,
@@ -89,7 +89,7 @@ public class AetherCli implements Runnable {
     }
 
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v0.6.5 - Connected to " + nodeAddress);
+        System.out.println("Aether v0.7.0 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
@@ -180,6 +180,24 @@ public class AetherCli implements Runnable {
                                .isEmpty()
                        ? "{\"status\":\"ok\"}"
                        : response.body();
+            }else {
+                return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
+            }
+        } catch (Exception e) {
+            return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
+    }
+
+    String deleteFromNode(String path) {
+        try{
+            var uri = URI.create("http://" + nodeAddress + path);
+            var request = HttpRequest.newBuilder()
+                                     .uri(uri)
+                                     .DELETE()
+                                     .build();
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            if (response.statusCode() == 200) {
+                return response.body();
             }else {
                 return "{\"error\":\"HTTP " + response.statusCode() + ": " + response.body() + "\"}";
             }
@@ -623,7 +641,8 @@ public class AetherCli implements Runnable {
     @Command(name = "invocation-metrics",
     description = "Invocation metrics management",
     subcommands = {InvocationMetricsCommand.ListCommand.class,
-    InvocationMetricsCommand.SlowCommand.class})
+    InvocationMetricsCommand.SlowCommand.class,
+    InvocationMetricsCommand.StrategyCommand.class})
     static class InvocationMetricsCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -657,6 +676,58 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 var response = metricsParent.parent.fetchFromNode("/invocation-metrics/slow");
                 System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "strategy", description = "Show or set threshold strategy")
+        static class StrategyCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private InvocationMetricsCommand metricsParent;
+
+            @Parameters(index = "0", description = "Strategy type: fixed, adaptive", arity = "0..1")
+            private String type;
+
+            @Parameters(index = "1", description = "First parameter (thresholdMs for fixed, minMs for adaptive)", arity = "0..1")
+            private Long param1;
+
+            @Parameters(index = "2", description = "Second parameter (maxMs for adaptive)", arity = "0..1")
+            private Long param2;
+
+            @Override
+            public Integer call() {
+                if (type == null) {
+                    // Show current strategy
+                    var response = metricsParent.parent.fetchFromNode("/invocation-metrics/strategy");
+                    System.out.println(formatJson(response));
+                }else {
+                    // Set strategy
+                    String body;
+                    switch (type.toLowerCase()) {
+                        case"fixed" -> {
+                            var thresholdMs = param1 != null
+                                              ? param1
+                                              : 100;
+                            body = "{\"type\":\"fixed\",\"thresholdMs\":" + thresholdMs + "}";
+                        }
+                        case"adaptive" -> {
+                            var minMs = param1 != null
+                                        ? param1
+                                        : 10;
+                            var maxMs = param2 != null
+                                        ? param2
+                                        : 1000;
+                            body = "{\"type\":\"adaptive\",\"minMs\":" + minMs + ",\"maxMs\":" + maxMs + "}";
+                        }
+                        default -> {
+                            System.err.println("Unknown strategy type: " + type);
+                            System.err.println("Supported: fixed, adaptive");
+                            return 1;
+                        }
+                    }
+                    var response = metricsParent.parent.postToNode("/invocation-metrics/strategy", body);
+                    System.out.println(formatJson(response));
+                }
                 return 0;
             }
         }
@@ -836,7 +907,8 @@ public class AetherCli implements Runnable {
     @Command(name = "thresholds",
     description = "Alert threshold management",
     subcommands = {ThresholdsCommand.ListCommand.class,
-    ThresholdsCommand.SetCommand.class})
+    ThresholdsCommand.SetCommand.class,
+    ThresholdsCommand.RemoveCommand.class})
     static class ThresholdsCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -879,6 +951,22 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 var body = "{\"metric\":\"" + metric + "\",\"warning\":" + warning + ",\"critical\":" + critical + "}";
                 var response = thresholdsParent.parent.postToNode("/thresholds", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "remove", description = "Remove a threshold")
+        static class RemoveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ThresholdsCommand thresholdsParent;
+
+            @Parameters(index = "0", description = "Metric name")
+            private String metric;
+
+            @Override
+            public Integer call() {
+                var response = thresholdsParent.parent.deleteFromNode("/thresholds/" + metric);
                 System.out.println(formatJson(response));
                 return 0;
             }

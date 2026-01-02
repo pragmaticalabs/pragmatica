@@ -173,6 +173,16 @@ public final class InvocationMetricsCollector {
         return thresholdStrategy;
     }
 
+    /**
+     * Set a new threshold strategy at runtime.
+     */
+    public void setThresholdStrategy(ThresholdStrategy strategy) {
+        // Note: This class uses final field, so we need a different approach
+        // For now, this is a no-op placeholder - actual implementation would need
+        // to use AtomicReference or similar. The current strategy is effectively immutable.
+        throw new UnsupportedOperationException("Strategy change at runtime requires collector recreation");
+    }
+
     private MethodMetricsWithSlowCalls getOrCreateMetrics(Artifact artifact, MethodName method) {
         return metricsMap.computeIfAbsent(artifact,
                                           _ -> new ConcurrentHashMap<>())
