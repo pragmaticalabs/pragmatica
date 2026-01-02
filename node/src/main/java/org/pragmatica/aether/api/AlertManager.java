@@ -34,6 +34,41 @@ public class AlertManager {
      */
     public void setThreshold(String metric, double warning, double critical) {
         thresholds.put(metric, new Threshold(warning, critical));
+        log.info("Threshold set for {}: warning={}, critical={}", metric, warning, critical);
+    }
+
+    /**
+     * Remove threshold for a metric.
+     */
+    public void removeThreshold(String metric) {
+        var removed = thresholds.remove(metric);
+        if (removed != null) {
+            log.info("Threshold removed for {}", metric);
+        }
+    }
+
+    /**
+     * Get all configured thresholds.
+     */
+    public Map<String, double[] > getAllThresholds() {
+        Map<String, double[] > result = new ConcurrentHashMap<>();
+        thresholds.forEach((k, v) -> result.put(k, new double[]{v.warning, v.critical}));
+        return result;
+    }
+
+    /**
+     * Clear all active alerts.
+     */
+    public void clearAlerts() {
+        activeAlerts.clear();
+        log.info("All active alerts cleared");
+    }
+
+    /**
+     * Get count of active alerts.
+     */
+    public int activeAlertCount() {
+        return activeAlerts.size();
     }
 
     /**

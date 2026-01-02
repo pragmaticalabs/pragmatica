@@ -26,8 +26,7 @@ public interface DecisionTreeController extends ClusterController {
      * Create a decision tree controller with default thresholds.
      */
     static DecisionTreeController decisionTreeController() {
-        return decisionTreeController(
-        0.8, 0.2, 1000);
+        return decisionTreeController(ControllerConfig.DEFAULT);
     }
 
     /**
@@ -37,28 +36,51 @@ public interface DecisionTreeController extends ClusterController {
                                                          double cpuScaleDownThreshold,
                                                          double callRateScaleUpThreshold) {
         return new DecisionTreeControllerImpl(
-        cpuScaleUpThreshold, cpuScaleDownThreshold, callRateScaleUpThreshold);
+        ControllerConfig.controllerConfig(cpuScaleUpThreshold, cpuScaleDownThreshold, callRateScaleUpThreshold, 1000));
     }
+
+    /**
+     * Create a decision tree controller with full configuration.
+     */
+    static DecisionTreeController decisionTreeController(ControllerConfig config) {
+        return new DecisionTreeControllerImpl(config);
+    }
+
+    /**
+     * Get current configuration.
+     */
+    ControllerConfig getConfiguration();
+
+    /**
+     * Update configuration at runtime.
+     */
+    void updateConfiguration(ControllerConfig config);
 }
 
 class DecisionTreeControllerImpl implements DecisionTreeController {
     private static final Logger log = LoggerFactory.getLogger(DecisionTreeControllerImpl.class);
 
-    private final double cpuScaleUpThreshold;
-    private final double cpuScaleDownThreshold;
-    private final double callRateScaleUpThreshold;
+    private volatile ControllerConfig config;
 
-    DecisionTreeControllerImpl(double cpuScaleUpThreshold,
-                               double cpuScaleDownThreshold,
-                               double callRateScaleUpThreshold) {
-        this.cpuScaleUpThreshold = cpuScaleUpThreshold;
-        this.cpuScaleDownThreshold = cpuScaleDownThreshold;
-        this.callRateScaleUpThreshold = callRateScaleUpThreshold;
+    DecisionTreeControllerImpl(ControllerConfig config) {
+        this.config = config;
+    }
+
+    @Override
+    public ControllerConfig getConfiguration() {
+        return config;
+    }
+
+    @Override
+    public void updateConfiguration(ControllerConfig config) {
+        log.info("Controller configuration updated: {}", config);
+        this.config = config;
     }
 
     @Override
     public Promise<ControlDecisions> evaluate(ControlContext context) {
         var changes = new ArrayList<BlueprintChange>();
+        var currentConfig = this.config;
         // Get current CPU usage
         var avgCpu = context.avgMetric(MetricsCollector.CPU_USAGE);
         log.debug("Evaluating: avgCpu={}, blueprints={}",
@@ -70,14 +92,20 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
             var artifact = entry.getKey();
             var blueprint = entry.getValue();
             // Rule 1: High CPU → scale up
-            if (avgCpu > cpuScaleUpThreshold) {
-                log.info("Rule triggered: High CPU ({} > {}), scaling up {}", avgCpu, cpuScaleUpThreshold, artifact);
+            if (avgCpu > currentConfig.cpuScaleUpThreshold()) {
+                log.info("Rule triggered: High CPU ({} > {}), scaling up {}",
+                         avgCpu,
+                         currentConfig.cpuScaleUpThreshold(),
+                         artifact);
                 changes.add(new BlueprintChange.ScaleUp(artifact, 1));
                 continue;
             }
             // Rule 2: Low CPU → scale down (if more than 1 instance)
-            if (avgCpu < cpuScaleDownThreshold && blueprint.instances() > 1) {
-                log.info("Rule triggered: Low CPU ({} < {}), scaling down {}", avgCpu, cpuScaleDownThreshold, artifact);
+            if (avgCpu < currentConfig.cpuScaleDownThreshold() && blueprint.instances() > 1) {
+                log.info("Rule triggered: Low CPU ({} < {}), scaling down {}",
+                         avgCpu,
+                         currentConfig.cpuScaleDownThreshold(),
+                         artifact);
                 changes.add(new BlueprintChange.ScaleDown(artifact, 1));
                 continue;
             }
@@ -89,10 +117,10 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
                 for (var metricName : nodeMetrics.keySet()) {
                     if (metricName.startsWith("method.") && metricName.endsWith(".calls")) {
                         var callCount = nodeMetrics.get(metricName);
-                        if (callCount != null && callCount > callRateScaleUpThreshold) {
+                        if (callCount != null && callCount > currentConfig.callRateScaleUpThreshold()) {
                             log.info("Rule triggered: High call rate ({} > {}), scaling up {}",
                                      callCount,
-                                     callRateScaleUpThreshold,
+                                     currentConfig.callRateScaleUpThreshold(),
                                      artifact);
                             changes.add(new BlueprintChange.ScaleUp(artifact, 1));
                             break;

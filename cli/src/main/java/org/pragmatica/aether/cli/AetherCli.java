@@ -53,7 +53,11 @@ import picocli.CommandLine.Parameters;
  AetherCli.UndeployCommand.class,
  AetherCli.BlueprintCommand.class,
  AetherCli.ArtifactCommand.class,
- AetherCli.UpdateCommand.class})
+ AetherCli.UpdateCommand.class,
+ AetherCli.InvocationMetricsCommand.class,
+ AetherCli.ControllerCommand.class,
+ AetherCli.AlertsCommand.class,
+ AetherCli.ThresholdsCommand.class})
 public class AetherCli implements Runnable {
     @Option(names = {"-c", "--connect"},
     description = "Node address to connect to (host:port)",
@@ -609,6 +613,272 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var response = updateParent.parent.fetchFromNode("/rolling-update/" + updateId + "/health");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== Invocation Metrics Commands =====
+    @Command(name = "invocation-metrics",
+    description = "Invocation metrics management",
+    subcommands = {InvocationMetricsCommand.ListCommand.class,
+    InvocationMetricsCommand.SlowCommand.class})
+    static class InvocationMetricsCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            // Default: show all metrics
+            var response = parent.fetchFromNode("/invocation-metrics");
+            System.out.println(formatJson(response));
+        }
+
+        @Command(name = "list", description = "List all invocation metrics")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private InvocationMetricsCommand metricsParent;
+
+            @Override
+            public Integer call() {
+                var response = metricsParent.parent.fetchFromNode("/invocation-metrics");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "slow", description = "Show slow invocations")
+        static class SlowCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private InvocationMetricsCommand metricsParent;
+
+            @Override
+            public Integer call() {
+                var response = metricsParent.parent.fetchFromNode("/invocation-metrics/slow");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== Controller Commands =====
+    @Command(name = "controller",
+    description = "Controller configuration and status",
+    subcommands = {ControllerCommand.ConfigCommand.class,
+    ControllerCommand.StatusCommand.class,
+    ControllerCommand.EvaluateCommand.class})
+    static class ControllerCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            CommandLine.usage(this, System.out);
+        }
+
+        @Command(name = "config", description = "Show or update controller configuration")
+        static class ConfigCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ControllerCommand controllerParent;
+
+            @Option(names = {"--cpu-up"}, description = "CPU scale-up threshold")
+            private Double cpuScaleUp;
+
+            @Option(names = {"--cpu-down"}, description = "CPU scale-down threshold")
+            private Double cpuScaleDown;
+
+            @Option(names = {"--call-rate"}, description = "Call rate scale-up threshold")
+            private Double callRate;
+
+            @Option(names = {"--interval"}, description = "Evaluation interval in ms")
+            private Long intervalMs;
+
+            @Override
+            public Integer call() {
+                if (cpuScaleUp != null || cpuScaleDown != null || callRate != null || intervalMs != null) {
+                    // Update configuration
+                    var sb = new StringBuilder("{");
+                    boolean first = true;
+                    if (cpuScaleUp != null) {
+                        sb.append("\"cpuScaleUpThreshold\":")
+                          .append(cpuScaleUp);
+                        first = false;
+                    }
+                    if (cpuScaleDown != null) {
+                        if (!first) sb.append(",");
+                        sb.append("\"cpuScaleDownThreshold\":")
+                          .append(cpuScaleDown);
+                        first = false;
+                    }
+                    if (callRate != null) {
+                        if (!first) sb.append(",");
+                        sb.append("\"callRateScaleUpThreshold\":")
+                          .append(callRate);
+                        first = false;
+                    }
+                    if (intervalMs != null) {
+                        if (!first) sb.append(",");
+                        sb.append("\"evaluationIntervalMs\":")
+                          .append(intervalMs);
+                    }
+                    sb.append("}");
+                    var response = controllerParent.parent.postToNode("/controller/config", sb.toString());
+                    System.out.println(formatJson(response));
+                }else {
+                    // Show current config
+                    var response = controllerParent.parent.fetchFromNode("/controller/config");
+                    System.out.println(formatJson(response));
+                }
+                return 0;
+            }
+        }
+
+        @Command(name = "status", description = "Show controller status")
+        static class StatusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ControllerCommand controllerParent;
+
+            @Override
+            public Integer call() {
+                var response = controllerParent.parent.fetchFromNode("/controller/status");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "evaluate", description = "Force controller evaluation")
+        static class EvaluateCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ControllerCommand controllerParent;
+
+            @Override
+            public Integer call() {
+                var response = controllerParent.parent.postToNode("/controller/evaluate", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== Alerts Commands =====
+    @Command(name = "alerts",
+    description = "Alert management",
+    subcommands = {AlertsCommand.ListCommand.class,
+    AlertsCommand.ActiveCommand.class,
+    AlertsCommand.HistoryCommand.class,
+    AlertsCommand.ClearCommand.class})
+    static class AlertsCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            // Default: show all alerts
+            var response = parent.fetchFromNode("/alerts");
+            System.out.println(formatJson(response));
+        }
+
+        @Command(name = "list", description = "List all alerts")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private AlertsCommand alertsParent;
+
+            @Override
+            public Integer call() {
+                var response = alertsParent.parent.fetchFromNode("/alerts");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "active", description = "Show active alerts only")
+        static class ActiveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private AlertsCommand alertsParent;
+
+            @Override
+            public Integer call() {
+                var response = alertsParent.parent.fetchFromNode("/alerts/active");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "history", description = "Show alert history")
+        static class HistoryCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private AlertsCommand alertsParent;
+
+            @Override
+            public Integer call() {
+                var response = alertsParent.parent.fetchFromNode("/alerts/history");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "clear", description = "Clear all active alerts")
+        static class ClearCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private AlertsCommand alertsParent;
+
+            @Override
+            public Integer call() {
+                var response = alertsParent.parent.postToNode("/alerts/clear", "{}");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+    }
+
+    // ===== Thresholds Commands =====
+    @Command(name = "thresholds",
+    description = "Alert threshold management",
+    subcommands = {ThresholdsCommand.ListCommand.class,
+    ThresholdsCommand.SetCommand.class})
+    static class ThresholdsCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            // Default: show all thresholds
+            var response = parent.fetchFromNode("/thresholds");
+            System.out.println(formatJson(response));
+        }
+
+        @Command(name = "list", description = "List all thresholds")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ThresholdsCommand thresholdsParent;
+
+            @Override
+            public Integer call() {
+                var response = thresholdsParent.parent.fetchFromNode("/thresholds");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "set", description = "Set a threshold")
+        static class SetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ThresholdsCommand thresholdsParent;
+
+            @Parameters(index = "0", description = "Metric name")
+            private String metric;
+
+            @Option(names = {"-w", "--warning"}, description = "Warning threshold", required = true)
+            private double warning;
+
+            @Option(names = {"-c", "--critical"}, description = "Critical threshold", required = true)
+            private double critical;
+
+            @Override
+            public Integer call() {
+                var body = "{\"metric\":\"" + metric + "\",\"warning\":" + warning + ",\"critical\":" + critical + "}";
+                var response = thresholdsParent.parent.postToNode("/thresholds", body);
                 System.out.println(formatJson(response));
                 return 0;
             }

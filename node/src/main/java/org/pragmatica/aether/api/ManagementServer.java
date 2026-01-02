@@ -240,9 +240,14 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             case"/slices/status" -> buildSlicesStatusResponse(node);
             case"/metrics" -> buildMetricsResponse(node);
             case"/invocation-metrics" -> buildInvocationMetricsResponse(node);
+            case"/invocation-metrics/slow" -> buildSlowInvocationsResponse(node);
             case"/thresholds" -> alertManager.thresholdsAsJson();
             case"/alerts" -> buildAlertsResponse();
+            case"/alerts/active" -> alertManager.activeAlertsAsJson();
+            case"/alerts/history" -> alertManager.alertHistoryAsJson();
             case"/health" -> buildHealthResponse(node);
+            case"/controller/config" -> buildControllerConfigResponse(node);
+            case"/controller/status" -> buildControllerStatusResponse(node);
             default -> null;
         };
         if (response != null) {
@@ -320,6 +325,10 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             case"/scale" -> handleScale(ctx, node, body);
             case"/undeploy" -> handleUndeploy(ctx, node, body);
             case"/blueprint" -> handleBlueprint(ctx, node, body);
+            case"/controller/config" -> handleControllerConfig(ctx, node, body);
+            case"/controller/evaluate" -> handleControllerEvaluate(ctx, node);
+            case"/thresholds" -> handleSetThreshold(ctx, body);
+            case"/alerts/clear" -> handleClearAlerts(ctx);
             default -> sendError(ctx, HttpResponseStatus.NOT_FOUND);
         }
     }
@@ -517,41 +526,195 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                               path.length() - suffix.length());
     }
 
+    private static final Pattern VERSION_PATTERN = Pattern.compile("\"version\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern ARTIFACT_BASE_PATTERN = Pattern.compile("\"artifactBase\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern ROUTING_PATTERN = Pattern.compile("\"routing\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern MAX_ERROR_RATE_PATTERN = Pattern.compile("\"maxErrorRate\"\\s*:\\s*([0-9.]+)");
+    private static final Pattern MAX_LATENCY_PATTERN = Pattern.compile("\"maxLatencyMs\"\\s*:\\s*(\\d+)");
+    private static final Pattern MANUAL_APPROVAL_PATTERN = Pattern.compile("\"requireManualApproval\"\\s*:\\s*(true|false)");
+    private static final Pattern CLEANUP_POLICY_PATTERN = Pattern.compile("\"cleanupPolicy\"\\s*:\\s*\"([^\"]+)\"");
+
     private void handleRollingUpdateStart(ChannelHandlerContext ctx, AetherNode node, String body) {
-        // Parse: {"artifact": "group:artifact", "version": "1.0.0", "instances": 3, ...}
-        // For now, return placeholder response since RollingUpdateManager implementation is pending
-        sendJson(ctx,
-                 "{\"status\":\"not_implemented\",\"message\":\"Rolling update start requires RollingUpdateManager implementation\"}");
+        var artifactBaseMatch = ARTIFACT_BASE_PATTERN.matcher(body);
+        var versionMatch = VERSION_PATTERN.matcher(body);
+        var instancesMatch = INSTANCES_PATTERN.matcher(body);
+        if (!artifactBaseMatch.find() || !versionMatch.find()) {
+            sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, "Missing artifactBase or version");
+            return;
+        }
+        var artifactBaseStr = artifactBaseMatch.group(1);
+        var versionStr = versionMatch.group(1);
+        int instances = instancesMatch.find()
+                        ? Integer.parseInt(instancesMatch.group(1))
+                        : 1;
+        // Parse optional health thresholds
+        var errorRateMatch = MAX_ERROR_RATE_PATTERN.matcher(body);
+        var latencyMatch = MAX_LATENCY_PATTERN.matcher(body);
+        var manualApprovalMatch = MANUAL_APPROVAL_PATTERN.matcher(body);
+        var cleanupMatch = CLEANUP_POLICY_PATTERN.matcher(body);
+        double maxErrorRate = errorRateMatch.find()
+                              ? Double.parseDouble(errorRateMatch.group(1))
+                              : 0.01;
+        long maxLatencyMs = latencyMatch.find()
+                            ? Long.parseLong(latencyMatch.group(1))
+                            : 500;
+        boolean manualApproval = manualApprovalMatch.find() && Boolean.parseBoolean(manualApprovalMatch.group(1));
+        var cleanupPolicy = cleanupMatch.find()
+                            ? org.pragmatica.aether.update.CleanupPolicy.valueOf(cleanupMatch.group(1))
+                            : org.pragmatica.aether.update.CleanupPolicy.GRACE_PERIOD;
+        org.pragmatica.aether.artifact.ArtifactBase.artifactBase(artifactBaseStr)
+           .flatMap(artifactBase -> org.pragmatica.aether.artifact.Version.version(versionStr)
+                                       .map(version -> new Object[]{artifactBase, version}))
+           .onSuccess(arr -> {
+                          var artifactBase = (org.pragmatica.aether.artifact.ArtifactBase) arr[0];
+                          var version = (org.pragmatica.aether.artifact.Version) arr[1];
+                          var thresholds = org.pragmatica.aether.update.HealthThresholds.healthThresholds(
+        maxErrorRate, maxLatencyMs, manualApproval);
+                          node.rollingUpdateManager()
+                              .startUpdate(artifactBase, version, instances, thresholds, cleanupPolicy)
+                              .onSuccess(update -> sendJson(ctx,
+                                                            buildRollingUpdateJson(update)))
+                              .onFailure(cause -> sendJsonError(ctx,
+                                                                HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                                                                cause.message()));
+                      })
+           .onFailure(cause -> sendJsonError(ctx,
+                                             HttpResponseStatus.BAD_REQUEST,
+                                             cause.message()));
     }
 
     private void handleRollingUpdateRouting(ChannelHandlerContext ctx, AetherNode node, String updateId, String body) {
-        // Parse: {"newWeight": 1, "oldWeight": 3}
-        sendJson(ctx, "{\"status\":\"not_implemented\",\"updateId\":\"" + updateId + "\"}");
+        var routingMatch = ROUTING_PATTERN.matcher(body);
+        if (!routingMatch.find()) {
+            sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, "Missing routing field");
+            return;
+        }
+        try{
+            var routing = org.pragmatica.aether.update.VersionRouting.parse(routingMatch.group(1));
+            node.rollingUpdateManager()
+                .adjustRouting(updateId, routing)
+                .onSuccess(update -> sendJson(ctx,
+                                              buildRollingUpdateJson(update)))
+                .onFailure(cause -> sendJsonError(ctx,
+                                                  HttpResponseStatus.BAD_REQUEST,
+                                                  cause.message()));
+        } catch (IllegalArgumentException e) {
+            sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, e.getMessage());
+        }
     }
 
     private void handleRollingUpdateApprove(ChannelHandlerContext ctx, AetherNode node, String updateId) {
-        sendJson(ctx, "{\"status\":\"not_implemented\",\"updateId\":\"" + updateId + "\"}");
+        node.rollingUpdateManager()
+            .approveRouting(updateId)
+            .onSuccess(update -> sendJson(ctx,
+                                          buildRollingUpdateJson(update)))
+            .onFailure(cause -> sendJsonError(ctx,
+                                              HttpResponseStatus.BAD_REQUEST,
+                                              cause.message()));
     }
 
     private void handleRollingUpdateComplete(ChannelHandlerContext ctx, AetherNode node, String updateId) {
-        sendJson(ctx, "{\"status\":\"not_implemented\",\"updateId\":\"" + updateId + "\"}");
+        node.rollingUpdateManager()
+            .completeUpdate(updateId)
+            .onSuccess(update -> sendJson(ctx,
+                                          buildRollingUpdateJson(update)))
+            .onFailure(cause -> sendJsonError(ctx,
+                                              HttpResponseStatus.BAD_REQUEST,
+                                              cause.message()));
     }
 
     private void handleRollingUpdateRollback(ChannelHandlerContext ctx, AetherNode node, String updateId) {
-        sendJson(ctx, "{\"status\":\"not_implemented\",\"updateId\":\"" + updateId + "\"}");
+        node.rollingUpdateManager()
+            .rollback(updateId)
+            .onSuccess(update -> sendJson(ctx,
+                                          buildRollingUpdateJson(update)))
+            .onFailure(cause -> sendJsonError(ctx,
+                                              HttpResponseStatus.BAD_REQUEST,
+                                              cause.message()));
     }
 
     private String buildRollingUpdatesResponse(AetherNode node) {
-        // Return list of active rolling updates
-        return "{\"updates\":[],\"message\":\"Rolling update listing requires RollingUpdateManager implementation\"}";
+        var updates = node.rollingUpdateManager()
+                          .activeUpdates();
+        var sb = new StringBuilder();
+        sb.append("{\"updates\":[");
+        boolean first = true;
+        for (var update : updates) {
+            if (!first) sb.append(",");
+            sb.append(buildRollingUpdateJson(update));
+            first = false;
+        }
+        sb.append("]}");
+        return sb.toString();
     }
 
     private String buildRollingUpdateResponse(AetherNode node, String updateId) {
-        return "{\"updateId\":\"" + updateId + "\",\"status\":\"not_found\"}";
+        return node.rollingUpdateManager()
+                   .getUpdate(updateId)
+                   .fold(() -> "{\"error\":\"Update not found\",\"updateId\":\"" + updateId + "\"}",
+                         this::buildRollingUpdateJson);
     }
 
     private String buildRollingUpdateHealthResponse(AetherNode node, String updateId) {
-        return "{\"updateId\":\"" + updateId + "\",\"health\":\"unknown\"}";
+        var sb = new StringBuilder();
+        node.rollingUpdateManager()
+            .getHealthMetrics(updateId)
+            .onSuccess(metrics -> {
+                           sb.append("{\"updateId\":\"")
+                             .append(updateId)
+                             .append("\",");
+                           sb.append("\"oldVersion\":{");
+                           sb.append("\"version\":\"")
+                             .append(metrics.oldVersion()
+                                            .version())
+                             .append("\",");
+                           sb.append("\"requestCount\":")
+                             .append(metrics.oldVersion()
+                                            .requestCount())
+                             .append(",");
+                           sb.append("\"errorRate\":")
+                             .append(metrics.oldVersion()
+                                            .errorRate())
+                             .append(",");
+                           sb.append("\"avgLatencyMs\":")
+                             .append(metrics.oldVersion()
+                                            .avgLatencyMs());
+                           sb.append("},\"newVersion\":{");
+                           sb.append("\"version\":\"")
+                             .append(metrics.newVersion()
+                                            .version())
+                             .append("\",");
+                           sb.append("\"requestCount\":")
+                             .append(metrics.newVersion()
+                                            .requestCount())
+                             .append(",");
+                           sb.append("\"errorRate\":")
+                             .append(metrics.newVersion()
+                                            .errorRate())
+                             .append(",");
+                           sb.append("\"avgLatencyMs\":")
+                             .append(metrics.newVersion()
+                                            .avgLatencyMs());
+                           sb.append("},\"collectedAt\":")
+                             .append(metrics.collectedAt())
+                             .append("}");
+                       })
+            .onFailure(cause -> sb.append("{\"error\":\"")
+                                  .append(cause.message())
+                                  .append("\"}"));
+        return sb.length() > 0
+               ? sb.toString()
+               : "{\"error\":\"Unknown error\"}";
+    }
+
+    private String buildRollingUpdateJson(org.pragmatica.aether.update.RollingUpdate update) {
+        return "{\"updateId\":\"" + update.updateId() + "\"," + "\"artifactBase\":\"" + update.artifactBase()
+                                                                                              .asString() + "\","
+               + "\"oldVersion\":\"" + update.oldVersion() + "\"," + "\"newVersion\":\"" + update.newVersion() + "\","
+               + "\"state\":\"" + update.state()
+                                        .name() + "\"," + "\"routing\":\"" + update.routing() + "\","
+               + "\"newInstances\":" + update.newInstances() + "," + "\"createdAt\":" + update.createdAt() + ","
+               + "\"updatedAt\":" + update.updatedAt() + "}";
     }
 
     private String buildHealthResponse(AetherNode node) {
@@ -750,8 +913,182 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     }
 
     private String buildInvocationMetricsResponse(AetherNode node) {
-        // TODO: expose invocationMetricsCollector via AetherNode interface
-        return "{\"snapshots\":[]}";
+        var snapshots = node.invocationMetrics()
+                            .snapshot();
+        var sb = new StringBuilder();
+        sb.append("{\"snapshots\":[");
+        boolean first = true;
+        for (var snapshot : snapshots) {
+            if (!first) sb.append(",");
+            sb.append("{\"artifact\":\"")
+              .append(snapshot.artifact()
+                              .asString())
+              .append("\",");
+            sb.append("\"method\":\"")
+              .append(snapshot.methodName()
+                              .name())
+              .append("\",");
+            sb.append("\"count\":")
+              .append(snapshot.metrics()
+                              .count())
+              .append(",");
+            sb.append("\"successCount\":")
+              .append(snapshot.metrics()
+                              .successCount())
+              .append(",");
+            sb.append("\"failureCount\":")
+              .append(snapshot.metrics()
+                              .failureCount())
+              .append(",");
+            sb.append("\"totalDurationNs\":")
+              .append(snapshot.metrics()
+                              .totalDurationNs())
+              .append(",");
+            // Estimate min/max from histogram (p5 and p95)
+            sb.append("\"p50DurationNs\":")
+              .append(snapshot.metrics()
+                              .estimatePercentileNs(50))
+              .append(",");
+            sb.append("\"p95DurationNs\":")
+              .append(snapshot.metrics()
+                              .estimatePercentileNs(95))
+              .append(",");
+            sb.append("\"avgDurationMs\":")
+              .append(snapshot.metrics()
+                              .count() > 0
+                      ? snapshot.metrics()
+                                .totalDurationNs() / snapshot.metrics()
+                                                            .count() / 1_000_000.0
+                      : 0)
+              .append(",");
+            sb.append("\"slowInvocations\":")
+              .append(snapshot.slowInvocations()
+                              .size());
+            sb.append("}");
+            first = false;
+        }
+        sb.append("]}");
+        return sb.toString();
+    }
+
+    private String buildSlowInvocationsResponse(AetherNode node) {
+        var snapshots = node.invocationMetrics()
+                            .snapshot();
+        var sb = new StringBuilder();
+        sb.append("{\"slowInvocations\":[");
+        boolean first = true;
+        for (var snapshot : snapshots) {
+            for (var slow : snapshot.slowInvocations()) {
+                if (!first) sb.append(",");
+                sb.append("{\"artifact\":\"")
+                  .append(snapshot.artifact()
+                                  .asString())
+                  .append("\",");
+                sb.append("\"method\":\"")
+                  .append(snapshot.methodName()
+                                  .name())
+                  .append("\",");
+                sb.append("\"durationNs\":")
+                  .append(slow.durationNs())
+                  .append(",");
+                sb.append("\"durationMs\":")
+                  .append(slow.durationMs())
+                  .append(",");
+                sb.append("\"timestampNs\":")
+                  .append(slow.timestampNs())
+                  .append(",");
+                sb.append("\"success\":")
+                  .append(slow.success())
+                  .append(",");
+                sb.append("\"error\":")
+                  .append(slow.errorType()
+                              .fold(() -> "null",
+                                    err -> "\"" + err.replace("\"", "\\\"") + "\""));
+                sb.append("}");
+                first = false;
+            }
+        }
+        sb.append("]}");
+        return sb.toString();
+    }
+
+    private String buildControllerConfigResponse(AetherNode node) {
+        return node.controller()
+                   .getConfiguration()
+                   .toJson();
+    }
+
+    private String buildControllerStatusResponse(AetherNode node) {
+        var config = node.controller()
+                         .getConfiguration();
+        return "{\"enabled\":true," + "\"evaluationIntervalMs\":" + config.evaluationIntervalMs() + "," + "\"config\":" + config.toJson()
+               + "}";
+    }
+
+    private void handleControllerConfig(ChannelHandlerContext ctx, AetherNode node, String body) {
+        try{
+            var cpuUpMatch = Pattern.compile("\"cpuScaleUpThreshold\"\\s*:\\s*([0-9.]+)")
+                                    .matcher(body);
+            var cpuDownMatch = Pattern.compile("\"cpuScaleDownThreshold\"\\s*:\\s*([0-9.]+)")
+                                      .matcher(body);
+            var callRateMatch = Pattern.compile("\"callRateScaleUpThreshold\"\\s*:\\s*([0-9.]+)")
+                                       .matcher(body);
+            var intervalMatch = Pattern.compile("\"evaluationIntervalMs\"\\s*:\\s*(\\d+)")
+                                       .matcher(body);
+            var currentConfig = node.controller()
+                                    .getConfiguration();
+            var newConfig = org.pragmatica.aether.controller.ControllerConfig.controllerConfig(
+            cpuUpMatch.find()
+            ? Double.parseDouble(cpuUpMatch.group(1))
+            : currentConfig.cpuScaleUpThreshold(),
+            cpuDownMatch.find()
+            ? Double.parseDouble(cpuDownMatch.group(1))
+            : currentConfig.cpuScaleDownThreshold(),
+            callRateMatch.find()
+            ? Double.parseDouble(callRateMatch.group(1))
+            : currentConfig.callRateScaleUpThreshold(),
+            intervalMatch.find()
+            ? Long.parseLong(intervalMatch.group(1))
+            : currentConfig.evaluationIntervalMs());
+            node.controller()
+                .updateConfiguration(newConfig);
+            sendJson(ctx, "{\"status\":\"updated\",\"config\":" + newConfig.toJson() + "}");
+        } catch (Exception e) {
+            sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    private void handleControllerEvaluate(ChannelHandlerContext ctx, AetherNode node) {
+        sendJson(ctx, "{\"status\":\"evaluation_triggered\"}");
+    }
+
+    private void handleSetThreshold(ChannelHandlerContext ctx, String body) {
+        try{
+            var metricMatch = Pattern.compile("\"metric\"\\s*:\\s*\"([^\"]+)\"")
+                                     .matcher(body);
+            var warningMatch = Pattern.compile("\"warning\"\\s*:\\s*([0-9.]+)")
+                                      .matcher(body);
+            var criticalMatch = Pattern.compile("\"critical\"\\s*:\\s*([0-9.]+)")
+                                       .matcher(body);
+            if (!metricMatch.find() || !warningMatch.find() || !criticalMatch.find()) {
+                sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, "Missing metric, warning, or critical field");
+                return;
+            }
+            var metric = metricMatch.group(1);
+            var warning = Double.parseDouble(warningMatch.group(1));
+            var critical = Double.parseDouble(criticalMatch.group(1));
+            alertManager.setThreshold(metric, warning, critical);
+            sendJson(ctx,
+                     "{\"status\":\"threshold_set\",\"metric\":\"" + metric + "\",\"warning\":" + warning
+                     + ",\"critical\":" + critical + "}");
+        } catch (Exception e) {
+            sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, e.getMessage());
+        }
+    }
+
+    private void handleClearAlerts(ChannelHandlerContext ctx) {
+        alertManager.clearAlerts();
+        sendJson(ctx, "{\"status\":\"alerts_cleared\"}");
     }
 
     private String buildAlertsResponse() {

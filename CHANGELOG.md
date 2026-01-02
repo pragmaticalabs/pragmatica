@@ -7,11 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.5] - Unreleased
 
+### Added
+- **API completeness** - All endpoints now return real data (no stubs)
+- **Rolling Update Manager** - Full implementation with KV-Store persistence
+  - `RollingUpdateManagerImpl` - Orchestrates rolling updates via consensus
+  - Two-stage model: deploy (0% traffic) then route (gradual traffic shift)
+  - Health-based auto-progression with configurable thresholds
+  - Manual approval option for critical updates
+- **Invocation Metrics API** - Per-method metrics exposed via REST
+  - `GET /invocation-metrics` - All method metrics with counts, latencies
+  - `GET /invocation-metrics/slow` - Slow invocation details
+- **Controller Configuration API** - Runtime-configurable scaling thresholds
+  - `ControllerConfig` record with CPU, call rate, and interval settings
+  - `GET /controller/config` - Get current configuration
+  - `POST /controller/config` - Update thresholds at runtime
+  - `GET /controller/status` - Controller status
+  - `POST /controller/evaluate` - Force evaluation cycle
+- **Alert Configuration API** - Enhanced alert management
+  - `GET /alerts/active` - Active alerts only
+  - `GET /alerts/history` - Alert history only
+  - `POST /alerts/clear` - Clear active alerts
+  - `POST /thresholds` - Set alert thresholds
+- **CLI Commands** - New commands for all APIs
+  - `invocation-metrics` - View per-method metrics
+  - `controller config/status/evaluate` - Manage controller
+  - `alerts list/active/history/clear` - Manage alerts
+  - `thresholds list/set` - Manage thresholds
+- **API Documentation** - Comprehensive HTTP API reference
+  - `docs/api/management-api.md` - Full endpoint documentation
+  - `docs/api/examples/curl-examples.sh` - Shell script examples
+  - `docs/api/examples/python-client.py` - Python client example
+
 ### Changed
 - **pragmatica-lite 0.9.4** - Updated with Hello handshake protocol and helloTimeout support
 - **Networking layer cleanup** - Removed duplicate NettyClusterNetwork, Handler, Encoder, Decoder from aetherx
 - **Use pragmatica-lite networking** - Now uses `org.pragmatica.consensus.net.netty.NettyClusterNetwork` from pragmatica-lite
 - **Use pragmatica-lite topology** - Now uses `org.pragmatica.consensus.topology.TcpTopologyManager` and `TopologyConfig` from pragmatica-lite
+- **DecisionTreeController** - Now accepts ControllerConfig, supports runtime configuration updates
+- **AlertManager** - Added `removeThreshold()`, `getAllThresholds()`, `clearAlerts()`, `activeAlertCount()` methods
+- **AetherNode interface** - Added `invocationMetrics()`, `controller()`, `rollingUpdateManager()`, `endpointRegistry()` methods
 
 ### Removed
 - `cluster/net/netty/` package - Duplicate of pragmatica-lite implementation

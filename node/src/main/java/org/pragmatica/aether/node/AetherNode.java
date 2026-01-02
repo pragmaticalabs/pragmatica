@@ -93,6 +93,26 @@ public interface AetherNode {
     MavenProtocolHandler mavenProtocolHandler();
 
     /**
+     * Get the invocation metrics collector for method-level metrics.
+     */
+    org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector invocationMetrics();
+
+    /**
+     * Get the cluster controller for scaling decisions.
+     */
+    DecisionTreeController controller();
+
+    /**
+     * Get the rolling update manager for managing version transitions.
+     */
+    org.pragmatica.aether.update.RollingUpdateManager rollingUpdateManager();
+
+    /**
+     * Get the endpoint registry for service discovery.
+     */
+    EndpointRegistry endpointRegistry();
+
+    /**
      * Apply commands to the cluster via consensus.
      */
     <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands);
@@ -127,6 +147,9 @@ public interface AetherNode {
         InvocationHandler invocationHandler,
         BlueprintService blueprintService,
         MavenProtocolHandler mavenProtocolHandler,
+        org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector invocationMetrics,
+        DecisionTreeController controller,
+        org.pragmatica.aether.update.RollingUpdateManager rollingUpdateManager,
         Option<ManagementServer> managementServer,
         Option<HttpRouter> httpRouter) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
@@ -233,6 +256,11 @@ public interface AetherNode {
         var dhtClient = LocalDHTClient.localDHTClient(dhtNode);
         var artifactStore = ArtifactStore.artifactStore(dhtClient);
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
+        // Create invocation metrics collector
+        var invocationMetrics = org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector.invocationMetricsCollector();
+        // Create rolling update manager
+        var rollingUpdateManager = org.pragmatica.aether.update.RollingUpdateManagerImpl.rollingUpdateManager(
+        clusterNode, kvStore, invocationMetrics);
         // Wire up message routing
         configureRoutes(router,
                         kvStore,
@@ -284,6 +312,9 @@ public interface AetherNode {
         invocationHandler,
         blueprintService,
         mavenProtocolHandler,
+        invocationMetrics,
+        controller,
+        rollingUpdateManager,
         Option.empty(),
         httpRouter);
         // Create management server if enabled
@@ -308,6 +339,9 @@ public interface AetherNode {
             invocationHandler,
             blueprintService,
             mavenProtocolHandler,
+            invocationMetrics,
+            controller,
+            rollingUpdateManager,
             Option.some(managementServer),
             httpRouter);
         }
