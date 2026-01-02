@@ -1,5 +1,6 @@
 package org.pragmatica.aether.node;
 
+import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ControlLoop;
@@ -113,6 +114,11 @@ public interface AetherNode {
     EndpointRegistry endpointRegistry();
 
     /**
+     * Get the alert manager for threshold management.
+     */
+    AlertManager alertManager();
+
+    /**
      * Apply commands to the cluster via consensus.
      */
     <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands);
@@ -150,6 +156,7 @@ public interface AetherNode {
         org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector invocationMetrics,
         DecisionTreeController controller,
         org.pragmatica.aether.update.RollingUpdateManager rollingUpdateManager,
+        AlertManager alertManager,
         Option<ManagementServer> managementServer,
         Option<HttpRouter> httpRouter) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
@@ -234,9 +241,6 @@ public interface AetherNode {
         var controller = DecisionTreeController.decisionTreeController();
         var controlLoop = ControlLoop.controlLoop(
         config.self(), controller, metricsCollector, clusterNode);
-        // Create slice invoker (invocationHandler already created above)
-        var sliceInvoker = SliceInvoker.sliceInvoker(
-        config.self(), clusterNode.network(), endpointRegistry, invocationHandler, serializer, deserializer);
         // Create blueprint service using composite repository from configuration
         var blueprintService = BlueprintServiceImpl.blueprintService(
         clusterNode,
@@ -261,6 +265,17 @@ public interface AetherNode {
         // Create rolling update manager
         var rollingUpdateManager = org.pragmatica.aether.update.RollingUpdateManagerImpl.rollingUpdateManager(
         clusterNode, kvStore, invocationMetrics);
+        // Create alert manager with KV-Store persistence
+        var alertManager = AlertManager.alertManager(clusterNode, kvStore);
+        // Create slice invoker (needs rollingUpdateManager for weighted routing during rolling updates)
+        var sliceInvoker = SliceInvoker.sliceInvoker(
+        config.self(),
+        clusterNode.network(),
+        endpointRegistry,
+        invocationHandler,
+        serializer,
+        deserializer,
+        rollingUpdateManager);
         // Wire up message routing
         configureRoutes(router,
                         kvStore,
@@ -274,7 +289,8 @@ public interface AetherNode {
                         deploymentMetricsScheduler,
                         controlLoop,
                         sliceInvoker,
-                        invocationHandler);
+                        invocationHandler,
+                        alertManager);
         // Create HTTP router if configured
         Option<HttpRouter> httpRouter = config.httpRouter()
                                               .map(routerConfig -> {
@@ -315,11 +331,15 @@ public interface AetherNode {
         invocationMetrics,
         controller,
         rollingUpdateManager,
+        alertManager,
         Option.empty(),
         httpRouter);
         // Create management server if enabled
         if (config.managementPort() > 0) {
-            var managementServer = ManagementServer.managementServer(config.managementPort(), () -> node, config.tls());
+            var managementServer = ManagementServer.managementServer(config.managementPort(),
+                                                                     () -> node,
+                                                                     alertManager,
+                                                                     config.tls());
             return new aetherNode(
             config,
             router,
@@ -342,6 +362,7 @@ public interface AetherNode {
             invocationMetrics,
             controller,
             rollingUpdateManager,
+            alertManager,
             Option.some(managementServer),
             httpRouter);
         }
@@ -360,7 +381,8 @@ public interface AetherNode {
                                         DeploymentMetricsScheduler deploymentMetricsScheduler,
                                         ControlLoop controlLoop,
                                         SliceInvoker sliceInvoker,
-                                        InvocationHandler invocationHandler) {
+                                        InvocationHandler invocationHandler,
+                                        AlertManager alertManager) {
         // KVStore notifications to deployment managers
         router.addRoute(KVStoreNotification.ValuePut.class, nodeDeploymentManager::onValuePut);
         router.addRoute(KVStoreNotification.ValuePut.class, clusterDeploymentManager::onValuePut);
@@ -370,6 +392,16 @@ public interface AetherNode {
         router.addRoute(KVStoreNotification.ValueRemove.class, clusterDeploymentManager::onValueRemove);
         router.addRoute(KVStoreNotification.ValueRemove.class, endpointRegistry::onValueRemove);
         router.addRoute(KVStoreNotification.ValueRemove.class, routeRegistry::onValueRemove);
+        // Alert threshold sync via KV-Store
+        router.addRoute(KVStoreNotification.ValuePut.class,
+                        notification -> alertManager.onKvStoreUpdate(
+        (AetherKey) notification.cause()
+                               .key(),
+        (AetherValue) notification.cause()
+                                 .value()));
+        router.addRoute(KVStoreNotification.ValueRemove.class,
+                        notification -> alertManager.onKvStoreRemove((AetherKey) notification.cause()
+                                                                                            .key()));
         // Quorum state notifications
         router.addRoute(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange);
         // Leader change notifications

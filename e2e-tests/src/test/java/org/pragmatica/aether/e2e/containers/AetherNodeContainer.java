@@ -216,7 +216,13 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
 
     // ===== HTTP Helpers =====
 
-    private String get(String path) {
+    /**
+     * Performs a GET request to the management API.
+     *
+     * @param path API path (e.g., "/health")
+     * @return response body JSON
+     */
+    public String get(String path) {
         try {
             var request = HttpRequest.newBuilder()
                                      .uri(URI.create(managementUrl() + path))
@@ -230,7 +236,14 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         }
     }
 
-    private String post(String path, String body) {
+    /**
+     * Performs a POST request to the management API.
+     *
+     * @param path API path (e.g., "/deploy")
+     * @param body request body JSON
+     * @return response body JSON
+     */
+    public String post(String path, String body) {
         try {
             var request = HttpRequest.newBuilder()
                                      .uri(URI.create(managementUrl() + path))

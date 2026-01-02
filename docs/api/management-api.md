@@ -185,6 +185,22 @@ Get cluster-wide metrics snapshot.
 
 Get per-method invocation metrics.
 
+**Query Parameters:**
+- `artifact` (optional) - Filter by artifact (partial match)
+- `method` (optional) - Filter by method name (exact match)
+
+**Examples:**
+```bash
+# All metrics
+curl http://localhost:8080/invocation-metrics
+
+# Filter by artifact
+curl "http://localhost:8080/invocation-metrics?artifact=order-service"
+
+# Filter by method
+curl "http://localhost:8080/invocation-metrics?method=processOrder"
+```
+
 **Response:**
 ```json
 {
@@ -223,6 +239,43 @@ Get slow invocation details.
       "error": "TimeoutException"
     }
   ]
+}
+```
+
+### GET /invocation-metrics/strategy
+
+Get current slow invocation threshold strategy.
+
+**Response (Fixed):**
+```json
+{
+  "type": "fixed",
+  "thresholdMs": 100
+}
+```
+
+**Response (Adaptive):**
+```json
+{
+  "type": "adaptive",
+  "minMs": 10,
+  "maxMs": 1000,
+  "multiplier": 3.0
+}
+```
+
+**Response (PerMethod):**
+```json
+{
+  "type": "perMethod",
+  "defaultMs": 100
+}
+```
+
+**Response (Composite):**
+```json
+{
+  "type": "composite"
 }
 ```
 
@@ -378,7 +431,7 @@ Get all configured alert thresholds.
 
 ### POST /thresholds
 
-Set a threshold.
+Set a threshold. Thresholds are persisted to the KV-Store and replicated across all cluster nodes.
 
 **Request:**
 ```json
@@ -396,6 +449,23 @@ Set a threshold.
   "metric": "cpu.usage",
   "warning": 0.7,
   "critical": 0.9
+}
+```
+
+### DELETE /thresholds/{metric}
+
+Remove an alert threshold. The removal is persisted to the KV-Store and replicated across all cluster nodes.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/thresholds/cpu.usage
+```
+
+**Response:**
+```json
+{
+  "status": "threshold_removed",
+  "metric": "cpu.usage"
 }
 ```
 

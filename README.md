@@ -148,6 +148,16 @@ Kill nodes, inject latency, watch recovery — all from the dashboard.
 | [CLI Reference](docs/guide/cli-reference.md) | All commands |
 | [Forge Guide](docs/guide/forge-guide.md) | Chaos testing |
 | [Slice Developer Guide](docs/slice-developer-guide.md) | Writing slices |
+| [Configuration Reference](docs/guide/configuration-reference.md) | All settings |
+| [Management API](docs/api/management-api.md) | HTTP API reference |
+
+### Operations
+| Document | Description |
+|----------|-------------|
+| [Rolling Updates](docs/guide/rolling-updates.md) | Zero-downtime deployments |
+| [Alerts & Thresholds](docs/guide/alerts-and-thresholds.md) | Monitoring and alerts |
+| [Docker Deployment](docs/guide/docker-deployment.md) | Container deployment |
+| [E2E Testing](docs/guide/e2e-testing.md) | Integration testing |
 
 ### Design Documents
 | Document | Description |

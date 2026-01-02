@@ -8,7 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.0] - Unreleased
 
 ### Added
-- (No changes yet)
+- **Weighted endpoint routing integration** - `SliceInvoker` now uses weighted routing during rolling updates
+  - Checks for active rolling update via `RollingUpdateManager`
+  - Uses `EndpointRegistry.selectEndpointWithRouting()` for traffic distribution
+  - Falls back to simple round-robin when no update active
+- **Alert threshold persistence** - Thresholds now persist to KV-Store with consensus replication
+  - `AlertThresholdKey` - KV-Store key for threshold entries (`alert-threshold/{metric}`)
+  - `AlertThresholdValue` - Threshold configuration with warning/critical values
+  - Automatic sync across cluster nodes via KVStoreNotification
+  - Thresholds survive node restarts
+- **DELETE /thresholds/{metric}** - Remove alert thresholds via REST API
+- **Per-artifact invocation metrics filtering** - Query parameters for `/invocation-metrics`
+  - `?artifact=<partial>` - Filter by artifact (partial match)
+  - `?method=<name>` - Filter by method name (exact match)
+- **Threshold strategy introspection** - `GET /invocation-metrics/strategy` endpoint
+  - Returns current strategy type and configuration
+  - Supports Fixed, Adaptive, PerMethod, Composite strategies
+- **E2E rolling update tests** - Fixed and enabled `RollingUpdateE2ETest`
+  - `AetherNodeContainer.get()` and `post()` helpers for HTTP operations
+
+### Changed
+- **AlertManager** - Now requires `RabiaNode` and `KVStore` for persistence
+  - `setThreshold()` returns `Promise<Unit>` (consensus operation)
+  - `removeThreshold()` returns `Promise<Unit>` (consensus operation)
+  - Added `onKvStoreUpdate()` and `onKvStoreRemove()` for cluster sync
+- **ThresholdStrategy** - Added getter methods for introspection
+  - `Adaptive`: `minThresholdNs()`, `maxThresholdNs()`, `multiplier()`
+  - `PerMethod`: `defaultThresholdNs()`
 
 ## [0.6.5] - 2026-01-02
 

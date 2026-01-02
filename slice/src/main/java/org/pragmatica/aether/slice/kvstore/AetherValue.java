@@ -115,4 +115,27 @@ public sealed interface AetherValue {
     String cleanupPolicy,
     long createdAt,
     long updatedAt) implements AetherValue {}
+
+    /// Alert threshold configuration stored in consensus.
+    /// Allows thresholds to survive restarts and sync across cluster nodes.
+    ///
+    /// @param metricName the metric this threshold applies to
+    /// @param warningThreshold value at which a warning is triggered
+    /// @param criticalThreshold value at which a critical alert is triggered
+    /// @param updatedAt timestamp of last update
+    record AlertThresholdValue(
+    String metricName,
+    double warningThreshold,
+    double criticalThreshold,
+    long updatedAt) implements AetherValue {
+        /// Creates a new threshold value with current timestamp.
+        public static AlertThresholdValue alertThresholdValue(String metricName, double warning, double critical) {
+            return new AlertThresholdValue(metricName, warning, critical, System.currentTimeMillis());
+        }
+
+        /// Updates the threshold values with current timestamp.
+        public AlertThresholdValue withThresholds(double warning, double critical) {
+            return new AlertThresholdValue(metricName, warning, critical, System.currentTimeMillis());
+        }
+    }
 }

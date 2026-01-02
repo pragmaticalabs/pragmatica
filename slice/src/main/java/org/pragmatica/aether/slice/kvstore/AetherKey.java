@@ -321,6 +321,49 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Alert threshold key format:
+    /// ```
+    /// alert-threshold/{metricName}
+    /// ```
+    /// Stores alert threshold configuration for metrics.
+    record AlertThresholdKey(String metricName) implements AetherKey {
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.AlertThresholdPattern alertThresholdPattern -> alertThresholdPattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return "alert-threshold/" + metricName;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static AlertThresholdKey alertThresholdKey(String metricName) {
+            return new AlertThresholdKey(metricName);
+        }
+
+        public static Result<AlertThresholdKey> parse(String key) {
+            if (!key.startsWith("alert-threshold/")) {
+                return ALERT_THRESHOLD_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
+            }
+            var metricName = key.substring(16);
+            // Remove "alert-threshold/"
+            if (metricName.isEmpty()) {
+                return ALERT_THRESHOLD_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
+            }
+            return Result.success(new AlertThresholdKey(metricName));
+        }
+    }
+
     Fn1<Cause, String>BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint key format: %s");
     Fn1<Cause, String>APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
     Fn1<Cause, String>SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");
@@ -328,6 +371,7 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String>ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid route key format: %s");
     Fn1<Cause, String>VERSION_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid version-routing key format: %s");
     Fn1<Cause, String>ROLLING_UPDATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid rolling-update key format: %s");
+    Fn1<Cause, String>ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
 
     /// Aether KV-Store structured patterns for key matching
     sealed interface AetherKeyPattern extends StructuredPattern {
@@ -376,6 +420,13 @@ public sealed interface AetherKey extends StructuredKey {
         /// Pattern for rolling-update keys: rolling-update/*
         record RollingUpdatePattern() implements AetherKeyPattern {
             public boolean matches(RollingUpdateKey key) {
+                return true;
+            }
+        }
+
+        /// Pattern for alert-threshold keys: alert-threshold/*
+        record AlertThresholdPattern() implements AetherKeyPattern {
+            public boolean matches(AlertThresholdKey key) {
                 return true;
             }
         }

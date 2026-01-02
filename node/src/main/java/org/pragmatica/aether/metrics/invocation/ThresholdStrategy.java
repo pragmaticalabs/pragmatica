@@ -125,6 +125,18 @@ public sealed interface ThresholdStrategy {
             this.multiplier = multiplier;
         }
 
+        public long minThresholdNs() {
+            return minThresholdNs;
+        }
+
+        public long maxThresholdNs() {
+            return maxThresholdNs;
+        }
+
+        public double multiplier() {
+            return multiplier;
+        }
+
         @Override
         public boolean isSlow(MethodName method, long durationNs) {
             var stats = methodStats.get(method);
@@ -192,6 +204,10 @@ public sealed interface ThresholdStrategy {
 
         PerMethod(long defaultThresholdNs) {
             this.defaultThresholdNs = defaultThresholdNs;
+        }
+
+        public long defaultThresholdNs() {
+            return defaultThresholdNs;
         }
 
         /**

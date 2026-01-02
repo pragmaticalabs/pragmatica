@@ -71,7 +71,15 @@ public interface ManagementServer {
     }
 
     static ManagementServer managementServer(int port, Supplier<AetherNode> nodeSupplier, Option<TlsConfig> tls) {
-        return new ManagementServerImpl(port, nodeSupplier, tls);
+        // This overload is deprecated - use the version with AlertManager
+        throw new IllegalArgumentException("AlertManager is required - use managementServer(port, nodeSupplier, alertManager, tls)");
+    }
+
+    static ManagementServer managementServer(int port,
+                                             Supplier<AetherNode> nodeSupplier,
+                                             AlertManager alertManager,
+                                             Option<TlsConfig> tls) {
+        return new ManagementServerImpl(port, nodeSupplier, alertManager, tls);
     }
 }
 
@@ -90,12 +98,15 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<SslContext> sslContext;
     private Channel serverChannel;
 
-    ManagementServerImpl(int port, Supplier<AetherNode> nodeSupplier, Option<TlsConfig> tls) {
+    ManagementServerImpl(int port,
+                         Supplier<AetherNode> nodeSupplier,
+                         AlertManager alertManager,
+                         Option<TlsConfig> tls) {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         this.workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
-        this.alertManager = new AlertManager();
+        this.alertManager = alertManager;
         this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager);
         this.observability = ObservabilityRegistry.prometheus();
         this.sslContext = tls.map(TlsContextFactory::create)
@@ -202,6 +213,8 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         }else if (method == HttpMethod.POST || method == HttpMethod.PUT) {
             // Handle both POST and PUT for repository uploads (Maven uses PUT)
             handlePost(ctx, uri, request);
+        }else if (method == HttpMethod.DELETE) {
+            handleDelete(ctx, uri);
         }else {
             sendError(ctx, HttpResponseStatus.METHOD_NOT_ALLOWED);
         }
@@ -233,14 +246,28 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             sendPrometheus(ctx, observability.scrape());
             return;
         }
+        // Handle invocation metrics with optional query parameters
+        if (uri.startsWith("/invocation-metrics")) {
+            var path = extractPath(uri);
+            if (path.equals("/invocation-metrics/slow")) {
+                sendJson(ctx, buildSlowInvocationsResponse(node));
+            }else if (path.equals("/invocation-metrics/strategy")) {
+                sendJson(ctx, buildStrategyResponse(node));
+            }else if (path.equals("/invocation-metrics")) {
+                var artifactFilter = extractQueryParam(uri, "artifact");
+                var methodFilter = extractQueryParam(uri, "method");
+                sendJson(ctx, buildInvocationMetricsResponse(node, artifactFilter, methodFilter));
+            }else {
+                sendError(ctx, HttpResponseStatus.NOT_FOUND);
+            }
+            return;
+        }
         var response = switch (uri) {
             case"/status" -> buildStatusResponse(node);
             case"/nodes" -> buildNodesResponse(node);
             case"/slices" -> buildSlicesResponse(node);
             case"/slices/status" -> buildSlicesStatusResponse(node);
             case"/metrics" -> buildMetricsResponse(node);
-            case"/invocation-metrics" -> buildInvocationMetricsResponse(node);
-            case"/invocation-metrics/slow" -> buildSlowInvocationsResponse(node);
             case"/thresholds" -> alertManager.thresholdsAsJson();
             case"/alerts" -> buildAlertsResponse();
             case"/alerts/active" -> alertManager.activeAlertsAsJson();
@@ -333,6 +360,28 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         }
     }
 
+    private void handleDelete(ChannelHandlerContext ctx, String uri) {
+        // DELETE /thresholds/{metric}
+        if (uri.startsWith("/thresholds/")) {
+            var metric = uri.substring("/thresholds/".length());
+            handleDeleteThreshold(ctx, metric);
+            return;
+        }
+        sendError(ctx, HttpResponseStatus.NOT_FOUND);
+    }
+
+    private void handleDeleteThreshold(ChannelHandlerContext ctx, String metric) {
+        if (metric.isEmpty()) {
+            sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, "Metric name required");
+            return;
+        }
+        alertManager.removeThreshold(metric)
+                    .onSuccess(_ -> sendJson(ctx, "{\"status\":\"threshold_removed\",\"metric\":\"" + metric + "\"}"))
+                    .onFailure(cause -> sendJsonError(ctx,
+                                                      HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                                                      "Failed to remove threshold: " + cause.message()));
+    }
+
     private void handleRepositoryPut(ChannelHandlerContext ctx, AetherNode node, String uri, FullHttpRequest request) {
         // Read binary content directly from ByteBuf
         var byteBuf = request.content();
@@ -358,6 +407,27 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             .onFailure(cause -> sendJsonError(ctx,
                                               HttpResponseStatus.INTERNAL_SERVER_ERROR,
                                               cause.message()));
+    }
+
+    // URL parsing helpers
+    private static String extractPath(String uri) {
+        var queryIndex = uri.indexOf('?');
+        return queryIndex >= 0
+               ? uri.substring(0, queryIndex)
+               : uri;
+    }
+
+    private static String extractQueryParam(String uri, String paramName) {
+        var queryIndex = uri.indexOf('?');
+        if (queryIndex < 0) return null;
+        var query = uri.substring(queryIndex + 1);
+        for (var pair : query.split("&")) {
+            var kv = pair.split("=", 2);
+            if (kv.length == 2 && kv[0].equals(paramName)) {
+                return java.net.URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
+            }
+        }
+        return null;
     }
 
     // Simple JSON parsing helpers
@@ -912,13 +982,25 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         return sb.toString();
     }
 
-    private String buildInvocationMetricsResponse(AetherNode node) {
+    private String buildInvocationMetricsResponse(AetherNode node, String artifactFilter, String methodFilter) {
         var snapshots = node.invocationMetrics()
                             .snapshot();
         var sb = new StringBuilder();
         sb.append("{\"snapshots\":[");
         boolean first = true;
         for (var snapshot : snapshots) {
+            // Apply artifact filter (partial match)
+            if (artifactFilter != null && !snapshot.artifact()
+                                                   .asString()
+                                                   .contains(artifactFilter)) {
+                continue;
+            }
+            // Apply method filter (exact match)
+            if (methodFilter != null && !snapshot.methodName()
+                                                 .name()
+                                                 .equals(methodFilter)) {
+                continue;
+            }
             if (!first) sb.append(",");
             sb.append("{\"artifact\":\"")
               .append(snapshot.artifact()
@@ -1012,6 +1094,22 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         return sb.toString();
     }
 
+    private String buildStrategyResponse(AetherNode node) {
+        var strategy = node.invocationMetrics()
+                           .thresholdStrategy();
+        return switch (strategy) {
+            case org.pragmatica.aether.metrics.invocation.ThresholdStrategy.Fixed f ->
+            "{\"type\":\"fixed\",\"thresholdMs\":" + (f.thresholdNs() / 1_000_000) + "}";
+            case org.pragmatica.aether.metrics.invocation.ThresholdStrategy.Adaptive a ->
+            "{\"type\":\"adaptive\",\"minMs\":" + (a.minThresholdNs() / 1_000_000) + ",\"maxMs\":" + (a.maxThresholdNs() / 1_000_000)
+            + ",\"multiplier\":" + a.multiplier() + "}";
+            case org.pragmatica.aether.metrics.invocation.ThresholdStrategy.PerMethod p ->
+            "{\"type\":\"perMethod\",\"defaultMs\":" + (p.defaultThresholdNs() / 1_000_000) + "}";
+            case org.pragmatica.aether.metrics.invocation.ThresholdStrategy.Composite c ->
+            "{\"type\":\"composite\"}";
+        };
+    }
+
     private String buildControllerConfigResponse(AetherNode node) {
         return node.controller()
                    .getConfiguration()
@@ -1077,10 +1175,13 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             var metric = metricMatch.group(1);
             var warning = Double.parseDouble(warningMatch.group(1));
             var critical = Double.parseDouble(criticalMatch.group(1));
-            alertManager.setThreshold(metric, warning, critical);
-            sendJson(ctx,
-                     "{\"status\":\"threshold_set\",\"metric\":\"" + metric + "\",\"warning\":" + warning
-                     + ",\"critical\":" + critical + "}");
+            alertManager.setThreshold(metric, warning, critical)
+                        .onSuccess(_ -> sendJson(ctx,
+                                                 "{\"status\":\"threshold_set\",\"metric\":\"" + metric
+                                                 + "\",\"warning\":" + warning + ",\"critical\":" + critical + "}"))
+                        .onFailure(cause -> sendJsonError(ctx,
+                                                          HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                                                          "Failed to persist threshold: " + cause.message()));
         } catch (Exception e) {
             sendJsonError(ctx, HttpResponseStatus.BAD_REQUEST, e.getMessage());
         }

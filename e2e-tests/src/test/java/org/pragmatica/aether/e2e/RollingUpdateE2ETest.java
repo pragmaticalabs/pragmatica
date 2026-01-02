@@ -2,7 +2,6 @@ package org.pragmatica.aether.e2e;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.e2e.containers.AetherCluster;
 
@@ -24,14 +23,13 @@ import static org.awaitility.Awaitility.await;
  *   <li>Request continuity during updates</li>
  * </ul>
  *
- * <p>Note: These tests require the rolling update implementation.
- * Currently disabled until implementation is complete.
+ * <p>Note: These tests require Docker and the example-slice artifacts.
+ * Run with: mvn test -pl e2e-tests -Dtest=RollingUpdateE2ETest
  */
-@Disabled("Pending rolling update implementation")
 class RollingUpdateE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String OLD_VERSION = "org.pragmatica-lite.aether:example-slice:0.6.3";
-    private static final String NEW_VERSION = "org.pragmatica-lite.aether:example-slice:0.6.5";
+    private static final String OLD_VERSION = "org.pragmatica-lite.aether:example-slice:0.7.0";
+    private static final String NEW_VERSION = "org.pragmatica-lite.aether:example-slice:0.7.1";
     private static final Duration UPDATE_TIMEOUT = Duration.ofSeconds(120);
     private AetherCluster cluster;
 
@@ -254,12 +252,11 @@ class RollingUpdateE2ETest {
     }
 
     private String get(String path) {
-        return cluster.anyNode().getHealth().replace("/health", path);
+        return cluster.anyNode().get(path);
     }
 
     private String post(String path, String body) {
-        // Using health endpoint base URL pattern
-        return "{}"; // Placeholder until implementation
+        return cluster.anyNode().post(path, body);
     }
 
     private boolean sliceIsActive(String artifact) {

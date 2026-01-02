@@ -1,12 +1,14 @@
 package org.pragmatica.aether.invoke;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceRuntime.SliceInvokerFacade;
+import org.pragmatica.aether.update.RollingUpdateManager;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
@@ -163,14 +165,16 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      EndpointRegistry endpointRegistry,
                                      InvocationHandler invocationHandler,
                                      Serializer serializer,
-                                     Deserializer deserializer) {
+                                     Deserializer deserializer,
+                                     RollingUpdateManager rollingUpdateManager) {
         return new SliceInvokerImpl(self,
                                     network,
                                     endpointRegistry,
                                     invocationHandler,
                                     serializer,
                                     deserializer,
-                                    DEFAULT_TIMEOUT_MS);
+                                    DEFAULT_TIMEOUT_MS,
+                                    rollingUpdateManager);
     }
 
     /**
@@ -182,14 +186,16 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      InvocationHandler invocationHandler,
                                      Serializer serializer,
                                      Deserializer deserializer,
-                                     long timeoutMs) {
+                                     long timeoutMs,
+                                     RollingUpdateManager rollingUpdateManager) {
         return new SliceInvokerImpl(self,
                                     network,
                                     endpointRegistry,
                                     invocationHandler,
                                     serializer,
                                     deserializer,
-                                    timeoutMs);
+                                    timeoutMs,
+                                    rollingUpdateManager);
     }
 }
 
@@ -209,6 +215,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private final Deserializer deserializer;
     private final long timeoutMs;
     private final ScheduledExecutorService scheduler;
+    private final RollingUpdateManager rollingUpdateManager;
 
     // Pending request-response invocations awaiting responses
     // Maps correlationId -> (promise, createdAtMs)
@@ -224,7 +231,8 @@ class SliceInvokerImpl implements SliceInvoker {
                      InvocationHandler invocationHandler,
                      Serializer serializer,
                      Deserializer deserializer,
-                     long timeoutMs) {
+                     long timeoutMs,
+                     RollingUpdateManager rollingUpdateManager) {
         this.self = self;
         this.network = network;
         this.endpointRegistry = endpointRegistry;
@@ -232,6 +240,7 @@ class SliceInvokerImpl implements SliceInvoker {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.timeoutMs = timeoutMs;
+        this.rollingUpdateManager = rollingUpdateManager;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
                                                                         var t = new Thread(r, "slice-invoker-scheduler");
                                                                         t.setDaemon(true);
@@ -455,9 +464,25 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private Promise<Endpoint> selectEndpoint(Artifact slice, MethodName method) {
-        return endpointRegistry.selectEndpoint(slice, method)
-                               .fold(() -> NO_ENDPOINT_FOUND.promise(),
-                                     Promise::success);
+        // Check if there's an active rolling update for this artifact
+        var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
+        return rollingUpdateManager.getActiveUpdate(artifactBase)
+                                   .fold(() -> endpointRegistry.selectEndpoint(slice, method)
+                                                               .fold(() -> NO_ENDPOINT_FOUND.promise(),
+                                                                     Promise::success),
+                                         // Active update - use weighted routing based on version routing configuration
+        update -> {
+                                             log.debug("Using weighted routing for {} during rolling update {}",
+                                                       slice,
+                                                       update.updateId());
+                                             return endpointRegistry.selectEndpointWithRouting(artifactBase,
+                                                                                               method,
+                                                                                               update.routing(),
+                                                                                               update.oldVersion(),
+                                                                                               update.newVersion())
+                                                                    .fold(() -> NO_ENDPOINT_FOUND.promise(),
+                                                                          Promise::success);
+                                         });
     }
 
     private byte[] serializeRequest(Object request) {
