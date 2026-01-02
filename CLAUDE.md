@@ -95,7 +95,7 @@ Maven-style coordinates for slices:
 
 ```java
 // Format: groupId:artifactId:version[-qualifier]
-Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.6.4")
+Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.6.5")
 ```
 
 **Components**:
@@ -565,7 +565,7 @@ Use `.await()` to block, then test like Result:
 @Test
 void loadSlice_succeeds_withValidArtifact() {
     LoadSlice loadSlice = artifact -> Promise.success(new LoadedSlice(artifact));
-    var artifact = Artifact.artifact("org.example:slice:1.0.0").unsafe();
+    var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
 
     loadSlice.apply(artifact)
         .await()
@@ -582,7 +582,7 @@ void loadSlice_succeeds_withValidArtifact() {
 @Test
 void loadSlice_fails_whenArtifactNotFound() {
     LoadSlice loadSlice = artifact -> SliceError.NotFound.INSTANCE.promise();
-    var artifact = Artifact.artifact("org.example:slice:1.0.0").unsafe();
+    var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
 
     loadSlice.apply(artifact)
         .await()
@@ -820,7 +820,7 @@ option.async()                    // Option<T> → Promise<T>
 option.toResult(cause)            // Option<T> → Result<T>
 
 // Extract values (use carefully, prefer map/flatMap)
-result.unsafe()                   // Result<T> → T (throws on failure)
+result.unwrap()                   // Result<T> → T (throws on failure)
 option.orElse(defaultValue)       // Option<T> → T
 
 // Error creation
