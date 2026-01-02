@@ -2,8 +2,12 @@ package org.pragmatica.aether.forge;
 
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.rabia.ProtocolConfig;
+import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -19,6 +23,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import static org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider.furySerializerFactoryProvider;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
@@ -31,6 +37,7 @@ public final class ForgeCluster {
     private static final Logger log = LoggerFactory.getLogger(ForgeCluster.class);
 
     private static final int BASE_PORT = 5050;
+    private static final int BASE_MGMT_PORT = 5150;
     private static final TimeSpan NODE_TIMEOUT = TimeSpan.timeSpan(10)
                                                         .seconds();
 
@@ -70,7 +77,7 @@ public final class ForgeCluster {
         var startPromises = new ArrayList<Promise<Unit>>();
         for (int i = 0; i < initialClusterSize; i++ ) {
             var nodeInfo = initialNodes.get(i);
-            var node = createNode(nodeInfo.id(), BASE_PORT + i, initialNodes);
+            var node = createNode(nodeInfo.id(), BASE_PORT + i, BASE_MGMT_PORT + i, initialNodes);
             nodes.put(nodeInfo.id()
                               .id(),
                       node);
@@ -113,7 +120,8 @@ public final class ForgeCluster {
         nodeInfos.put(nodeId.id(), info);
         // Get current topology including the new node
         var allNodes = new ArrayList<>(nodeInfos.values());
-        var node = createNode(nodeId, port, allNodes);
+        var mgmtPort = BASE_MGMT_PORT + nodeNum - 1;
+        var node = createNode(nodeId, port, mgmtPort, allNodes);
         nodes.put(nodeId.id(), node);
         return node.start()
                    .map(_ -> nodeId)
@@ -196,8 +204,10 @@ public final class ForgeCluster {
                    .flatMap(_ -> {
                                 var port = nodeInfo.address()
                                                    .port();
+                                var mgmtPort = BASE_MGMT_PORT + (port - BASE_PORT);
                                 var newNode = createNode(nodeInfo.id(),
                                                          port,
+                                                         mgmtPort,
                                                          topology);
                                 nodes.put(nodeIdStr, newNode);
                                 return newNode.start();
@@ -232,15 +242,19 @@ public final class ForgeCluster {
     public ClusterStatus status() {
         var nodeStatuses = nodes.entrySet()
                                 .stream()
-                                .map(entry -> new NodeStatus(
+                                .map(entry -> {
+                                         var clusterPort = nodeInfos.get(entry.getKey())
+                                                                    .address()
+                                                                    .port();
+                                         return new NodeStatus(
         entry.getKey(),
-        nodeInfos.get(entry.getKey())
-                 .address()
-                 .port(),
+        clusterPort,
+        BASE_MGMT_PORT + (clusterPort - BASE_PORT),
         "healthy",
         currentLeader()
         .fold(() -> false,
-              leaderId -> leaderId.equals(entry.getKey()))))
+              leaderId -> leaderId.equals(entry.getKey())));
+                                     })
                                 .toList();
         return new ClusterStatus(nodeStatuses, currentLeader()
                                               .fold(() -> "none",
@@ -268,8 +282,19 @@ public final class ForgeCluster {
         return nodes.size();
     }
 
-    private AetherNode createNode(NodeId nodeId, int port, List<NodeInfo> coreNodes) {
-        var config = AetherNodeConfig.testConfig(nodeId, port, coreNodes);
+    private AetherNode createNode(NodeId nodeId, int port, int mgmtPort, List<NodeInfo> coreNodes) {
+        var topology = new TopologyConfig(
+        nodeId, timeSpan(500)
+               .millis(), timeSpan(100)
+                         .millis(), coreNodes);
+        var config = new AetherNodeConfig(
+        topology,
+        ProtocolConfig.testConfig(),
+        SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider()),
+        mgmtPort,
+        Option.empty(),
+        DHTConfig.FULL,
+        Option.empty());
         return AetherNode.aetherNode(config);
     }
 
@@ -305,6 +330,7 @@ public final class ForgeCluster {
     public record NodeStatus(
     String id,
     int port,
+    int mgmtPort,
     String state,
     boolean isLeader) {}
 
