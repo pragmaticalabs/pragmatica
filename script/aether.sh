@@ -29,7 +29,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-JAR_FILE="$PROJECT_DIR/cli/target/cli-0.6.5-SNAPSHOT.jar"
+JAR_FILE="$PROJECT_DIR/cli/target/cli-0.7.0-SNAPSHOT.jar"
 
 if [ ! -f "$JAR_FILE" ]; then
     echo "CLI JAR not found. Building..."

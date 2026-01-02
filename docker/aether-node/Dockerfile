@@ -5,7 +5,7 @@ FROM eclipse-temurin:25-alpine
 
 LABEL org.opencontainers.image.title="Aether Node"
 LABEL org.opencontainers.image.description="Aether distributed runtime node"
-LABEL org.opencontainers.image.version="0.6.5"
+LABEL org.opencontainers.image.version="0.7.0"
 LABEL org.opencontainers.image.source="https://github.com/siy/aether"
 
 # Create non-root user for security

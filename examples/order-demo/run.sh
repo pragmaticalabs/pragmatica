@@ -31,4 +31,4 @@ export CLUSTER_SIZE=${CLUSTER_SIZE:-5}
 export LOAD_RATE=${LOAD_RATE:-1000}
 
 # Run with the shaded JAR
-java -jar "$ROOT_DIR/forge/target/forge-0.6.5-shaded.jar"
+java -jar "$ROOT_DIR/forge/target/forge-0.7.0-shaded.jar"

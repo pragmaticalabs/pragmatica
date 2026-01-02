@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.6.5</version>
+        <version>0.7.0</version>
     </parent>
 
     <artifactId>cli</artifactId>
