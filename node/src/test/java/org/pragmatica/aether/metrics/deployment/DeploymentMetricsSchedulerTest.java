@@ -256,6 +256,11 @@ class DeploymentMetricsSchedulerTest {
             return Promise.success(Unit.unit());
         }
 
+        @Override
+        public int connectedNodeCount() {
+            return 0;
+        }
+
         public void configure(MessageRouter.MutableRouter router) {}
     }
 

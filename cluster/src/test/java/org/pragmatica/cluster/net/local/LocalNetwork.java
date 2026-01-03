@@ -53,6 +53,11 @@ public class LocalNetwork implements ClusterNetwork {
     }
 
     @Override
+    public int connectedNodeCount() {
+        return nodes.size();
+    }
+
+    @Override
     public <M extends ProtocolMessage> void broadcast(M message) {
         nodes.keySet()
              .forEach(nodeId -> send(nodeId, message));

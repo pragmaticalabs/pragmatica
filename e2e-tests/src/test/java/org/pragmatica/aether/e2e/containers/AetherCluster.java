@@ -45,20 +45,54 @@ public class AetherCluster implements AutoCloseable {
     private final Path projectRoot;
     private final Map<String, AetherNodeContainer> nodeMap;
 
+    // Use predictable IPs for container-to-container communication
+    // Podman's DNS doesn't reliably resolve network aliases, so we use explicit IPs
+    private static final String SUBNET_PREFIX = "10.99.0";
+    private static final int IP_START = 2; // Gateway is .1, containers start at .2
+
     private AetherCluster(int size, Path projectRoot) {
         this.projectRoot = projectRoot;
-        this.network = Network.newNetwork();
+        // Create network with fixed subnet for predictable IPs
+        this.network = Network.builder()
+                              .createNetworkCmdModifier(cmd -> {
+                                  cmd.withIpam(new com.github.dockerjava.api.model.Network.Ipam()
+                                      .withConfig(new com.github.dockerjava.api.model.Network.Ipam.Config()
+                                          .withSubnet(SUBNET_PREFIX + ".0/24")
+                                          .withGateway(SUBNET_PREFIX + ".1")));
+                              })
+                              .build();
         this.nodes = new ArrayList<>(size);
         this.nodeMap = new LinkedHashMap<>();
 
-        var peers = buildPeerList(size);
+        // Build IP-based peer list
+        var peerList = buildIpPeerList(size);
+        System.out.println("[DEBUG] Using IP-based peer list: " + peerList);
+
+        // Create nodes with predictable IPs and extra host entries
         for (int i = 1; i <= size; i++) {
             var nodeId = "node-" + i;
-            var node = AetherNodeContainer.aetherNode(nodeId, projectRoot, peers)
+            var nodeIp = SUBNET_PREFIX + "." + (IP_START + i - 1);
+            var node = AetherNodeContainer.aetherNode(nodeId, projectRoot, peerList)
                                           .withClusterNetwork(network);
+
+            // Add extra host entries for all OTHER nodes
+            for (int j = 1; j <= size; j++) {
+                if (j != i) {
+                    var otherNodeId = "node-" + j;
+                    var otherIp = SUBNET_PREFIX + "." + (IP_START + j - 1);
+                    node.withExtraHost(otherNodeId, otherIp);
+                }
+            }
+
             nodes.add(node);
             nodeMap.put(nodeId, node);
         }
+    }
+
+    private String buildIpPeerList(int size) {
+        return IntStream.rangeClosed(1, size)
+                        .mapToObj(i -> "node-" + i + ":" + SUBNET_PREFIX + "." + (IP_START + i - 1) + ":8090")
+                        .collect(Collectors.joining(","));
     }
 
     /**
@@ -77,12 +111,35 @@ public class AetherCluster implements AutoCloseable {
 
     /**
      * Starts all nodes in the cluster.
+     * Uses hostname-based peer configuration since containers share a Docker network.
      */
     public void start() {
-        // Start nodes sequentially to ensure stable cluster formation
+        System.out.println("[DEBUG] Starting cluster with " + nodes.size() + " nodes...");
+
+        // Start nodes sequentially
         for (var node : nodes) {
             node.start();
+            var ip = getContainerIp(node);
+            System.out.println("[DEBUG] Node " + node.nodeId() + " started with IP: " + ip);
         }
+
+        System.out.println("[DEBUG] All nodes started. Waiting for cluster formation...");
+    }
+
+    private String getContainerIp(AetherNodeContainer node) {
+        try {
+            var networkSettings = node.getContainerInfo().getNetworkSettings();
+            var networks = networkSettings.getNetworks();
+            for (var networkEntry : networks.entrySet()) {
+                var ip = networkEntry.getValue().getIpAddress();
+                if (ip != null && !ip.isEmpty()) {
+                    return ip;
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("[DEBUG] Failed to get IP for " + node.nodeId() + ": " + e.getMessage());
+        }
+        return null;
     }
 
     /**
@@ -111,6 +168,17 @@ public class AetherCluster implements AutoCloseable {
         await().atMost(QUORUM_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
+    }
+
+    /**
+     * Waits for a leader to be elected.
+     *
+     * @throws org.awaitility.core.ConditionTimeoutException if leader not elected
+     */
+    public void awaitLeader() {
+        await().atMost(QUORUM_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> leader().isPresent());
     }
 
     /**
@@ -235,10 +303,27 @@ public class AetherCluster implements AutoCloseable {
 
     private boolean hasQuorum() {
         try {
+            // Check cluster formation using /health endpoint which shows actual network connections
+            // The /health endpoint includes connectedPeers count from network layer
             var health = anyNode().getHealth();
-            return health.contains("\"status\":\"healthy\"") ||
-                   health.contains("\"quorum\":true");
+            var expectedNodeCount = runningNodeCount();
+            // Parse connectedPeers from health response: {"connectedPeers":N,...}
+            int connectedPeers = 0;
+            var matcher = java.util.regex.Pattern.compile("\"connectedPeers\":(\\d+)").matcher(health);
+            if (matcher.find()) {
+                connectedPeers = Integer.parseInt(matcher.group(1));
+            }
+            // Total nodes = connected peers + 1 (self)
+            int totalNodes = connectedPeers + 1;
+            // Log for debugging
+            System.out.println("[DEBUG] hasQuorum check: health=" + health +
+                               ", expectedNodeCount=" + expectedNodeCount +
+                               ", connectedPeers=" + connectedPeers +
+                               ", totalNodes=" + totalNodes);
+            // Quorum requires majority of expected nodes to be connected
+            return totalNodes >= (expectedNodeCount / 2 + 1);
         } catch (Exception e) {
+            System.out.println("[DEBUG] hasQuorum error: " + e.getMessage());
             return false;
         }
     }

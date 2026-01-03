@@ -119,6 +119,22 @@ public interface AetherNode {
     AlertManager alertManager();
 
     /**
+     * Get the number of currently connected peer nodes in the cluster.
+     * This is a network-level count, not based on metrics exchange.
+     */
+    int connectedNodeCount();
+
+    /**
+     * Check if this node is the current leader.
+     */
+    boolean isLeader();
+
+    /**
+     * Get the current leader node ID.
+     */
+    Option<NodeId> leader();
+
+    /**
      * Apply commands to the cluster via consensus.
      */
     <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands);
@@ -171,15 +187,26 @@ public interface AetherNode {
                 log.info("Starting Aether node {}", self());
                 // Configure SliceRuntime so slices can access runtime services
                 SliceRuntime.setSliceInvoker(sliceInvoker);
-                return clusterNode.start()
-                                  .flatMap(_ -> managementServer.fold(
-                () -> Promise.success(Unit.unit()),
-                ManagementServer::start))
-                                  .flatMap(_ -> httpRouter.fold(
+                // Start management server FIRST (so health checks work during cluster formation)
+                // Then start HTTP router, then cluster node
+                // The cluster node starts asynchronously - it may take time to synchronize with peers
+                return managementServer.fold(() -> Promise.success(Unit.unit()),
+                                             ManagementServer::start)
+                                       .flatMap(_ -> httpRouter.fold(
                 () -> Promise.success(Unit.unit()),
                 HttpRouter::start))
-                                  .onSuccess(_ -> log.info("Aether node {} started successfully",
-                                                           self()));
+                                       .flatMap(_ -> {
+                                                    // Start cluster node asynchronously - don't block on cluster formation
+                // This allows health checks to work while cluster is forming
+                clusterNode.start()
+                           .onSuccess(_ -> log.info("Aether node {} cluster formation complete",
+                                                    self()))
+                           .onFailure(cause -> log.error("Cluster formation failed: {}",
+                                                         cause.message()));
+                                                    return Promise.success(Unit.unit());
+                                                })
+                                       .onSuccess(_ -> log.info("Aether node {} HTTP server started, cluster forming...",
+                                                                self()));
             }
 
             @Override
@@ -203,6 +230,24 @@ public interface AetherNode {
             @Override
             public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
                 return clusterNode.apply(commands);
+            }
+
+            @Override
+            public int connectedNodeCount() {
+                return clusterNode.network()
+                                  .connectedNodeCount();
+            }
+
+            @Override
+            public boolean isLeader() {
+                return clusterNode.leaderManager()
+                                  .isLeader();
+            }
+
+            @Override
+            public Option<NodeId> leader() {
+                return clusterNode.leaderManager()
+                                  .leader();
             }
         }
         // Create KVStore (state machine for consensus)

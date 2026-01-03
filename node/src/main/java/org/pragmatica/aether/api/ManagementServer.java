@@ -791,13 +791,16 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private String buildHealthResponse(AetherNode node) {
         var metrics = node.metricsCollector()
                           .allMetrics();
-        var nodeCount = metrics.size();
+        var metricsNodeCount = metrics.size();
+        var connectedNodeCount = node.connectedNodeCount();
         var sliceCount = node.sliceStore()
                              .loaded()
                              .size();
-        // Quorum: we have metrics from at least half the expected nodes
-        // Use nodeCount > 1 as a simple proxy for "cluster is functioning"
-        var hasQuorum = nodeCount >= 1;
+        // Quorum based on actual network connections (connectedNodeCount + 1 for self)
+        // connectedNodeCount() returns peer count (not including self)
+        var totalNodes = connectedNodeCount + 1;
+        var hasQuorum = totalNodes >= 2;
+        // At least 2 nodes for minimal cluster
         // Determine status: healthy if quorum, degraded if no slices but quorum, unhealthy if no quorum
         var status = !hasQuorum
                      ? "unhealthy"
@@ -813,7 +816,13 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
           .append(hasQuorum)
           .append(",");
         sb.append("\"nodeCount\":")
-          .append(nodeCount)
+          .append(totalNodes)
+          .append(",");
+        sb.append("\"connectedPeers\":")
+          .append(connectedNodeCount)
+          .append(",");
+        sb.append("\"metricsNodeCount\":")
+          .append(metricsNodeCount)
           .append(",");
         sb.append("\"sliceCount\":")
           .append(sliceCount);
@@ -828,7 +837,15 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
           .append(node.self()
                       .id())
           .append("\",");
-        sb.append("\"status\":\"running\"");
+        sb.append("\"status\":\"running\",");
+        sb.append("\"isLeader\":")
+          .append(node.isLeader())
+          .append(",");
+        sb.append("\"leader\":\"")
+          .append(node.leader()
+                      .fold(() -> "",
+                            nodeId -> nodeId.id()))
+          .append("\"");
         sb.append("}");
         return sb.toString();
     }
