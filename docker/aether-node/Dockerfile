@@ -19,7 +19,9 @@ RUN mkdir -p /app /data /config && \
 WORKDIR /app
 
 # Copy the shaded JAR from build context
-COPY --chown=aether:aether node/target/aether-node.jar /app/aether-node.jar
+# JAR_PATH can be overridden for Testcontainers which uses flat build context
+ARG JAR_PATH=node/target/aether-node.jar
+COPY --chown=aether:aether ${JAR_PATH} /app/aether-node.jar
 
 # Environment variables for configuration
 # These map to Main.java command-line arguments

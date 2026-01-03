@@ -47,8 +47,8 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return configured container (not yet started)
      */
     public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot) {
-        // Explicitly add required files to build context since withFileFromPath(".", dir)
-        // doesn't always include the full directory tree correctly
+        // Explicitly add JAR with flat path and use build arg to override Dockerfile's default path
+        // This avoids issues with Testcontainers not creating directory structure correctly
         var jarPath = projectRoot.resolve("node/target/aether-node.jar");
         if (!java.nio.file.Files.exists(jarPath)) {
             throw new IllegalStateException(
@@ -57,7 +57,8 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
 
         var image = new ImageFromDockerfile("aether-node-test", false)
             .withDockerfile(projectRoot.resolve("docker/aether-node/Dockerfile"))
-            .withFileFromPath("node/target/aether-node.jar", jarPath);
+            .withFileFromPath("aether-node.jar", jarPath)
+            .withBuildArg("JAR_PATH", "aether-node.jar");
 
         var container = new AetherNodeContainer(image, nodeId);
         container.withExposedPorts(MANAGEMENT_PORT, CLUSTER_PORT)
