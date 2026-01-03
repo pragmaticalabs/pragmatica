@@ -47,16 +47,18 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return configured container (not yet started)
      */
     public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot) {
-        // Explicitly add JAR with flat path and use build arg to override Dockerfile's default path
-        // This avoids issues with Testcontainers not creating directory structure correctly
+        // Build context must include both Dockerfile and JAR explicitly
+        // Using withDockerfile() doesn't work together with withFileFromPath()
         var jarPath = projectRoot.resolve("node/target/aether-node.jar");
+        var dockerfilePath = projectRoot.resolve("docker/aether-node/Dockerfile");
+
         if (!java.nio.file.Files.exists(jarPath)) {
             throw new IllegalStateException(
                 "aether-node.jar not found at " + jarPath + ". Run 'mvn package' first.");
         }
 
         var image = new ImageFromDockerfile("aether-node-test", false)
-            .withDockerfile(projectRoot.resolve("docker/aether-node/Dockerfile"))
+            .withFileFromPath("Dockerfile", dockerfilePath)
             .withFileFromPath("aether-node.jar", jarPath)
             .withBuildArg("JAR_PATH", "aether-node.jar");
 
