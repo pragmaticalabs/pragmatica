@@ -12,6 +12,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.concurrent.Future;
 
 /**
  * Testcontainer wrapper for Aether Node.
@@ -22,16 +23,24 @@ import java.time.Duration;
  *   <li>Management port (8080) - HTTP API for cluster management</li>
  *   <li>Cluster port (8090) - Internal cluster communication</li>
  * </ul>
+ *
+ * <p>The Docker image is built once and cached for all test containers,
+ * significantly reducing E2E test execution time.
  */
 public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     private static final int MANAGEMENT_PORT = 8080;
     private static final int CLUSTER_PORT = 8090;
     private static final Duration STARTUP_TIMEOUT = Duration.ofSeconds(60);
+    private static final String IMAGE_NAME = "aether-node-e2e";
+
+    // Cached image - built once, reused across all containers
+    private static volatile Future<String> cachedImage;
+    private static volatile Path cachedProjectRoot;
 
     private final String nodeId;
     private final HttpClient httpClient;
 
-    private AetherNodeContainer(ImageFromDockerfile image, String nodeId) {
+    private AetherNodeContainer(Future<String> image, String nodeId) {
         super(image);
         this.nodeId = nodeId;
         this.httpClient = HttpClient.newBuilder()
@@ -42,25 +51,14 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     /**
      * Creates a new Aether node container with the specified node ID.
      *
+     * <p>The Docker image is built once on first call and cached for subsequent containers.
+     *
      * @param nodeId unique identifier for this node
      * @param projectRoot path to the project root (for Dockerfile context)
      * @return configured container (not yet started)
      */
     public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot) {
-        // Build context must include both Dockerfile and JAR explicitly
-        // Using withDockerfile() doesn't work together with withFileFromPath()
-        var jarPath = projectRoot.resolve("node/target/aether-node.jar");
-        var dockerfilePath = projectRoot.resolve("docker/aether-node/Dockerfile");
-
-        if (!java.nio.file.Files.exists(jarPath)) {
-            throw new IllegalStateException(
-                "aether-node.jar not found at " + jarPath + ". Run 'mvn package' first.");
-        }
-
-        var image = new ImageFromDockerfile("aether-node-test", false)
-            .withFileFromPath("Dockerfile", dockerfilePath)
-            .withFileFromPath("aether-node.jar", jarPath)
-            .withBuildArg("JAR_PATH", "aether-node.jar");
+        var image = getOrBuildImage(projectRoot);
 
         var container = new AetherNodeContainer(image, nodeId);
         container.withExposedPorts(MANAGEMENT_PORT, CLUSTER_PORT)
@@ -74,6 +72,36 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                                  .withStartupTimeout(STARTUP_TIMEOUT))
                  .withNetworkAliases(nodeId);
         return container;
+    }
+
+    /**
+     * Gets the cached image or builds it if not yet available.
+     * Thread-safe - only one build will occur even with concurrent access.
+     */
+    private static synchronized Future<String> getOrBuildImage(Path projectRoot) {
+        // Return cached image if available and project root matches
+        if (cachedImage != null && projectRoot.equals(cachedProjectRoot)) {
+            return cachedImage;
+        }
+
+        // Build and cache the image
+        var jarPath = projectRoot.resolve("node/target/aether-node.jar");
+        var dockerfilePath = projectRoot.resolve("docker/aether-node/Dockerfile");
+
+        if (!java.nio.file.Files.exists(jarPath)) {
+            throw new IllegalStateException(
+                "aether-node.jar not found at " + jarPath + ". Run 'mvn package' first.");
+        }
+
+        // Build image once with caching disabled (deleteOnExit=false keeps it cached)
+        var image = new ImageFromDockerfile(IMAGE_NAME, false)
+            .withFileFromPath("Dockerfile", dockerfilePath)
+            .withFileFromPath("aether-node.jar", jarPath)
+            .withBuildArg("JAR_PATH", "aether-node.jar");
+
+        cachedImage = image;
+        cachedProjectRoot = projectRoot;
+        return image;
     }
 
     /**
