@@ -1,5 +1,8 @@
 package org.pragmatica.aether.cli;
 
+import org.pragmatica.aether.config.AetherConfig;
+import org.pragmatica.aether.config.ConfigLoader;
+
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
@@ -59,26 +62,88 @@ import picocli.CommandLine.Parameters;
  AetherCli.AlertsCommand.class,
  AetherCli.ThresholdsCommand.class})
 public class AetherCli implements Runnable {
+    private static final String DEFAULT_ADDRESS = "localhost:8080";
+
     @Option(names = {"-c", "--connect"},
-    description = "Node address to connect to (host:port)",
-    defaultValue = "localhost:8080")
+    description = "Node address to connect to (host:port)")
     private String nodeAddress;
+
+    @Option(names = {"--config"},
+    description = "Path to aether.toml config file")
+    private Path configPath;
 
     private final HttpClient httpClient = HttpClient.newHttpClient();
 
     public static void main(String[] args) {
         var cli = new AetherCli();
         var cmd = new CommandLine(cli);
-        if (args.length == 0 || (args.length == 2 && (args[0].equals("-c") || args[0].equals("--connect")))) {
-            // REPL mode when no command specified (only --connect option)
-            if (args.length == 2) {
-                cli.nodeAddress = args[1];
-            }
+        // Pre-parse to extract connection info
+        cli.resolveConnection(args);
+        // Check if this is REPL mode (no subcommand)
+        if (isReplMode(args)) {
             cli.runRepl(cmd);
         }else {
             // Batch mode
             int exitCode = cmd.execute(args);
             System.exit(exitCode);
+        }
+    }
+
+    private static boolean isReplMode(String[] args) {
+        // REPL if no args, or only connection-related options
+        if (args.length == 0) {
+            return true;
+        }
+        for (String arg : args) {
+            // Skip known non-subcommand options
+            if (arg.startsWith("-c") || arg.startsWith("--connect") ||
+            arg.startsWith("--config") || arg.equals("-h") || arg.equals("--help") ||
+            arg.equals("-V") || arg.equals("--version")) {
+                continue;
+            }
+            // Skip option values (next arg after option)
+            if (!arg.startsWith("-")) {
+                // Could be a subcommand or option value
+                // Check if previous arg was an option expecting value
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private void resolveConnection(String[] args) {
+        // Parse args manually to get --connect and --config
+        String connectArg = null;
+        Path configArg = null;
+        for (int i = 0; i < args.length; i++ ) {
+            if ((args[i].equals("-c") || args[i].equals("--connect")) && i + 1 < args.length) {
+                connectArg = args[i + 1];
+            }else if (args[i].startsWith("--connect=")) {
+                connectArg = args[i].substring("--connect=".length());
+            }else if (args[i].equals("--config") && i + 1 < args.length) {
+                configArg = Path.of(args[i + 1]);
+            }else if (args[i].startsWith("--config=")) {
+                configArg = Path.of(args[i].substring("--config=".length()));
+            }
+        }
+        // Priority: --connect > config file > default
+        if (connectArg != null) {
+            nodeAddress = connectArg;
+        }else if (configArg != null && Files.exists(configArg)) {
+            ConfigLoader.load(configArg)
+                        .onSuccess(config -> {
+                                       var port = config.cluster()
+                                                        .ports()
+                                                        .management();
+                                       nodeAddress = "localhost:" + port;
+                                   })
+                        .onFailure(cause -> {
+                                       System.err.println("Warning: Failed to load config: " + cause.message());
+                                       nodeAddress = DEFAULT_ADDRESS;
+                                   });
+            configPath = configArg;
+        }else {
+            nodeAddress = DEFAULT_ADDRESS;
         }
     }
 

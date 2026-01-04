@@ -20,6 +20,12 @@
             <artifactId>picocli</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-config</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

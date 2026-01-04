@@ -38,7 +38,7 @@ public record AetherNodeConfig(
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
 
-    private static SliceActionConfig defaultSliceConfig() {
+    public static SliceActionConfig defaultSliceConfig() {
         return SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider());
     }
 
