@@ -51,8 +51,11 @@ Interactive CLI for managing Aether clusters.
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-c, --connect <host:port>` | Node address to connect to | `localhost:8080` |
+| `--config <path>` | Path to aether.toml config file | |
 | `-h, --help` | Show help | |
 | `-V, --version` | Show version | |
+
+When `--config` is specified, the CLI reads the management port from the config file. The `--connect` option takes precedence if both are provided.
 
 ### Commands
 
@@ -147,10 +150,10 @@ aether deploy org.example:order:1.0.0 3
 Scale a slice:
 
 ```bash
-aether scale <artifact> <instances>
+aether scale <artifact> -n <instances>
 
 # Example
-aether scale org.example:order:1.0.0 5
+aether scale org.example:order:1.0.0 -n 5
 ```
 
 #### undeploy
@@ -266,6 +269,74 @@ aether update complete abc123
 aether update rollback abc123
 ```
 
+#### invocation-metrics
+
+View per-method invocation metrics:
+
+```bash
+# List all metrics
+aether invocation-metrics list
+
+# Show slow invocations
+aether invocation-metrics slow
+
+# Show or set threshold strategy
+aether invocation-metrics strategy              # Show current
+aether invocation-metrics strategy fixed 100    # Fixed 100ms threshold
+aether invocation-metrics strategy adaptive 10 1000  # Adaptive 10-1000ms
+```
+
+#### controller
+
+Manage the cluster controller:
+
+```bash
+# Show current configuration
+aether controller config
+
+# Update thresholds
+aether controller config --cpu-up 0.8 --cpu-down 0.3
+
+# Show controller status
+aether controller status
+
+# Force evaluation cycle
+aether controller evaluate
+```
+
+#### alerts
+
+Manage cluster alerts:
+
+```bash
+# List all alerts
+aether alerts list
+
+# Show active alerts only
+aether alerts active
+
+# Show alert history
+aether alerts history
+
+# Clear all active alerts
+aether alerts clear
+```
+
+#### thresholds
+
+Manage alert thresholds:
+
+```bash
+# List all thresholds
+aether thresholds list
+
+# Set a threshold
+aether thresholds set cpu -w 0.7 -c 0.9
+
+# Remove a threshold
+aether thresholds remove cpu
+```
+
 ### REPL Mode
 
 Start interactive mode by omitting the command:
@@ -320,9 +391,22 @@ Run an Aether cluster node.
 
 | Option | Description | Default |
 |--------|-------------|---------|
+| `--config=<path>` | Path to aether.toml config file | |
 | `--node-id=<id>` | Node identifier | Random UUID |
 | `--port=<port>` | Cluster port | 8090 |
+| `--management-port=<port>` | Management API port | 8080 |
 | `--peers=<list>` | Comma-separated peer addresses | Self only |
+
+Command-line options override values from the config file.
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `NODE_ID` | Node identifier |
+| `CLUSTER_PORT` | Cluster communication port |
+| `MANAGEMENT_PORT` | Management API port |
+| `CLUSTER_PEERS` | Comma-separated peer addresses |
 
 ### Peer Address Format
 

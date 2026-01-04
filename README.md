@@ -110,7 +110,7 @@ aether status
 aether deploy org.example:my-slice:1.0.0
 
 # Scale it
-aether scale org.example:my-slice:1.0.0 3
+aether scale org.example:my-slice:1.0.0 -n 3
 ```
 
 ## Try Forge (Local Development Environment)
