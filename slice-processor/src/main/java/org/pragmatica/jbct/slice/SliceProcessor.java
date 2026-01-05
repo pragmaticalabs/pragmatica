@@ -61,7 +61,8 @@ public class SliceProcessor extends AbstractProcessor {
 
     private void processSliceInterface(TypeElement interfaceElement) {
         SliceModel.sliceModel(interfaceElement, processingEnv)
-                  .onFailure(cause -> error(interfaceElement, cause.message()))
+                  .onFailure(cause -> error(interfaceElement,
+                                            cause.message()))
                   .onSuccess(sliceModel -> generateArtifacts(interfaceElement, sliceModel));
     }
 

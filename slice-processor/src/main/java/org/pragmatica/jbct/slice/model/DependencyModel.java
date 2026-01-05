@@ -10,14 +10,13 @@ import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 
-public record DependencyModel(
- String parameterName,
- TypeMirror interfaceType,
- String interfaceQualifiedName,
- String interfaceSimpleName,
- String interfacePackage,
- Option<String> sliceArtifact,
- Option<String> version) {
+public record DependencyModel(String parameterName,
+                              TypeMirror interfaceType,
+                              String interfaceQualifiedName,
+                              String interfaceSimpleName,
+                              String interfacePackage,
+                              Option<String> sliceArtifact,
+                              Option<String> version) {
     public static Result<DependencyModel> dependencyModel(VariableElement param, ProcessingEnvironment env) {
         var paramName = param.getSimpleName()
                              .toString();
@@ -35,19 +34,23 @@ public record DependencyModel(
                              .getPackageOf(typeElement)
                              .getQualifiedName()
                              .toString();
-        return Result.success(new DependencyModel(
-        paramName, type, qualifiedName, simpleName, packageName, Option.none(), Option.none()));
+        return Result.success(new DependencyModel(paramName,
+                                                  type,
+                                                  qualifiedName,
+                                                  simpleName,
+                                                  packageName,
+                                                  Option.none(),
+                                                  Option.none()));
     }
 
     public DependencyModel withResolved(String sliceArtifact, String version) {
-        return new DependencyModel(
-        parameterName,
-        interfaceType,
-        interfaceQualifiedName,
-        interfaceSimpleName,
-        interfacePackage,
-        Option.some(sliceArtifact),
-        Option.some(version));
+        return new DependencyModel(parameterName,
+                                   interfaceType,
+                                   interfaceQualifiedName,
+                                   interfaceSimpleName,
+                                   interfacePackage,
+                                   Option.some(sliceArtifact),
+                                   Option.some(version));
     }
 
     public Option<String> fullArtifact() {

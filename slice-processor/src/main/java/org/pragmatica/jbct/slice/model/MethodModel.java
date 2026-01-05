@@ -7,13 +7,12 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 
-public record MethodModel(
- String name,
- TypeMirror returnType,
- TypeMirror responseType,
- TypeMirror parameterType,
- String parameterName,
- boolean deprecated) {
+public record MethodModel(String name,
+                          TypeMirror returnType,
+                          TypeMirror responseType,
+                          TypeMirror parameterType,
+                          String parameterName,
+                          boolean deprecated) {
     public static Result<MethodModel> methodModel(ExecutableElement method) {
         var name = method.getSimpleName()
                          .toString();
@@ -26,14 +25,13 @@ public record MethodModel(
         }
         var param = params.getFirst();
         var deprecated = method.getAnnotation(Deprecated.class) != null;
-        return Result.success(new MethodModel(
-        name,
-        returnType,
-        responseType,
-        param.asType(),
-        param.getSimpleName()
-             .toString(),
-        deprecated));
+        return Result.success(new MethodModel(name,
+                                              returnType,
+                                              responseType,
+                                              param.asType(),
+                                              param.getSimpleName()
+                                                   .toString(),
+                                              deprecated));
     }
 
     private static TypeMirror extractPromiseTypeArg(TypeMirror returnType) {

@@ -342,15 +342,15 @@ public class CstPrinter {
         // Print enum constants
         childByRule(enumBody, RuleId.EnumConsts.class)
                    .onPresent(consts -> {
-                       var leadingTrivia = consts.leadingTrivia();
-                       boolean hasComments = leadingTrivia.stream()
-                                                          .anyMatch(t -> t instanceof Trivia.LineComment || t instanceof Trivia.BlockComment);
-                       printIndent();
-                       if (hasComments) {
-                           printCommentsOnly(leadingTrivia);
-                       }
-                       printEnumConsts((CstNode.NonTerminal) consts);
-                   });
+                                  var leadingTrivia = consts.leadingTrivia();
+                                  boolean hasComments = leadingTrivia.stream()
+                                                                     .anyMatch(t -> t instanceof Trivia.LineComment || t instanceof Trivia.BlockComment);
+                                  printIndent();
+                                  if (hasComments) {
+                                      printCommentsOnly(leadingTrivia);
+                                  }
+                                  printEnumConsts((CstNode.NonTerminal) consts);
+                              });
         // Print semicolon if there are class members (fields, constructors, methods)
         if (!classMembers.isEmpty()) {
             print(";");

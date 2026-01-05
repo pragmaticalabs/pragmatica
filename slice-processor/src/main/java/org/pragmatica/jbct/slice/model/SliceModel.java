@@ -10,14 +10,13 @@ import javax.lang.model.element.Modifier;
 import javax.lang.model.element.TypeElement;
 import java.util.List;
 
-public record SliceModel(
- String packageName,
- String simpleName,
- String qualifiedName,
- String apiPackage,
- List<MethodModel> methods,
- List<DependencyModel> dependencies,
- ExecutableElement factoryMethod) {
+public record SliceModel(String packageName,
+                         String simpleName,
+                         String qualifiedName,
+                         String apiPackage,
+                         List<MethodModel> methods,
+                         List<DependencyModel> dependencies,
+                         ExecutableElement factoryMethod) {
     public static Result<SliceModel> sliceModel(TypeElement element, ProcessingEnvironment env) {
         var packageName = env.getElementUtils()
                              .getPackageOf(element)
@@ -29,16 +28,16 @@ public record SliceModel(
                                    .toString();
         var apiPackage = packageName + ".api";
         return extractMethods(element)
-                      .flatMap(methods -> findFactoryMethod(element, simpleName)
-                                                 .flatMap(factoryMethod -> extractDependencies(factoryMethod, env)
-                                                                                  .map(dependencies -> new SliceModel(
-                                                                                  packageName,
-                                                                                  simpleName,
-                                                                                  qualifiedName,
-                                                                                  apiPackage,
-                                                                                  methods,
-                                                                                  dependencies,
-                                                                                  factoryMethod))));
+                             .flatMap(methods -> findFactoryMethod(element, simpleName)
+                                                                  .flatMap(factoryMethod -> extractDependencies(factoryMethod,
+                                                                                                                env)
+                                                                                                               .map(dependencies -> new SliceModel(packageName,
+                                                                                                                                                   simpleName,
+                                                                                                                                                   qualifiedName,
+                                                                                                                                                   apiPackage,
+                                                                                                                                                   methods,
+                                                                                                                                                   dependencies,
+                                                                                                                                                   factoryMethod))));
     }
 
     private static Result<List<MethodModel>> extractMethods(TypeElement element) {
@@ -82,7 +81,7 @@ public record SliceModel(
     }
 
     public boolean hasDependencies() {
-        return !dependencies.isEmpty();
+        return ! dependencies.isEmpty();
     }
 
     public String factoryMethodName() {
