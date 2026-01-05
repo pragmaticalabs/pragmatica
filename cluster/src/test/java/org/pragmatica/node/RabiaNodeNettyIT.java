@@ -68,15 +68,18 @@ class RabiaNodeNettyIT {
                                                     RECONCILE_INTERVAL,
                                                     PING_INTERVAL,
                                                     configuredNodes);
-            var router = MessageRouter.mutable();
+            var delegateRouter = MessageRouter.DelegateRouter.delegate();
 
-            routers.add(router);
-            var store = new KVStore<StringKey, String>(router, serializer, deserializer);
+            routers.add(delegateRouter);
+            var store = new KVStore<StringKey, String>(delegateRouter, serializer, deserializer);
 
             stores.add(store);
 
             var node = rabiaNode(nodeConfig(protocolConfig, topologyConfig),
-                                 router, store, serializer, deserializer);
+                                 delegateRouter, store, serializer, deserializer);
+            // Wire the router with all entries
+            RabiaNode.buildAndWireRouter(delegateRouter, node.routeEntries())
+                     .onFailure(cause -> fail("Failed to build router: " + cause.message()));
             nodes.add(node);
         }
         // Start all nodes

@@ -374,8 +374,11 @@ public interface AetherNode {
         // Create minute aggregator for TTM and metrics collection
         var minuteAggregator = MinuteAggregator.minuteAggregator();
         // Create TTM manager (returns no-op if disabled in config)
-        var ttmManager = TTMManager.ttmManager(config.ttm(), minuteAggregator, controller::getConfiguration)
-                                   .fold(_ -> TTMManager.noOp(config.ttm()), manager -> manager);
+        var ttmManager = TTMManager.ttmManager(config.ttm(),
+                                               minuteAggregator,
+                                               controller::getConfiguration)
+                                   .fold(_ -> TTMManager.noOp(config.ttm()),
+                                         manager -> manager);
         // Create slice invoker (needs rollingUpdateManager for weighted routing during rolling updates)
         var sliceInvoker = SliceInvoker.sliceInvoker(
         config.self(),
