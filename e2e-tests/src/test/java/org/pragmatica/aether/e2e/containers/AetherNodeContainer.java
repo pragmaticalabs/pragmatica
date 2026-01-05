@@ -468,6 +468,17 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         return post("/alerts/clear", "{}");
     }
 
+    // ===== TTM API =====
+
+    /**
+     * Fetches TTM (Tiny Time Mixers) status.
+     *
+     * @return TTM status JSON
+     */
+    public String getTtmStatus() {
+        return get("/ttm/status");
+    }
+
     // ===== Controller API =====
 
     /**

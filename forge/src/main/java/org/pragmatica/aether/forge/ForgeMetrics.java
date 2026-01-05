@@ -93,11 +93,7 @@ public final class ForgeMetrics {
      * Get current metrics for dashboard.
      */
     public MetricsSnapshot currentMetrics() {
-        return new MetricsSnapshot(requestsPerSecond,
-                                   successRate,
-                                   avgLatencyMs,
-                                   totalSuccess.get(),
-                                   totalFailures.get());
+        return new MetricsSnapshot(requestsPerSecond, successRate, avgLatencyMs, totalSuccess.get(), totalFailures.get());
     }
 
     /**

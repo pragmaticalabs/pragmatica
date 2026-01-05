@@ -274,6 +274,7 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             case "/health" -> buildHealthResponse(node);
             case "/controller/config" -> buildControllerConfigResponse(node);
             case "/controller/status" -> buildControllerStatusResponse(node);
+            case "/ttm/status" -> buildTtmStatusResponse(node);
             default -> (String) null;
         };
         if (response != null) {
@@ -1177,6 +1178,52 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                          .getConfiguration();
         return "{\"enabled\":true," + "\"evaluationIntervalMs\":" + config.evaluationIntervalMs() + "," + "\"config\":" + config.toJson()
                + "}";
+    }
+
+    private String buildTtmStatusResponse(AetherNode node) {
+        var ttm = node.ttmManager();
+        var config = ttm.config();
+        var sb = new StringBuilder();
+        sb.append("{");
+        sb.append("\"enabled\":")
+          .append(config.enabled())
+          .append(",");
+        sb.append("\"state\":\"")
+          .append(ttm.state()
+                     .name())
+          .append("\",");
+        sb.append("\"modelPath\":\"")
+          .append(config.modelPath())
+          .append("\",");
+        sb.append("\"inputWindowMinutes\":")
+          .append(config.inputWindowMinutes())
+          .append(",");
+        sb.append("\"evaluationIntervalMs\":")
+          .append(config.evaluationIntervalMs())
+          .append(",");
+        sb.append("\"confidenceThreshold\":")
+          .append(config.confidenceThreshold())
+          .append(",");
+        sb.append("\"hasForecast\":")
+          .append(ttm.currentForecast()
+                     .isPresent());
+        ttm.currentForecast()
+           .onPresent(forecast -> {
+                          sb.append(",\"lastForecast\":{");
+                          sb.append("\"timestamp\":")
+                            .append(forecast.timestamp())
+                            .append(",");
+                          sb.append("\"confidence\":")
+                            .append(forecast.confidence())
+                            .append(",");
+                          sb.append("\"recommendation\":\"")
+                            .append(forecast.recommendation()
+                                            .getClass()
+                                            .getSimpleName())
+                            .append("\"}");
+                      });
+        sb.append("}");
+        return sb.toString();
     }
 
     private void handleControllerConfig(ChannelHandlerContext ctx, AetherNode node, String body) {
