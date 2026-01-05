@@ -146,7 +146,7 @@ Multiplicative <- Unary ((!'*=' '*' / !'/=' '/' / !'%=' '%') Unary)*
 Unary <- ('++' / '--' / '+' / '-' / '!' / '~') Unary / '(' Type ('&' Type)* ')' Unary / Postfix
 Postfix <- Primary PostOp*
 PostOp <- '.' TypeArgs? Identifier ('(' Args? ')')? / '.' 'class' / '.' 'this' / '[' Expr ']' / '(' Args? ')' / '++' / '--' / '::' TypeArgs? (Identifier / 'new')
-Primary <- Literal / < 'this' ![a-zA-Z0-9_$] > / < 'super' ![a-zA-Z0-9_$] > / < 'new' ![a-zA-Z0-9_$] > TypeArgs? Type ('(' Args? ')' ClassBody? / Dims? VarInit?) / SwitchKW '(' Expr ')' SwitchBlock / Lambda / '(' Expr ')' / TypeExpr / QualifiedName
+Primary <- Literal / < 'this' ![a-zA-Z0-9_$] > / < 'super' ![a-zA-Z0-9_$] > / < 'new' ![a-zA-Z0-9_$] > TypeArgs? ArrayType (DimExprs Dims? / Dims VarInit / '(' Args? ')' ClassBody?) / SwitchKW '(' Expr ')' SwitchBlock / Lambda / '(' Expr ')' / TypeExpr / QualifiedName
 TypeExpr <- Type ('.' < 'class' > / '::' TypeArgs? (< 'new' > / Identifier))
 Lambda <- LambdaParams '->' (Expr / Block)
 LambdaParams <- Identifier / '_' / '(' LambdaParam? (',' LambdaParam)* ')'
@@ -161,6 +161,11 @@ PrimType <- < ('boolean' / 'byte' / 'short' / 'int' / 'long' / 'float' / 'double
 RefType <- AnnotatedTypeName (&('.' ('@' / Identifier)) '.' AnnotatedTypeName)*
 AnnotatedTypeName <- Annotation* Identifier TypeArgs?
 Dims <- (Annotation* '[' ']')+
+# ArrayType is Type without trailing Dims - used for array creation expressions
+ArrayType <- Annotation* (PrimType / RefType)
+# DimExprs are dimension expressions with sizes - e.g., [10], [rows][cols]
+# Lookahead BEFORE consuming '[' prevents java-peglib bug where failed iterations leave partial matches
+DimExprs <- (Annotation* &('[' !']') '[' Expr ']')+
 TypeArgs <- '<' '>' / '<' TypeArg (',' TypeArg)* '>'
 TypeArg <- Type / '?' (Annotation* ('extends' / 'super') Type)?
 

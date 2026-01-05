@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>jbct-parent</artifactId>
-        <version>0.4.5</version>
+        <version>0.4.6</version>
     </parent>
 
     <artifactId>slice-processor</artifactId>
@@ -23,6 +23,12 @@
     </properties>
 
     <dependencies>
+        <!-- Pragmatica Lite Core for Result types -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+        </dependency>
+
         <!-- Annotation processing API -->
         <dependency>
             <groupId>com.google.auto.service</groupId>

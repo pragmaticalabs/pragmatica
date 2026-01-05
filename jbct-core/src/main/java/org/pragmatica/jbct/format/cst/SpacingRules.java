@@ -70,7 +70,11 @@ final class SpacingRules {
             return false;
         }
         char firstChar = text.charAt(0);
-        // Check rules in order of frequency/importance
+        // VETO RULES - These must NOT have space, regardless of other rules
+        if (mustNotHaveSpaceBefore(ctx, text, firstChar)) {
+            return false;
+        }
+        // Check rules that add spaces
         return checkCommaRule(ctx) || checkClosingBraceKeywordRule(ctx, text) || checkKeywordBeforeLiteralRule(ctx,
                                                                                                                firstChar) || checkParenthesesRules(ctx,
                                                                                                                                                    text,
@@ -87,6 +91,51 @@ final class SpacingRules {
                                                                                                                                                                                                                                                                                                                                                                                                     firstChar) || checkClosingParenRule(ctx,
                                                                                                                                                                                                                                                                                                                                                                                                                                         firstChar) || checkGenericClosingRule(ctx,
                                                                                                                                                                                                                                                                                                                                                                                                                                                                               firstChar);
+    }
+
+    /**
+     * Veto rules that prevent spaces regardless of other rules.
+     * These handle cases where tokens like ++ before ) would otherwise get a space
+     * due to binary operator rules.
+     */
+    private static boolean mustNotHaveSpaceBefore(SpacingContext ctx, String text, char firstChar) {
+        // No space before ) regardless of previous token (fixes i++ ) issue)
+        if (firstChar == ')') {
+            return true;
+        }
+        // No space before ] regardless of previous token
+        if (firstChar == ']') {
+            return true;
+        }
+        // No space before ; or ,
+        if (firstChar == ';' || firstChar == ',') {
+            return true;
+        }
+        // No space after @
+        if (ctx.lastChar() == '@') {
+            return true;
+        }
+        // No space after ( or [
+        if (ctx.lastChar() == '(' || ctx.lastChar() == '[') {
+            return true;
+        }
+        // No space before . (except varargs ...)
+        if (firstChar == '.' && !text.equals("...")) {
+            return true;
+        }
+        // No space after . (except after ... varargs)
+        if (ctx.lastChar() == '.' && ctx.prevChar() != '.') {
+            return true;
+        }
+        // No space before or after ::
+        if (text.equals("::") || (ctx.lastChar() == ':' && ctx.prevChar() == ':')) {
+            return true;
+        }
+        // No space before > after ] (array in generics: Promise<float[]>)
+        if (firstChar == '>' && ctx.lastChar() == ']') {
+            return true;
+        }
+        return false;
     }
 
     private static boolean checkCommaRule(SpacingContext ctx) {
@@ -262,7 +311,7 @@ final class SpacingRules {
      * Context needed for spacing decisions.
      */
     record SpacingContext(char lastChar, char prevChar, String lastWord, int outputLength) {
-        static SpacingContext of(char lastChar, char prevChar, String lastWord, int outputLength) {
+        static SpacingContext spacingContext(char lastChar, char prevChar, String lastWord, int outputLength) {
             return new SpacingContext(lastChar, prevChar, lastWord, outputLength);
         }
     }

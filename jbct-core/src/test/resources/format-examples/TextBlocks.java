@@ -62,7 +62,7 @@ public class TextBlocks {
         return """
                 Template content
                 with multiple lines
-                """. strip()
+                """.strip()
                    .indent(4);
     }
 

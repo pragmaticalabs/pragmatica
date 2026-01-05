@@ -20,8 +20,8 @@ public class FactoryClassGenerator {
     private final Types types;
     private final DependencyVersionResolver versionResolver;
 
-    private static final ClassName SLICE_INVOKER_FACADE = ClassName.get(
-    "org.pragmatica.aether.slice", "SliceInvokerFacade");
+    private static final ClassName SLICE_INVOKER_FACADE = ClassName.get("org.pragmatica.aether.slice",
+                                                                        "SliceInvokerFacade");
 
     public FactoryClassGenerator(Filer filer,
                                  Elements elements,

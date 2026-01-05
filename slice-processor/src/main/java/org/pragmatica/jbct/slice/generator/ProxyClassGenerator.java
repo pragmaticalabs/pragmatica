@@ -24,8 +24,8 @@ public class ProxyClassGenerator {
     private final Elements elements;
     private final Types types;
 
-    private static final ClassName SLICE_INVOKER_FACADE = ClassName.get(
-    "org.pragmatica.aether.slice", "SliceInvokerFacade");
+    private static final ClassName SLICE_INVOKER_FACADE = ClassName.get("org.pragmatica.aether.slice",
+                                                                        "SliceInvokerFacade");
 
     public ProxyClassGenerator(Filer filer, Elements elements, Types types) {
         this.filer = filer;

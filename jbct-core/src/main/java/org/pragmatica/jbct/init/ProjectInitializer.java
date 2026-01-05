@@ -8,6 +8,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -62,7 +63,7 @@ public final class ProjectInitializer {
             var packagePath = basePackage.replace(".", "/");
             Files.createDirectories(srcMainJava.resolve(packagePath));
             Files.createDirectories(srcTestJava.resolve(packagePath));
-            var createdFiles = new java.util.ArrayList<Path>();
+            var createdFiles = new ArrayList<Path>();
             // Create pom.xml
             createFile("pom.xml.template",
                        projectDir.resolve("pom.xml"))

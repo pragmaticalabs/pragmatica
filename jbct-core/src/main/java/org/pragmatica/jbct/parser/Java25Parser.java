@@ -1190,9 +1190,29 @@ public final class Java25Parser {
             }
         }
 
-        record TypeArgs() implements RuleId {
+        record ArrayType() implements RuleId {
             public int ordinal() {
                 return 117;
+            }
+
+            public String name() {
+                return "ArrayType";
+            }
+        }
+
+        record DimExprs() implements RuleId {
+            public int ordinal() {
+                return 118;
+            }
+
+            public String name() {
+                return "DimExprs";
+            }
+        }
+
+        record TypeArgs() implements RuleId {
+            public int ordinal() {
+                return 119;
             }
 
             public String name() {
@@ -1202,7 +1222,7 @@ public final class Java25Parser {
 
         record TypeArg() implements RuleId {
             public int ordinal() {
-                return 118;
+                return 120;
             }
 
             public String name() {
@@ -1212,7 +1232,7 @@ public final class Java25Parser {
 
         record QualifiedName() implements RuleId {
             public int ordinal() {
-                return 119;
+                return 121;
             }
 
             public String name() {
@@ -1222,7 +1242,7 @@ public final class Java25Parser {
 
         record Identifier() implements RuleId {
             public int ordinal() {
-                return 120;
+                return 122;
             }
 
             public String name() {
@@ -1232,7 +1252,7 @@ public final class Java25Parser {
 
         record Modifier() implements RuleId {
             public int ordinal() {
-                return 121;
+                return 123;
             }
 
             public String name() {
@@ -1242,7 +1262,7 @@ public final class Java25Parser {
 
         record Annotation() implements RuleId {
             public int ordinal() {
-                return 122;
+                return 124;
             }
 
             public String name() {
@@ -1252,7 +1272,7 @@ public final class Java25Parser {
 
         record AnnotationValue() implements RuleId {
             public int ordinal() {
-                return 123;
+                return 125;
             }
 
             public String name() {
@@ -1262,7 +1282,7 @@ public final class Java25Parser {
 
         record AnnotationElem() implements RuleId {
             public int ordinal() {
-                return 124;
+                return 126;
             }
 
             public String name() {
@@ -1272,7 +1292,7 @@ public final class Java25Parser {
 
         record Literal() implements RuleId {
             public int ordinal() {
-                return 125;
+                return 127;
             }
 
             public String name() {
@@ -1282,7 +1302,7 @@ public final class Java25Parser {
 
         record CharLit() implements RuleId {
             public int ordinal() {
-                return 126;
+                return 128;
             }
 
             public String name() {
@@ -1292,7 +1312,7 @@ public final class Java25Parser {
 
         record StringLit() implements RuleId {
             public int ordinal() {
-                return 127;
+                return 129;
             }
 
             public String name() {
@@ -1302,7 +1322,7 @@ public final class Java25Parser {
 
         record NumLit() implements RuleId {
             public int ordinal() {
-                return 128;
+                return 130;
             }
 
             public String name() {
@@ -1312,7 +1332,7 @@ public final class Java25Parser {
 
         record Keyword() implements RuleId {
             public int ordinal() {
-                return 129;
+                return 131;
             }
 
             public String name() {
@@ -1480,6 +1500,8 @@ public final class Java25Parser {
     private static final RuleId.RefType RULE_REF_TYPE = new RuleId.RefType();
     private static final RuleId.AnnotatedTypeName RULE_ANNOTATED_TYPE_NAME = new RuleId.AnnotatedTypeName();
     private static final RuleId.Dims RULE_DIMS = new RuleId.Dims();
+    private static final RuleId.ArrayType RULE_ARRAY_TYPE = new RuleId.ArrayType();
+    private static final RuleId.DimExprs RULE_DIM_EXPRS = new RuleId.DimExprs();
     private static final RuleId.TypeArgs RULE_TYPE_ARGS = new RuleId.TypeArgs();
     private static final RuleId.TypeArg RULE_TYPE_ARG = new RuleId.TypeArg();
     private static final RuleId.QualifiedName RULE_QUALIFIED_NAME = new RuleId.QualifiedName();
@@ -18439,7 +18461,7 @@ public final class Java25Parser {
                         var trivia20 = inTokenBoundary
                                        ? List.<Trivia>of()
                                        : skipWhitespace();
-                        var elem12_2 = parse_Type(trivia20);
+                        var elem12_2 = parse_ArrayType(trivia20);
                         if (elem12_2.isSuccess() && elem12_2.node.isPresent()) {
                             children.add(elem12_2.node.unwrap());
                         }
@@ -18463,7 +18485,10 @@ public final class Java25Parser {
                         var seqStart23 = location();
                         boolean cut23 = false;
                         if (alt22_0.isSuccess()) {
-                            var elem23_0 = matchLiteralCst("(", false);
+                            var trivia24 = inTokenBoundary
+                                           ? List.<Trivia>of()
+                                           : skipWhitespace();
+                            var elem23_0 = parse_DimExprs(trivia24);
                             if (elem23_0.isSuccess() && elem23_0.node.isPresent()) {
                                 children.add(elem23_0.node.unwrap());
                             }
@@ -18482,7 +18507,7 @@ public final class Java25Parser {
                             var trivia26 = inTokenBoundary
                                            ? List.<Trivia>of()
                                            : skipWhitespace();
-                            var optElem25 = parse_Args(trivia26);
+                            var optElem25 = parse_Dims(trivia26);
                             if (optElem25.isSuccess() && optElem25.node.isPresent()) {
                                 children.add(optElem25.node.unwrap());
                             }
@@ -18503,47 +18528,6 @@ public final class Java25Parser {
                             }
                         }
                         if (alt22_0.isSuccess()) {
-                            if (!inTokenBoundary) skipWhitespace();
-                            var elem23_2 = matchLiteralCst(")", false);
-                            if (elem23_2.isSuccess() && elem23_2.node.isPresent()) {
-                                children.add(elem23_2.node.unwrap());
-                            }
-                            if (elem23_2.isCutFailure()) {
-                                restoreLocation(seqStart23);
-                                alt22_0 = elem23_2;
-                            } else if (elem23_2.isFailure()) {
-                                restoreLocation(seqStart23);
-                                alt22_0 = cut23
-                                          ? elem23_2.asCutFailure()
-                                          : elem23_2;
-                            }
-                        }
-                        if (alt22_0.isSuccess()) {
-                            var optStart28 = location();
-                            var trivia29 = inTokenBoundary
-                                           ? List.<Trivia>of()
-                                           : skipWhitespace();
-                            var optElem28 = parse_ClassBody(trivia29);
-                            if (optElem28.isSuccess() && optElem28.node.isPresent()) {
-                                children.add(optElem28.node.unwrap());
-                            }
-                            var elem23_3 = optElem28.isSuccess()
-                                           ? optElem28
-                                           : CstParseResult.success(null, "", location());
-                            if (optElem28.isFailure()) {
-                                restoreLocation(optStart28);
-                            }
-                            if (elem23_3.isCutFailure()) {
-                                restoreLocation(seqStart23);
-                                alt22_0 = elem23_3;
-                            } else if (elem23_3.isFailure()) {
-                                restoreLocation(seqStart23);
-                                alt22_0 = cut23
-                                          ? elem23_3.asCutFailure()
-                                          : elem23_3;
-                            }
-                        }
-                        if (alt22_0.isSuccess()) {
                             alt22_0 = CstParseResult.success(null, substring(seqStart23.offset(), pos), location());
                         }
                         if (alt22_0.isSuccess()) {
@@ -18555,60 +18539,46 @@ public final class Java25Parser {
                             children.clear();
                             children.addAll(savedChildren22);
                             CstParseResult alt22_1 = CstParseResult.success(null, "", location());
-                            var seqStart30 = location();
-                            boolean cut30 = false;
+                            var seqStart27 = location();
+                            boolean cut27 = false;
                             if (alt22_1.isSuccess()) {
-                                var optStart31 = location();
-                                var trivia32 = inTokenBoundary
+                                var trivia28 = inTokenBoundary
                                                ? List.<Trivia>of()
                                                : skipWhitespace();
-                                var optElem31 = parse_Dims(trivia32);
-                                if (optElem31.isSuccess() && optElem31.node.isPresent()) {
-                                    children.add(optElem31.node.unwrap());
+                                var elem27_0 = parse_Dims(trivia28);
+                                if (elem27_0.isSuccess() && elem27_0.node.isPresent()) {
+                                    children.add(elem27_0.node.unwrap());
                                 }
-                                var elem30_0 = optElem31.isSuccess()
-                                               ? optElem31
-                                               : CstParseResult.success(null, "", location());
-                                if (optElem31.isFailure()) {
-                                    restoreLocation(optStart31);
-                                }
-                                if (elem30_0.isCutFailure()) {
-                                    restoreLocation(seqStart30);
-                                    alt22_1 = elem30_0;
-                                } else if (elem30_0.isFailure()) {
-                                    restoreLocation(seqStart30);
-                                    alt22_1 = cut30
-                                              ? elem30_0.asCutFailure()
-                                              : elem30_0;
+                                if (elem27_0.isCutFailure()) {
+                                    restoreLocation(seqStart27);
+                                    alt22_1 = elem27_0;
+                                } else if (elem27_0.isFailure()) {
+                                    restoreLocation(seqStart27);
+                                    alt22_1 = cut27
+                                              ? elem27_0.asCutFailure()
+                                              : elem27_0;
                                 }
                             }
                             if (alt22_1.isSuccess()) {
-                                var optStart33 = location();
-                                var trivia34 = inTokenBoundary
+                                var trivia29 = inTokenBoundary
                                                ? List.<Trivia>of()
                                                : skipWhitespace();
-                                var optElem33 = parse_VarInit(trivia34);
-                                if (optElem33.isSuccess() && optElem33.node.isPresent()) {
-                                    children.add(optElem33.node.unwrap());
+                                var elem27_1 = parse_VarInit(trivia29);
+                                if (elem27_1.isSuccess() && elem27_1.node.isPresent()) {
+                                    children.add(elem27_1.node.unwrap());
                                 }
-                                var elem30_1 = optElem33.isSuccess()
-                                               ? optElem33
-                                               : CstParseResult.success(null, "", location());
-                                if (optElem33.isFailure()) {
-                                    restoreLocation(optStart33);
-                                }
-                                if (elem30_1.isCutFailure()) {
-                                    restoreLocation(seqStart30);
-                                    alt22_1 = elem30_1;
-                                } else if (elem30_1.isFailure()) {
-                                    restoreLocation(seqStart30);
-                                    alt22_1 = cut30
-                                              ? elem30_1.asCutFailure()
-                                              : elem30_1;
+                                if (elem27_1.isCutFailure()) {
+                                    restoreLocation(seqStart27);
+                                    alt22_1 = elem27_1;
+                                } else if (elem27_1.isFailure()) {
+                                    restoreLocation(seqStart27);
+                                    alt22_1 = cut27
+                                              ? elem27_1.asCutFailure()
+                                              : elem27_1;
                                 }
                             }
                             if (alt22_1.isSuccess()) {
-                                alt22_1 = CstParseResult.success(null, substring(seqStart30.offset(), pos), location());
+                                alt22_1 = CstParseResult.success(null, substring(seqStart27.offset(), pos), location());
                             }
                             if (alt22_1.isSuccess()) {
                                 elem12_3 = alt22_1;
@@ -18616,6 +18586,104 @@ public final class Java25Parser {
                                 elem12_3 = alt22_1.asRegularFailure();
                             } else {
                                 restoreLocation(choiceStart22);
+                                children.clear();
+                                children.addAll(savedChildren22);
+                                CstParseResult alt22_2 = CstParseResult.success(null, "", location());
+                                var seqStart30 = location();
+                                boolean cut30 = false;
+                                if (alt22_2.isSuccess()) {
+                                    var elem30_0 = matchLiteralCst("(", false);
+                                    if (elem30_0.isSuccess() && elem30_0.node.isPresent()) {
+                                        children.add(elem30_0.node.unwrap());
+                                    }
+                                    if (elem30_0.isCutFailure()) {
+                                        restoreLocation(seqStart30);
+                                        alt22_2 = elem30_0;
+                                    } else if (elem30_0.isFailure()) {
+                                        restoreLocation(seqStart30);
+                                        alt22_2 = cut30
+                                                  ? elem30_0.asCutFailure()
+                                                  : elem30_0;
+                                    }
+                                }
+                                if (alt22_2.isSuccess()) {
+                                    var optStart32 = location();
+                                    var trivia33 = inTokenBoundary
+                                                   ? List.<Trivia>of()
+                                                   : skipWhitespace();
+                                    var optElem32 = parse_Args(trivia33);
+                                    if (optElem32.isSuccess() && optElem32.node.isPresent()) {
+                                        children.add(optElem32.node.unwrap());
+                                    }
+                                    var elem30_1 = optElem32.isSuccess()
+                                                   ? optElem32
+                                                   : CstParseResult.success(null, "", location());
+                                    if (optElem32.isFailure()) {
+                                        restoreLocation(optStart32);
+                                    }
+                                    if (elem30_1.isCutFailure()) {
+                                        restoreLocation(seqStart30);
+                                        alt22_2 = elem30_1;
+                                    } else if (elem30_1.isFailure()) {
+                                        restoreLocation(seqStart30);
+                                        alt22_2 = cut30
+                                                  ? elem30_1.asCutFailure()
+                                                  : elem30_1;
+                                    }
+                                }
+                                if (alt22_2.isSuccess()) {
+                                    if (!inTokenBoundary) skipWhitespace();
+                                    var elem30_2 = matchLiteralCst(")", false);
+                                    if (elem30_2.isSuccess() && elem30_2.node.isPresent()) {
+                                        children.add(elem30_2.node.unwrap());
+                                    }
+                                    if (elem30_2.isCutFailure()) {
+                                        restoreLocation(seqStart30);
+                                        alt22_2 = elem30_2;
+                                    } else if (elem30_2.isFailure()) {
+                                        restoreLocation(seqStart30);
+                                        alt22_2 = cut30
+                                                  ? elem30_2.asCutFailure()
+                                                  : elem30_2;
+                                    }
+                                }
+                                if (alt22_2.isSuccess()) {
+                                    var optStart35 = location();
+                                    var trivia36 = inTokenBoundary
+                                                   ? List.<Trivia>of()
+                                                   : skipWhitespace();
+                                    var optElem35 = parse_ClassBody(trivia36);
+                                    if (optElem35.isSuccess() && optElem35.node.isPresent()) {
+                                        children.add(optElem35.node.unwrap());
+                                    }
+                                    var elem30_3 = optElem35.isSuccess()
+                                                   ? optElem35
+                                                   : CstParseResult.success(null, "", location());
+                                    if (optElem35.isFailure()) {
+                                        restoreLocation(optStart35);
+                                    }
+                                    if (elem30_3.isCutFailure()) {
+                                        restoreLocation(seqStart30);
+                                        alt22_2 = elem30_3;
+                                    } else if (elem30_3.isFailure()) {
+                                        restoreLocation(seqStart30);
+                                        alt22_2 = cut30
+                                                  ? elem30_3.asCutFailure()
+                                                  : elem30_3;
+                                    }
+                                }
+                                if (alt22_2.isSuccess()) {
+                                    alt22_2 = CstParseResult.success(null,
+                                                                     substring(seqStart30.offset(), pos),
+                                                                     location());
+                                }
+                                if (alt22_2.isSuccess()) {
+                                    elem12_3 = alt22_2;
+                                } else if (alt22_2.isCutFailure()) {
+                                    elem12_3 = alt22_2.asRegularFailure();
+                                } else {
+                                    restoreLocation(choiceStart22);
+                                }
                             }
                         }
                         if (elem12_3 == null) {
@@ -18645,96 +18713,96 @@ public final class Java25Parser {
                         children.clear();
                         children.addAll(savedChildren0);
                         CstParseResult alt0_4 = CstParseResult.success(null, "", location());
-                        var seqStart35 = location();
-                        boolean cut35 = false;
-                        if (alt0_4.isSuccess()) {
-                            var trivia36 = inTokenBoundary
-                                           ? List.<Trivia>of()
-                                           : skipWhitespace();
-                            var elem35_0 = parse_SwitchKW(trivia36);
-                            if (elem35_0.isSuccess() && elem35_0.node.isPresent()) {
-                                children.add(elem35_0.node.unwrap());
-                            }
-                            if (elem35_0.isCutFailure()) {
-                                restoreLocation(seqStart35);
-                                alt0_4 = elem35_0;
-                            } else if (elem35_0.isFailure()) {
-                                restoreLocation(seqStart35);
-                                alt0_4 = cut35
-                                         ? elem35_0.asCutFailure()
-                                         : elem35_0;
-                            }
-                        }
-                        if (alt0_4.isSuccess()) {
-                            if (!inTokenBoundary) skipWhitespace();
-                            var elem35_1 = matchLiteralCst("(", false);
-                            if (elem35_1.isSuccess() && elem35_1.node.isPresent()) {
-                                children.add(elem35_1.node.unwrap());
-                            }
-                            if (elem35_1.isCutFailure()) {
-                                restoreLocation(seqStart35);
-                                alt0_4 = elem35_1;
-                            } else if (elem35_1.isFailure()) {
-                                restoreLocation(seqStart35);
-                                alt0_4 = cut35
-                                         ? elem35_1.asCutFailure()
-                                         : elem35_1;
-                            }
-                        }
+                        var seqStart37 = location();
+                        boolean cut37 = false;
                         if (alt0_4.isSuccess()) {
                             var trivia38 = inTokenBoundary
                                            ? List.<Trivia>of()
                                            : skipWhitespace();
-                            var elem35_2 = parse_Expr(trivia38);
-                            if (elem35_2.isSuccess() && elem35_2.node.isPresent()) {
-                                children.add(elem35_2.node.unwrap());
+                            var elem37_0 = parse_SwitchKW(trivia38);
+                            if (elem37_0.isSuccess() && elem37_0.node.isPresent()) {
+                                children.add(elem37_0.node.unwrap());
                             }
-                            if (elem35_2.isCutFailure()) {
-                                restoreLocation(seqStart35);
-                                alt0_4 = elem35_2;
-                            } else if (elem35_2.isFailure()) {
-                                restoreLocation(seqStart35);
-                                alt0_4 = cut35
-                                         ? elem35_2.asCutFailure()
-                                         : elem35_2;
+                            if (elem37_0.isCutFailure()) {
+                                restoreLocation(seqStart37);
+                                alt0_4 = elem37_0;
+                            } else if (elem37_0.isFailure()) {
+                                restoreLocation(seqStart37);
+                                alt0_4 = cut37
+                                         ? elem37_0.asCutFailure()
+                                         : elem37_0;
                             }
                         }
                         if (alt0_4.isSuccess()) {
                             if (!inTokenBoundary) skipWhitespace();
-                            var elem35_3 = matchLiteralCst(")", false);
-                            if (elem35_3.isSuccess() && elem35_3.node.isPresent()) {
-                                children.add(elem35_3.node.unwrap());
+                            var elem37_1 = matchLiteralCst("(", false);
+                            if (elem37_1.isSuccess() && elem37_1.node.isPresent()) {
+                                children.add(elem37_1.node.unwrap());
                             }
-                            if (elem35_3.isCutFailure()) {
-                                restoreLocation(seqStart35);
-                                alt0_4 = elem35_3;
-                            } else if (elem35_3.isFailure()) {
-                                restoreLocation(seqStart35);
-                                alt0_4 = cut35
-                                         ? elem35_3.asCutFailure()
-                                         : elem35_3;
+                            if (elem37_1.isCutFailure()) {
+                                restoreLocation(seqStart37);
+                                alt0_4 = elem37_1;
+                            } else if (elem37_1.isFailure()) {
+                                restoreLocation(seqStart37);
+                                alt0_4 = cut37
+                                         ? elem37_1.asCutFailure()
+                                         : elem37_1;
                             }
                         }
                         if (alt0_4.isSuccess()) {
                             var trivia40 = inTokenBoundary
                                            ? List.<Trivia>of()
                                            : skipWhitespace();
-                            var elem35_4 = parse_SwitchBlock(trivia40);
-                            if (elem35_4.isSuccess() && elem35_4.node.isPresent()) {
-                                children.add(elem35_4.node.unwrap());
+                            var elem37_2 = parse_Expr(trivia40);
+                            if (elem37_2.isSuccess() && elem37_2.node.isPresent()) {
+                                children.add(elem37_2.node.unwrap());
                             }
-                            if (elem35_4.isCutFailure()) {
-                                restoreLocation(seqStart35);
-                                alt0_4 = elem35_4;
-                            } else if (elem35_4.isFailure()) {
-                                restoreLocation(seqStart35);
-                                alt0_4 = cut35
-                                         ? elem35_4.asCutFailure()
-                                         : elem35_4;
+                            if (elem37_2.isCutFailure()) {
+                                restoreLocation(seqStart37);
+                                alt0_4 = elem37_2;
+                            } else if (elem37_2.isFailure()) {
+                                restoreLocation(seqStart37);
+                                alt0_4 = cut37
+                                         ? elem37_2.asCutFailure()
+                                         : elem37_2;
                             }
                         }
                         if (alt0_4.isSuccess()) {
-                            alt0_4 = CstParseResult.success(null, substring(seqStart35.offset(), pos), location());
+                            if (!inTokenBoundary) skipWhitespace();
+                            var elem37_3 = matchLiteralCst(")", false);
+                            if (elem37_3.isSuccess() && elem37_3.node.isPresent()) {
+                                children.add(elem37_3.node.unwrap());
+                            }
+                            if (elem37_3.isCutFailure()) {
+                                restoreLocation(seqStart37);
+                                alt0_4 = elem37_3;
+                            } else if (elem37_3.isFailure()) {
+                                restoreLocation(seqStart37);
+                                alt0_4 = cut37
+                                         ? elem37_3.asCutFailure()
+                                         : elem37_3;
+                            }
+                        }
+                        if (alt0_4.isSuccess()) {
+                            var trivia42 = inTokenBoundary
+                                           ? List.<Trivia>of()
+                                           : skipWhitespace();
+                            var elem37_4 = parse_SwitchBlock(trivia42);
+                            if (elem37_4.isSuccess() && elem37_4.node.isPresent()) {
+                                children.add(elem37_4.node.unwrap());
+                            }
+                            if (elem37_4.isCutFailure()) {
+                                restoreLocation(seqStart37);
+                                alt0_4 = elem37_4;
+                            } else if (elem37_4.isFailure()) {
+                                restoreLocation(seqStart37);
+                                alt0_4 = cut37
+                                         ? elem37_4.asCutFailure()
+                                         : elem37_4;
+                            }
+                        }
+                        if (alt0_4.isSuccess()) {
+                            alt0_4 = CstParseResult.success(null, substring(seqStart37.offset(), pos), location());
                         }
                         if (alt0_4.isSuccess()) {
                             result = alt0_4;
@@ -18744,10 +18812,10 @@ public final class Java25Parser {
                             restoreLocation(choiceStart0);
                             children.clear();
                             children.addAll(savedChildren0);
-                            var trivia41 = inTokenBoundary
+                            var trivia43 = inTokenBoundary
                                            ? List.<Trivia>of()
                                            : skipWhitespace();
-                            var alt0_5 = parse_Lambda(trivia41);
+                            var alt0_5 = parse_Lambda(trivia43);
                             if (alt0_5.isSuccess() && alt0_5.node.isPresent()) {
                                 children.add(alt0_5.node.unwrap());
                             }
@@ -18760,60 +18828,60 @@ public final class Java25Parser {
                                 children.clear();
                                 children.addAll(savedChildren0);
                                 CstParseResult alt0_6 = CstParseResult.success(null, "", location());
-                                var seqStart42 = location();
-                                boolean cut42 = false;
+                                var seqStart44 = location();
+                                boolean cut44 = false;
                                 if (alt0_6.isSuccess()) {
-                                    var elem42_0 = matchLiteralCst("(", false);
-                                    if (elem42_0.isSuccess() && elem42_0.node.isPresent()) {
-                                        children.add(elem42_0.node.unwrap());
+                                    var elem44_0 = matchLiteralCst("(", false);
+                                    if (elem44_0.isSuccess() && elem44_0.node.isPresent()) {
+                                        children.add(elem44_0.node.unwrap());
                                     }
-                                    if (elem42_0.isCutFailure()) {
-                                        restoreLocation(seqStart42);
-                                        alt0_6 = elem42_0;
-                                    } else if (elem42_0.isFailure()) {
-                                        restoreLocation(seqStart42);
-                                        alt0_6 = cut42
-                                                 ? elem42_0.asCutFailure()
-                                                 : elem42_0;
+                                    if (elem44_0.isCutFailure()) {
+                                        restoreLocation(seqStart44);
+                                        alt0_6 = elem44_0;
+                                    } else if (elem44_0.isFailure()) {
+                                        restoreLocation(seqStart44);
+                                        alt0_6 = cut44
+                                                 ? elem44_0.asCutFailure()
+                                                 : elem44_0;
                                     }
                                 }
                                 if (alt0_6.isSuccess()) {
-                                    var trivia44 = inTokenBoundary
+                                    var trivia46 = inTokenBoundary
                                                    ? List.<Trivia>of()
                                                    : skipWhitespace();
-                                    var elem42_1 = parse_Expr(trivia44);
-                                    if (elem42_1.isSuccess() && elem42_1.node.isPresent()) {
-                                        children.add(elem42_1.node.unwrap());
+                                    var elem44_1 = parse_Expr(trivia46);
+                                    if (elem44_1.isSuccess() && elem44_1.node.isPresent()) {
+                                        children.add(elem44_1.node.unwrap());
                                     }
-                                    if (elem42_1.isCutFailure()) {
-                                        restoreLocation(seqStart42);
-                                        alt0_6 = elem42_1;
-                                    } else if (elem42_1.isFailure()) {
-                                        restoreLocation(seqStart42);
-                                        alt0_6 = cut42
-                                                 ? elem42_1.asCutFailure()
-                                                 : elem42_1;
+                                    if (elem44_1.isCutFailure()) {
+                                        restoreLocation(seqStart44);
+                                        alt0_6 = elem44_1;
+                                    } else if (elem44_1.isFailure()) {
+                                        restoreLocation(seqStart44);
+                                        alt0_6 = cut44
+                                                 ? elem44_1.asCutFailure()
+                                                 : elem44_1;
                                     }
                                 }
                                 if (alt0_6.isSuccess()) {
                                     if (!inTokenBoundary) skipWhitespace();
-                                    var elem42_2 = matchLiteralCst(")", false);
-                                    if (elem42_2.isSuccess() && elem42_2.node.isPresent()) {
-                                        children.add(elem42_2.node.unwrap());
+                                    var elem44_2 = matchLiteralCst(")", false);
+                                    if (elem44_2.isSuccess() && elem44_2.node.isPresent()) {
+                                        children.add(elem44_2.node.unwrap());
                                     }
-                                    if (elem42_2.isCutFailure()) {
-                                        restoreLocation(seqStart42);
-                                        alt0_6 = elem42_2;
-                                    } else if (elem42_2.isFailure()) {
-                                        restoreLocation(seqStart42);
-                                        alt0_6 = cut42
-                                                 ? elem42_2.asCutFailure()
-                                                 : elem42_2;
+                                    if (elem44_2.isCutFailure()) {
+                                        restoreLocation(seqStart44);
+                                        alt0_6 = elem44_2;
+                                    } else if (elem44_2.isFailure()) {
+                                        restoreLocation(seqStart44);
+                                        alt0_6 = cut44
+                                                 ? elem44_2.asCutFailure()
+                                                 : elem44_2;
                                     }
                                 }
                                 if (alt0_6.isSuccess()) {
                                     alt0_6 = CstParseResult.success(null,
-                                                                    substring(seqStart42.offset(), pos),
+                                                                    substring(seqStart44.offset(), pos),
                                                                     location());
                                 }
                                 if (alt0_6.isSuccess()) {
@@ -18824,10 +18892,10 @@ public final class Java25Parser {
                                     restoreLocation(choiceStart0);
                                     children.clear();
                                     children.addAll(savedChildren0);
-                                    var trivia46 = inTokenBoundary
+                                    var trivia48 = inTokenBoundary
                                                    ? List.<Trivia>of()
                                                    : skipWhitespace();
-                                    var alt0_7 = parse_TypeExpr(trivia46);
+                                    var alt0_7 = parse_TypeExpr(trivia48);
                                     if (alt0_7.isSuccess() && alt0_7.node.isPresent()) {
                                         children.add(alt0_7.node.unwrap());
                                     }
@@ -18839,10 +18907,10 @@ public final class Java25Parser {
                                         restoreLocation(choiceStart0);
                                         children.clear();
                                         children.addAll(savedChildren0);
-                                        var trivia47 = inTokenBoundary
+                                        var trivia49 = inTokenBoundary
                                                        ? List.<Trivia>of()
                                                        : skipWhitespace();
-                                        var alt0_8 = parse_QualifiedName(trivia47);
+                                        var alt0_8 = parse_QualifiedName(trivia49);
                                         if (alt0_8.isSuccess() && alt0_8.node.isPresent()) {
                                             children.add(alt0_8.node.unwrap());
                                         }
@@ -20748,10 +20816,443 @@ public final class Java25Parser {
         return finalResult;
     }
 
-    private CstParseResult parse_TypeArgs(List<Trivia> leadingTrivia) {
+    private CstParseResult parse_ArrayType(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
         long key = cacheKey(117, startLoc.offset());
+        if (cache != null) {
+            var cached = cache.get(key);
+            if (cached != null) {
+                if (cached.isSuccess()) restoreLocation(cached.endLocation.unwrap());
+                return cached;
+            }
+        }
+        var children = new ArrayList<CstNode>();
+        CstParseResult result = CstParseResult.success(null, "", location());
+        var seqStart0 = location();
+        boolean cut0 = false;
+        if (result.isSuccess()) {
+            CstParseResult elem0_0 = CstParseResult.success(null, "", location());
+            var zomStart1 = location();
+            while (true) {
+                var beforeLoc1 = location();
+                var trivia2 = inTokenBoundary
+                              ? List.<Trivia>of()
+                              : skipWhitespace();
+                var zomElem1 = parse_Annotation(trivia2);
+                if (zomElem1.isSuccess() && zomElem1.node.isPresent()) {
+                    children.add(zomElem1.node.unwrap());
+                }
+                if (zomElem1.isFailure() || location()
+                                                    .offset() == beforeLoc1.offset()) {
+                    restoreLocation(beforeLoc1);
+                    break;
+                }
+            }
+            elem0_0 = CstParseResult.success(null, substring(zomStart1.offset(), pos), location());
+            if (elem0_0.isCutFailure()) {
+                restoreLocation(seqStart0);
+                result = elem0_0;
+            } else if (elem0_0.isFailure()) {
+                restoreLocation(seqStart0);
+                result = cut0
+                         ? elem0_0.asCutFailure()
+                         : elem0_0;
+            }
+        }
+        if (result.isSuccess()) {
+            CstParseResult elem0_1 = null;
+            var choiceStart4 = location();
+            var savedChildren4 = new ArrayList<>(children);
+            children.clear();
+            children.addAll(savedChildren4);
+            var trivia5 = inTokenBoundary
+                          ? List.<Trivia>of()
+                          : skipWhitespace();
+            var alt4_0 = parse_PrimType(trivia5);
+            if (alt4_0.isSuccess() && alt4_0.node.isPresent()) {
+                children.add(alt4_0.node.unwrap());
+            }
+            if (alt4_0.isSuccess()) {
+                elem0_1 = alt4_0;
+            } else if (alt4_0.isCutFailure()) {
+                elem0_1 = alt4_0.asRegularFailure();
+            } else {
+                restoreLocation(choiceStart4);
+                children.clear();
+                children.addAll(savedChildren4);
+                var trivia6 = inTokenBoundary
+                              ? List.<Trivia>of()
+                              : skipWhitespace();
+                var alt4_1 = parse_RefType(trivia6);
+                if (alt4_1.isSuccess() && alt4_1.node.isPresent()) {
+                    children.add(alt4_1.node.unwrap());
+                }
+                if (alt4_1.isSuccess()) {
+                    elem0_1 = alt4_1;
+                } else if (alt4_1.isCutFailure()) {
+                    elem0_1 = alt4_1.asRegularFailure();
+                } else {
+                    restoreLocation(choiceStart4);
+                }
+            }
+            if (elem0_1 == null) {
+                children.clear();
+                children.addAll(savedChildren4);
+                elem0_1 = CstParseResult.failure("one of alternatives");
+            }
+            if (elem0_1.isCutFailure()) {
+                restoreLocation(seqStart0);
+                result = elem0_1;
+            } else if (elem0_1.isFailure()) {
+                restoreLocation(seqStart0);
+                result = cut0
+                         ? elem0_1.asCutFailure()
+                         : elem0_1;
+            }
+        }
+        if (result.isSuccess()) {
+            result = CstParseResult.success(null, substring(seqStart0.offset(), pos), location());
+        }
+        CstParseResult finalResult;
+        if (result.isSuccess()) {
+            var endLoc = location();
+            var span = SourceSpan.of(startLoc, endLoc);
+            var node = new CstNode.NonTerminal(span, RULE_ARRAY_TYPE, children, leadingTrivia, List.of());
+            finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
+        } else {
+            restoreLocation(startLoc);
+            finalResult = result;
+        }
+        if (cache != null) cache.put(key, finalResult);
+        return finalResult;
+    }
+
+    private CstParseResult parse_DimExprs(List<Trivia> leadingTrivia) {
+        var startLoc = location();
+        // Check cache
+        long key = cacheKey(118, startLoc.offset());
+        if (cache != null) {
+            var cached = cache.get(key);
+            if (cached != null) {
+                if (cached.isSuccess()) restoreLocation(cached.endLocation.unwrap());
+                return cached;
+            }
+        }
+        var children = new ArrayList<CstNode>();
+        CstParseResult oomFirst0 = CstParseResult.success(null, "", location());
+        var seqStart2 = location();
+        boolean cut2 = false;
+        if (oomFirst0.isSuccess()) {
+            CstParseResult elem2_0 = CstParseResult.success(null, "", location());
+            var zomStart3 = location();
+            while (true) {
+                var beforeLoc3 = location();
+                var trivia4 = inTokenBoundary
+                              ? List.<Trivia>of()
+                              : skipWhitespace();
+                var zomElem3 = parse_Annotation(trivia4);
+                if (zomElem3.isSuccess() && zomElem3.node.isPresent()) {
+                    children.add(zomElem3.node.unwrap());
+                }
+                if (zomElem3.isFailure() || location()
+                                                    .offset() == beforeLoc3.offset()) {
+                    restoreLocation(beforeLoc3);
+                    break;
+                }
+            }
+            elem2_0 = CstParseResult.success(null, substring(zomStart3.offset(), pos), location());
+            if (elem2_0.isCutFailure()) {
+                restoreLocation(seqStart2);
+                oomFirst0 = elem2_0;
+            } else if (elem2_0.isFailure()) {
+                restoreLocation(seqStart2);
+                oomFirst0 = cut2
+                            ? elem2_0.asCutFailure()
+                            : elem2_0;
+            }
+        }
+        if (oomFirst0.isSuccess()) {
+            if (!inTokenBoundary) skipWhitespace();
+            var andStart5 = location();
+            var savedChildrenAnd5 = new ArrayList<>(children);
+            CstParseResult andElem5 = CstParseResult.success(null, "", location());
+            var seqStart7 = location();
+            boolean cut7 = false;
+            if (andElem5.isSuccess()) {
+                var elem7_0 = matchLiteralCst("[", false);
+                if (elem7_0.isCutFailure()) {
+                    restoreLocation(seqStart7);
+                    andElem5 = elem7_0;
+                } else if (elem7_0.isFailure()) {
+                    restoreLocation(seqStart7);
+                    andElem5 = cut7
+                               ? elem7_0.asCutFailure()
+                               : elem7_0;
+                }
+            }
+            if (andElem5.isSuccess()) {
+                if (!inTokenBoundary) skipWhitespace();
+                var notStart9 = location();
+                var notElem9 = matchLiteralCst("]", false);
+                restoreLocation(notStart9);
+                var elem7_1 = notElem9.isSuccess()
+                              ? CstParseResult.failure("not match")
+                              : CstParseResult.success(null, "", location());
+                if (elem7_1.isCutFailure()) {
+                    restoreLocation(seqStart7);
+                    andElem5 = elem7_1;
+                } else if (elem7_1.isFailure()) {
+                    restoreLocation(seqStart7);
+                    andElem5 = cut7
+                               ? elem7_1.asCutFailure()
+                               : elem7_1;
+                }
+            }
+            if (andElem5.isSuccess()) {
+                andElem5 = CstParseResult.success(null, substring(seqStart7.offset(), pos), location());
+            }
+            restoreLocation(andStart5);
+            children.clear();
+            children.addAll(savedChildrenAnd5);
+            var elem2_1 = andElem5.isSuccess()
+                          ? CstParseResult.success(null, "", location())
+                          : andElem5;
+            if (elem2_1.isCutFailure()) {
+                restoreLocation(seqStart2);
+                oomFirst0 = elem2_1;
+            } else if (elem2_1.isFailure()) {
+                restoreLocation(seqStart2);
+                oomFirst0 = cut2
+                            ? elem2_1.asCutFailure()
+                            : elem2_1;
+            }
+        }
+        if (oomFirst0.isSuccess()) {
+            if (!inTokenBoundary) skipWhitespace();
+            var elem2_2 = matchLiteralCst("[", false);
+            if (elem2_2.isSuccess() && elem2_2.node.isPresent()) {
+                children.add(elem2_2.node.unwrap());
+            }
+            if (elem2_2.isCutFailure()) {
+                restoreLocation(seqStart2);
+                oomFirst0 = elem2_2;
+            } else if (elem2_2.isFailure()) {
+                restoreLocation(seqStart2);
+                oomFirst0 = cut2
+                            ? elem2_2.asCutFailure()
+                            : elem2_2;
+            }
+        }
+        if (oomFirst0.isSuccess()) {
+            var trivia12 = inTokenBoundary
+                           ? List.<Trivia>of()
+                           : skipWhitespace();
+            var elem2_3 = parse_Expr(trivia12);
+            if (elem2_3.isSuccess() && elem2_3.node.isPresent()) {
+                children.add(elem2_3.node.unwrap());
+            }
+            if (elem2_3.isCutFailure()) {
+                restoreLocation(seqStart2);
+                oomFirst0 = elem2_3;
+            } else if (elem2_3.isFailure()) {
+                restoreLocation(seqStart2);
+                oomFirst0 = cut2
+                            ? elem2_3.asCutFailure()
+                            : elem2_3;
+            }
+        }
+        if (oomFirst0.isSuccess()) {
+            if (!inTokenBoundary) skipWhitespace();
+            var elem2_4 = matchLiteralCst("]", false);
+            if (elem2_4.isSuccess() && elem2_4.node.isPresent()) {
+                children.add(elem2_4.node.unwrap());
+            }
+            if (elem2_4.isCutFailure()) {
+                restoreLocation(seqStart2);
+                oomFirst0 = elem2_4;
+            } else if (elem2_4.isFailure()) {
+                restoreLocation(seqStart2);
+                oomFirst0 = cut2
+                            ? elem2_4.asCutFailure()
+                            : elem2_4;
+            }
+        }
+        if (oomFirst0.isSuccess()) {
+            oomFirst0 = CstParseResult.success(null, substring(seqStart2.offset(), pos), location());
+        }
+        var result = oomFirst0;
+        if (oomFirst0.isSuccess()) {
+            var oomStart0 = location();
+            while (true) {
+                var beforeLoc0 = location();
+                if (!inTokenBoundary) skipWhitespace();
+                CstParseResult oomElem0 = CstParseResult.success(null, "", location());
+                var seqStart15 = location();
+                boolean cut15 = false;
+                if (oomElem0.isSuccess()) {
+                    CstParseResult elem15_0 = CstParseResult.success(null, "", location());
+                    var zomStart16 = location();
+                    while (true) {
+                        var beforeLoc16 = location();
+                        var trivia17 = inTokenBoundary
+                                       ? List.<Trivia>of()
+                                       : skipWhitespace();
+                        var zomElem16 = parse_Annotation(trivia17);
+                        if (zomElem16.isSuccess() && zomElem16.node.isPresent()) {
+                            children.add(zomElem16.node.unwrap());
+                        }
+                        if (zomElem16.isFailure() || location()
+                                                             .offset() == beforeLoc16.offset()) {
+                            restoreLocation(beforeLoc16);
+                            break;
+                        }
+                    }
+                    elem15_0 = CstParseResult.success(null, substring(zomStart16.offset(), pos), location());
+                    if (elem15_0.isCutFailure()) {
+                        restoreLocation(seqStart15);
+                        oomElem0 = elem15_0;
+                    } else if (elem15_0.isFailure()) {
+                        restoreLocation(seqStart15);
+                        oomElem0 = cut15
+                                   ? elem15_0.asCutFailure()
+                                   : elem15_0;
+                    }
+                }
+                if (oomElem0.isSuccess()) {
+                    if (!inTokenBoundary) skipWhitespace();
+                    var andStart18 = location();
+                    var savedChildrenAnd18 = new ArrayList<>(children);
+                    CstParseResult andElem18 = CstParseResult.success(null, "", location());
+                    var seqStart20 = location();
+                    boolean cut20 = false;
+                    if (andElem18.isSuccess()) {
+                        var elem20_0 = matchLiteralCst("[", false);
+                        if (elem20_0.isCutFailure()) {
+                            restoreLocation(seqStart20);
+                            andElem18 = elem20_0;
+                        } else if (elem20_0.isFailure()) {
+                            restoreLocation(seqStart20);
+                            andElem18 = cut20
+                                        ? elem20_0.asCutFailure()
+                                        : elem20_0;
+                        }
+                    }
+                    if (andElem18.isSuccess()) {
+                        if (!inTokenBoundary) skipWhitespace();
+                        var notStart22 = location();
+                        var notElem22 = matchLiteralCst("]", false);
+                        restoreLocation(notStart22);
+                        var elem20_1 = notElem22.isSuccess()
+                                       ? CstParseResult.failure("not match")
+                                       : CstParseResult.success(null, "", location());
+                        if (elem20_1.isCutFailure()) {
+                            restoreLocation(seqStart20);
+                            andElem18 = elem20_1;
+                        } else if (elem20_1.isFailure()) {
+                            restoreLocation(seqStart20);
+                            andElem18 = cut20
+                                        ? elem20_1.asCutFailure()
+                                        : elem20_1;
+                        }
+                    }
+                    if (andElem18.isSuccess()) {
+                        andElem18 = CstParseResult.success(null, substring(seqStart20.offset(), pos), location());
+                    }
+                    restoreLocation(andStart18);
+                    children.clear();
+                    children.addAll(savedChildrenAnd18);
+                    var elem15_1 = andElem18.isSuccess()
+                                   ? CstParseResult.success(null, "", location())
+                                   : andElem18;
+                    if (elem15_1.isCutFailure()) {
+                        restoreLocation(seqStart15);
+                        oomElem0 = elem15_1;
+                    } else if (elem15_1.isFailure()) {
+                        restoreLocation(seqStart15);
+                        oomElem0 = cut15
+                                   ? elem15_1.asCutFailure()
+                                   : elem15_1;
+                    }
+                }
+                if (oomElem0.isSuccess()) {
+                    if (!inTokenBoundary) skipWhitespace();
+                    var elem15_2 = matchLiteralCst("[", false);
+                    if (elem15_2.isSuccess() && elem15_2.node.isPresent()) {
+                        children.add(elem15_2.node.unwrap());
+                    }
+                    if (elem15_2.isCutFailure()) {
+                        restoreLocation(seqStart15);
+                        oomElem0 = elem15_2;
+                    } else if (elem15_2.isFailure()) {
+                        restoreLocation(seqStart15);
+                        oomElem0 = cut15
+                                   ? elem15_2.asCutFailure()
+                                   : elem15_2;
+                    }
+                }
+                if (oomElem0.isSuccess()) {
+                    var trivia25 = inTokenBoundary
+                                   ? List.<Trivia>of()
+                                   : skipWhitespace();
+                    var elem15_3 = parse_Expr(trivia25);
+                    if (elem15_3.isSuccess() && elem15_3.node.isPresent()) {
+                        children.add(elem15_3.node.unwrap());
+                    }
+                    if (elem15_3.isCutFailure()) {
+                        restoreLocation(seqStart15);
+                        oomElem0 = elem15_3;
+                    } else if (elem15_3.isFailure()) {
+                        restoreLocation(seqStart15);
+                        oomElem0 = cut15
+                                   ? elem15_3.asCutFailure()
+                                   : elem15_3;
+                    }
+                }
+                if (oomElem0.isSuccess()) {
+                    if (!inTokenBoundary) skipWhitespace();
+                    var elem15_4 = matchLiteralCst("]", false);
+                    if (elem15_4.isSuccess() && elem15_4.node.isPresent()) {
+                        children.add(elem15_4.node.unwrap());
+                    }
+                    if (elem15_4.isCutFailure()) {
+                        restoreLocation(seqStart15);
+                        oomElem0 = elem15_4;
+                    } else if (elem15_4.isFailure()) {
+                        restoreLocation(seqStart15);
+                        oomElem0 = cut15
+                                   ? elem15_4.asCutFailure()
+                                   : elem15_4;
+                    }
+                }
+                if (oomElem0.isSuccess()) {
+                    oomElem0 = CstParseResult.success(null, substring(seqStart15.offset(), pos), location());
+                }
+                if (oomElem0.isFailure() || location()
+                                                    .offset() == beforeLoc0.offset()) {
+                    restoreLocation(beforeLoc0);
+                    break;
+                }
+            }
+        }
+        CstParseResult finalResult;
+        if (result.isSuccess()) {
+            var endLoc = location();
+            var span = SourceSpan.of(startLoc, endLoc);
+            var node = new CstNode.NonTerminal(span, RULE_DIM_EXPRS, children, leadingTrivia, List.of());
+            finalResult = CstParseResult.success(node, result.text.or(""), endLoc);
+        } else {
+            restoreLocation(startLoc);
+            finalResult = result;
+        }
+        if (cache != null) cache.put(key, finalResult);
+        return finalResult;
+    }
+
+    private CstParseResult parse_TypeArgs(List<Trivia> leadingTrivia) {
+        var startLoc = location();
+        // Check cache
+        long key = cacheKey(119, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -20957,7 +21458,7 @@ public final class Java25Parser {
     private CstParseResult parse_TypeArg(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(118, startLoc.offset());
+        long key = cacheKey(120, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -21154,7 +21655,7 @@ public final class Java25Parser {
     private CstParseResult parse_QualifiedName(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(119, startLoc.offset());
+        long key = cacheKey(121, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -21319,7 +21820,7 @@ public final class Java25Parser {
     private CstParseResult parse_Identifier(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(120, startLoc.offset());
+        long key = cacheKey(122, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -21444,7 +21945,7 @@ public final class Java25Parser {
     private CstParseResult parse_Modifier(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(121, startLoc.offset());
+        long key = cacheKey(123, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -21638,7 +22139,7 @@ public final class Java25Parser {
     private CstParseResult parse_Annotation(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(122, startLoc.offset());
+        long key = cacheKey(124, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -21805,7 +22306,7 @@ public final class Java25Parser {
     private CstParseResult parse_AnnotationValue(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(123, startLoc.offset());
+        long key = cacheKey(125, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -22018,7 +22519,7 @@ public final class Java25Parser {
     private CstParseResult parse_AnnotationElem(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(124, startLoc.offset());
+        long key = cacheKey(126, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -22258,7 +22759,7 @@ public final class Java25Parser {
     private CstParseResult parse_Literal(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(125, startLoc.offset());
+        long key = cacheKey(127, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -22429,7 +22930,7 @@ public final class Java25Parser {
     private CstParseResult parse_CharLit(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(126, startLoc.offset());
+        long key = cacheKey(128, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -22576,7 +23077,7 @@ public final class Java25Parser {
     private CstParseResult parse_StringLit(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(127, startLoc.offset());
+        long key = cacheKey(129, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -22855,7 +23356,7 @@ public final class Java25Parser {
     private CstParseResult parse_NumLit(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(128, startLoc.offset());
+        long key = cacheKey(130, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {
@@ -23501,7 +24002,7 @@ public final class Java25Parser {
     private CstParseResult parse_Keyword(List<Trivia> leadingTrivia) {
         var startLoc = location();
         // Check cache
-        long key = cacheKey(129, startLoc.offset());
+        long key = cacheKey(131, startLoc.offset());
         if (cache != null) {
             var cached = cache.get(key);
             if (cached != null) {

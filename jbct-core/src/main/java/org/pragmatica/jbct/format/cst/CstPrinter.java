@@ -5,6 +5,7 @@ import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 import org.pragmatica.jbct.parser.Java25Parser.Trivia;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -136,7 +137,11 @@ public class CstPrinter {
 
     private void printNode(CstNode node, TriviaMode mode) {
         // Handle leading trivia
-        switch (mode) {
+        // TypeArgs/TypeParams: skip leading whitespace to prevent errant space before '<'
+        var effectiveMode = (node.rule() instanceof RuleId.TypeArgs || node.rule() instanceof RuleId.TypeParams)
+                            ? TriviaMode.SKIP_LEADING
+                            : mode;
+        switch (effectiveMode) {
             case FULL -> printTrivia(node.leadingTrivia());
             case COMMENTS_ONLY, SKIP_LEADING -> printCommentsOnly(node.leadingTrivia());
         }
@@ -147,7 +152,7 @@ public class CstPrinter {
             case CstNode.NonTerminal nt -> printNonTerminal(nt);
             case CstNode.Error err -> print(err.skippedText());
         }
-        // Handle trailing trivia
+        // Handle trailing trivia (use original mode)
         switch (mode) {
             case FULL, SKIP_LEADING -> printTrivia(node.trailingTrivia());
             case COMMENTS_ONLY -> printCommentsOnly(node.trailingTrivia());
@@ -188,7 +193,7 @@ public class CstPrinter {
      */
     private void printWithSpacing(String text) {
         if (!text.isEmpty()) {
-            var ctx = SpacingRules.SpacingContext.of(lastChar, prevChar, lastWord, output.length());
+            var ctx = SpacingRules.SpacingContext.spacingContext(lastChar, prevChar, lastWord, output.length());
             if (SpacingRules.needsSpaceBefore(ctx, text)) {
                 print(" ");
             }
@@ -221,6 +226,8 @@ public class CstPrinter {
             case RuleId.ResourceSpec _ -> printResourceSpec(nt);
             case RuleId.Ternary _ -> printTernary(nt);
             case RuleId.Additive _ -> printAdditive(nt);
+            case RuleId.TypeArgs _ -> printTypeArgs(nt);
+            case RuleId.TypeParams _ -> printTypeParams(nt);
             default -> printChildren(nt);
         }
     }
@@ -228,11 +235,7 @@ public class CstPrinter {
     private void printOrdinaryUnit(CstNode.NonTerminal ou) {
         // Print package declaration
         childByRule(ou, RuleId.PackageDecl.class)
-                   .fold(() -> null,
-                         pkg -> {
-                             printNode(pkg);
-                             return null;
-                         });
+                   .onPresent(this::printNode);
         // Collect and organize imports
         var imports = childrenByRule(ou, RuleId.ImportDecl.class);
         if (!imports.isEmpty()) {
@@ -338,18 +341,16 @@ public class CstPrinter {
         println();
         // Print enum constants
         childByRule(enumBody, RuleId.EnumConsts.class)
-                   .fold(() -> null,
-                         consts -> {
-                             var leadingTrivia = consts.leadingTrivia();
-                             boolean hasComments = leadingTrivia.stream()
-                                                                .anyMatch(t -> t instanceof Trivia.LineComment || t instanceof Trivia.BlockComment);
-                             printIndent();
-                             if (hasComments) {
-                                 printCommentsOnly(leadingTrivia);
-                             }
-                             printEnumConsts((CstNode.NonTerminal) consts);
-                             return null;
-                         });
+                   .onPresent(consts -> {
+                                  var leadingTrivia = consts.leadingTrivia();
+                                  boolean hasComments = leadingTrivia.stream()
+                                                                     .anyMatch(t -> t instanceof Trivia.LineComment || t instanceof Trivia.BlockComment);
+                                  printIndent();
+                                  if (hasComments) {
+                                      printCommentsOnly(leadingTrivia);
+                                  }
+                                  printEnumConsts((CstNode.NonTerminal) consts);
+                              });
         // Print semicolon if there are class members (fields, constructors, methods)
         if (!classMembers.isEmpty()) {
             print(";");
@@ -628,7 +629,7 @@ public class CstPrinter {
         var children = children(postfix);
         // Find Primary and all PostOp children
         CstNode primary = null;
-        var postOps = new java.util.ArrayList<CstNode>();
+        var postOps = new ArrayList<CstNode>();
         for (var child : children) {
             if (child.rule() instanceof RuleId.Primary) {
                 primary = child;
@@ -705,7 +706,7 @@ public class CstPrinter {
      *             .map(String::toUpperCase);
      *        ^--- alignColumn (position of first `.`)
      */
-    private void printMethodChainAligned(CstNode primary, java.util.List<CstNode> postOps) {
+    private void printMethodChainAligned(CstNode primary, List<CstNode> postOps) {
         int startColumn = currentColumn;
         int alignColumn = startColumn;
         // Print primary and calculate alignment column
@@ -1014,6 +1015,43 @@ public class CstPrinter {
             } else if (child.rule() instanceof RuleId.RecordComp) {
                 // First component stays on same line, subsequent components after comma+newline
                 printNodeSkipTrivia(child);
+            }
+        }
+    }
+
+    private void printTypeArgs(CstNode.NonTerminal typeArgs) {
+        // TypeArgs <- '<' '>' / '<' TypeArg (',' TypeArg)* '>'
+        // Print '<' directly without spacing rules to prevent errant space (e.g., router <> -> router<>)
+        // The heuristic in SpacingRules can't distinguish lowercase type names from variables
+        var children = children(typeArgs);
+        boolean first = true;
+        for (var child : children) {
+            if (first && isTerminalWithText(child, "<")) {
+                // Print '<' directly - skip trivia AND bypass spacing rules
+                printCommentsOnly(child.leadingTrivia());
+                print("<");
+                printTrivia(child.trailingTrivia());
+                first = false;
+            } else {
+                printNode(child);
+            }
+        }
+    }
+
+    private void printTypeParams(CstNode.NonTerminal typeParams) {
+        // TypeParams <- '<' TypeParam (',' TypeParam)* '>'
+        // Print '<' directly without spacing rules to prevent errant space (e.g., record router <T> -> record router<T>)
+        var children = children(typeParams);
+        boolean first = true;
+        for (var child : children) {
+            if (first && isTerminalWithText(child, "<")) {
+                // Print '<' directly - skip trivia AND bypass spacing rules
+                printCommentsOnly(child.leadingTrivia());
+                print("<");
+                printTrivia(child.trailingTrivia());
+                first = false;
+            } else {
+                printNode(child);
             }
         }
     }

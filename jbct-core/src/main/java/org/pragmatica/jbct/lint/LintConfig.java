@@ -1,5 +1,7 @@
 package org.pragmatica.jbct.lint;
 
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -115,7 +117,7 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
      * Builder-style method to set rule severity.
      */
     public LintConfig withRuleSeverity(String ruleId, DiagnosticSeverity severity) {
-        var newSeverities = new java.util.HashMap<>(ruleSeverities);
+        var newSeverities = new HashMap<>(ruleSeverities);
         newSeverities.put(ruleId, severity);
         return new LintConfig(Map.copyOf(newSeverities), disabledRules, failOnWarning);
     }
@@ -124,7 +126,7 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
      * Builder-style method to disable a rule.
      */
     public LintConfig withDisabledRule(String ruleId) {
-        var newDisabled = new java.util.HashSet<>(disabledRules);
+        var newDisabled = new HashSet<>(disabledRules);
         newDisabled.add(ruleId);
         return new LintConfig(ruleSeverities, Set.copyOf(newDisabled), failOnWarning);
     }

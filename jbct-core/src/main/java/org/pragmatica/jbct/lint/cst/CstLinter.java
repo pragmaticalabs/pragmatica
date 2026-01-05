@@ -68,7 +68,7 @@ public class CstLinter {
         var hasWarnings = diagnostics.stream()
                                      .anyMatch(d -> d.severity() == DiagnosticSeverity.WARNING);
         return ! ( context.config()
-                         .failOnWarning() && hasWarnings);
+                          .failOnWarning() && hasWarnings);
     }
 
     private Result<CstNode> parse(SourceFile source) {
