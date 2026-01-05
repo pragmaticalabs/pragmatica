@@ -43,7 +43,7 @@ public class Annotations {
     }
 
     // Multiple annotations on method
-    @ SuppressWarnings("unused")
+    @SuppressWarnings("unused")
     @Deprecated
     void multipleOnMethod() {}
 
