@@ -8,6 +8,7 @@
 
 ### Fixed
 - Parser: add support for array creation with dimension expressions (`new int[10][]`, `new float[rows][cols]`)
+- Formatter: remove errant space before `<` in generics with lowercase type names (`new router<>()`, `record router<T>`)
 
 ## [0.4.5] - 2026-01-02
 

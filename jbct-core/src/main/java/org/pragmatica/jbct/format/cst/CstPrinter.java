@@ -136,7 +136,10 @@ public class CstPrinter {
 
     private void printNode(CstNode node, TriviaMode mode) {
         // Handle leading trivia
-        switch (mode) {
+        // TypeArgs/TypeParams: skip leading whitespace to prevent errant space before '<'
+        var effectiveMode = (node.rule() instanceof RuleId.TypeArgs || node.rule() instanceof RuleId.TypeParams)
+                            ? TriviaMode.SKIP_LEADING : mode;
+        switch (effectiveMode) {
             case FULL -> printTrivia(node.leadingTrivia());
             case COMMENTS_ONLY, SKIP_LEADING -> printCommentsOnly(node.leadingTrivia());
         }
@@ -147,7 +150,7 @@ public class CstPrinter {
             case CstNode.NonTerminal nt -> printNonTerminal(nt);
             case CstNode.Error err -> print(err.skippedText());
         }
-        // Handle trailing trivia
+        // Handle trailing trivia (use original mode)
         switch (mode) {
             case FULL, SKIP_LEADING -> printTrivia(node.trailingTrivia());
             case COMMENTS_ONLY -> printCommentsOnly(node.trailingTrivia());
@@ -221,6 +224,8 @@ public class CstPrinter {
             case RuleId.ResourceSpec _ -> printResourceSpec(nt);
             case RuleId.Ternary _ -> printTernary(nt);
             case RuleId.Additive _ -> printAdditive(nt);
+            case RuleId.TypeArgs _ -> printTypeArgs(nt);
+            case RuleId.TypeParams _ -> printTypeParams(nt);
             default -> printChildren(nt);
         }
     }
@@ -1014,6 +1019,43 @@ public class CstPrinter {
             } else if (child.rule() instanceof RuleId.RecordComp) {
                 // First component stays on same line, subsequent components after comma+newline
                 printNodeSkipTrivia(child);
+            }
+        }
+    }
+
+    private void printTypeArgs(CstNode.NonTerminal typeArgs) {
+        // TypeArgs <- '<' '>' / '<' TypeArg (',' TypeArg)* '>'
+        // Print '<' directly without spacing rules to prevent errant space (e.g., router <> -> router<>)
+        // The heuristic in SpacingRules can't distinguish lowercase type names from variables
+        var children = children(typeArgs);
+        boolean first = true;
+        for (var child : children) {
+            if (first && isTerminalWithText(child, "<")) {
+                // Print '<' directly - skip trivia AND bypass spacing rules
+                printCommentsOnly(child.leadingTrivia());
+                print("<");
+                printTrivia(child.trailingTrivia());
+                first = false;
+            } else {
+                printNode(child);
+            }
+        }
+    }
+
+    private void printTypeParams(CstNode.NonTerminal typeParams) {
+        // TypeParams <- '<' TypeParam (',' TypeParam)* '>'
+        // Print '<' directly without spacing rules to prevent errant space (e.g., record router <T> -> record router<T>)
+        var children = children(typeParams);
+        boolean first = true;
+        for (var child : children) {
+            if (first && isTerminalWithText(child, "<")) {
+                // Print '<' directly - skip trivia AND bypass spacing rules
+                printCommentsOnly(child.leadingTrivia());
+                print("<");
+                printTrivia(child.trailingTrivia());
+                first = false;
+            } else {
+                printNode(child);
             }
         }
     }
