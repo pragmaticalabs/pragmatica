@@ -115,7 +115,7 @@ public record AetherNodeConfig(
                                     httpRouter,
                                     artifactRepoConfig,
                                     Option.empty(),
-                                    TTMConfig.DISABLED);
+                                    TTMConfig.disabled());
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -131,7 +131,7 @@ public record AetherNodeConfig(
                                     Option.empty(),
                                     DHTConfig.FULL,
                                     Option.empty(),
-                                    TTMConfig.DISABLED);
+                                    TTMConfig.disabled());
     }
 
     /**

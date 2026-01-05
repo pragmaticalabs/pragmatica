@@ -55,7 +55,7 @@ public record AetherConfig(
         env == Environment.KUBERNETES
         ? KubernetesConfig.defaults()
         : null,
-        TTMConfig.DISABLED);
+        TTMConfig.disabled());
     }
 
     /**
@@ -186,7 +186,7 @@ public record AetherConfig(
                               : null);
             var finalTtm = ttmConfig != null
                            ? ttmConfig
-                           : TTMConfig.DISABLED;
+                           : TTMConfig.disabled();
             return new AetherConfig(clusterConfig, nodeConfig, finalTls, finalDocker, finalK8s, finalTtm);
         }
     }

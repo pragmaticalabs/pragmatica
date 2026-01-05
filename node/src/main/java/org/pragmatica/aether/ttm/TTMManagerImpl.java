@@ -12,13 +12,14 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 final class TTMManagerImpl implements TTMManager {
     private static final Logger log = LoggerFactory.getLogger(TTMManagerImpl.class);
@@ -30,12 +31,13 @@ final class TTMManagerImpl implements TTMManager {
     private final Supplier<ControllerConfig> controllerConfigSupplier;
 
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-        var thread = new Thread(r, "ttm-manager");
-        thread.setDaemon(true);
-        return thread;
-    });
+                                                                                                      var thread = new Thread(r,
+                                                                                                                              "ttm-manager");
+                                                                                                      thread.setDaemon(true);
+                                                                                                      return thread;
+                                                                                                  });
 
-    private final AtomicReference<ScheduledFuture<?>> evaluationTask = new AtomicReference<>();
+    private final AtomicReference<ScheduledFuture< ? >> evaluationTask = new AtomicReference<>();
     private final AtomicReference<TTMForecast> currentForecast = new AtomicReference<>();
     private final AtomicReference<TTMState> state = new AtomicReference<>(TTMState.STOPPED);
     private final CopyOnWriteArrayList<Consumer<TTMForecast>> callbacks = new CopyOnWriteArrayList<>();
@@ -57,7 +59,7 @@ final class TTMManagerImpl implements TTMManager {
         if (leaderChange.localNodeIsLeader()) {
             log.info("Node became leader, starting TTM evaluation");
             startEvaluation();
-        } else {
+        }else {
             log.info("Node is no longer leader, stopping TTM evaluation");
             stopEvaluation();
         }
@@ -92,25 +94,25 @@ final class TTMManagerImpl implements TTMManager {
     }
 
     private void awaitSchedulerTermination() {
-        Result.lift(
-            e -> new TTMError.InferenceFailed("Scheduler termination interrupted"),
-            () -> {
-                if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                    scheduler.shutdownNow();
-                }
-                return Unit.unit();
-            }
-        ).onFailure(cause -> {
-            scheduler.shutdownNow();
-            Thread.currentThread().interrupt();
-        });
+        Result.lift(e -> new TTMError.InferenceFailed("Scheduler termination interrupted"),
+                    () -> {
+                        if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                        scheduler.shutdownNow();
+                    }
+                        return Unit.unit();
+                    })
+              .onFailure(cause -> {
+                  scheduler.shutdownNow();
+                  Thread.currentThread()
+                        .interrupt();
+              });
     }
 
     private void startEvaluation() {
         stopEvaluation();
         state.set(TTMState.RUNNING);
         var task = scheduler.scheduleAtFixedRate(
-            this::runEvaluation, config.evaluationIntervalMs(), config.evaluationIntervalMs(), TimeUnit.MILLISECONDS);
+        this::runEvaluation, config.evaluationIntervalMs(), config.evaluationIntervalMs(), TimeUnit.MILLISECONDS);
         evaluationTask.set(task);
         log.info("TTM evaluation started with interval {}ms", config.evaluationIntervalMs());
     }
@@ -126,20 +128,17 @@ final class TTMManagerImpl implements TTMManager {
 
     private void runEvaluation() {
         evaluateAsync()
-            .onFailure(this::handleEvaluationError);
+        .onFailure(this::handleEvaluationError);
     }
 
     private Promise<Unit> evaluateAsync() {
         int available = aggregator.aggregateCount();
         int required = config.inputWindowMinutes();
-
         if (available < required / 2) {
             log.debug("Insufficient data for TTM: {} minutes available, {} required", available, required);
             return Promise.unitPromise();
         }
-
         float[][] input = aggregator.toTTMInput(required);
-
         return predictor.predict(input)
                         .map(this::processPredictionAndReturn);
     }
@@ -160,7 +159,9 @@ final class TTMManagerImpl implements TTMManager {
         var forecast = analyzer.analyze(predictions, predictor.lastConfidence(), recentHistory, controllerConfig);
         currentForecast.set(forecast);
         log.debug("TTM forecast: recommendation={}, confidence={}",
-                  forecast.recommendation().getClass().getSimpleName(),
+                  forecast.recommendation()
+                          .getClass()
+                          .getSimpleName(),
                   forecast.confidence());
         notifyCallbacks(forecast);
         state.set(TTMState.RUNNING);
@@ -171,12 +172,12 @@ final class TTMManagerImpl implements TTMManager {
     }
 
     private void safeInvokeCallback(Consumer<TTMForecast> callback, TTMForecast forecast) {
-        Result.lift(
-            e -> new TTMError.InferenceFailed("Callback error: " + e.getMessage()),
-            () -> {
-                callback.accept(forecast);
-                return Unit.unit();
-            }
-        ).onFailure(cause -> log.warn("Forecast callback error: {}", cause.message()));
+        Result.lift(e -> new TTMError.InferenceFailed("Callback error: " + e.getMessage()),
+                    () -> {
+                        callback.accept(forecast);
+                        return Unit.unit();
+                    })
+              .onFailure(cause -> log.warn("Forecast callback error: {}",
+                                           cause.message()));
     }
 }

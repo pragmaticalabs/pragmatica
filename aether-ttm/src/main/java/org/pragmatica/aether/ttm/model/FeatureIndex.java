@@ -1,5 +1,4 @@
 package org.pragmatica.aether.ttm.model;
-
 /**
  * Feature indices matching {@link org.pragmatica.aether.metrics.MinuteAggregate#toFeatureArray()} order.
  * <p>
@@ -25,8 +24,8 @@ public sealed interface FeatureIndex {
      */
     static String[] featureNames() {
         return new String[]{"cpu_usage", "heap_usage", "event_loop_lag_ms", "latency_ms", "invocations",
-                            "gc_pause_ms", "latency_p50", "latency_p95", "latency_p99", "error_rate", "event_count"};
+        "gc_pause_ms", "latency_p50", "latency_p95", "latency_p99", "error_rate", "event_count"};
     }
 
-    record Unused() implements FeatureIndex {}
+    record unused() implements FeatureIndex {}
 }

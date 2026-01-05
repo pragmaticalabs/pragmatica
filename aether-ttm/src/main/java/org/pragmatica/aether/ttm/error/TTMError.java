@@ -38,18 +38,6 @@ public sealed interface TTMError extends Cause {
     }
 
     /**
-     * Not the leader node.
-     */
-    record NotLeader() implements TTMError {
-        public static final NotLeader INSTANCE = new NotLeader();
-
-        @Override
-        public String message() {
-            return "TTM operations can only be performed by the leader node";
-        }
-    }
-
-    /**
      * TTM is disabled.
      */
     record Disabled() implements TTMError {

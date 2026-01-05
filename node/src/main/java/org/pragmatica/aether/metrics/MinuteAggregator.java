@@ -264,13 +264,9 @@ public final class MinuteAggregator {
     }
 
     private int countEventsInMinute(long minuteTimestamp) {
-        try{
-            var events = EventPublisher.since(minuteTimestamp);
-            return ( int) events.stream()
-                               .filter(e -> e.timestamp() < minuteTimestamp + 60_000L)
-                               .count();
-        } catch (Exception e) {
-            return 0;
-        }
+        var events = EventPublisher.since(minuteTimestamp);
+        return (int) events.stream()
+                           .filter(e -> e.timestamp() < minuteTimestamp + 60_000L)
+                           .count();
     }
 }

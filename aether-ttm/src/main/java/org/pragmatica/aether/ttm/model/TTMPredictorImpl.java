@@ -4,6 +4,7 @@ import org.pragmatica.aether.config.TTMConfig;
 import org.pragmatica.aether.ttm.error.TTMError;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.nio.FloatBuffer;
 import java.nio.file.Files;
@@ -40,7 +41,7 @@ final class TTMPredictorImpl implements TTMPredictor {
             return Result.success(TTMPredictor.noOp());
         }
         return checkModelExists(config)
-            .flatMap(TTMPredictorImpl::loadModel);
+               .flatMap(TTMPredictorImpl::loadModel);
     }
 
     private static Result<TTMConfig> checkModelExists(TTMConfig config) {
@@ -52,19 +53,18 @@ final class TTMPredictorImpl implements TTMPredictor {
 
     private static Result<TTMPredictor> loadModel(TTMConfig config) {
         return Result.lift(
-            e -> new TTMError.ModelLoadFailed(config.modelPath(), e.getMessage()),
-            () -> {
-                var env = OrtEnvironment.getEnvironment();
-                var sessionOptions = new OrtSession.SessionOptions();
-                sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
-                sessionOptions.setIntraOpNumThreads(2);
-                var session = env.createSession(config.modelPath(), sessionOptions);
-                log.info("Loaded TTM model from {}", config.modelPath());
-                log.debug("Model inputs: {}", session.getInputNames());
-                log.debug("Model outputs: {}", session.getOutputNames());
-                return new TTMPredictorImpl(env, session, config);
-            }
-        );
+        e -> new TTMError.ModelLoadFailed(config.modelPath(), e.getMessage()),
+        () -> {
+            var env = OrtEnvironment.getEnvironment();
+            var sessionOptions = new OrtSession.SessionOptions();
+            sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+            sessionOptions.setIntraOpNumThreads(2);
+            var session = env.createSession(config.modelPath(), sessionOptions);
+            log.info("Loaded TTM model from {}", config.modelPath());
+            log.debug("Model inputs: {}", session.getInputNames());
+            log.debug("Model outputs: {}", session.getOutputNames());
+            return new TTMPredictorImpl(env, session, config);
+        });
     }
 
     @Override
@@ -171,12 +171,11 @@ final class TTMPredictorImpl implements TTMPredictor {
     @Override
     public void close() {
         ready = false;
-        Result.lift(
-            e -> new TTMError.InferenceFailed("Error closing ONNX session: " + e.getMessage()),
-            () -> {
-                session.close();
-                return org.pragmatica.lang.Unit.unit();
-            }
-        ).onFailure(cause -> log.warn(cause.message()));
+        Result.lift(e -> new TTMError.InferenceFailed("Error closing ONNX session: " + e.getMessage()),
+                    () -> {
+                        session.close();
+                        return Unit.unit();
+                    })
+              .onFailure(cause -> log.warn(cause.message()));
     }
 }

@@ -592,7 +592,7 @@ Use sealed interfaces for domain-specific errors:
 - `SliceError` - Slice lifecycle failures
 - `RegistrationError` - User registration failures
 - `RepositoryError` - Data access failures
-- `TTMError` - TTM inference failures (ModelLoadFailed, InferenceFailed, InsufficientData, NotLeader, Disabled)
+- `TTMError` - TTM inference failures (ModelLoadFailed, InferenceFailed, InsufficientData, Disabled)
 
 ## Testing Framework and Patterns
 

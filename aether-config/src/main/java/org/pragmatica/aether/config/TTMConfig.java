@@ -20,9 +20,9 @@ public record TTMConfig(
  long evaluationIntervalMs,
  double confidenceThreshold,
  boolean enabled) {
-    public static final TTMConfig DEFAULT = new TTMConfig("models/ttm-aether.onnx", 60, 1, 60_000L, 0.7, true);
+    private static final TTMConfig DEFAULT = new TTMConfig("models/ttm-aether.onnx", 60, 1, 60_000L, 0.7, true);
 
-    public static final TTMConfig DISABLED = new TTMConfig("", 60, 1, 60_000L, 0.7, false);
+    private static final TTMConfig DISABLED = new TTMConfig("", 60, 1, 60_000L, 0.7, false);
 
     public static TTMConfig defaults() {
         return DEFAULT;

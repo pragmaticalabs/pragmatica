@@ -86,7 +86,8 @@ final class AdaptiveDecisionTreeImpl implements AdaptiveDecisionTree {
     }
 
     private boolean meetsConfidenceThreshold(TTMForecast forecast) {
-        return forecast.confidence() > ttmManager.config().confidenceThreshold();
+        return forecast.confidence() > ttmManager.config()
+                                                 .confidenceThreshold();
     }
 
     private ControlDecisions mergeDecisions(List<BlueprintChange> preemptiveChanges, ControlDecisions decisions) {
@@ -123,18 +124,10 @@ final class AdaptiveDecisionTreeImpl implements AdaptiveDecisionTree {
         }
     }
 
-    private java.util.List<BlueprintChange> getPreemptiveChanges(TTMForecast forecast) {
-        var changes = new ArrayList<BlueprintChange>();
-        // Note: Preemptive scaling requires artifact context from the control loop.
-        // The actual scaling is handled by logging recommendations and adjusting thresholds.
-        // Future enhancement: Pass artifact information to enable direct preemptive scaling.
-        switch (forecast.recommendation()) {
-            case ScalingRecommendation.PreemptiveScaleUp _ ->
-            log.debug("Preemptive scale up indicated; threshold adjustment applied");
-            case ScalingRecommendation.PreemptiveScaleDown _ ->
-            log.debug("Preemptive scale down indicated; threshold adjustment applied");
-            default -> {}
-        }
-        return changes;
+    // TODO: Implement preemptive scaling with artifact context
+    private List<BlueprintChange> getPreemptiveChanges(TTMForecast forecast) {
+        // Preemptive scaling requires artifact context from the control loop.
+        // Currently handled via threshold adjustments in onForecast().
+        return List.of();
     }
 }
