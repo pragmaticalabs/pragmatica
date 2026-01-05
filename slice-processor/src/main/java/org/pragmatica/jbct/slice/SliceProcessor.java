@@ -60,16 +60,20 @@ public class SliceProcessor extends AbstractProcessor {
     }
 
     private void processSliceInterface(TypeElement interfaceElement) {
+        SliceModel.sliceModel(interfaceElement, processingEnv)
+                  .onFailure(cause -> error(interfaceElement, cause.message()))
+                  .onSuccess(sliceModel -> generateArtifacts(interfaceElement, sliceModel));
+    }
+
+    private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
         try{
-            // 1. Build model from interface
-            var sliceModel = SliceModel.from(interfaceElement, processingEnv);
-            // 2. Generate API interface (if not exists)
+            // 1. Generate API interface (if not exists)
             if (!apiInterfaceExists(sliceModel)) {
                 apiGenerator.generate(sliceModel);
                 note(interfaceElement,
                      "Generated API interface: " + sliceModel.apiPackage() + "." + sliceModel.simpleName());
             }
-            // 3. If this slice has dependencies, generate proxies and factory
+            // 2. If this slice has dependencies, generate proxies and factory
             if (sliceModel.hasDependencies()) {
                 for (var dependency : sliceModel.dependencies()) {
                     var resolved = versionResolver.resolve(dependency);
@@ -79,11 +83,9 @@ public class SliceProcessor extends AbstractProcessor {
                 factoryGenerator.generate(sliceModel);
                 note(interfaceElement, "Generated factory: " + sliceModel.simpleName() + "Factory");
             }
-            // 4. Generate manifest
+            // 3. Generate manifest
             manifestGenerator.generate(sliceModel);
             note(interfaceElement, "Generated manifest: META-INF/slice-api.properties");
-        } catch (IllegalStateException e) {
-            error(interfaceElement, e.getMessage());
         } catch (Exception e) {
             error(interfaceElement, "Failed to process @Slice: " + e.getMessage());
         }

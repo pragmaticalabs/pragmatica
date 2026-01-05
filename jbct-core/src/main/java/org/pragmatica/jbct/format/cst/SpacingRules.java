@@ -262,7 +262,7 @@ final class SpacingRules {
      * Context needed for spacing decisions.
      */
     record SpacingContext(char lastChar, char prevChar, String lastWord, int outputLength) {
-        static SpacingContext of(char lastChar, char prevChar, String lastWord, int outputLength) {
+        static SpacingContext spacingContext(char lastChar, char prevChar, String lastWord, int outputLength) {
             return new SpacingContext(lastChar, prevChar, lastWord, outputLength);
         }
     }

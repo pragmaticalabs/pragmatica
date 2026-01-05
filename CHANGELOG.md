@@ -5,10 +5,15 @@
 ### Added
 
 ### Changed
+- Build: bump Pragmatica Lite to 0.9.7
+- Slice processor: refactored models to use `Result<T>` instead of exceptions (JBCT compliance)
 
 ### Fixed
 - Parser: add support for array creation with dimension expressions (`new int[10][]`, `new float[rows][cols]`)
 - Formatter: remove errant space before `<` in generics with lowercase type names (`new router<>()`, `record router<T>`)
+- Style: remove FQCN usage in LintConfig, CstPrinter, ProjectInitializer, CstParsingUtilitiesRule
+- Style: rename factory methods to follow `TypeName.typeName()` convention (MethodModel, DependencyModel, SliceModel, SpacingContext)
+- Style: replace null returns with `Option.onPresent()` in CstPrinter
 
 ## [0.4.5] - 2026-01-02
 

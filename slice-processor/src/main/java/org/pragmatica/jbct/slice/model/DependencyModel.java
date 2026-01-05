@@ -1,5 +1,9 @@
 package org.pragmatica.jbct.slice.model;
 
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
@@ -12,15 +16,15 @@ public record DependencyModel(
  String interfaceQualifiedName,
  String interfaceSimpleName,
  String interfacePackage,
- String sliceArtifact,
- String version) {
-    public static DependencyModel from(VariableElement param, ProcessingEnvironment env) {
+ Option<String> sliceArtifact,
+ Option<String> version) {
+    public static Result<DependencyModel> dependencyModel(VariableElement param, ProcessingEnvironment env) {
         var paramName = param.getSimpleName()
                              .toString();
         var type = param.asType();
         if (! (type instanceof DeclaredType dt)) {
-            throw new IllegalStateException(
-            "Dependency parameter must be an interface: " + paramName);
+            return Causes.cause("Dependency parameter must be an interface: " + paramName)
+                         .result();
         }
         var typeElement = (TypeElement) dt.asElement();
         var qualifiedName = typeElement.getQualifiedName()
@@ -31,8 +35,8 @@ public record DependencyModel(
                              .getPackageOf(typeElement)
                              .getQualifiedName()
                              .toString();
-        return new DependencyModel(
-        paramName, type, qualifiedName, simpleName, packageName, null, null);
+        return Result.success(new DependencyModel(
+        paramName, type, qualifiedName, simpleName, packageName, Option.none(), Option.none()));
     }
 
     public DependencyModel withResolved(String sliceArtifact, String version) {
@@ -42,15 +46,13 @@ public record DependencyModel(
         interfaceQualifiedName,
         interfaceSimpleName,
         interfacePackage,
-        sliceArtifact,
-        version);
+        Option.some(sliceArtifact),
+        Option.some(version));
     }
 
-    public String fullArtifact() {
-        if (sliceArtifact == null || version == null) {
-            throw new IllegalStateException("Dependency not resolved: call resolve() first");
-        }
-        return sliceArtifact + ":" + version;
+    public Option<String> fullArtifact() {
+        return Option.all(sliceArtifact, version)
+                     .map((artifact, ver) -> artifact + ":" + ver);
     }
 
     public String proxyClassName() {

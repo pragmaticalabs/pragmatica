@@ -5,6 +5,7 @@ import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 import org.pragmatica.jbct.parser.Java25Parser.Trivia;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -192,7 +193,7 @@ public class CstPrinter {
      */
     private void printWithSpacing(String text) {
         if (!text.isEmpty()) {
-            var ctx = SpacingRules.SpacingContext.of(lastChar, prevChar, lastWord, output.length());
+            var ctx = SpacingRules.SpacingContext.spacingContext(lastChar, prevChar, lastWord, output.length());
             if (SpacingRules.needsSpaceBefore(ctx, text)) {
                 print(" ");
             }
@@ -234,11 +235,7 @@ public class CstPrinter {
     private void printOrdinaryUnit(CstNode.NonTerminal ou) {
         // Print package declaration
         childByRule(ou, RuleId.PackageDecl.class)
-                   .fold(() -> null,
-                         pkg -> {
-                             printNode(pkg);
-                             return null;
-                         });
+                   .onPresent(this::printNode);
         // Collect and organize imports
         var imports = childrenByRule(ou, RuleId.ImportDecl.class);
         if (!imports.isEmpty()) {
@@ -344,18 +341,16 @@ public class CstPrinter {
         println();
         // Print enum constants
         childByRule(enumBody, RuleId.EnumConsts.class)
-                   .fold(() -> null,
-                         consts -> {
-                             var leadingTrivia = consts.leadingTrivia();
-                             boolean hasComments = leadingTrivia.stream()
-                                                                .anyMatch(t -> t instanceof Trivia.LineComment || t instanceof Trivia.BlockComment);
-                             printIndent();
-                             if (hasComments) {
-                                 printCommentsOnly(leadingTrivia);
-                             }
-                             printEnumConsts((CstNode.NonTerminal) consts);
-                             return null;
-                         });
+                   .onPresent(consts -> {
+                       var leadingTrivia = consts.leadingTrivia();
+                       boolean hasComments = leadingTrivia.stream()
+                                                          .anyMatch(t -> t instanceof Trivia.LineComment || t instanceof Trivia.BlockComment);
+                       printIndent();
+                       if (hasComments) {
+                           printCommentsOnly(leadingTrivia);
+                       }
+                       printEnumConsts((CstNode.NonTerminal) consts);
+                   });
         // Print semicolon if there are class members (fields, constructors, methods)
         if (!classMembers.isEmpty()) {
             print(";");
@@ -634,7 +629,7 @@ public class CstPrinter {
         var children = children(postfix);
         // Find Primary and all PostOp children
         CstNode primary = null;
-        var postOps = new java.util.ArrayList<CstNode>();
+        var postOps = new ArrayList<CstNode>();
         for (var child : children) {
             if (child.rule() instanceof RuleId.Primary) {
                 primary = child;
@@ -711,7 +706,7 @@ public class CstPrinter {
      *             .map(String::toUpperCase);
      *        ^--- alignColumn (position of first `.`)
      */
-    private void printMethodChainAligned(CstNode primary, java.util.List<CstNode> postOps) {
+    private void printMethodChainAligned(CstNode primary, List<CstNode> postOps) {
         int startColumn = currentColumn;
         int alignColumn = startColumn;
         // Print primary and calculate alignment column

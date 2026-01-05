@@ -23,6 +23,12 @@
     </properties>
 
     <dependencies>
+        <!-- Pragmatica Lite Core for Result types -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+        </dependency>
+
         <!-- Annotation processing API -->
         <dependency>
             <groupId>com.google.auto.service</groupId>

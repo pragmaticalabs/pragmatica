@@ -6,6 +6,7 @@ import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -75,7 +76,7 @@ public class CstParsingUtilitiesRule implements CstLintRule {
                                      .map(p -> "(" + p.jdkPattern() + ")")
                                      .toList();
         COMBINED_PATTERN = Pattern.compile(String.join("|", patternStrings));
-        var mapBuilder = new java.util.HashMap<String, ParsingPattern>();
+        var mapBuilder = new HashMap<String, ParsingPattern>();
         for (var p : PATTERNS) {
             mapBuilder.put(p.jdkPattern(), p);
         }

@@ -1,5 +1,8 @@
 package org.pragmatica.jbct.slice.model;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
 import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
@@ -11,26 +14,26 @@ public record MethodModel(
  TypeMirror parameterType,
  String parameterName,
  boolean deprecated) {
-    public static MethodModel from(ExecutableElement method) {
+    public static Result<MethodModel> methodModel(ExecutableElement method) {
         var name = method.getSimpleName()
                          .toString();
         var returnType = method.getReturnType();
         var responseType = extractPromiseTypeArg(returnType);
         var params = method.getParameters();
         if (params.size() != 1) {
-            throw new IllegalStateException(
-            "Slice methods must have exactly one parameter: " + name);
+            return Causes.cause("Slice methods must have exactly one parameter: " + name)
+                         .result();
         }
         var param = params.getFirst();
         var deprecated = method.getAnnotation(Deprecated.class) != null;
-        return new MethodModel(
+        return Result.success(new MethodModel(
         name,
         returnType,
         responseType,
         param.asType(),
         param.getSimpleName()
              .toString(),
-        deprecated);
+        deprecated));
     }
 
     private static TypeMirror extractPromiseTypeArg(TypeMirror returnType) {
