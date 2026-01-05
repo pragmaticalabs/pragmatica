@@ -14,9 +14,11 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification;
 
 import org.pragmatica.consensus.net.NetworkManagementOperation;
 import org.pragmatica.consensus.net.NetworkMessage;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.Server;
 
 import java.util.List;
 import java.util.Map;
@@ -408,6 +410,11 @@ class DeploymentMetricsCollectorTest {
         @Override
         public int connectedNodeCount() {
             return 0;
+        }
+
+        @Override
+        public Option<Server> server() {
+            return Option.empty();
         }
 
         public void configure(MessageRouter.MutableRouter router) {}

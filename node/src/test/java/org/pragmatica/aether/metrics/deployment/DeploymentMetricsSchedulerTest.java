@@ -16,6 +16,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageRouter;
+import org.pragmatica.net.tcp.Server;
 
 import java.util.List;
 import java.util.Map;
@@ -259,6 +260,11 @@ class DeploymentMetricsSchedulerTest {
         @Override
         public int connectedNodeCount() {
             return 0;
+        }
+
+        @Override
+        public Option<Server> server() {
+            return Option.empty();
         }
 
         public void configure(MessageRouter.MutableRouter router) {}
