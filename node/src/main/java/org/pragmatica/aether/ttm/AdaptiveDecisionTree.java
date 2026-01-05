@@ -77,22 +77,25 @@ final class AdaptiveDecisionTreeImpl implements AdaptiveDecisionTree {
 
     @Override
     public Promise<ControlDecisions> evaluate(ControlContext context) {
-        // Check for preemptive actions from TTM
         var preemptiveChanges = ttmManager.currentForecast()
-                                          .filter(f -> f.confidence() > ttmManager.config().confidenceThreshold())
+                                          .filter(this::meetsConfidenceThreshold)
                                           .map(this::getPreemptiveChanges)
                                           .or(List.of());
-        // Run base controller evaluation
         return baseController.evaluate(context)
-                             .map(decisions -> {
-                                      if (!preemptiveChanges.isEmpty()) {
-                                      // Merge preemptive changes with reactive decisions
+                             .map(decisions -> mergeDecisions(preemptiveChanges, decisions));
+    }
+
+    private boolean meetsConfidenceThreshold(TTMForecast forecast) {
+        return forecast.confidence() > ttmManager.config().confidenceThreshold();
+    }
+
+    private ControlDecisions mergeDecisions(List<BlueprintChange> preemptiveChanges, ControlDecisions decisions) {
+        if (preemptiveChanges.isEmpty()) {
+            return decisions;
+        }
         var merged = new ArrayList<>(preemptiveChanges);
-                                      merged.addAll(decisions.changes());
-                                      return new ControlDecisions(merged);
-                                  }
-                                      return decisions;
-                                  });
+        merged.addAll(decisions.changes());
+        return new ControlDecisions(merged);
     }
 
     private void onForecast(TTMForecast forecast) {

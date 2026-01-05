@@ -39,23 +39,32 @@ final class TTMPredictorImpl implements TTMPredictor {
         if (!config.enabled()) {
             return Result.success(TTMPredictor.noOp());
         }
-        try{
-            var modelPath = Path.of(config.modelPath());
-            if (!Files.exists(modelPath)) {
-                return new TTMError.ModelLoadFailed(config.modelPath(), "File not found").result();
+        return checkModelExists(config)
+            .flatMap(TTMPredictorImpl::loadModel);
+    }
+
+    private static Result<TTMConfig> checkModelExists(TTMConfig config) {
+        var modelPath = Path.of(config.modelPath());
+        return Files.exists(modelPath)
+               ? Result.success(config)
+               : new TTMError.ModelLoadFailed(config.modelPath(), "File not found").result();
+    }
+
+    private static Result<TTMPredictor> loadModel(TTMConfig config) {
+        return Result.lift(
+            e -> new TTMError.ModelLoadFailed(config.modelPath(), e.getMessage()),
+            () -> {
+                var env = OrtEnvironment.getEnvironment();
+                var sessionOptions = new OrtSession.SessionOptions();
+                sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+                sessionOptions.setIntraOpNumThreads(2);
+                var session = env.createSession(config.modelPath(), sessionOptions);
+                log.info("Loaded TTM model from {}", config.modelPath());
+                log.debug("Model inputs: {}", session.getInputNames());
+                log.debug("Model outputs: {}", session.getOutputNames());
+                return new TTMPredictorImpl(env, session, config);
             }
-            var env = OrtEnvironment.getEnvironment();
-            var sessionOptions = new OrtSession.SessionOptions();
-            sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
-            sessionOptions.setIntraOpNumThreads(2);
-            var session = env.createSession(config.modelPath(), sessionOptions);
-            log.info("Loaded TTM model from {}", config.modelPath());
-            log.debug("Model inputs: {}", session.getInputNames());
-            log.debug("Model outputs: {}", session.getOutputNames());
-            return Result.success(new TTMPredictorImpl(env, session, config));
-        } catch (OrtException e) {
-            return new TTMError.ModelLoadFailed(config.modelPath(), e.getMessage()).result();
-        }
+        );
     }
 
     @Override
@@ -162,10 +171,12 @@ final class TTMPredictorImpl implements TTMPredictor {
     @Override
     public void close() {
         ready = false;
-        try{
-            session.close();
-        } catch (OrtException e) {
-            log.warn("Error closing ONNX session: {}", e.getMessage());
-        }
+        Result.lift(
+            e -> new TTMError.InferenceFailed("Error closing ONNX session: " + e.getMessage()),
+            () -> {
+                session.close();
+                return org.pragmatica.lang.Unit.unit();
+            }
+        ).onFailure(cause -> log.warn(cause.message()));
     }
 }

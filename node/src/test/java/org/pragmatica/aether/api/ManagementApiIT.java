@@ -294,6 +294,7 @@ class ManagementApiIT {
                 managementPort,
                 Option.empty(),
                 org.pragmatica.dht.DHTConfig.FULL,
-                Option.empty());
+                Option.empty(),
+                org.pragmatica.aether.config.TTMConfig.disabled());
     }
 }

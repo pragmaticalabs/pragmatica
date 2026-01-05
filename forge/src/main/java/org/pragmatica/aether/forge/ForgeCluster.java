@@ -294,7 +294,8 @@ public final class ForgeCluster {
         mgmtPort,
         Option.empty(),
         DHTConfig.FULL,
-        Option.empty());
+        Option.empty(),
+        org.pragmatica.aether.config.TTMConfig.disabled());
         return AetherNode.aetherNode(config)
                          .unwrap();
     }

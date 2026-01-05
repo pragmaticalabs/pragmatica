@@ -68,14 +68,15 @@ public interface TTMManager {
             return TTMError.Disabled.INSTANCE.result();
         }
         return TTMPredictor.ttmPredictor(config)
-                           .flatMap(predictor -> {
-                                        var analyzer = ForecastAnalyzer.forecastAnalyzer(config);
-                                        return Result.success(new TTMManagerImpl(config,
-                                                                                 predictor,
-                                                                                 analyzer,
-                                                                                 aggregator,
-                                                                                 controllerConfigSupplier));
-                                    });
+                           .map(predictor -> createManager(config, predictor, aggregator, controllerConfigSupplier));
+    }
+
+    private static TTMManager createManager(TTMConfig config,
+                                            TTMPredictor predictor,
+                                            MinuteAggregator aggregator,
+                                            Supplier<ControllerConfig> controllerConfigSupplier) {
+        var analyzer = ForecastAnalyzer.forecastAnalyzer(config);
+        return new TTMManagerImpl(config, predictor, analyzer, aggregator, controllerConfigSupplier);
     }
 
     /**
