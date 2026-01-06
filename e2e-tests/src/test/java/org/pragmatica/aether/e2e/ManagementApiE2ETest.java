@@ -88,7 +88,7 @@ class ManagementApiE2ETest {
             assertThat(slices).doesNotContain("\"error\"");
 
             // Deploy a slice and verify it appears
-            cluster.anyNode().deploy("org.pragmatica-lite.aether:example-slice:0.7.1", 1);
+            cluster.anyNode().deploy("org.pragmatica-lite.aether:example-slice:0.7.2", 1);
 
             await().atMost(WAIT_TIMEOUT).until(() -> {
                 var response = cluster.anyNode().getSlices();
@@ -125,7 +125,7 @@ class ManagementApiE2ETest {
         @Test
         void invocationMetrics_tracksCallsPerMethod() {
             // Deploy a slice to generate some invocation data
-            cluster.anyNode().deploy("org.pragmatica-lite.aether:example-slice:0.7.1", 1);
+            cluster.anyNode().deploy("org.pragmatica-lite.aether:example-slice:0.7.2", 1);
 
             await().atMost(WAIT_TIMEOUT).until(() -> {
                 var slices = cluster.anyNode().getSlices();
@@ -262,7 +262,7 @@ class ManagementApiE2ETest {
         @Test
         void slicesStatus_returnsDetailedHealth() {
             // Deploy a slice first
-            cluster.anyNode().deploy("org.pragmatica-lite.aether:example-slice:0.7.1", 2);
+            cluster.anyNode().deploy("org.pragmatica-lite.aether:example-slice:0.7.2", 2);
 
             await().atMost(WAIT_TIMEOUT).until(() -> {
                 var slices = cluster.anyNode().getSlices();

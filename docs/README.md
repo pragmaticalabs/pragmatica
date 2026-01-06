@@ -73,7 +73,7 @@ Understand Aether's design and capabilities:
 
 ## Version
 
-This documentation is for **Aether v0.7.1**.
+This documentation is for **Aether v0.7.2**.
 
 ## Getting Help
 

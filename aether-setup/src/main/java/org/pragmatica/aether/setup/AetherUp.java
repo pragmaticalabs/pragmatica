@@ -33,7 +33,7 @@ import java.util.Map;
  * </pre>
  */
 public final class AetherUp {
-    private static final String VERSION = "0.7.1";
+    private static final String VERSION = "0.7.2";
     private static final List<Generator> GENERATORS = List.of(new LocalGenerator(),
                                                               new DockerGenerator(),
                                                               new KubernetesGenerator());

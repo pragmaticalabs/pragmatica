@@ -98,7 +98,7 @@ aether/
 <dependency>
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>slice-api</artifactId>
-    <version>0.7.1</version>
+    <version>0.7.2</version>
 </dependency>
 <dependency>
     <groupId>org.pragmatica-lite</groupId>

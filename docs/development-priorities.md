@@ -1,8 +1,8 @@
 # Development Priorities
 
-## Current Status (v0.7.1)
+## Current Status (v0.7.2)
 
-Release 0.7.1 focuses on **production readiness** with comprehensive E2E testing and documentation.
+Release 0.7.2 focuses on **production readiness** with comprehensive E2E testing and documentation.
 
 ## Completed ✅
 
@@ -55,7 +55,7 @@ Release 0.7.1 focuses on **production readiness** with comprehensive E2E testing
    - Fix any failing tests
    - Performance benchmarking
 
-2. **Release 0.7.1**
+2. **Release 0.7.2**
    - Final documentation review
    - CHANGELOG finalization
    - Create release branch

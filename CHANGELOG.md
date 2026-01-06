@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-01-06
+
+### Added
+- **Introduction article** - Comprehensive article presenting Aether to developers (`docs/articles/aether-introduction.md`)
+
 ### Fixed
 - **Rolling Update Manager** - Multiple critical fixes
   - State restoration race condition - no longer restores state in constructor before KVStore is ready

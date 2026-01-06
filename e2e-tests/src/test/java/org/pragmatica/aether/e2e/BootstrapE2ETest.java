@@ -28,7 +28,7 @@ import static org.awaitility.Awaitility.await;
 class BootstrapE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether:example-slice:0.7.1";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether:example-slice:0.7.2";
     private AetherCluster cluster;
 
     @BeforeEach
