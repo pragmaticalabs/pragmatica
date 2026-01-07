@@ -1,6 +1,5 @@
 package org.pragmatica.aether.metrics;
 
-import org.pragmatica.aether.metrics.events.EventPublisher;
 import org.pragmatica.utility.RingBuffer;
 
 import java.util.ArrayList;
@@ -216,8 +215,7 @@ public final class MinuteAggregator {
             p95 = percentile(sorted, 95);
             p99 = percentile(sorted, 99);
         }
-        // Get event count from EventPublisher
-        int events = countEventsInMinute(currentMinute);
+        int events = 0;
         var aggregate = new MinuteAggregate(currentMinute,
                                             sumCpu / n,
                                             sumHeap / n,
@@ -243,12 +241,5 @@ public final class MinuteAggregator {
         }
         int index = (int) Math.ceil(percentile / 100.0 * sorted.length) - 1;
         return sorted[Math.max(0, Math.min(index, sorted.length - 1))];
-    }
-
-    private int countEventsInMinute(long minuteTimestamp) {
-        var events = EventPublisher.since(minuteTimestamp);
-        return (int) events.stream()
-                          .filter(e -> e.timestamp() < minuteTimestamp + 60_000L)
-                          .count();
     }
 }

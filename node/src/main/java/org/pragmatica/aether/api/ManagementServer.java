@@ -221,6 +221,7 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private void handleGet(ChannelHandlerContext ctx, String uri) {
         var node = nodeSupplier.get();
+
         // Handle dashboard static files
         if (uri.equals("/dashboard") || uri.equals("/dashboard/")) {
             serveDashboardFile(ctx, "index.html", CONTENT_TYPE_HTML);
@@ -230,21 +231,45 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             serveDashboardFile(ctx, "style.css", CONTENT_TYPE_CSS);
             return;
         }
-        // Handle repository requests
+        if (uri.equals("/dashboard/dashboard.js")) {
+            serveDashboardFile(ctx, "dashboard.js", CONTENT_TYPE_JS);
+            return;
+        }
+
+        // Handle /api/ prefixed endpoints
+        if (uri.startsWith("/api/")) {
+            handleApiGet(ctx, node, uri.substring(4)); // Strip /api prefix
+            return;
+        }
+
+        // Handle repository requests (no /api prefix)
         if (uri.startsWith("/repository/")) {
             handleRepositoryGet(ctx, node, uri);
             return;
         }
+
+        sendError(ctx, HttpResponseStatus.NOT_FOUND);
+    }
+
+    private void handleApiGet(ChannelHandlerContext ctx, AetherNode node, String uri) {
+        // Handle chaos panel endpoint (returns empty for Node, Forge overrides)
+        if (uri.equals("/panel/chaos")) {
+            sendText(ctx, "");
+            return;
+        }
+
         // Handle rolling update paths
         if (uri.startsWith("/rolling-update/") || uri.equals("/rolling-updates")) {
             handleRollingUpdateGet(ctx, node, uri);
             return;
         }
+
         // Handle Prometheus metrics endpoint
         if (uri.equals("/metrics/prometheus")) {
             sendPrometheus(ctx, observability.scrape());
             return;
         }
+
         // Handle invocation metrics with optional query parameters
         if (uri.startsWith("/invocation-metrics")) {
             var path = extractPath(uri);
@@ -261,6 +286,7 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             }
             return;
         }
+
         var response = switch (uri) {
             case "/status" -> buildStatusResponse(node);
             case "/nodes" -> buildNodesResponse(node);
@@ -277,8 +303,11 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             case "/controller/config" -> buildControllerConfigResponse(node);
             case "/controller/status" -> buildControllerStatusResponse(node);
             case "/ttm/status" -> buildTtmStatusResponse(node);
+            case "/node-metrics" -> buildNodeMetricsResponse(node);
+            case "/events" -> "[]"; // Empty events for Node (Forge provides events)
             default -> (String) null;
         };
+
         if (response != null) {
             sendJson(ctx, response);
         } else {
@@ -335,20 +364,30 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private void handlePost(ChannelHandlerContext ctx, String uri, FullHttpRequest request) {
         var node = nodeSupplier.get();
-        // Handle repository PUT requests (binary content)
+
+        // Handle repository PUT requests (binary content, no /api prefix)
         if (uri.startsWith("/repository/")) {
             handleRepositoryPut(ctx, node, uri, request);
             return;
         }
-        // For other endpoints, read as string
-        var body = request.content()
-                          .toString(CharsetUtil.UTF_8);
-        // Handle rolling update POST paths
-        if (uri.startsWith("/rolling-update")) {
-            handleRollingUpdatePost(ctx, node, uri, body);
+
+        // Require /api/ prefix for API endpoints
+        if (!uri.startsWith("/api/")) {
+            sendError(ctx, HttpResponseStatus.NOT_FOUND);
             return;
         }
-        switch (uri) {
+
+        var apiUri = uri.substring(4); // Strip /api prefix
+        var body = request.content()
+                          .toString(CharsetUtil.UTF_8);
+
+        // Handle rolling update POST paths
+        if (apiUri.startsWith("/rolling-update")) {
+            handleRollingUpdatePost(ctx, node, apiUri, body);
+            return;
+        }
+
+        switch (apiUri) {
             case "/deploy" -> handleDeploy(ctx, node, body);
             case "/scale" -> handleScale(ctx, node, body);
             case "/undeploy" -> handleUndeploy(ctx, node, body);
@@ -363,9 +402,17 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     }
 
     private void handleDelete(ChannelHandlerContext ctx, String uri) {
-        // DELETE /thresholds/{metric}
-        if (uri.startsWith("/thresholds/")) {
-            var metric = uri.substring("/thresholds/".length());
+        // Require /api/ prefix
+        if (!uri.startsWith("/api/")) {
+            sendError(ctx, HttpResponseStatus.NOT_FOUND);
+            return;
+        }
+
+        var apiUri = uri.substring(4); // Strip /api prefix
+
+        // DELETE /api/thresholds/{metric}
+        if (apiUri.startsWith("/thresholds/")) {
+            var metric = apiUri.substring("/thresholds/".length());
             handleDeleteThreshold(ctx, metric);
             return;
         }
@@ -833,6 +880,66 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private String buildStatusResponse(AetherNode node) {
         var sb = new StringBuilder();
         sb.append("{");
+
+        // Uptime
+        var uptimeSeconds = node.uptimeSeconds();
+        sb.append("\"uptimeSeconds\":")
+          .append(uptimeSeconds)
+          .append(",");
+
+        // Cluster info
+        sb.append("\"cluster\":{");
+        var allMetrics = node.metricsCollector()
+                             .allMetrics();
+        var connectedNodes = allMetrics.keySet();
+        var leaderId = node.leader()
+                           .fold(() -> "none", NodeId::id);
+
+        sb.append("\"nodeCount\":")
+          .append(connectedNodes.size())
+          .append(",");
+        sb.append("\"leaderId\":\"")
+          .append(leaderId)
+          .append("\",");
+        sb.append("\"nodes\":[");
+
+        boolean first = true;
+        for (NodeId nodeId : connectedNodes) {
+            if (!first) sb.append(",");
+            var isLeader = node.leader()
+                               .fold(() -> false, l -> l.equals(nodeId));
+            sb.append("{\"id\":\"")
+              .append(nodeId.id())
+              .append("\",\"isLeader\":")
+              .append(isLeader)
+              .append("}");
+            first = false;
+        }
+        sb.append("]},");
+
+        // Slice count
+        var sliceCount = node.sliceStore()
+                             .loaded()
+                             .size();
+        sb.append("\"sliceCount\":")
+          .append(sliceCount)
+          .append(",");
+
+        // Metrics summary
+        var derived = node.snapshotCollector()
+                          .derivedMetrics();
+        sb.append("\"metrics\":{");
+        sb.append("\"requestsPerSecond\":")
+          .append(derived.requestRate())
+          .append(",");
+        sb.append("\"successRate\":")
+          .append(100.0 - derived.errorRate() * 100.0)
+          .append(",");
+        sb.append("\"avgLatencyMs\":")
+          .append(derived.latencyP50());
+        sb.append("},");
+
+        // Node info
         sb.append("\"nodeId\":\"")
           .append(node.self()
                       .id())
@@ -842,10 +949,9 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
           .append(node.isLeader())
           .append(",");
         sb.append("\"leader\":\"")
-          .append(node.leader()
-                      .fold(() -> "",
-                            nodeId -> nodeId.id()))
+          .append(leaderId)
           .append("\"");
+
         sb.append("}");
         return sb.toString();
     }
@@ -1215,8 +1321,11 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         var config = ttm.config();
         var sb = new StringBuilder();
         sb.append("{");
-        sb.append("\"enabled\":")
+        sb.append("\"configEnabled\":")
           .append(config.enabled())
+          .append(",");
+        sb.append("\"active\":")
+          .append(ttm.isEnabled())
           .append(",");
         sb.append("\"state\":\"")
           .append(ttm.state()
@@ -1343,6 +1452,34 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
                       "Runtime strategy change not supported. Strategy must be set at node startup.");
     }
 
+    private String buildNodeMetricsResponse(AetherNode node) {
+        var allMetrics = node.metricsCollector()
+                             .allMetrics();
+        var sb = new StringBuilder();
+        sb.append("[");
+        boolean first = true;
+        for (var entry : allMetrics.entrySet()) {
+            if (!first) sb.append(",");
+            var nodeId = entry.getKey();
+            var metrics = entry.getValue();
+            sb.append("{\"nodeId\":\"")
+              .append(nodeId.id())
+              .append("\",");
+            sb.append("\"cpuUsage\":")
+              .append(metrics.getOrDefault("cpuUsage", 0.0))
+              .append(",");
+            sb.append("\"heapUsedMb\":")
+              .append(metrics.getOrDefault("heapUsedMb", 0.0).longValue())
+              .append(",");
+            sb.append("\"heapMaxMb\":")
+              .append(metrics.getOrDefault("heapMaxMb", 0.0).longValue());
+            sb.append("}");
+            first = false;
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
     private String buildAlertsResponse() {
         return "{\"active\":" + alertManager.activeAlertsAsJson() + ",\"history\":" + alertManager.alertHistoryAsJson()
                + "}";
@@ -1365,6 +1502,18 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf);
         response.headers()
                 .set(HttpHeaderNames.CONTENT_TYPE, CONTENT_TYPE_PROMETHEUS);
+        response.headers()
+                .setInt(HttpHeaderNames.CONTENT_LENGTH,
+                        buf.readableBytes());
+        ctx.writeAndFlush(response)
+           .addListener(ChannelFutureListener.CLOSE);
+    }
+
+    private void sendText(ChannelHandlerContext ctx, String content) {
+        var buf = Unpooled.copiedBuffer(content, CharsetUtil.UTF_8);
+        var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK, buf);
+        response.headers()
+                .set(HttpHeaderNames.CONTENT_TYPE, CONTENT_TYPE_HTML);
         response.headers()
                 .setInt(HttpHeaderNames.CONTENT_LENGTH,
                         buf.readableBytes());

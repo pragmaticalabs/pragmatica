@@ -48,6 +48,12 @@ public interface TTMManager {
     TTMConfig config();
 
     /**
+     * Check if TTM is actually enabled and functional.
+     * Returns false for NoOpTTMManager or if model failed to load.
+     */
+    boolean isEnabled();
+
+    /**
      * Stop the TTM manager.
      */
     void stop();
@@ -116,6 +122,11 @@ final class NoOpTTMManager implements TTMManager {
     @Override
     public TTMConfig config() {
         return config;
+    }
+
+    @Override
+    public boolean isEnabled() {
+        return false;
     }
 
     @Override

@@ -47,7 +47,6 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
     private final ForgeCluster cluster;
     private final LoadGenerator loadGenerator;
     private final ForgeMetrics metrics;
-    private final LocalSliceInvoker sliceInvoker;
     private final ChaosController chaosController;
     private static final int MAX_EVENTS = 100;
     private final Deque<ForgeEvent> events = new ConcurrentLinkedDeque<>();
@@ -64,20 +63,17 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
 
     private ForgeApiHandler(ForgeCluster cluster,
                             LoadGenerator loadGenerator,
-                            ForgeMetrics metrics,
-                            LocalSliceInvoker sliceInvoker) {
+                            ForgeMetrics metrics) {
         this.cluster = cluster;
         this.loadGenerator = loadGenerator;
         this.metrics = metrics;
-        this.sliceInvoker = sliceInvoker;
         this.chaosController = ChaosController.chaosController(this::executeChaosEvent);
     }
 
     public static ForgeApiHandler forgeApiHandler(ForgeCluster cluster,
                                                   LoadGenerator loadGenerator,
-                                                  ForgeMetrics metrics,
-                                                  LocalSliceInvoker sliceInvoker) {
-        return new ForgeApiHandler(cluster, loadGenerator, metrics, sliceInvoker);
+                                                  ForgeMetrics metrics) {
+        return new ForgeApiHandler(cluster, loadGenerator, metrics);
     }
 
     /**
@@ -104,118 +100,161 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
     }
 
     public int sliceCount() {
-        return sliceInvoker.sliceCount();
+        return cluster.allNodes()
+                      .stream()
+                      .mapToInt(node -> node.sliceStore()
+                                            .loaded()
+                                            .size())
+                      .sum();
     }
 
     @Override
     protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
         var path = request.uri();
-        var method = request.method();
-        log.debug("API request: {} {}", method, path);
-        try{
-            if (path.equals("/api/status") && method == HttpMethod.GET) {
-                handleStatus(ctx);
-            } else if (path.equals("/api/add-node") && method == HttpMethod.POST) {
-                handleAddNode(ctx);
-            } else if (path.startsWith("/api/kill/") && method == HttpMethod.POST) {
-                handleKillNode(ctx,
-                               path.substring("/api/kill/".length()));
-            } else if (path.startsWith("/api/crash/") && method == HttpMethod.POST) {
-                handleCrashNode(ctx,
-                                path.substring("/api/crash/".length()));
-            } else if (path.equals("/api/rolling-restart") && method == HttpMethod.POST) {
-                handleRollingRestart(ctx);
-            } else if (path.startsWith("/api/load/set/") && method == HttpMethod.POST) {
-                handleSetLoad(ctx,
-                              path.substring("/api/load/set/".length()));
-            } else if (path.equals("/api/load/ramp") && method == HttpMethod.POST) {
-                handleRampLoad(ctx, request);
-            } else if (path.equals("/api/events") && method == HttpMethod.GET) {
-                handleEvents(ctx);
-            } else if (path.equals("/api/reset-metrics") && method == HttpMethod.POST) {
-                handleResetMetrics(ctx);
-            } else if (path.equals("/api/node-metrics") && method == HttpMethod.GET) {
-                handleNodeMetrics(ctx);
-            } else if (path.equals("/api/orders") && method == HttpMethod.POST) {
-                handlePlaceOrder(ctx, request);
-            } else if (path.startsWith("/api/orders/") && method == HttpMethod.GET) {
-                handleGetOrderStatus(ctx,
-                                     path.substring("/api/orders/".length()));
-            } else if (path.startsWith("/api/orders/") && method == HttpMethod.DELETE) {
-                handleCancelOrder(ctx,
-                                  path.substring("/api/orders/".length()),
-                                  request);
-            } else if (path.startsWith("/api/inventory/") && method == HttpMethod.GET) {
-                handleCheckStock(ctx,
-                                 path.substring("/api/inventory/".length()));
-            } else if (path.startsWith("/api/pricing/") && method == HttpMethod.GET) {
-                handleGetPrice(ctx,
-                               path.substring("/api/pricing/".length()));
-            } else if (path.equals("/api/simulator/metrics") && method == HttpMethod.GET) {
-                handleSimulatorMetrics(ctx);
-            } else if (path.startsWith("/api/simulator/rate/") && method == HttpMethod.POST) {
-                handleSimulatorRate(ctx,
-                                    path.substring("/api/simulator/rate/".length()),
-                                    request);
-            } else if (path.equals("/api/simulator/entrypoints") && method == HttpMethod.GET) {
-                handleSimulatorEntryPoints(ctx);
-            } else if (path.equals("/api/simulator/config") && method == HttpMethod.GET) {
-                handleGetConfig(ctx);
-            } else if (path.equals("/api/simulator/config") && method == HttpMethod.PUT) {
-                handlePutConfig(ctx, request);
-            } else if (path.equals("/api/simulator/config/multiplier") && method == HttpMethod.POST) {
-                handleSetMultiplier(ctx, request);
-            } else if (path.equals("/api/simulator/config/enabled") && method == HttpMethod.POST) {
-                handleSetEnabled(ctx, request);
-            } else if (path.equals("/api/inventory/mode") && method == HttpMethod.GET) {
-                handleGetInventoryMode(ctx);
-            } else if (path.equals("/api/inventory/mode") && method == HttpMethod.POST) {
-                handleSetInventoryMode(ctx, request);
-            } else if (path.equals("/api/inventory/metrics") && method == HttpMethod.GET) {
-                handleInventoryMetrics(ctx);
-            } else if (path.equals("/api/inventory/stock") && method == HttpMethod.GET) {
-                handleInventoryStock(ctx);
-            } else if (path.equals("/api/inventory/reset") && method == HttpMethod.POST) {
-                handleInventoryReset(ctx);
-            } else if (path.equals("/api/chaos/status") && method == HttpMethod.GET) {
-                handleChaosStatus(ctx);
-            } else if (path.equals("/api/chaos/enable") && method == HttpMethod.POST) {
-                handleChaosEnable(ctx, request);
-            } else if (path.equals("/api/chaos/inject") && method == HttpMethod.POST) {
-                handleChaosInject(ctx, request);
-            } else if (path.startsWith("/api/chaos/stop/") && method == HttpMethod.POST) {
-                handleChaosStop(ctx,
-                                path.substring("/api/chaos/stop/".length()));
-            } else if (path.equals("/api/chaos/stop-all") && method == HttpMethod.POST) {
-                handleChaosStopAll(ctx);
-            } else if (path.equals("/api/simulator/mode") && method == HttpMethod.GET) {
-                handleGetMode(ctx);
-            } else if (path.equals("/api/simulator/modes") && method == HttpMethod.GET) {
-                handleGetModes(ctx);
-            } else if (path.startsWith("/api/simulator/mode/") && method == HttpMethod.PUT) {
-                handleSetMode(ctx,
-                              path.substring("/api/simulator/mode/".length()));
-            } else if (path.startsWith("/repository/") && method == HttpMethod.GET) {
-                handleRepositoryGet(ctx, path);
-            } else if (path.startsWith("/repository/") && (method == HttpMethod.PUT || method == HttpMethod.POST)) {
-                handleRepositoryPut(ctx, path, request);
-            } else if (path.equals("/api/deploy") && method == HttpMethod.POST) {
-                handleDeploy(ctx, request);
-            } else if (path.equals("/api/blueprint") && method == HttpMethod.POST) {
-                handleBlueprint(ctx, request);
-            } else if (path.equals("/api/undeploy") && method == HttpMethod.POST) {
-                handleUndeploy(ctx, request);
-            } else if (path.equals("/api/slices/status") && method == HttpMethod.GET) {
-                handleSlicesStatus(ctx);
-            } else if (path.equals("/api/cluster/metrics") && method == HttpMethod.GET) {
-                handleClusterMetrics(ctx);
-            } else {
-                sendResponse(ctx, NOT_FOUND, "{\"error\": \"Not found\"}");
+        log.debug("API request: {} {}", request.method(), path);
+        try {
+            switch (request.method().name()) {
+                case "GET" -> handleGet(ctx, path);
+                case "POST" -> handlePost(ctx, path, request);
+                case "PUT" -> handlePut(ctx, path, request);
+                case "DELETE" -> handleDelete(ctx, path);
+                default -> sendResponse(ctx, METHOD_NOT_ALLOWED, "{\"error\": \"Method not allowed\"}");
             }
         } catch (Exception e) {
             log.error("Error handling API request: {}", e.getMessage(), e);
             sendResponse(ctx, INTERNAL_SERVER_ERROR, "{\"error\": \"" + escapeJson(e.getMessage()) + "\"}");
         }
+    }
+
+    private void handleGet(ChannelHandlerContext ctx, String path) {
+        switch (path) {
+            case "/api/panel/chaos" -> handleChaosPanel(ctx);
+            case "/api/status" -> handleStatus(ctx);
+            case "/api/events" -> handleEvents(ctx);
+            case "/api/node-metrics" -> handleNodeMetrics(ctx);
+            case "/api/chaos/status" -> handleChaosStatus(ctx);
+            case "/api/slices/status" -> handleSlicesStatus(ctx);
+            default -> handleGetWithPrefix(ctx, path);
+        }
+    }
+
+    private void handleGetWithPrefix(ChannelHandlerContext ctx, String path) {
+        if (path.startsWith("/repository/")) {
+            handleRepositoryGet(ctx, path);
+        } else if (path.startsWith("/api/")) {
+            proxyGetToLeader(ctx, path);
+        } else {
+            sendResponse(ctx, NOT_FOUND, "{\"error\": \"Not found\"}");
+        }
+    }
+
+    private void handlePost(ChannelHandlerContext ctx, String path, FullHttpRequest request) {
+        switch (path) {
+            case "/api/chaos/enable" -> handleChaosEnable(ctx, request);
+            case "/api/chaos/inject" -> handleChaosInject(ctx, request);
+            case "/api/chaos/stop-all" -> handleChaosStopAll(ctx);
+            case "/api/chaos/add-node" -> handleAddNode(ctx);
+            case "/api/chaos/rolling-restart" -> handleRollingRestart(ctx);
+            case "/api/chaos/reset-metrics" -> handleResetMetrics(ctx);
+            case "/api/load/ramp" -> handleRampLoad(ctx, request);
+            case "/api/load/config/enabled" -> handleSetEnabled(ctx, request);
+            case "/api/load/config/multiplier" -> handleSetMultiplier(ctx, request);
+            default -> handlePostWithPrefix(ctx, path, request);
+        }
+    }
+
+    private void handlePostWithPrefix(ChannelHandlerContext ctx, String path, FullHttpRequest request) {
+        if (path.startsWith("/api/chaos/stop/")) {
+            handleChaosStop(ctx, path.substring("/api/chaos/stop/".length()));
+        } else if (path.startsWith("/api/chaos/kill/")) {
+            handleKillNode(ctx, path.substring("/api/chaos/kill/".length()));
+        } else if (path.startsWith("/api/load/set/")) {
+            handleSetLoad(ctx, path.substring("/api/load/set/".length()));
+        } else if (path.startsWith("/repository/")) {
+            handleRepositoryPut(ctx, path, request);
+        } else if (path.startsWith("/api/")) {
+            proxyToLeader(ctx, path, request);
+        } else {
+            sendResponse(ctx, NOT_FOUND, "{\"error\": \"Not found\"}");
+        }
+    }
+
+    private void handlePut(ChannelHandlerContext ctx, String path, FullHttpRequest request) {
+        if (path.startsWith("/repository/")) {
+            handleRepositoryPut(ctx, path, request);
+        } else {
+            sendResponse(ctx, NOT_FOUND, "{\"error\": \"Not found\"}");
+        }
+    }
+
+    private void handleDelete(ChannelHandlerContext ctx, String path) {
+        if (path.startsWith("/api/")) {
+            proxyDeleteToLeader(ctx, path);
+        } else {
+            sendResponse(ctx, NOT_FOUND, "{\"error\": \"Not found\"}");
+        }
+    }
+
+    private void handleChaosPanel(ChannelHandlerContext ctx) {
+        var panelHtml = """
+            <!-- Chaos Control Panel -->
+            <div class="panel control-panel">
+                <h2>Chaos Controls</h2>
+                <div class="control-section">
+                    <div class="control-group">
+                        <span class="control-label">Node Chaos</span>
+                        <div class="control-buttons">
+                            <button id="btn-kill-node" class="btn btn-danger btn-small">Kill Node</button>
+                            <button id="btn-kill-leader" class="btn btn-warning btn-small">Kill Leader</button>
+                            <button id="btn-rolling-restart" class="btn btn-secondary btn-small">Rolling Restart</button>
+                            <button id="btn-add-node" class="btn btn-primary btn-small">Add Node</button>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <span class="control-label">Load Control</span>
+                        <div class="control-buttons">
+                            <button id="btn-load-1k" class="btn btn-secondary btn-small">1K</button>
+                            <button id="btn-load-5k" class="btn btn-secondary btn-small">5K</button>
+                            <button id="btn-load-10k" class="btn btn-secondary btn-small">10K</button>
+                            <button id="btn-load-25k" class="btn btn-secondary btn-small">25K</button>
+                            <button id="btn-load-50k" class="btn btn-secondary btn-small">50K</button>
+                            <button id="btn-load-100k" class="btn btn-secondary btn-small">100K</button>
+                            <button id="btn-ramp" class="btn btn-primary btn-small">Ramp</button>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <span class="control-label">Rate Slider</span>
+                        <div class="slider-container">
+                            <input type="range" id="load-slider" min="0" max="100000" value="0" step="1000">
+                            <span id="load-value" class="slider-value">0</span>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <span class="control-label">Load Generator</span>
+                        <div class="control-buttons">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="load-generator-toggle" checked>
+                                <span>Enabled</span>
+                            </label>
+                            <input type="number" id="rate-multiplier" value="1.0" min="0.1" max="10" step="0.1" class="multiplier-input">
+                            <button id="btn-apply-multiplier" class="btn btn-secondary btn-small">Apply</button>
+                        </div>
+                    </div>
+                    <div class="control-group">
+                        <button id="btn-reset" class="btn btn-secondary btn-small">Reset Metrics</button>
+                    </div>
+                </div>
+            </div>
+            """;
+        sendHtml(ctx, panelHtml);
+    }
+
+    private void sendHtml(ChannelHandlerContext ctx, String html) {
+        var buf = Unpooled.copiedBuffer(html, StandardCharsets.UTF_8);
+        var response = new DefaultFullHttpResponse(HTTP_1_1, OK, buf);
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "text/html; charset=UTF-8");
+        response.headers().setInt(HttpHeaderNames.CONTENT_LENGTH, buf.readableBytes());
+        ctx.writeAndFlush(response).addListener(ChannelFutureListener.CLOSE);
     }
 
     private void handleStatus(ChannelHandlerContext ctx) {
@@ -224,11 +263,7 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
         var loadStatus = new LoadStatus(loadGenerator.currentRate(),
                                         loadGenerator.targetRate(),
                                         loadGenerator.isRunning());
-        var response = new StatusResponse(clusterStatus,
-                                          metricsSnapshot,
-                                          loadStatus,
-                                          uptimeSeconds(),
-                                          sliceInvoker.sliceCount());
+        var response = new StatusResponse(clusterStatus, metricsSnapshot, loadStatus, uptimeSeconds(), sliceCount());
         sendResponse(ctx, OK, toJson(response));
     }
 
@@ -988,6 +1023,25 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                                });
     }
 
+    private void proxyDeleteToLeader(ChannelHandlerContext ctx, String endpoint) {
+        var leaderNode = findLeaderNode();
+        if (leaderNode.isEmpty()) {
+            sendResponse(ctx, SERVICE_UNAVAILABLE, "{\"error\": \"No leader available\"}");
+            return;
+        }
+        var node = leaderNode.get();
+        var mgmtPort = node.managementPort();
+        proxyHttpDelete("localhost", mgmtPort, endpoint)
+                    .onSuccess(response -> sendResponse(ctx, OK, response))
+                    .onFailure(cause -> {
+                                   log.error("Failed to proxy DELETE to leader: {}",
+                                             cause.message());
+                                   sendResponse(ctx,
+                                                INTERNAL_SERVER_ERROR,
+                                                "{\"error\": \"" + escapeJson(cause.message()) + "\"}");
+                               });
+    }
+
     /**
      * Find the current leader node.
      */
@@ -1045,6 +1099,40 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                                        var request = java.net.http.HttpRequest.newBuilder()
                                                          .uri(java.net.URI.create("http://" + host + ":" + port + path))
                                                          .GET()
+                                                         .timeout(Duration.ofSeconds(30))
+                                                         .build();
+                                       client.sendAsync(request,
+                                                        java.net.http.HttpResponse.BodyHandlers.ofString())
+                                             .thenAccept(response -> {
+                                                             if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                                                                 promise.succeed(response.body());
+                                                             } else {
+                                                                 promise.fail(Causes.cause("HTTP " + response.statusCode()
+                                                                                           + ": " + response.body()));
+                                                             }
+                                                         })
+                                             .exceptionally(e -> {
+                                           promise.fail(Causes.fromThrowable(e));
+                                           return null;
+                                       });
+                                   } catch (Exception e) {
+                                       promise.fail(Causes.fromThrowable(e));
+                                   }
+                               });
+    }
+
+    /**
+     * Execute HTTP DELETE to a node's ManagementServer.
+     */
+    private Promise<String> proxyHttpDelete(String host, int port, String path) {
+        return Promise.promise(promise -> {
+                                   try{
+                                       var client = java.net.http.HttpClient.newBuilder()
+                                                        .connectTimeout(Duration.ofSeconds(5))
+                                                        .build();
+                                       var request = java.net.http.HttpRequest.newBuilder()
+                                                         .uri(java.net.URI.create("http://" + host + ":" + port + path))
+                                                         .DELETE()
                                                          .timeout(Duration.ofSeconds(30))
                                                          .build();
                                        client.sendAsync(request,

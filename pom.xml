@@ -22,6 +22,7 @@
         <module>slice-annotations</module>
         <module>aether-config</module>
         <module>aether-setup</module>
+        <module>dashboard</module>
         <module>node</module>
         <module>slice-api</module>
         <module>slice</module>

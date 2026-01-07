@@ -86,6 +86,11 @@ final class TTMManagerImpl implements TTMManager {
     }
 
     @Override
+    public boolean isEnabled() {
+        return true;
+    }
+
+    @Override
     public void stop() {
         stopEvaluation();
         predictor.close();

@@ -25,7 +25,6 @@ import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.MetricsScheduler;
 import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
-import org.pragmatica.aether.metrics.events.EventPublisher;
 import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.consensus.RabiaMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
@@ -172,6 +171,11 @@ public interface AetherNode {
      */
     int managementPort();
 
+    /**
+     * Get the node uptime in seconds since start.
+     */
+    long uptimeSeconds();
+
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
         var serializer = furySerializer(AetherCustomClasses::configure);
@@ -260,7 +264,8 @@ public interface AetherNode {
                               ComprehensiveSnapshotCollector snapshotCollector,
                               EventLoopMetricsCollector eventLoopMetricsCollector,
                               Option<ManagementServer> managementServer,
-                              Option<HttpRouter> httpRouter) implements AetherNode {
+                              Option<HttpRouter> httpRouter,
+                              long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNodeImpl.class);
 
             @Override
@@ -271,8 +276,6 @@ public interface AetherNode {
             @Override
             public Promise<Unit> start() {
                 log.info("Starting Aether node {}", self());
-                // Initialize event publisher for cluster events
-                EventPublisher.initialize();
                 // Start comprehensive snapshot collection (feeds TTM pipeline)
                 snapshotCollector.start();
                 SliceRuntime.setSliceInvoker(sliceInvoker);
@@ -293,7 +296,6 @@ public interface AetherNode {
                 deploymentMetricsScheduler.stop();
                 ttmManager.stop();
                 snapshotCollector.stop();
-                EventPublisher.shutdown();
                 SliceRuntime.clear();
                 return httpRouter.fold(() -> Promise.success(Unit.unit()),
                                        HttpRouter::stop)
@@ -353,6 +355,11 @@ public interface AetherNode {
             @Override
             public int managementPort() {
                 return config.managementPort();
+            }
+
+            @Override
+            public long uptimeSeconds() {
+                return (System.currentTimeMillis() - startTimeMs) / 1000;
             }
         }
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
@@ -435,9 +442,8 @@ public interface AetherNode {
                                                controller::getConfiguration)
                                    .fold(_ -> TTMManager.noOp(config.ttm()),
                                          manager -> manager);
-        // Create control loop with adaptive controller when TTM is enabled
-        ClusterController effectiveController = config.ttm()
-                                                      .enabled()
+        // Create control loop with adaptive controller when TTM is actually enabled and functional
+        ClusterController effectiveController = ttmManager.isEnabled()
                                                 ? AdaptiveDecisionTree.adaptiveDecisionTree(controller, ttmManager)
                                                 : controller;
         var controlLoop = ControlLoop.controlLoop(config.self(), effectiveController, metricsCollector, clusterNode);
@@ -477,6 +483,7 @@ public interface AetherNode {
                                                                                     serializer,
                                                                                     deserializer));
         // Create the node first (without management server reference)
+        var startTimeMs = System.currentTimeMillis();
         var node = new aetherNodeImpl(config,
                                       delegateRouter,
                                       kvStore,
@@ -503,7 +510,8 @@ public interface AetherNode {
                                       snapshotCollector,
                                       eventLoopMetricsCollector,
                                       Option.empty(),
-                                      httpRouter);
+                                      httpRouter,
+                                      startTimeMs);
         // Build and wire ImmutableRouter, then create final node
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
                         .map(_ -> {
@@ -539,7 +547,8 @@ public interface AetherNode {
                                                                snapshotCollector,
                                                                eventLoopMetricsCollector,
                                                                Option.some(managementServer),
-                                                               httpRouter);
+                                                               httpRouter,
+                                                               startTimeMs);
                                  }
                                  return node;
                              });

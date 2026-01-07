@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Aether Forge</title>
+    <title>Aether Dashboard</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
@@ -11,7 +11,7 @@
     <div class="container">
         <!-- Header -->
         <header class="header">
-            <h1>AETHER FORGE</h1>
+            <h1 id="header-title">AETHER</h1>
             <div class="header-stats">
                 <span class="stat"><span class="stat-label">Uptime:</span><span id="uptime" class="stat-value">0:00</span></span>
                 <span class="stat"><span class="stat-label">Nodes:</span><span id="node-count" class="stat-value">0</span></span>
@@ -27,7 +27,7 @@
             <button class="nav-tab" data-page="cluster">Cluster</button>
         </nav>
 
-        <!-- Page: Overview (existing main content) -->
+        <!-- Page: Overview -->
         <div id="page-overview" class="page active">
             <!-- Main Grid -->
             <div class="main-grid">
@@ -75,7 +75,6 @@
                                 <thead>
                                     <tr>
                                         <th>Entry Point</th>
-                                        <th>Rate</th>
                                         <th>Total</th>
                                         <th>Success</th>
                                         <th>Avg</th>
@@ -83,7 +82,7 @@
                                     </tr>
                                 </thead>
                                 <tbody id="entrypoints-body">
-                                    <tr><td colspan="6" class="placeholder">Loading...</td></tr>
+                                    <tr><td colspan="5" class="placeholder">Loading...</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -103,52 +102,8 @@
                 </div>
             </div>
 
-            <!-- Control Panel -->
-            <div class="control-panel">
-                <div class="control-group">
-                    <h3>Chaos</h3>
-                    <div class="button-row">
-                        <button id="btn-kill-node" class="btn btn-danger">Kill Node</button>
-                        <button id="btn-kill-leader" class="btn btn-danger">Kill Leader</button>
-                        <button id="btn-rolling-restart" class="btn btn-warning">Rolling Restart</button>
-                        <button id="btn-add-node" class="btn btn-success">+ Node</button>
-                    </div>
-                </div>
-
-                <div class="control-group">
-                    <h3>Load</h3>
-                    <div class="load-control">
-                        <input type="range" id="load-slider" min="100" max="100000" value="1000" step="100">
-                        <span id="load-value">1K</span>
-                    </div>
-                    <div class="button-row">
-                        <button id="btn-load-1k" class="btn btn-primary btn-small">1K</button>
-                        <button id="btn-load-5k" class="btn btn-primary btn-small">5K</button>
-                        <button id="btn-load-10k" class="btn btn-primary btn-small">10K</button>
-                        <button id="btn-load-25k" class="btn btn-primary btn-small">25K</button>
-                        <button id="btn-load-50k" class="btn btn-primary btn-small">50K</button>
-                        <button id="btn-load-100k" class="btn btn-primary btn-small">100K</button>
-                        <button id="btn-ramp" class="btn btn-info btn-small">Ramp</button>
-                    </div>
-                </div>
-
-                <div class="control-group">
-                    <h3>Config</h3>
-                    <div class="config-row">
-                        <label class="toggle-label">
-                            <input type="checkbox" id="load-generator-toggle" checked>
-                            <span class="toggle-slider"></span>
-                            Generator
-                        </label>
-                        <div class="multiplier-control">
-                            <span>x</span>
-                            <input type="number" id="rate-multiplier" min="0.1" max="10" step="0.1" value="1.0">
-                            <button id="btn-apply-multiplier" class="btn btn-small btn-secondary">Apply</button>
-                        </div>
-                        <button id="btn-reset" class="btn btn-secondary btn-small">Reset</button>
-                    </div>
-                </div>
-            </div>
+            <!-- Dynamic Control Panel (injected from /api/panel/chaos) -->
+            <div id="control-panel-container"></div>
         </div>
 
         <!-- Page: Configuration -->
@@ -264,7 +219,7 @@
         </div>
     </div>
 
-    <!-- Node Selection Modal -->
+    <!-- Node Selection Modal (used by chaos panel when present) -->
     <div id="node-modal" class="modal hidden">
         <div class="modal-content">
             <h3>Select Node</h3>

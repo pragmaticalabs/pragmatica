@@ -39,7 +39,6 @@ public final class ForgeServer {
     private ForgeCluster cluster;
     private LoadGenerator loadGenerator;
     private ForgeMetrics metrics;
-    private LocalSliceInvoker sliceInvoker;
     private ForgeApiHandler apiHandler;
     private StaticFileHandler staticHandler;
 
@@ -86,10 +85,8 @@ public final class ForgeServer {
         metrics = ForgeMetrics.forgeMetrics();
         cluster = ForgeCluster.forgeCluster(clusterSize);
         loadGenerator = LoadGenerator.loadGenerator(port, metrics);
-        sliceInvoker = LocalSliceInvoker.localSliceInvoker();
-        apiHandler = ForgeApiHandler.forgeApiHandler(cluster, loadGenerator, metrics, sliceInvoker);
+        apiHandler = ForgeApiHandler.forgeApiHandler(cluster, loadGenerator, metrics);
         staticHandler = StaticFileHandler.staticFileHandler();
-        log.info("Forge running in standalone mode (no slices loaded)");
         // Start the cluster
         log.info("Starting {} node cluster...", clusterSize);
         var startResult = cluster.start()
