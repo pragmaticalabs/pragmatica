@@ -32,11 +32,11 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-JAR_FILE="$PROJECT_DIR/node/target/node-0.7.0-SNAPSHOT.jar"
+JAR_FILE="$PROJECT_DIR/node/target/aether-node.jar"
 
 if [ ! -f "$JAR_FILE" ]; then
     echo "Node JAR not found. Building..."
     mvn -f "$PROJECT_DIR/pom.xml" package -pl node -am -DskipTests -q
 fi
 
-java -jar "$JAR_FILE" "$@"
+exec java -jar "$JAR_FILE" "$@"

@@ -185,17 +185,32 @@ mvn install
 
 ## Running the Order Demo
 
-The `examples/order-demo` contains a complete multi-slice application:
+The easiest way to run the full order demo with slice deployment:
 
 ```bash
-cd examples/order-demo
-./run.sh
+# Start 5-node cluster
+./script/demo-cluster.sh start
+
+# Deploy order-demo slices
+./script/demo-cluster.sh deploy
+
+# Check status
+./script/demo-cluster.sh status
+
+# Open dashboard
+open http://localhost:8081/dashboard
+
+# Clean up when done
+./script/demo-cluster.sh clean
 ```
 
 This demonstrates:
-- Multiple interdependent slices
+- Real multi-process cluster with consensus
+- Slice deployment across nodes
 - Inter-slice communication
-- Scaling behavior
+- Management dashboard
+
+See [Demos Guide](../demos.md#real-cluster-demo) for detailed walkthrough.
 
 ## Next Steps
 

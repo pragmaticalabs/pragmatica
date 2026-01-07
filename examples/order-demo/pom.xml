@@ -6,9 +6,8 @@
 
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
-        <artifactId>aether</artifactId>
+        <artifactId>examples</artifactId>
         <version>0.7.2</version>
-        <relativePath>../../pom.xml</relativePath>
     </parent>
 
     <groupId>org.pragmatica-lite.aether.demo</groupId>

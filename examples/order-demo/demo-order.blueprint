@@ -1,22 +1,11 @@
-# Aether Blueprint - Order Demo
+# Aether Blueprint - Order Demo (working slices only)
+# Note: Slices with shared dependencies (order-domain) currently timeout
 id = "demo-order:0.1.0"
 
 [slices.inventory_service]
 artifact = "org.pragmatica-lite.aether.demo:inventory-service:0.1.0"
-instances = 2
-
-[slices.pricing_service]
-artifact = "org.pragmatica-lite.aether.demo:pricing-service:0.1.0"
-instances = 2
-
-[slices.place_order]
-artifact = "org.pragmatica-lite.aether.demo:place-order:0.1.0"
 instances = 3
 
 [slices.get_order_status]
 artifact = "org.pragmatica-lite.aether.demo:get-order-status:0.1.0"
-instances = 2
-
-[slices.cancel_order]
-artifact = "org.pragmatica-lite.aether.demo:cancel-order:0.1.0"
 instances = 2

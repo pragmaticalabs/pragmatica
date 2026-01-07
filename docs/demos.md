@@ -9,6 +9,7 @@ Aether includes:
 | Component | Purpose | Audience |
 |-----------|---------|----------|
 | **Aether Forge** (`forge/`) | Cluster simulator with visual dashboard for resilience testing | Developers, DevOps, executives |
+| **Real Cluster Demo** (`script/demo-cluster.sh`) | Multi-process cluster with slice deployment | Developers, DevOps |
 | **Order Domain Demo** (`examples/order-demo/`) | Multi-slice business domain example | Developers, architects |
 
 ---
@@ -293,6 +294,160 @@ docker-compose up
 - Cluster survives all operations
 - Success rate never drops to 0%
 - Recovery happens automatically without manual intervention
+
+---
+
+## Real Cluster Demo
+
+Run a **real multi-process cluster** on your local machine with actual slice deployment.
+
+### Quick Start
+
+```bash
+# Build everything
+mvn package -DskipTests
+
+# Start 5-node cluster
+./script/demo-cluster.sh start
+
+# Deploy order-demo slices
+./script/demo-cluster.sh deploy
+
+# Check status
+./script/demo-cluster.sh status
+
+# View logs (all nodes)
+./script/demo-cluster.sh logs
+
+# Stop and cleanup
+./script/demo-cluster.sh clean
+```
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Local Machine                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌────────────┐
+│  │   node-1    │  │   node-2    │  │   node-3    │  │   node-4    │  │   node-5   │
+│  │ Cluster:8091│  │ Cluster:8092│  │ Cluster:8093│  │ Cluster:8094│  │Cluster:8095│
+│  │ Mgmt:8081   │  │ Mgmt:8082   │  │ Mgmt:8083   │  │ Mgmt:8084   │  │ Mgmt:8085  │
+│  │ (Leader)    │  │             │  │             │  │             │  │            │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘  └────────────┘
+│        │                │                │                │                │
+│        └────────────────┴────────────────┴────────────────┴────────────────┘
+│                              Rabia Consensus (CFT)
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Commands
+
+| Command | Description |
+|---------|-------------|
+| `start` | Start 5-node cluster (auto-builds if needed) |
+| `stop` | Gracefully stop all nodes |
+| `status` | Show node health and cluster status |
+| `deploy` | Deploy order-demo blueprint |
+| `logs` | Tail all node logs |
+| `clean` | Stop cluster and remove logs/pids |
+
+### Endpoints
+
+After starting, access these endpoints:
+
+| Node | Management API | Dashboard |
+|------|----------------|-----------|
+| node-1 (leader) | http://localhost:8081 | http://localhost:8081/dashboard |
+| node-2 | http://localhost:8082 | http://localhost:8082/dashboard |
+| node-3 | http://localhost:8083 | http://localhost:8083/dashboard |
+| node-4 | http://localhost:8084 | http://localhost:8084/dashboard |
+| node-5 | http://localhost:8085 | http://localhost:8085/dashboard |
+
+### Step-by-Step Demo
+
+**1. Start the cluster:**
+
+```bash
+./script/demo-cluster.sh start
+```
+
+Output:
+```
+[INFO] Starting 5-node Aether cluster...
+[INFO] Starting node-1 on ports 8091 (cluster) / 8081 (mgmt)...
+[INFO] node-1 started (PID: 12345)
+...
+[INFO] Cluster is UP!
+```
+
+**2. Verify cluster health:**
+
+```bash
+curl http://localhost:8081/health
+```
+
+```json
+{"status":"UP","quorum":true,"nodeCount":5,"sliceCount":0}
+```
+
+**3. Deploy slices:**
+
+```bash
+./script/demo-cluster.sh deploy
+```
+
+**4. Check deployed slices:**
+
+```bash
+./script/demo-cluster.sh status
+```
+
+Shows slice distribution across nodes.
+
+**5. Open dashboard:**
+
+Navigate to http://localhost:8081/dashboard for real-time metrics.
+
+**6. Clean up:**
+
+```bash
+./script/demo-cluster.sh clean
+```
+
+### Logs
+
+Node logs are written to `logs/` directory:
+
+```bash
+# Follow all logs
+./script/demo-cluster.sh logs
+
+# Or individual nodes
+tail -f logs/node-1.log
+tail -f logs/node-3.log
+```
+
+### Troubleshooting
+
+**Port conflicts:**
+```bash
+lsof -i :8081-8095  # Check for processes using these ports
+```
+
+**Cluster won't form:**
+```bash
+./script/demo-cluster.sh logs  # Check for errors
+./script/demo-cluster.sh clean  # Reset and try again
+```
+
+**Slice deployment fails:**
+```bash
+# Ensure order-demo is installed
+cd examples/order-demo && mvn install -DskipTests
+```
 
 ---
 

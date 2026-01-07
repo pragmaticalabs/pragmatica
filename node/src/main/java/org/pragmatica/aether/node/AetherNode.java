@@ -360,10 +360,17 @@ public interface AetherNode {
                                                                                 invocationHandler,
                                                                                 routeRegistry,
                                                                                 config.sliceAction());
+        // Extract initial topology from config (node IDs from core nodes)
+        var initialTopology = config.topology()
+                                    .coreNodes()
+                                    .stream()
+                                    .map(org.pragmatica.consensus.net.NodeInfo::id)
+                                    .toList();
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
-                                                                                         delegateRouter);
+                                                                                         delegateRouter,
+                                                                                         initialTopology);
         // Create endpoint registry
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         // Create metrics components

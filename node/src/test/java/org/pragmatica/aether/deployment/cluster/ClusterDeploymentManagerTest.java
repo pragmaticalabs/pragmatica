@@ -46,7 +46,7 @@ class ClusterDeploymentManagerTest {
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
         router = MessageRouter.mutable();
-        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router);
+        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3));
     }
 
     // === Leader State Tests ===
@@ -167,11 +167,14 @@ class ClusterDeploymentManagerTest {
 
     @Test
     void no_allocation_when_no_nodes_available() {
-        becomeLeader();
-        // Don't add any topology
+        // Create manager with empty initial topology
+        var emptyTopologyManager = ClusterDeploymentManager.clusterDeploymentManager(
+            self, clusterNode, kvStore, router, List.of());
+        emptyTopologyManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        clusterNode.appliedCommands.clear();
 
         var artifact = createTestArtifact();
-        sendBlueprintPut(artifact, 3);
+        emptyTopologyManager.onValuePut(blueprintPut(artifact, 3));
 
         assertThat(clusterNode.appliedCommands).isEmpty();
     }
@@ -330,11 +333,14 @@ class ClusterDeploymentManagerTest {
     }
 
     private void sendBlueprintPut(Artifact artifact, int instanceCount) {
+        manager.onValuePut(blueprintPut(artifact, instanceCount));
+    }
+
+    private ValuePut<AetherKey, AetherValue> blueprintPut(Artifact artifact, int instanceCount) {
         var key = new BlueprintKey(artifact);
         var value = new BlueprintValue(instanceCount);
         var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-        var notification = new ValuePut<>(command, Option.none());
-        manager.onValuePut(notification);
+        return new ValuePut<>(command, Option.none());
     }
 
     private void sendBlueprintRemove(Artifact artifact) {

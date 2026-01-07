@@ -25,10 +25,9 @@
         <module>node</module>
         <module>slice-api</module>
         <module>slice</module>
-        <module>example-slice</module>
         <module>cluster</module>
         <module>cli</module>
-        <module>examples/order-demo</module>
+        <module>examples</module>
         <module>forge</module>
         <module>infra-services</module>
         <module>e2e-tests</module>

@@ -27,9 +27,10 @@ intelligent orchestration, and seamless multi-cloud deployment without requiring
 - **cluster/** - Cluster networking and KVStore (`NettyClusterNetwork`, `KVStore`)
 - **aether-ttm/** - TTM (Tiny Time Mixers) ONNX inference for predictive scaling
 - **aether-config/** - Configuration types (`AetherConfig`, `TTMConfig`)
-- **example-slice/** - Reference implementation (`StringProcessorSlice`)
 - **forge/** - Aether Forge: Standalone simulator CLI with visual dashboard for load/chaos testing
-- **examples/order-demo/** - Complete order domain demo (5 slices)
+- **examples/** - Example slices and demos
+  - **ecommerce/** - E-commerce domain with @Slice annotation pattern
+  - **order-demo/** - Complete order domain demo (5 slices)
 - **cli/** - Command-line interface for cluster management
 
 ### Module Dependencies
@@ -41,7 +42,7 @@ slice (depends on slice-api, cluster)
     ↑
 node (depends on slice, cluster)
     ↑
-example-slice (depends on slice-api)
+examples (depends on slice-api)
 ```
 
 ## Core Concepts
@@ -97,7 +98,7 @@ Maven-style coordinates for slices:
 
 ```java
 // Format: groupId:artifactId:version[-qualifier]
-Artifact.artifact("org.pragmatica-lite.aether:example-slice:0.7.2")
+Artifact.artifact("org.pragmatica-lite.aether.demo:inventory-service:0.1.0")
 ```
 
 **Components**:
@@ -829,8 +830,8 @@ When the specific error doesn't matter, just validate failure occurred:
 # Test specific module
 cd slice && mvn test
 
-# Run tests in example-slice
-cd example-slice && mvn test
+# Run tests in examples
+cd examples && mvn test
 ```
 
 ## Quick Reference
