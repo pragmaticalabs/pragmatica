@@ -223,6 +223,19 @@ async function fetchEntryPointMetrics() {
     } catch {}
 }
 
+let realSliceStatus = null;
+
+async function fetchSliceStatus() {
+    try {
+        const response = await fetch(`${API_BASE}/api/slices/status`);
+        if (response.ok) {
+            realSliceStatus = await response.json();
+        }
+    } catch {
+        realSliceStatus = null;
+    }
+}
+
 function updateEntryPointsTable() {
     const tbody = document.getElementById('entrypoints-body');
     if (!entryPointMetrics?.length) {
@@ -277,13 +290,18 @@ async function poll() {
 
     document.getElementById('uptime').textContent = formatUptime(status.uptimeSeconds);
     document.getElementById('node-count').textContent = status.cluster.nodeCount;
-    document.getElementById('slice-count').textContent = status.sliceCount || 0;
+
+    // Fetch real slice status from cluster
+    await fetchSliceStatus();
+    // Count unique active slices (aggregate state per artifact)
+    const activeSliceCount = realSliceStatus?.slices?.filter(s => s.state === 'ACTIVE')?.length || status.sliceCount || 0;
+    document.getElementById('slice-count').textContent = activeSliceCount;
 
     const newEvents = await fetchEvents();
     updateTimeline(newEvents);
 
     await fetchNodeMetrics();
-    updateNodesList(status.cluster.nodes, status.sliceCount);
+    updateNodesList(status.cluster.nodes);
 
     await fetchEntryPointMetrics();
 }
@@ -349,14 +367,34 @@ function formatEventTime(isoString) {
     return new Date(isoString).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
-function updateNodesList(clusterNodes, sliceCount) {
+function updateNodesList(clusterNodes) {
     const container = document.getElementById('nodes-list');
     if (!clusterNodes?.length) {
         container.innerHTML = '<div class="node-item placeholder">No nodes available</div>';
         return;
     }
 
-    const sliceNames = sliceCount > 0 ? ['inventory', 'pricing', 'place-order', 'get-status', 'cancel'] : [];
+    // Get real slice data per node from realSliceStatus
+    // Response format: {slices: [{artifact, state, instances: [{nodeId, state, health}]}]}
+    const slicesPerNode = {};
+    if (realSliceStatus?.slices) {
+        realSliceStatus.slices.forEach(slice => {
+            // Extract artifact short name (last part before version)
+            const artifactParts = (slice.artifact || '').split(':');
+            const shortName = artifactParts.length >= 2 ? artifactParts[1] : slice.artifact;
+            // Process each instance of this slice
+            if (slice.instances) {
+                slice.instances.forEach(instance => {
+                    const nodeId = instance.nodeId || 'unknown';
+                    if (!slicesPerNode[nodeId]) slicesPerNode[nodeId] = [];
+                    slicesPerNode[nodeId].push({
+                        name: shortName,
+                        state: instance.state
+                    });
+                });
+            }
+        });
+    }
 
     container.innerHTML = [...clusterNodes]
         .sort((a, b) => a.isLeader ? -1 : b.isLeader ? 1 : a.id.localeCompare(b.id))
@@ -364,13 +402,17 @@ function updateNodesList(clusterNodes, sliceCount) {
             const metrics = nodeMetricsData.find(m => m.nodeId === node.id);
             const cpu = metrics ? (metrics.cpuUsage * 100).toFixed(0) : '?';
             const heap = metrics ? `${metrics.heapUsedMb}/${metrics.heapMaxMb}` : '?/?';
-            const slices = sliceNames.map(s => `<span class="slice-tag">${s}</span>`).join('');
+            const nodeSlices = slicesPerNode[node.id] || [];
+            const slices = nodeSlices.map(s => {
+                const stateClass = s.state === 'ACTIVE' ? 'active' : s.state === 'LOADING' ? 'loading' : 'inactive';
+                return `<span class="slice-tag ${stateClass}" title="${s.state}">${escapeHtml(s.name)}</span>`;
+            }).join('');
 
             return `<div class="node-item ${node.isLeader ? 'leader' : ''}">
                 <span class="node-id">${node.id}</span>
                 ${node.isLeader ? '<span class="leader-badge">LEADER</span>' : ''}
                 <span class="node-stats"><span>CPU ${cpu}%</span><span>Heap ${heap}MB</span></span>
-                <span class="node-slices">${slices}</span>
+                <span class="node-slices">${slices || '<span class="no-slices">No slices</span>'}</span>
             </div>`;
         }).join('');
 }

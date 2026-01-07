@@ -12,7 +12,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
-
 import org.pragmatica.utility.IdGenerator;
 
 import java.math.BigDecimal;
@@ -84,10 +83,7 @@ public interface PaymentService {
 
     record RefundResult(String refundId, String originalTransactionId, Money refundedAmount, Instant processedAt) {
         public static RefundResult refundResult(String originalTransactionId, Money amount) {
-            return new RefundResult(IdGenerator.generate("REF"),
-                                    originalTransactionId,
-                                    amount,
-                                    Instant.now());
+            return new RefundResult(IdGenerator.generate("REF"), originalTransactionId, amount, Instant.now());
         }
     }
 
@@ -252,7 +248,7 @@ class PaymentServiceImpl implements PaymentService {
 
     private Result<Money> validateRefundAmount(RefundRequest request, PaymentResult original) {
         var refundAmount = request.partialAmount()
-                                  .fold(original::amount, java.util.function.Function.identity());
+                                  .fold(original::amount, amount -> amount);
         return original.amount()
                        .isGreaterThan(refundAmount)
                        .flatMap(isGreater -> isGreater || refundAmount.amount()

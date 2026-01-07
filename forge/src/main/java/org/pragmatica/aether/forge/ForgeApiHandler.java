@@ -199,6 +199,16 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                 handleRepositoryGet(ctx, path);
             } else if (path.startsWith("/repository/") && (method == HttpMethod.PUT || method == HttpMethod.POST)) {
                 handleRepositoryPut(ctx, path, request);
+            } else if (path.equals("/api/deploy") && method == HttpMethod.POST) {
+                handleDeploy(ctx, request);
+            } else if (path.equals("/api/blueprint") && method == HttpMethod.POST) {
+                handleBlueprint(ctx, request);
+            } else if (path.equals("/api/undeploy") && method == HttpMethod.POST) {
+                handleUndeploy(ctx, request);
+            } else if (path.equals("/api/slices/status") && method == HttpMethod.GET) {
+                handleSlicesStatus(ctx);
+            } else if (path.equals("/api/cluster/metrics") && method == HttpMethod.GET) {
+                handleClusterMetrics(ctx);
             } else {
                 sendResponse(ctx, NOT_FOUND, "{\"error\": \"Not found\"}");
             }
@@ -883,6 +893,178 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                        : 0;
             loadGenerator.setRate(entryPoint, rate);
         }
+    }
+
+    // ==================== Deployment API Handlers ====================
+    // These handlers proxy to the actual cluster nodes for real slice management
+    /**
+     * Handle POST /api/deploy - deploy a slice via blueprint.
+     * Proxies to leader node's ManagementServer.
+     * Body: {"artifact": "group:id:version", "instances": 1}
+     */
+    private void handleDeploy(ChannelHandlerContext ctx, FullHttpRequest request) {
+        proxyToLeader(ctx, "/deploy", request);
+    }
+
+    /**
+     * Handle POST /api/blueprint - apply a complete blueprint.
+     * Proxies to leader node's ManagementServer.
+     */
+    private void handleBlueprint(ChannelHandlerContext ctx, FullHttpRequest request) {
+        proxyToLeader(ctx, "/blueprint", request);
+    }
+
+    /**
+     * Handle POST /api/undeploy - undeploy a slice.
+     * Proxies to leader node's ManagementServer.
+     * Body: {"artifact": "group:id:version"}
+     */
+    private void handleUndeploy(ChannelHandlerContext ctx, FullHttpRequest request) {
+        proxyToLeader(ctx, "/undeploy", request);
+    }
+
+    /**
+     * Handle GET /api/slices/status - get real slice status from cluster.
+     * Proxies to leader node's ManagementServer.
+     */
+    private void handleSlicesStatus(ChannelHandlerContext ctx) {
+        proxyGetToLeader(ctx, "/slices/status");
+    }
+
+    /**
+     * Handle GET /api/cluster/metrics - get real cluster metrics.
+     * Proxies to leader node's ManagementServer.
+     */
+    private void handleClusterMetrics(ChannelHandlerContext ctx) {
+        proxyGetToLeader(ctx, "/metrics");
+    }
+
+    /**
+     * Proxy a POST request to the leader node's ManagementServer.
+     */
+    private void proxyToLeader(ChannelHandlerContext ctx, String endpoint, FullHttpRequest request) {
+        var leaderNode = findLeaderNode();
+        if (leaderNode.isEmpty()) {
+            sendResponse(ctx, SERVICE_UNAVAILABLE, "{\"error\": \"No leader available\"}");
+            return;
+        }
+        var node = leaderNode.get();
+        var mgmtPort = node.managementPort();
+        var body = request.content()
+                          .toString(StandardCharsets.UTF_8);
+        proxyHttpPost("localhost", mgmtPort, endpoint, body)
+                     .onSuccess(response -> {
+                                    addEvent("DEPLOY", "Proxied " + endpoint + " to leader: " + response);
+                                    sendResponse(ctx, OK, response);
+                                })
+                     .onFailure(cause -> {
+                                    log.error("Failed to proxy to leader: {}",
+                                              cause.message());
+                                    sendResponse(ctx,
+                                                 INTERNAL_SERVER_ERROR,
+                                                 "{\"error\": \"" + escapeJson(cause.message()) + "\"}");
+                                });
+    }
+
+    /**
+     * Proxy a GET request to the leader node's ManagementServer.
+     */
+    private void proxyGetToLeader(ChannelHandlerContext ctx, String endpoint) {
+        var leaderNode = findLeaderNode();
+        if (leaderNode.isEmpty()) {
+            sendResponse(ctx, SERVICE_UNAVAILABLE, "{\"error\": \"No leader available\"}");
+            return;
+        }
+        var node = leaderNode.get();
+        var mgmtPort = node.managementPort();
+        proxyHttpGet("localhost", mgmtPort, endpoint)
+                    .onSuccess(response -> sendResponse(ctx, OK, response))
+                    .onFailure(cause -> {
+                                   log.error("Failed to proxy GET to leader: {}",
+                                             cause.message());
+                                   sendResponse(ctx,
+                                                INTERNAL_SERVER_ERROR,
+                                                "{\"error\": \"" + escapeJson(cause.message()) + "\"}");
+                               });
+    }
+
+    /**
+     * Find the current leader node.
+     */
+    private java.util.Optional<org.pragmatica.aether.node.AetherNode> findLeaderNode() {
+        return cluster.allNodes()
+                      .stream()
+                      .filter(org.pragmatica.aether.node.AetherNode::isLeader)
+                      .findFirst();
+    }
+
+    /**
+     * Execute HTTP POST to a node's ManagementServer.
+     */
+    private Promise<String> proxyHttpPost(String host, int port, String path, String body) {
+        return Promise.promise(promise -> {
+                                   try{
+                                       var client = java.net.http.HttpClient.newBuilder()
+                                                        .connectTimeout(Duration.ofSeconds(5))
+                                                        .build();
+                                       var request = java.net.http.HttpRequest.newBuilder()
+                                                         .uri(java.net.URI.create("http://" + host + ":" + port + path))
+                                                         .header("Content-Type", "application/json")
+                                                         .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
+                                                         .timeout(Duration.ofSeconds(30))
+                                                         .build();
+                                       client.sendAsync(request,
+                                                        java.net.http.HttpResponse.BodyHandlers.ofString())
+                                             .thenAccept(response -> {
+                                                             if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                                                                 promise.succeed(response.body());
+                                                             } else {
+                                                                 promise.fail(Causes.cause("HTTP " + response.statusCode()
+                                                                                           + ": " + response.body()));
+                                                             }
+                                                         })
+                                             .exceptionally(e -> {
+                                           promise.fail(Causes.fromThrowable(e));
+                                           return null;
+                                       });
+                                   } catch (Exception e) {
+                                       promise.fail(Causes.fromThrowable(e));
+                                   }
+                               });
+    }
+
+    /**
+     * Execute HTTP GET to a node's ManagementServer.
+     */
+    private Promise<String> proxyHttpGet(String host, int port, String path) {
+        return Promise.promise(promise -> {
+                                   try{
+                                       var client = java.net.http.HttpClient.newBuilder()
+                                                        .connectTimeout(Duration.ofSeconds(5))
+                                                        .build();
+                                       var request = java.net.http.HttpRequest.newBuilder()
+                                                         .uri(java.net.URI.create("http://" + host + ":" + port + path))
+                                                         .GET()
+                                                         .timeout(Duration.ofSeconds(30))
+                                                         .build();
+                                       client.sendAsync(request,
+                                                        java.net.http.HttpResponse.BodyHandlers.ofString())
+                                             .thenAccept(response -> {
+                                                             if (response.statusCode() >= 200 && response.statusCode() < 300) {
+                                                                 promise.succeed(response.body());
+                                                             } else {
+                                                                 promise.fail(Causes.cause("HTTP " + response.statusCode()
+                                                                                           + ": " + response.body()));
+                                                             }
+                                                         })
+                                             .exceptionally(e -> {
+                                           promise.fail(Causes.fromThrowable(e));
+                                           return null;
+                                       });
+                                   } catch (Exception e) {
+                                       promise.fail(Causes.fromThrowable(e));
+                                   }
+                               });
     }
 
     // ==================== Repository API Handlers ====================

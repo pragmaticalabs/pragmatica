@@ -180,6 +180,34 @@ body {
     opacity: 0.8;
 }
 
+.slice-tag.active {
+    color: var(--accent-green);
+    border-color: var(--accent-green);
+}
+
+.slice-tag.loading {
+    color: var(--accent-yellow);
+    border-color: var(--accent-yellow);
+    animation: pulse 1s infinite;
+}
+
+.slice-tag.inactive {
+    color: var(--text-muted);
+    border-color: var(--text-muted);
+    opacity: 0.5;
+}
+
+.no-slices {
+    font-size: 9px;
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 0.8; }
+    50% { opacity: 0.4; }
+}
+
 /* Metrics */
 .metrics-row {
     display: grid;

@@ -27,9 +27,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  */
 @Slice
 public interface FulfillmentService {
-
     // === Requests ===
-
     record CalculateShippingRequest(List<LineItem> items, Address destination) {
         public static CalculateShippingRequest calculateShippingRequest(List<LineItem> items, Address destination) {
             return new CalculateShippingRequest(List.copyOf(items), destination);
@@ -55,12 +53,13 @@ public interface FulfillmentService {
     }
 
     // === Responses ===
-
     record ShippingQuote(List<ShippingOptionQuote> options, Instant validUntil) {
         public record ShippingOptionQuote(ShippingOption option, Money cost, Instant estimatedDelivery) {}
 
         public static ShippingQuote quote(List<ShippingOptionQuote> options) {
-            return new ShippingQuote(List.copyOf(options), Instant.now().plusSeconds(3600));
+            return new ShippingQuote(List.copyOf(options),
+                                     Instant.now()
+                                            .plusSeconds(3600));
         }
     }
 
@@ -72,9 +71,14 @@ public interface FulfillmentService {
                     ShipmentStatus status,
                     Instant estimatedDelivery,
                     Instant createdAt) {
-
         public enum ShipmentStatus {
-            PENDING, LABEL_CREATED, PICKED_UP, IN_TRANSIT, OUT_FOR_DELIVERY, DELIVERED, EXCEPTION
+            PENDING,
+            LABEL_CREATED,
+            PICKED_UP,
+            IN_TRANSIT,
+            OUT_FOR_DELIVERY,
+            DELIVERED,
+            EXCEPTION
         }
 
         public static Shipment create(OrderId orderId, Address destination, ShippingOption option) {
@@ -84,13 +88,21 @@ public interface FulfillmentService {
                                 option,
                                 destination,
                                 ShipmentStatus.LABEL_CREATED,
-                                Instant.now().plus(option.estimatedDelivery().duration()),
+                                Instant.now()
+                                       .plus(option.estimatedDelivery()
+                                                   .duration()),
                                 Instant.now());
         }
 
         public Shipment updateStatus(ShipmentStatus newStatus) {
-            return new Shipment(shipmentId, orderId, trackingNumber, shippingOption,
-                                destination, newStatus, estimatedDelivery, createdAt);
+            return new Shipment(shipmentId,
+                                orderId,
+                                trackingNumber,
+                                shippingOption,
+                                destination,
+                                newStatus,
+                                estimatedDelivery,
+                                createdAt);
         }
 
         public String trackingUrl() {
@@ -102,41 +114,50 @@ public interface FulfillmentService {
                         Shipment.ShipmentStatus currentStatus,
                         Instant estimatedDelivery,
                         List<TrackingEvent> events) {
-
-        public record TrackingEvent(Instant timestamp, String location, String description, Shipment.ShipmentStatus status) {}
+        public record TrackingEvent(Instant timestamp,
+                                    String location,
+                                    String description,
+                                    Shipment.ShipmentStatus status) {}
 
         public static TrackingInfo fromShipment(Shipment shipment) {
-            var events = List.of(new TrackingEvent(shipment.createdAt(), "Origin", "Shipment created",
+            var events = List.of(new TrackingEvent(shipment.createdAt(),
+                                                   "Origin",
+                                                   "Shipment created",
                                                    Shipment.ShipmentStatus.LABEL_CREATED));
             return new TrackingInfo(shipment.trackingNumber(), shipment.status(), shipment.estimatedDelivery(), events);
         }
     }
 
     // === Enums ===
-
     enum ShippingOption {
-        STANDARD("Standard Shipping", timeSpan(5).days(), BigDecimal.ZERO),
-        EXPRESS("Express Shipping", timeSpan(2).days(), new BigDecimal("9.99")),
-        OVERNIGHT("Overnight Shipping", timeSpan(1).days(), new BigDecimal("24.99")),
-        SAME_DAY("Same Day Delivery", timeSpan(4).hours(), new BigDecimal("49.99"));
-
+        STANDARD("Standard Shipping", timeSpan(5)
+                                              .days(), BigDecimal.ZERO),
+        EXPRESS("Express Shipping", timeSpan(2)
+                                            .days(), new BigDecimal("9.99")),
+        OVERNIGHT("Overnight Shipping", timeSpan(1)
+                                                .days(), new BigDecimal("24.99")),
+        SAME_DAY("Same Day Delivery", timeSpan(4)
+                                              .hours(), new BigDecimal("49.99"));
         private final String displayName;
         private final TimeSpan estimatedDelivery;
         private final BigDecimal baseCost;
-
         ShippingOption(String displayName, TimeSpan estimatedDelivery, BigDecimal baseCost) {
             this.displayName = displayName;
             this.estimatedDelivery = estimatedDelivery;
             this.baseCost = baseCost;
         }
-
-        public String displayName() { return displayName; }
-        public TimeSpan estimatedDelivery() { return estimatedDelivery; }
-        public Money cost() { return new Money(baseCost, Money.USD); }
+        public String displayName() {
+            return displayName;
+        }
+        public TimeSpan estimatedDelivery() {
+            return estimatedDelivery;
+        }
+        public Money cost() {
+            return new Money(baseCost, Money.USD);
+        }
     }
 
     // === Errors ===
-
     sealed interface FulfillmentError extends Cause {
         record ShipmentNotFound(String trackingNumber) implements FulfillmentError {
             @Override
@@ -161,7 +182,6 @@ public interface FulfillmentService {
     }
 
     // === Operations ===
-
     Promise<ShippingQuote> calculateShipping(CalculateShippingRequest request);
 
     Promise<Shipment> createShipment(CreateShipmentRequest request);
@@ -169,7 +189,6 @@ public interface FulfillmentService {
     Promise<TrackingInfo> trackShipment(TrackShipmentRequest request);
 
     // === Factory ===
-
     static FulfillmentService fulfillmentService() {
         return new FulfillmentServiceImpl();
     }
@@ -189,11 +208,12 @@ class FulfillmentServiceImpl implements FulfillmentService {
 
     @Override
     public Promise<Shipment> createShipment(CreateShipmentRequest request) {
-        if (request.shippingOption() == ShippingOption.SAME_DAY
-                && NO_SAME_DAY_STATES.contains(request.shippingAddress().state().toUpperCase())) {
-            return new FulfillmentError.SameDayNotAvailable(request.shippingAddress().state()).promise();
+        if (request.shippingOption() == ShippingOption.SAME_DAY && NO_SAME_DAY_STATES.contains(request.shippingAddress()
+                                                                                                      .state()
+                                                                                                      .toUpperCase())) {
+            return new FulfillmentError.SameDayNotAvailable(request.shippingAddress()
+                                                                   .state()).promise();
         }
-
         var shipment = Shipment.create(request.orderId(), request.shippingAddress(), request.shippingOption());
         shipments.put(shipment.trackingNumber(), shipment);
         return Promise.success(shipment);
@@ -207,10 +227,10 @@ class FulfillmentServiceImpl implements FulfillmentService {
                      .async();
     }
 
-    private List<ShippingQuote.ShippingOptionQuote> calculateAvailableOptions(List<LineItem> items, Address destination) {
+    private List<ShippingQuote.ShippingOptionQuote> calculateAvailableOptions(List<LineItem> items,
+                                                                              Address destination) {
         var itemValue = calculateItemValue(items);
         var isFreeShippingEligible = itemValue.compareTo(FREE_SHIPPING_THRESHOLD) >= 0;
-
         return Arrays.stream(ShippingOption.values())
                      .filter(option -> isOptionAvailable(option, destination))
                      .map(option -> createQuote(option, items, isFreeShippingEligible))
@@ -218,18 +238,24 @@ class FulfillmentServiceImpl implements FulfillmentService {
     }
 
     private boolean isOptionAvailable(ShippingOption option, Address destination) {
-        return option != ShippingOption.SAME_DAY || !NO_SAME_DAY_STATES.contains(destination.state().toUpperCase());
+        return option != ShippingOption.SAME_DAY || !NO_SAME_DAY_STATES.contains(destination.state()
+                                                                                            .toUpperCase());
     }
 
-    private ShippingQuote.ShippingOptionQuote createQuote(ShippingOption option, List<LineItem> items, boolean freeShippingEligible) {
+    private ShippingQuote.ShippingOptionQuote createQuote(ShippingOption option,
+                                                          List<LineItem> items,
+                                                          boolean freeShippingEligible) {
         var cost = calculateShippingCost(option, items, freeShippingEligible);
-        var estimatedDelivery = Instant.now().plus(option.estimatedDelivery().duration());
+        var estimatedDelivery = Instant.now()
+                                       .plus(option.estimatedDelivery()
+                                                   .duration());
         return new ShippingQuote.ShippingOptionQuote(option, cost, estimatedDelivery);
     }
 
     private BigDecimal calculateItemValue(List<LineItem> items) {
         return items.stream()
-                    .map(item -> BigDecimal.valueOf(item.quantity().value() * 50L))
+                    .map(item -> BigDecimal.valueOf(item.quantity()
+                                                        .value() * 50L))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
@@ -237,15 +263,17 @@ class FulfillmentServiceImpl implements FulfillmentService {
         if (option == ShippingOption.STANDARD && freeShippingEligible) {
             return Money.ZERO_USD;
         }
-
         var baseCost = option.cost();
-        var totalItems = items.stream().mapToInt(i -> i.quantity().value()).sum();
-
+        var totalItems = items.stream()
+                              .mapToInt(i -> i.quantity()
+                                              .value())
+                              .sum();
         if (totalItems > 10) {
-            var surchargeAmount = BigDecimal.valueOf(totalItems - 10).multiply(BigDecimal.valueOf(0.5));
-            return baseCost.add(new Money(surchargeAmount, Money.USD)).orElse(baseCost);
+            var surchargeAmount = BigDecimal.valueOf(totalItems - 10)
+                                            .multiply(BigDecimal.valueOf(0.5));
+            return baseCost.add(new Money(surchargeAmount, Money.USD))
+                           .fold(_ -> baseCost, result -> result);
         }
-
         return baseCost;
     }
 }
