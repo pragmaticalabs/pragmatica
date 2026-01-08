@@ -9,7 +9,6 @@ import org.pragmatica.aether.slice.routing.Binding;
 import org.pragmatica.aether.slice.routing.Route;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.lang.Cause;
@@ -113,9 +112,8 @@ public interface RouteRegistry {
     /**
      * Create a new route registry.
      */
-    static RouteRegistry routeRegistry(ClusterNode<KVCommand<AetherKey>> cluster,
-                                       KVStore<AetherKey, AetherValue> kvStore) {
-        return new RouteRegistryImpl(cluster, kvStore);
+    static RouteRegistry routeRegistry(ClusterNode<KVCommand<AetherKey>> cluster) {
+        return new RouteRegistryImpl(cluster);
     }
 }
 
@@ -123,13 +121,10 @@ class RouteRegistryImpl implements RouteRegistry {
     private static final Logger log = LoggerFactory.getLogger(RouteRegistryImpl.class);
 
     private final ClusterNode<KVCommand<AetherKey>> cluster;
-    private final KVStore<AetherKey, AetherValue> kvStore;
     private final Map<RouteKey, RegisteredRoute> routes = new ConcurrentHashMap<>();
 
-    RouteRegistryImpl(ClusterNode<KVCommand<AetherKey>> cluster,
-                      KVStore<AetherKey, AetherValue> kvStore) {
+    RouteRegistryImpl(ClusterNode<KVCommand<AetherKey>> cluster) {
         this.cluster = cluster;
-        this.kvStore = kvStore;
     }
 
     @Override
@@ -161,12 +156,9 @@ class RouteRegistryImpl implements RouteRegistry {
                                   List<Binding> bindings) {
         var routeKey = RouteKey.routeKey(httpMethod, pathPattern);
         var routeValue = new RouteValue(artifact, methodName, httpMethod, pathPattern, bindings);
-        // Check if route already exists in local cache, then fall back to KV-Store
+        // Check local cache - events keep it in sync with KV-Store
         return Option.option(routes.get(routeKey))
-                     .fold(() -> kvStore.get(routeKey)
-                                        .map(value -> (RouteValue) value)
-                                        .fold(() -> submitRoute(routeKey, routeValue),
-                                              stored -> validateExisting(stored, routeValue)),
+                     .fold(() -> submitRoute(routeKey, routeValue),
                            existing -> validateExisting(existing.value(),
                                                         routeValue));
     }

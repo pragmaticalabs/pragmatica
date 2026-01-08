@@ -12,7 +12,6 @@ import org.pragmatica.aether.slice.routing.Binding;
 import org.pragmatica.aether.slice.routing.BindingSource;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.lang.Option;
@@ -27,13 +26,10 @@ class RouteRegistryTest {
     private RouteRegistry registry;
     private Artifact testArtifact;
     private TestClusterNode testCluster;
-    private TestKVStore testKvStore;
-
     @BeforeEach
     void setUp() {
         testCluster = new TestClusterNode();
-        testKvStore = new TestKVStore();
-        registry = RouteRegistry.routeRegistry(testCluster, testKvStore);
+        registry = RouteRegistry.routeRegistry(testCluster);
         testArtifact = Artifact.artifact("org.example:test-slice:1.0.0").unwrap();
     }
 
@@ -280,17 +276,6 @@ class RouteRegistryTest {
         public <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands) {
             appliedCommands.add(commands);
             return Promise.success((List<R>) commands.stream().map(_ -> Option.none()).toList());
-        }
-    }
-
-    static class TestKVStore extends KVStore<AetherKey, AetherValue> {
-        TestKVStore() {
-            super(null, null, null);
-        }
-
-        @Override
-        public Option<AetherValue> get(AetherKey key) {
-            return Option.none();
         }
     }
 }

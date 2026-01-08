@@ -365,7 +365,7 @@ public interface AetherNode {
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
         var invocationHandler = InvocationHandler.invocationHandler(config.self(), clusterNode.network());
         // Create route registry for dynamic route registration (before node deployment manager)
-        var routeRegistry = RouteRegistry.routeRegistry(clusterNode, kvStore);
+        var routeRegistry = RouteRegistry.routeRegistry(clusterNode);
         // Create deployment metrics components
         var deploymentMetricsCollector = DeploymentMetricsCollector.deploymentMetricsCollector(config.self(),
                                                                                                clusterNode.network());
