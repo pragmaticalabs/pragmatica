@@ -278,9 +278,9 @@ public final class ConfigurableLoadRunner {
     }
 
     private Result<Option<TemplateProcessor>> compileBodyProcessor(Option<String> body) {
-        return body.fold(() -> Result.success(none()),
-                         template -> TemplateProcessor.compile(template)
-                                                      .map(Option::some));
+        return body.map(TemplateProcessor::compile)
+                   .map(result -> result.map(Option::some))
+                   .or(Result.success(none()));
     }
 
     private void startRunner(TargetRunner runner, LoadTarget target) {

@@ -124,13 +124,14 @@ public record CancelOrderSlice() implements Slice {
         return repository()
                          .findById(validRequest.orderId()
                                                .value())
-                         .fold(() -> orderNotFound(validRequest),
-                               order -> validateCancellable(order, validRequest));
+                         .toResult(orderNotFound(validRequest))
+                         .async()
+                         .flatMap(order -> validateCancellable(order, validRequest));
     }
 
-    private Promise<OrderWithContext> orderNotFound(ValidCancelOrderRequest validRequest) {
+    private Cause orderNotFound(ValidCancelOrderRequest validRequest) {
         return new CancelOrderError.OrderNotFound(validRequest.orderId()
-                                                              .value()).promise();
+                                                              .value());
     }
 
     private Promise<OrderWithContext> validateCancellable(StoredOrder order, ValidCancelOrderRequest validRequest) {

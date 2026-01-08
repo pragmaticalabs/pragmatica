@@ -757,8 +757,12 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
     private String buildRollingUpdateResponse(AetherNode node, String updateId) {
         return node.rollingUpdateManager()
                    .getUpdate(updateId)
-                   .fold(() -> "{\"error\":\"Update not found\",\"updateId\":\"" + updateId + "\"}",
-                         this::buildRollingUpdateJson);
+                   .map(this::buildRollingUpdateJson)
+                   .or(updateNotFoundJson(updateId));
+    }
+
+    private String updateNotFoundJson(String updateId) {
+        return "{\"error\":\"Update not found\",\"updateId\":\"" + updateId + "\"}";
     }
 
     private String buildRollingUpdateHealthResponse(AetherNode node, String updateId) {

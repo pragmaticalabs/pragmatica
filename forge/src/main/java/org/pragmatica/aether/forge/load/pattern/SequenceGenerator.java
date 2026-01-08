@@ -37,9 +37,9 @@ public final class SequenceGenerator implements PatternGenerator {
         return Option.option(seqSpec)
                      .map(String::trim)
                      .filter(s -> !s.isBlank())
-                     .fold(() -> Result.success(sequenceGenerator(1)),
-                           s -> Number.parseLong(s)
-                                      .map(SequenceGenerator::sequenceGenerator));
+                     .map(s -> Number.parseLong(s)
+                                     .<PatternGenerator> map(SequenceGenerator::sequenceGenerator))
+                     .or(Result.success(sequenceGenerator(1)));
     }
 
     @Override

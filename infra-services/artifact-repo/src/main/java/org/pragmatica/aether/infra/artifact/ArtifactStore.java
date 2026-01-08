@@ -177,8 +177,8 @@ class ArtifactStoreImpl implements ArtifactStore {
         log.debug("Resolving artifact: {}", artifact.asString());
         return dht.get(metaKey(artifact))
                   .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
-                                             .fold(() -> new ArtifactStoreError.NotFound(artifact).promise(),
-                                                   meta -> resolveChunks(artifact, meta)));
+                                             .async(new ArtifactStoreError.NotFound(artifact))
+                                             .flatMap(meta -> resolveChunks(artifact, meta)));
     }
 
     private Promise<byte[]> resolveChunks(Artifact artifact, ArtifactMetadata meta) {
@@ -222,8 +222,8 @@ class ArtifactStoreImpl implements ArtifactStore {
         log.info("Deleting artifact: {}", artifact.asString());
         return dht.get(metaKey(artifact))
                   .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
-                                             .fold(() -> Promise.success(Unit.unit()),
-                                                   meta -> deleteChunksAndMeta(artifact, meta)));
+                                             .map(meta -> deleteChunksAndMeta(artifact, meta))
+                                             .or(Promise.unitPromise()));
     }
 
     private Promise<Unit> deleteChunksAndMeta(Artifact artifact, ArtifactMetadata meta) {

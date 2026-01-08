@@ -93,13 +93,14 @@ public record GetOrderStatusSlice() implements Slice {
         return repository()
                          .findById(validRequest.orderId()
                                                .value())
-                         .fold(() -> orderNotFound(validRequest),
-                               this::toResponse);
+                         .toResult(orderNotFound(validRequest))
+                         .async()
+                         .flatMap(this::toResponse);
     }
 
-    private Promise<GetOrderStatusResponse> orderNotFound(ValidGetOrderStatusRequest validRequest) {
+    private Cause orderNotFound(ValidGetOrderStatusRequest validRequest) {
         return new GetOrderStatusError.OrderNotFound(validRequest.orderId()
-                                                                 .value()).promise();
+                                                                 .value());
     }
 
     private Promise<GetOrderStatusResponse> toResponse(OrderRepository.StoredOrder order) {

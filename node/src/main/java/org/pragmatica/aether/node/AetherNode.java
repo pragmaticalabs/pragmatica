@@ -279,10 +279,10 @@ public interface AetherNode {
                 // Start comprehensive snapshot collection (feeds TTM pipeline)
                 snapshotCollector.start();
                 SliceRuntime.setSliceInvoker(sliceInvoker);
-                return managementServer.fold(() -> Promise.success(Unit.unit()),
-                                             ManagementServer::start)
-                                       .flatMap(_ -> httpRouter.fold(() -> Promise.success(Unit.unit()),
-                                                                     HttpRouter::start))
+                return managementServer.map(ManagementServer::start)
+                                       .or(Promise.unitPromise())
+                                       .flatMap(_ -> httpRouter.map(HttpRouter::start)
+                                                               .or(Promise.unitPromise()))
                                        .flatMap(_ -> startClusterAsync())
                                        .onSuccess(_ -> log.info("Aether node {} HTTP server started, cluster forming...",
                                                                 self()));
@@ -297,10 +297,10 @@ public interface AetherNode {
                 ttmManager.stop();
                 snapshotCollector.stop();
                 SliceRuntime.clear();
-                return httpRouter.fold(() -> Promise.success(Unit.unit()),
-                                       HttpRouter::stop)
-                                 .flatMap(_ -> managementServer.fold(() -> Promise.success(Unit.unit()),
-                                                                     ManagementServer::stop))
+                return httpRouter.map(HttpRouter::stop)
+                                 .or(Promise.unitPromise())
+                                 .flatMap(_ -> managementServer.map(ManagementServer::stop)
+                                                               .or(Promise.unitPromise()))
                                  .flatMap(_ -> sliceInvoker.stop())
                                  .flatMap(_ -> clusterNode.stop())
                                  .onSuccess(_ -> log.info("Aether node {} stopped",
@@ -685,19 +685,17 @@ public interface AetherNode {
                            },
                            // Framework path configured - try to create FrameworkClassLoader
         path -> FrameworkClassLoader.fromDirectory(path)
-                                    .fold(cause -> {
-                                              log.warn("Failed to create FrameworkClassLoader from {}: {}. "
-                                                       + "Falling back to Application ClassLoader.",
-                                                       path,
-                                                       cause.message());
-                                              return new SharedLibraryClassLoader(AetherNode.class.getClassLoader());
-                                          },
-                                          frameworkLoader -> {
-                                              log.info("Using FrameworkClassLoader with {} JARs as parent",
-                                                       frameworkLoader.getLoadedJars()
-                                                                      .size());
-                                              return new SharedLibraryClassLoader(frameworkLoader);
-                                          }));
+                                    .onFailure(cause -> log.warn("Failed to create FrameworkClassLoader from {}: {}. "
+                                                                 + "Falling back to Application ClassLoader.",
+                                                                 path,
+                                                                 cause.message()))
+                                    .map(loader -> {
+                                             log.info("Using FrameworkClassLoader with {} JARs as parent",
+                                                      loader.getLoadedJars()
+                                                            .size());
+                                             return new SharedLibraryClassLoader(loader);
+                                         })
+                                    .or(new SharedLibraryClassLoader(AetherNode.class.getClassLoader())));
     }
 
     /**

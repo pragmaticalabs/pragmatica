@@ -73,13 +73,9 @@ public record Main(String[] args) {
 
     private Option<AetherConfig> loadConfigFile(Path path) {
         return ConfigLoader.load(path)
-                           .fold(cause -> logConfigError(cause.message()),
-                                 Option::option);
-    }
-
-    private Option<AetherConfig> logConfigError(String message) {
-        log.error("Failed to load config: {}", message);
-        return Option.none();
+                           .onFailure(cause -> log.error("Failed to load config: {}",
+                                                         cause.message()))
+                           .option();
     }
 
     private void logStartupInfo(NodeId nodeId,
