@@ -7,6 +7,11 @@
 ### Changed
 
 ### Fixed
+- Performance: eliminate O(n²) measurement patterns in formatter causing memory spikes on complex generic files
+  - Skip measureWidth when hasComplexArgs/hasExistingBreaks already triggers breaking (printArgs, printParams, printRecordComponents)
+  - Replace text() extraction with CST structure checks for method call detection (printPostfix)
+  - Pre-compute operand info to avoid per-child measurements in string concatenation wrapping (printAdditive)
+  - Combine duplicate loops in hasComplexArguments to single pass
 
 ## [0.4.6] - 2026-01-05
 
