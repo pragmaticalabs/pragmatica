@@ -5,6 +5,7 @@
 ### Added
 
 ### Changed
+- Build: bump Pragmatica Lite to 0.9.10
 
 ### Fixed
 - Performance: eliminate O(n²) measurement patterns in formatter causing memory spikes on complex generic files
