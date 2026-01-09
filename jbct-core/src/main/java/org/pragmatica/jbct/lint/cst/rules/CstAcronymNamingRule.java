@@ -89,13 +89,13 @@ public class CstAcronymNamingRule implements CstLintRule {
     private String suggestFix(String name) {
         var result = new StringBuilder();
         var chars = name.toCharArray();
-        for (int i = 0; i < chars.length; i++ ) {
+        for (int i = 0; i < chars.length; i++) {
             char c = chars[i];
             if (Character.isUpperCase(c)) {
                 // Check if this is part of an acronym (2+ consecutive caps)
                 int acronymEnd = i;
                 while (acronymEnd < chars.length && Character.isUpperCase(chars[acronymEnd])) {
-                    acronymEnd++ ;
+                    acronymEnd++;
                 }
                 int acronymLength = acronymEnd - i;
                 if (acronymLength > 1) {
@@ -105,7 +105,7 @@ public class CstAcronymNamingRule implements CstLintRule {
                         result.append(i == 0
                                       ? c
                                       : Character.toLowerCase(c));
-                        for (int j = i + 1; j < acronymEnd - 1; j++ ) {
+                        for (int j = i + 1; j < acronymEnd - 1; j++) {
                             result.append(Character.toLowerCase(chars[j]));
                         }
                         if (acronymEnd > i + 1) {
@@ -117,7 +117,7 @@ public class CstAcronymNamingRule implements CstLintRule {
                         result.append(i == 0
                                       ? c
                                       : Character.toLowerCase(c));
-                        for (int j = i + 1; j < acronymEnd; j++ ) {
+                        for (int j = i + 1; j < acronymEnd; j++) {
                             result.append(Character.toLowerCase(chars[j]));
                         }
                         i = acronymEnd - 1;

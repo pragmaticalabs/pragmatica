@@ -112,8 +112,8 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
     // No Fork-Join inside Sequencer
     // Slice
     Map.entry("JBCT-SLICE-01", DiagnosticSeverity.ERROR)),
-                                                            Set.of(),
-                                                            false);
+                                                        Set.of(),
+                                                        false);
 
     /**
      * Factory method for default config.

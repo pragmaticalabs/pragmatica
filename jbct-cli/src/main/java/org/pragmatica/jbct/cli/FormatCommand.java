@@ -55,8 +55,7 @@ public class FormatCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         // Load configuration
-        var config = ConfigLoader.load(
-        Option.option(configPath), Option.none());
+        var config = ConfigLoader.load(Option.option(configPath), Option.none());
         formatter = JbctFormatter.jbctFormatter(config.formatter());
         var filesToProcess = collectJavaFiles();
         if (filesToProcess.isEmpty()) {
@@ -100,32 +99,32 @@ public class FormatCommand implements Callable<Integer> {
         return formatter.isFormatted(source)
                         .flatMap(isFormatted -> {
                                      if (isFormatted) {
-                                     unchanged.incrementAndGet();
-                                     if (verbose) {
-                                     System.out.println("  unchanged: " + file);
-                                 }
-                                     return org.pragmatica.lang.Result.success(source);
-                                 }
+                                         unchanged.incrementAndGet();
+                                         if (verbose) {
+                                             System.out.println("  unchanged: " + file);
+                                         }
+                                         return org.pragmatica.lang.Result.success(source);
+                                     }
                                      // Needs formatting
         needsFormatting.add(file);
                                      if (checkOnly) {
-                                     System.out.println("  needs formatting: " + file);
-                                     return org.pragmatica.lang.Result.success(source);
-                                 }
+                                         System.out.println("  needs formatting: " + file);
+                                         return org.pragmatica.lang.Result.success(source);
+                                     }
                                      // Format the file
         return formatter.format(source)
                         .flatMap(formattedSource -> {
                                      if (dryRun) {
-                                     System.out.println("  would format: " + file);
-                                     return org.pragmatica.lang.Result.success(formattedSource);
-                                 }
+                                         System.out.println("  would format: " + file);
+                                         return org.pragmatica.lang.Result.success(formattedSource);
+                                     }
                                      // Write back
         return formattedSource.write()
                               .map(written -> {
                                        formatted.incrementAndGet();
                                        if (verbose) {
-                                       System.out.println("  formatted: " + file);
-                                   }
+                                           System.out.println("  formatted: " + file);
+                                       }
                                        return written;
                                    });
                                  });
@@ -142,12 +141,12 @@ public class FormatCommand implements Callable<Integer> {
         if (checkOnly) {
             if (needsFormatting.isEmpty()) {
                 System.out.println("All files are properly formatted.");
-            }else {
+            } else {
                 System.out.println(needsFormatting.size() + " file(s) need formatting.");
             }
-        }else if (dryRun) {
+        } else if (dryRun) {
             System.out.println("Dry run: " + needsFormatting.size() + " file(s) would be formatted.");
-        }else {
+        } else {
             System.out.println("Formatted: " + formatted + ", Unchanged: " + unchanged + ", Errors: " + errors);
         }
     }

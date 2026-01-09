@@ -47,26 +47,26 @@ public class UpgradeCommand implements Callable<Integer> {
                             release -> {
                                 System.out.println("Latest version: " + release.version());
                                 if (checkOnly) {
-                                if (GitHubReleaseChecker.isNewerVersion(currentVersion,
-                                                                        release.version())) {
-                                System.out.println("Update available: " + release.version());
-                            }else {
-                                System.out.println("Already at latest version.");
-                            }
-                                return 0;
-                            }
+                                    if (GitHubReleaseChecker.isNewerVersion(currentVersion,
+                                                                            release.version())) {
+                                        System.out.println("Update available: " + release.version());
+                                    } else {
+                                        System.out.println("Already at latest version.");
+                                    }
+                                    return 0;
+                                }
                                 // Check if upgrade is needed
         if (!force && !GitHubReleaseChecker.isNewerVersion(currentVersion,
                                                            release.version())) {
-                                System.out.println("Already at latest version. Use --force to reinstall.");
-                                return 0;
-                            }
+                                    System.out.println("Already at latest version. Use --force to reinstall.");
+                                    return 0;
+                                }
                                 // Check for download URL
         if (!release.hasDownloadUrl()) {
-                                System.err.println("Error: No downloadable JAR found in release.");
-                                System.err.println("Please download manually from GitHub.");
-                                return 1;
-                            }
+                                    System.err.println("Error: No downloadable JAR found in release.");
+                                    System.err.println("Please download manually from GitHub.");
+                                    return 1;
+                                }
                                 return performUpgrade(release.downloadUrl()
                                                              .getOrThrow("Download URL expected"),
                                                       release.version());
@@ -103,8 +103,8 @@ public class UpgradeCommand implements Callable<Integer> {
                                         return checker.checkLatestRelease()
                                                       .flatMap(release -> {
                                                                    if (!release.hasDownloadUrl()) {
-                                                                   return Result.failure(Causes.cause("No downloadable JAR found in release"));
-                                                               }
+                                                                       return Result.failure(Causes.cause("No downloadable JAR found in release"));
+                                                                   }
                                                                    System.out.println("Downloading version " + release.version()
                                                                                       + "...");
                                                                    var installer = JarInstaller.jarInstaller();

@@ -58,20 +58,20 @@ public class UpdateCommand implements Callable<Integer> {
                             },
                             updatedFiles -> {
                                 if (updatedFiles.isEmpty()) {
-                                System.out.println("AI tools are already up to date.");
-                            }else {
-                                System.out.println();
-                                System.out.println("Updated " + updatedFiles.size() + " file(s):");
-                                for (var file : updatedFiles) {
-                                System.out.println("  " + file.getFileName());
-                            }
-                                System.out.println();
-                                System.out.println("AI tools updated successfully.");
-                                System.out.println("  Skills: " + updater.claudeDir()
-                                                                        .resolve("skills/jbct"));
-                                System.out.println("  Agents: " + updater.claudeDir()
-                                                                        .resolve("agents"));
-                            }
+                                    System.out.println("AI tools are already up to date.");
+                                } else {
+                                    System.out.println();
+                                    System.out.println("Updated " + updatedFiles.size() + " file(s):");
+                                    for (var file : updatedFiles) {
+                                        System.out.println("  " + file.getFileName());
+                                    }
+                                    System.out.println();
+                                    System.out.println("AI tools updated successfully.");
+                                    System.out.println("  Skills: " + updater.claudeDir()
+                                                                            .resolve("skills/jbct"));
+                                    System.out.println("  Agents: " + updater.claudeDir()
+                                                                            .resolve("agents"));
+                                }
                                 return 0;
                             });
     }

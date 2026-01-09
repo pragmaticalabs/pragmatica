@@ -71,9 +71,7 @@ public final class JarInstaller {
                     return jarPath;
                 }
             }
-        } catch (Exception e) {
-            // Fall through to default - detection is best-effort
-        }
+        } catch (Exception e) {}
         return defaultInstallPath();
     }
 
@@ -109,11 +107,9 @@ public final class JarInstaller {
                                         return Result.success(response.body());
                                     } else {
                                         // Best-effort cleanup of temp file on failure
-                                        try{
+            try{
                                             Files.deleteIfExists(tempFile);
-                                        } catch (IOException cleanupError) {
-                                            // Cleanup is best-effort, log but don't fail
-                                        }
+                                        } catch (IOException cleanupError) {}
                                         return response.toResult();
                                     }
                                 });
@@ -149,9 +145,7 @@ public final class JarInstaller {
             backup.onPresent(backupPath -> {
                 try{
                     Files.deleteIfExists(backupPath);
-                } catch (IOException cleanupError) {
-                    // Backup cleanup is best-effort
-                }
+                } catch (IOException cleanupError) {}
             });
             return Result.success(targetPath);
         } catch (Exception e) {

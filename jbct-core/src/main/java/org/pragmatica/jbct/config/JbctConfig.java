@@ -26,10 +26,10 @@ public record JbctConfig(FormatterConfig formatter,
      * Note: slicePackages is empty by default - must be configured for JBCT-SLICE-01 rule.
      */
     public static final JbctConfig DEFAULT = jbctConfig(FormatterConfig.DEFAULT,
-                                                         LintConfig.DEFAULT,
-                                                         List.of("src/main/java"),
-                                                         List.of("**.usecase.**", "**.domain.**"),
-                                                         List.of());
+                                                        LintConfig.DEFAULT,
+                                                        List.of("src/main/java"),
+                                                        List.of("**.usecase.**", "**.domain.**"),
+                                                        List.of());
 
     /**
      * Factory method for creating JbctConfig.

@@ -53,14 +53,13 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
      * Collect Java files from source directories.
      */
     protected List<Path> collectJavaFiles() {
-        return FileCollector.collectFromDirectories(
-        Option.option(sourceDirectory)
-              .map(File::toPath),
-        Option.option(testSourceDirectory)
-              .map(File::toPath),
-        includeTests,
-        msg -> getLog()
-               .warn(msg));
+        return FileCollector.collectFromDirectories(Option.option(sourceDirectory)
+                                                          .map(File::toPath),
+                                                    Option.option(testSourceDirectory)
+                                                          .map(File::toPath),
+                                                    includeTests,
+                                                    msg -> getLog()
+                                                                 .warn(msg));
     }
 
     /**
@@ -69,7 +68,7 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     protected boolean shouldSkip(String goalName) {
         if (skip) {
             getLog()
-            .info("Skipping JBCT " + goalName);
+                  .info("Skipping JBCT " + goalName);
             return true;
         }
         return false;

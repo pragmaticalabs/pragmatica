@@ -54,7 +54,7 @@ public final class AiToolsInstaller {
      */
     public Result<List<Path>> install() {
         return createDirectories()
-                      .flatMap(_ -> installAllResources());
+                                .flatMap(_ -> installAllResources());
     }
 
     private Result<Unit> createDirectories() {
@@ -73,7 +73,6 @@ public final class AiToolsInstaller {
     private Result<List<Path>> installAllResources() {
         var skillsDir = claudeDir.resolve("skills/jbct");
         var agentsDir = claudeDir.resolve("agents");
-
         // Fork-Join: Install skills and agents in parallel
         return Result.allOf(installFromResources(AI_TOOLS_PATH + SKILLS_SUBPATH, skillsDir),
                             installFromResources(AI_TOOLS_PATH + AGENTS_SUBPATH, agentsDir))

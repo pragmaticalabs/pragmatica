@@ -70,9 +70,10 @@ public class SliceProcessor extends AbstractProcessor {
 
     private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
         generateApiInterface(interfaceElement, sliceModel)
-                           .flatMap(_ -> generateDependencyArtifacts(interfaceElement, sliceModel))
-                           .flatMap(_ -> generateManifest(interfaceElement, sliceModel))
-                           .onFailure(cause -> error(interfaceElement, cause.message()));
+                            .flatMap(_ -> generateDependencyArtifacts(interfaceElement, sliceModel))
+                            .flatMap(_ -> generateManifest(interfaceElement, sliceModel))
+                            .onFailure(cause -> error(interfaceElement,
+                                                      cause.message()));
     }
 
     private Result<Unit> generateApiInterface(TypeElement interfaceElement, SliceModel sliceModel) {
@@ -97,12 +98,14 @@ public class SliceProcessor extends AbstractProcessor {
             note(interfaceElement, "Generated proxy: " + resolved.proxyClassName());
         }
         return factoryGenerator.generate(sliceModel)
-                               .onSuccess(_ -> note(interfaceElement, "Generated factory: " + sliceModel.simpleName() + "Factory"));
+                               .onSuccess(_ -> note(interfaceElement,
+                                                    "Generated factory: " + sliceModel.simpleName() + "Factory"));
     }
 
     private Result<Unit> generateManifest(TypeElement interfaceElement, SliceModel sliceModel) {
         return manifestGenerator.generate(sliceModel)
-                                .onSuccess(_ -> note(interfaceElement, "Generated manifest: META-INF/slice-api.properties"));
+                                .onSuccess(_ -> note(interfaceElement,
+                                                     "Generated manifest: META-INF/slice-api.properties"));
     }
 
     private boolean apiInterfaceExists(SliceModel model) {

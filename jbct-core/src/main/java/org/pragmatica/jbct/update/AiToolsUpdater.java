@@ -125,9 +125,9 @@ public final class AiToolsUpdater {
 
     private Result<List<Path>> downloadFiles(String commitSha) {
         return createDirectories()
-                      .flatMap(_ -> downloadAllFiles())
-                      .flatMap(files -> saveCurrentVersion(commitSha)
-                                       .map(_ -> files));
+                                .flatMap(_ -> downloadAllFiles())
+                                .flatMap(files -> saveCurrentVersion(commitSha)
+                                                                    .map(_ -> files));
     }
 
     private Result<Unit> createDirectories() {
@@ -145,7 +145,6 @@ public final class AiToolsUpdater {
 
     private Result<List<Path>> downloadAllFiles() {
         var agentsDir = claudeDir.resolve("agents");
-
         // Fork-Join: Download skill files and agent files in parallel
         return Result.allOf(downloadSkillFiles(),
                             downloadAgentFiles(agentsDir))
@@ -156,9 +155,9 @@ public final class AiToolsUpdater {
 
     private Result<List<Path>> downloadSkillFiles() {
         var results = Stream.of(SKILL_FILES)
-                            .map(file -> downloadFile(file, claudeDir.resolve(file)))
+                            .map(file -> downloadFile(file,
+                                                      claudeDir.resolve(file)))
                             .toList();
-
         // Collect successful downloads
         var files = new ArrayList<Path>();
         for (var result : results) {
@@ -171,9 +170,9 @@ public final class AiToolsUpdater {
 
     private Result<List<Path>> downloadAgentFiles(Path agentsDir) {
         var results = Stream.of(AGENT_FILES)
-                            .map(file -> downloadFile(file, agentsDir.resolve(file)))
+                            .map(file -> downloadFile(file,
+                                                      agentsDir.resolve(file)))
                             .toList();
-
         // Collect successful downloads
         var files = new ArrayList<Path>();
         for (var result : results) {

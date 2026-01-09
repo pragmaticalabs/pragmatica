@@ -115,7 +115,7 @@ public final class SuppressionExtractor {
 
     private static Option<CstNode> findDeclarationInPath(List<CstNode> path) {
         // Walk up the path looking for a declaration
-        for (int i = path.size() - 1; i >= 0; i-- ) {
+        for (int i = path.size() - 1; i >= 0; i--) {
             var node = path.get(i);
             var rule = node.rule();
             // Type declarations

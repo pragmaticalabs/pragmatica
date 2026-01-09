@@ -36,16 +36,13 @@ public final class SliceProjectValidator {
         var pomResult = checkPomFile();
         var propsResult = checkSliceApiProperties();
         var manifestResult = checkManifestEntries();
-
         var errors = new ArrayList<String>();
         var warnings = new ArrayList<String>();
-
         Stream.of(pomResult, propsResult, manifestResult)
               .forEach(partial -> {
                   errors.addAll(partial.errors());
                   warnings.addAll(partial.warnings());
               });
-
         return ValidationResult.validationResult(errors, warnings);
     }
 
@@ -55,8 +52,8 @@ public final class SliceProjectValidator {
             return PartialResult.error("pom.xml not found in project directory");
         }
         return readFile(pomFile)
-                      .fold(cause -> PartialResult.error("Failed to read pom.xml: " + cause.message()),
-                            content -> checkPomContent(content));
+                       .fold(cause -> PartialResult.error("Failed to read pom.xml: " + cause.message()),
+                             content -> checkPomContent(content));
     }
 
     private PartialResult checkPomContent(String content) {
@@ -80,8 +77,8 @@ public final class SliceProjectValidator {
             return PartialResult.error("slice-api.properties not found - ensure annotation processor is configured");
         }
         return loadProperties(propsFile)
-                      .fold(cause -> PartialResult.error("Failed to read slice-api.properties: " + cause.message()),
-                            this::checkRequiredProperties);
+                             .fold(cause -> PartialResult.error("Failed to read slice-api.properties: " + cause.message()),
+                                   this::checkRequiredProperties);
     }
 
     private PartialResult checkRequiredProperties(Properties props) {
@@ -109,8 +106,8 @@ public final class SliceProjectValidator {
             return PartialResult.warning("MANIFEST.MF not found - will be created during packaging");
         }
         return loadManifest(manifestFile)
-                      .fold(cause -> PartialResult.error("Failed to read MANIFEST.MF: " + cause.message()),
-                            this::checkManifestAttributes);
+                           .fold(cause -> PartialResult.error("Failed to read MANIFEST.MF: " + cause.message()),
+                                 this::checkManifestAttributes);
     }
 
     private PartialResult checkManifestAttributes(Manifest manifest) {
@@ -129,7 +126,8 @@ public final class SliceProjectValidator {
         try{
             return Result.success(Files.readString(path));
         } catch (IOException e) {
-            return Causes.cause(e.getMessage()).result();
+            return Causes.cause(e.getMessage())
+                         .result();
         }
     }
 
@@ -139,7 +137,8 @@ public final class SliceProjectValidator {
             props.load(input);
             return Result.success(props);
         } catch (IOException e) {
-            return Causes.cause(e.getMessage()).result();
+            return Causes.cause(e.getMessage())
+                         .result();
         }
     }
 
@@ -147,7 +146,8 @@ public final class SliceProjectValidator {
         try (var input = new FileInputStream(path.toFile())) {
             return Result.success(new Manifest(input));
         } catch (IOException e) {
-            return Causes.cause(e.getMessage()).result();
+            return Causes.cause(e.getMessage())
+                         .result();
         }
     }
 
@@ -178,11 +178,11 @@ public final class SliceProjectValidator {
         }
 
         public boolean hasErrors() {
-            return !errors.isEmpty();
+            return ! errors.isEmpty();
         }
 
         public boolean hasWarnings() {
-            return !warnings.isEmpty();
+            return ! warnings.isEmpty();
         }
 
         public boolean isValid() {

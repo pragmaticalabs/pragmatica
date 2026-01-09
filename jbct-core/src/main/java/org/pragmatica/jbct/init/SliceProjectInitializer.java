@@ -67,7 +67,7 @@ public final class SliceProjectInitializer {
      */
     public Result<List<Path>> initialize() {
         return createDirectories()
-                      .flatMap(_ -> createAllFiles());
+                                .flatMap(_ -> createAllFiles());
     }
 
     private Result<Unit> createDirectories() {
@@ -94,13 +94,13 @@ public final class SliceProjectInitializer {
                             createSourceFiles(),
                             createDeployScripts())
                      .flatMap(fileLists -> createDependencyManifest()
-                                          .map(manifest -> {
-                                              var allFiles = fileLists.stream()
-                                                                      .flatMap(List::stream)
-                                                                      .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
-                                              allFiles.add(manifest);
-                                              return allFiles;
-                                          }));
+                                                                   .map(manifest -> {
+                                                                            var allFiles = fileLists.stream()
+                                                                                                    .flatMap(List::stream)
+                                                                                                    .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+                                                                            allFiles.add(manifest);
+                                                                            return allFiles;
+                                                                        }));
     }
 
     private Result<List<Path>> createProjectFiles() {
@@ -114,25 +114,32 @@ public final class SliceProjectInitializer {
         var packagePath = basePackage.replace(".", "/");
         var srcMainJava = projectDir.resolve("src/main/java");
         var srcTestJava = projectDir.resolve("src/test/java");
-
         // Fork-Join: Create source files in parallel
         return Result.allOf(createFile("Slice.java.template",
-                                       srcMainJava.resolve(packagePath).resolve(sliceName + ".java")),
+                                       srcMainJava.resolve(packagePath)
+                                                  .resolve(sliceName + ".java")),
                             createFile("SliceImpl.java.template",
-                                       srcMainJava.resolve(packagePath).resolve(sliceName + "Impl.java")),
+                                       srcMainJava.resolve(packagePath)
+                                                  .resolve(sliceName + "Impl.java")),
                             createFile("SampleRequest.java.template",
-                                       srcMainJava.resolve(packagePath).resolve("SampleRequest.java")),
+                                       srcMainJava.resolve(packagePath)
+                                                  .resolve("SampleRequest.java")),
                             createFile("SampleResponse.java.template",
-                                       srcMainJava.resolve(packagePath).resolve("SampleResponse.java")),
+                                       srcMainJava.resolve(packagePath)
+                                                  .resolve("SampleResponse.java")),
                             createFile("SliceTest.java.template",
-                                       srcTestJava.resolve(packagePath).resolve(sliceName + "Test.java")));
+                                       srcTestJava.resolve(packagePath)
+                                                  .resolve(sliceName + "Test.java")));
     }
 
     private Result<List<Path>> createDeployScripts() {
         // Fork-Join: Create deploy scripts in parallel
-        return Result.allOf(createFile("deploy-forge.sh.template", projectDir.resolve("deploy-forge.sh")),
-                            createFile("deploy-test.sh.template", projectDir.resolve("deploy-test.sh")),
-                            createFile("deploy-prod.sh.template", projectDir.resolve("deploy-prod.sh")))
+        return Result.allOf(createFile("deploy-forge.sh.template",
+                                       projectDir.resolve("deploy-forge.sh")),
+                            createFile("deploy-test.sh.template",
+                                       projectDir.resolve("deploy-test.sh")),
+                            createFile("deploy-prod.sh.template",
+                                       projectDir.resolve("deploy-prod.sh")))
                      .onSuccess(scripts -> scripts.forEach(SliceProjectInitializer::makeExecutable));
     }
 
@@ -229,11 +236,7 @@ public final class SliceProjectInitializer {
             perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
             perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
             Files.setPosixFilePermissions(path, perms);
-        } catch (UnsupportedOperationException e) {
-            // Windows doesn't support POSIX permissions - ignored
-        } catch (IOException e) {
-            // Permission change is best-effort
-        }
+        } catch (UnsupportedOperationException e) {} catch (IOException e) {}
     }
 
     // Inline templates

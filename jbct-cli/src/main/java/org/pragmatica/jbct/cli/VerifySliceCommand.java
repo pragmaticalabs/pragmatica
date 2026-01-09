@@ -32,7 +32,7 @@ public class VerifySliceCommand implements Callable<Integer> {
     public Integer call() {
         if (projectDir == null) {
             projectDir = Path.of(System.getProperty("user.dir"));
-        }else {
+        } else {
             projectDir = projectDir.toAbsolutePath();
         }
         System.out.println("Validating slice project: " + projectDir);

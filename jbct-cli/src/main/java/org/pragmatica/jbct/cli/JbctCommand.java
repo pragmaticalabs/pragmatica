@@ -25,7 +25,7 @@ public class JbctCommand implements Runnable {
 
     public static void main(String[] args) {
         int exitCode = new CommandLine(new JbctCommand()).setCaseInsensitiveEnumValuesAllowed(true)
-                       .execute(args);
+                                                         .execute(args);
         System.exit(exitCode);
     }
 

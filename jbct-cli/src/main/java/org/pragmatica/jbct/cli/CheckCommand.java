@@ -52,8 +52,7 @@ public class CheckCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         // Load configuration
-        var config = ConfigLoader.load(
-        Option.option(configPath), Option.none());
+        var config = ConfigLoader.load(Option.option(configPath), Option.none());
         var formatter = JbctFormatter.jbctFormatter(config.formatter());
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
@@ -129,10 +128,10 @@ public class CheckCommand implements Callable<Integer> {
                   .flatMap(formatter::isFormatted)
                   .onSuccess(isFormatted -> {
                                  if (!isFormatted) {
-                                 needsFormatting.add(file);
-                             }else if (verbose) {
-                                 System.out.println("  ✓ format: " + file.getFileName());
-                             }
+                                     needsFormatting.add(file);
+                                 } else if (verbose) {
+                                     System.out.println("  ✓ format: " + file.getFileName());
+                                 }
                              })
                   .onFailure(cause -> {
                                  errors.incrementAndGet();
@@ -151,15 +150,15 @@ public class CheckCommand implements Callable<Integer> {
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
-                                 switch (d.severity()) {
+                                     switch (d.severity()) {
             case ERROR -> errors.incrementAndGet();
             case WARNING -> warnings.incrementAndGet();
             default -> {}
         }
-                             }
+                                 }
                                  if (verbose && diagnostics.isEmpty()) {
-                                 System.out.println("  ✓ lint: " + file.getFileName());
-                             }
+                                     System.out.println("  ✓ lint: " + file.getFileName());
+                                 }
                              })
                   .onFailure(cause -> {
                                  parseErrors.incrementAndGet();

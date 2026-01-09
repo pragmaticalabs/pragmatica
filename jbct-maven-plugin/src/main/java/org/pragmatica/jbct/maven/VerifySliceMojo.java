@@ -38,46 +38,44 @@ public class VerifySliceMojo extends AbstractMojo {
     public void execute() throws MojoExecutionException, MojoFailureException {
         if (skip) {
             getLog()
-            .info("Skipping slice verification");
+                  .info("Skipping slice verification");
             return;
         }
         getLog()
-        .info("Validating slice configuration...");
-
+              .info("Validating slice configuration...");
         var result = validateSlice();
-
         for (var warning : result.warnings()) {
-            getLog().warn(warning);
+            getLog()
+                  .warn(warning);
         }
         for (var error : result.errors()) {
-            getLog().error(error);
+            getLog()
+                  .error(error);
         }
-
-        if (!result.errors().isEmpty()) {
-            throw new MojoFailureException(
-            "Slice validation failed with " + result.errors().size() + " error(s)");
+        if (!result.errors()
+                   .isEmpty()) {
+            throw new MojoFailureException("Slice validation failed with " + result.errors()
+                                                                                  .size() + " error(s)");
         }
-        if (failOnWarning && !result.warnings().isEmpty()) {
-            throw new MojoFailureException(
-            "Slice validation failed with " + result.warnings().size() + " warning(s)");
+        if (failOnWarning && !result.warnings()
+                                    .isEmpty()) {
+            throw new MojoFailureException("Slice validation failed with " + result.warnings()
+                                                                                  .size() + " warning(s)");
         }
         getLog()
-        .info("Slice validation passed");
+              .info("Slice validation passed");
     }
 
     private ValidationResult validateSlice() {
         var manifestResult = checkManifestEntries();
         var propsResult = checkSliceApiProperties();
-
         var errors = new ArrayList<String>();
         var warnings = new ArrayList<String>();
-
         Stream.of(manifestResult, propsResult)
               .forEach(partial -> {
                   errors.addAll(partial.errors());
                   warnings.addAll(partial.warnings());
               });
-
         return new ValidationResult(errors, warnings);
     }
 
@@ -145,6 +143,5 @@ public class VerifySliceMojo extends AbstractMojo {
         }
     }
 
-    private record ValidationResult(List<String> errors, List<String> warnings) {
-    }
+    private record ValidationResult(List<String> errors, List<String> warnings) {}
 }

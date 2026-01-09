@@ -107,7 +107,7 @@ public final class GitHubReleaseChecker {
         var newer = normalizeVersion(newVersion);
         var currentParts = current.split("\\.");
         var newerParts = newer.split("\\.");
-        for (int i = 0; i < Math.max(currentParts.length, newerParts.length); i++ ) {
+        for (int i = 0; i < Math.max(currentParts.length, newerParts.length); i++) {
             int currentPart = i < currentParts.length
                               ? parseVersionPart(currentParts[i])
                               : 0;

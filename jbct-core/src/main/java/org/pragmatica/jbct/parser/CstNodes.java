@@ -100,7 +100,7 @@ public final class CstNodes {
     public static Option<CstNode> findAncestor(CstNode root, CstNode target, Class< ? extends RuleId> ruleClass) {
         return findAncestorPath(root, target)
                                .flatMap(path -> {
-                                            for (int i = path.size() - 2; i >= 0; i-- ) {
+                                            for (int i = path.size() - 2; i >= 0; i--) {
                                                 if (isRule(path.get(i),
                                                            ruleClass)) {
                                                     return Option.some(path.get(i));

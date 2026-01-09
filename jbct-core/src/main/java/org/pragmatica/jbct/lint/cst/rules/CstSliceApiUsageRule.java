@@ -249,7 +249,8 @@ public class CstSliceApiUsageRule implements CstLintRule {
         var typeSlice = extractSliceBase(typePkg, ctx);
         // If both are slice packages, compare their bases
         if (currentSlice.isPresent() && typeSlice.isPresent()) {
-            return currentSlice.unwrap().equals(typeSlice.unwrap());
+            return currentSlice.unwrap()
+                               .equals(typeSlice.unwrap());
         }
         // If current is not a slice but type IS a slice, they're different
         // (non-slice code importing slice directly should be flagged)
@@ -271,7 +272,7 @@ public class CstSliceApiUsageRule implements CstLintRule {
         //       com.example.usecase.order.api -> com.example.usecase.order
         var parts = packageName.split("\\.");
         var result = new StringBuilder();
-        for (int i = 0; i < parts.length; i++ ) {
+        for (int i = 0; i < parts.length; i++) {
             if (i > 0) {
                 result.append(".");
             }

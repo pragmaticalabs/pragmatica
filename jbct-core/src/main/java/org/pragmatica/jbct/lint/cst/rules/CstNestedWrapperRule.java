@@ -5,12 +5,11 @@ import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.lang.Option;
 
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
-
-import org.pragmatica.lang.Option;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
@@ -56,13 +55,13 @@ public class CstNestedWrapperRule implements CstLintRule {
                             source)
                            .trim();
         return detectNestedWrapper(typeText)
-                      .map(nestedPattern -> {
-                               var methodName = childByRule(method, RuleId.Identifier.class)
-                                                           .map(id -> text(id, source))
-                                                           .or("(unknown)");
-                               return createDiagnostic(method, methodName, nestedPattern, ctx);
-                           })
-                      .stream();
+                                  .map(nestedPattern -> {
+                                           var methodName = childByRule(method, RuleId.Identifier.class)
+                                                                       .map(id -> text(id, source))
+                                                                       .or("(unknown)");
+                                           return createDiagnostic(method, methodName, nestedPattern, ctx);
+                                       })
+                                  .stream();
     }
 
     private Option<String> detectNestedWrapper(String typeText) {
