@@ -134,13 +134,15 @@ public final class GitHubReleaseChecker {
     }
 
     private static int parseVersionPart(String part) {
+        // Extract numeric prefix - non-numeric parts default to 0
+        var numericPart = part.replaceAll("[^0-9].*$", "");
+        if (numericPart.isEmpty()) {
+            return 0;
+        }
         try{
-            // Extract numeric prefix
-            var numericPart = part.replaceAll("[^0-9].*$", "");
-            return numericPart.isEmpty()
-                   ? 0
-                   : Integer.parseInt(numericPart);
+            return Integer.parseInt(numericPart);
         } catch (NumberFormatException e) {
+            // Non-numeric version part defaults to 0
             return 0;
         }
     }

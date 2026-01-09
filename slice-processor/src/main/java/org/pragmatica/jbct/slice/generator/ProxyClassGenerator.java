@@ -2,6 +2,10 @@ package org.pragmatica.jbct.slice.generator;
 
 import org.pragmatica.jbct.slice.model.DependencyModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.Filer;
 import javax.lang.model.element.ElementKind;
@@ -11,7 +15,6 @@ import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
-import java.io.IOException;
 
 import com.squareup.javapoet.ClassName;
 import com.squareup.javapoet.JavaFile;
@@ -33,7 +36,8 @@ public class ProxyClassGenerator {
         this.types = types;
     }
 
-    public void generate(DependencyModel dependency, SliceModel context) throws IOException {
+    public Result<Unit> generate(DependencyModel dependency, SliceModel context) {
+        try{
         var proxyName = dependency.proxyClassName();
         var interfaceType = TypeName.get(dependency.interfaceType());
         var classBuilder = TypeSpec.classBuilder(proxyName)
@@ -64,7 +68,11 @@ public class ProxyClassGenerator {
                                .contains(Modifier.STATIC) &&
                     !method.getModifiers()
                            .contains(Modifier.DEFAULT)) {
-                        classBuilder.addMethod(generateProxyMethod(method));
+                        var proxyMethod = generateProxyMethod(method);
+                        if (proxyMethod.isEmpty()) {
+                            return Causes.cause("Failed to generate proxy method: " + method.getSimpleName()).result();
+                        }
+                        classBuilder.addMethod(proxyMethod.unwrap());
                     }
                 }
             }
@@ -80,16 +88,20 @@ public class ProxyClassGenerator {
                                         classBuilder.build())
                                .indent("    ")
                                .build();
-        javaFile.writeTo(filer);
+            javaFile.writeTo(filer);
+            return Result.success(Unit.unit());
+        } catch (Exception e) {
+            return Causes.cause("Failed to generate proxy class: " + e.getMessage()).result();
+        }
     }
 
-    private MethodSpec generateProxyMethod(ExecutableElement method) {
+    private Option<MethodSpec> generateProxyMethod(ExecutableElement method) {
         var methodName = method.getSimpleName()
                                .toString();
         var returnType = method.getReturnType();
         var params = method.getParameters();
         if (params.size() != 1) {
-            throw new IllegalStateException("Proxy method must have exactly one parameter: " + methodName);
+            return Option.none();
         }
         var param = params.getFirst();
         var paramType = param.asType();
@@ -97,7 +109,10 @@ public class ProxyClassGenerator {
                              .toString();
         // Extract response type from Promise<T>
         var responseType = extractPromiseTypeArg(returnType);
-        return MethodSpec.methodBuilder(methodName)
+        if (responseType.isEmpty()) {
+            return Option.none();
+        }
+        return Option.some(MethodSpec.methodBuilder(methodName)
                          .addAnnotation(Override.class)
                          .addModifiers(Modifier.PUBLIC)
                          .returns(TypeName.get(returnType))
@@ -106,17 +121,17 @@ public class ProxyClassGenerator {
                          .addStatement("return invoker.invokeAndWait(artifact, $S, $L, $T.class)",
                                        methodName,
                                        paramName,
-                                       responseType)
-                         .build();
+                                       responseType.unwrap())
+                         .build());
     }
 
-    private TypeMirror extractPromiseTypeArg(TypeMirror type) {
+    private Option<TypeMirror> extractPromiseTypeArg(TypeMirror type) {
         if (type instanceof DeclaredType dt) {
             var typeArgs = dt.getTypeArguments();
             if (!typeArgs.isEmpty()) {
-                return typeArgs.getFirst();
+                return Option.some(typeArgs.getFirst());
             }
         }
-        throw new IllegalStateException("Return type must be Promise<T>");
+        return Option.none();
     }
 }

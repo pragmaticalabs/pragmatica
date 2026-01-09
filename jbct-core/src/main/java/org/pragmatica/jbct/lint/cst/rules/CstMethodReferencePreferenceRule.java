@@ -9,6 +9,8 @@ import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
+import org.pragmatica.lang.Option;
+
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
 /**
@@ -52,39 +54,39 @@ public class CstMethodReferencePreferenceRule implements CstLintRule {
         return findAll(root, RuleId.Lambda.class)
                       .stream()
                       .map(lambda -> checkLambda(lambda, source, ctx))
-                      .filter(d -> d != null);
+                      .flatMap(Option::stream);
     }
 
-    private Diagnostic checkLambda(CstNode lambda, String source, LintContext ctx) {
+    private Option<Diagnostic> checkLambda(CstNode lambda, String source, LintContext ctx) {
         var lambdaText = text(lambda, source)
                              .trim();
         // Check for constructor lambda: x -> new Type(x)
         var constructorMatch = CONSTRUCTOR_LAMBDA.matcher(lambdaText);
         if (constructorMatch.matches()) {
             var typeName = constructorMatch.group(2);
-            return createDiagnostic(lambda, lambdaText, typeName + "::new", ctx);
+            return Option.some(createDiagnostic(lambda, lambdaText, typeName + "::new", ctx));
         }
         // Check for multi-arg constructor: (a, b) -> new Type(a, b)
         var multiArgMatch = MULTI_ARG_CONSTRUCTOR.matcher(lambdaText);
         if (multiArgMatch.matches()) {
             var typeName = multiArgMatch.group(3);
-            return createDiagnostic(lambda, lambdaText, typeName + "::new", ctx);
+            return Option.some(createDiagnostic(lambda, lambdaText, typeName + "::new", ctx));
         }
         // Check for instance method: x -> x.method()
         var instanceMatch = INSTANCE_METHOD_LAMBDA.matcher(lambdaText);
         if (instanceMatch.matches()) {
             var methodName = instanceMatch.group(2);
             // For instance methods, we need the type, but we can suggest the pattern
-            return createDiagnostic(lambda, lambdaText, "Type::" + methodName, ctx);
+            return Option.some(createDiagnostic(lambda, lambdaText, "Type::" + methodName, ctx));
         }
         // Check for static method: x -> Type.method(x)
         var staticMatch = STATIC_METHOD_LAMBDA.matcher(lambdaText);
         if (staticMatch.matches()) {
             var typeName = staticMatch.group(2);
             var methodName = staticMatch.group(3);
-            return createDiagnostic(lambda, lambdaText, typeName + "::" + methodName, ctx);
+            return Option.some(createDiagnostic(lambda, lambdaText, typeName + "::" + methodName, ctx));
         }
-        return null;
+        return Option.none();
     }
 
     private Diagnostic createDiagnostic(CstNode lambda, String lambdaText, String suggestion, LintContext ctx) {

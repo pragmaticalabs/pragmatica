@@ -248,21 +248,21 @@ public class CstSliceApiUsageRule implements CstLintRule {
         var currentSlice = extractSliceBase(currentPkg, ctx);
         var typeSlice = extractSliceBase(typePkg, ctx);
         // If both are slice packages, compare their bases
-        if (currentSlice != null && typeSlice != null) {
-            return currentSlice.equals(typeSlice);
+        if (currentSlice.isPresent() && typeSlice.isPresent()) {
+            return currentSlice.unwrap().equals(typeSlice.unwrap());
         }
         // If current is not a slice but type IS a slice, they're different
         // (non-slice code importing slice directly should be flagged)
-        if (currentSlice == null && typeSlice != null) {
+        if (currentSlice.isEmpty() && typeSlice.isPresent()) {
             return false;
         }
         // If type is not a slice, will be handled by isSlicePackage check later
         return true;
     }
 
-    private String extractSliceBase(String packageName, LintContext ctx) {
+    private Option<String> extractSliceBase(String packageName, LintContext ctx) {
         if (!ctx.isSlicePackage(packageName)) {
-            return null;
+            return Option.none();
         }
         // Remove .api suffix if present, then remove any subpackage after the slice name
         // For pattern **.usecase.**, the slice base is everything up to and including the slice name
@@ -283,21 +283,21 @@ public class CstSliceApiUsageRule implements CstLintRule {
                 if (i + 1 < parts.length) {
                     var next = parts[i + 1];
                     if (next.equals("api") || next.equals("internal") || next.equals("impl")) {
-                        return partial;
+                        return Option.some(partial);
                     }
                 }
             }
         }
         // Return the full package minus .api suffix if present
         if (packageName.endsWith(".api")) {
-            return packageName.substring(0, packageName.length() - 4);
+            return Option.some(packageName.substring(0, packageName.length() - 4));
         }
-        return packageName;
+        return Option.some(packageName);
     }
 
     private String camelCase(String name) {
         if (name == null || name.isEmpty()) {
-            return name;
+            return "";
         }
         return Character.toLowerCase(name.charAt(0)) + name.substring(1);
     }

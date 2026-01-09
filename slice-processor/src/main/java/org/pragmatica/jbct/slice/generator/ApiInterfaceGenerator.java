@@ -2,12 +2,14 @@ package org.pragmatica.jbct.slice.generator;
 
 import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.Filer;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
-import java.io.IOException;
 
 import com.squareup.javapoet.JavaFile;
 import com.squareup.javapoet.MethodSpec;
@@ -25,7 +27,8 @@ public class ApiInterfaceGenerator {
         this.types = types;
     }
 
-    public void generate(SliceModel model) throws IOException {
+    public Result<Unit> generate(SliceModel model) {
+        try{
         var interfaceBuilder = TypeSpec.interfaceBuilder(model.simpleName())
                                        .addModifiers(Modifier.PUBLIC)
                                        .addJavadoc("API interface for $L slice.\n",
@@ -41,7 +44,11 @@ public class ApiInterfaceGenerator {
                                         interfaceBuilder.build())
                                .indent("    ")
                                .build();
-        javaFile.writeTo(filer);
+            javaFile.writeTo(filer);
+            return Result.success(Unit.unit());
+        } catch (Exception e) {
+            return Causes.cause("Failed to generate API interface: " + e.getMessage()).result();
+        }
     }
 
     private MethodSpec generateMethod(MethodModel method) {

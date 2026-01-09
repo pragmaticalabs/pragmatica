@@ -1,12 +1,14 @@
 package org.pragmatica.jbct.slice.generator;
 
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.Filer;
 import javax.lang.model.element.Modifier;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
-import java.io.IOException;
 
 import com.squareup.javapoet.ClassName;
 import com.squareup.javapoet.FieldSpec;
@@ -33,7 +35,8 @@ public class FactoryClassGenerator {
         this.versionResolver = versionResolver;
     }
 
-    public void generate(SliceModel model) throws IOException {
+    public Result<Unit> generate(SliceModel model) {
+        try{
         var factoryName = model.simpleName() + "Factory";
         var sliceType = ClassName.get(model.packageName(), model.simpleName());
         var classBuilder = TypeSpec.classBuilder(factoryName)
@@ -96,7 +99,11 @@ public class FactoryClassGenerator {
                                         classBuilder.build())
                                .indent("    ")
                                .build();
-        javaFile.writeTo(filer);
+            javaFile.writeTo(filer);
+            return Result.success(Unit.unit());
+        } catch (Exception e) {
+            return Causes.cause("Failed to generate factory class: " + e.getMessage()).result();
+        }
     }
 
     private String toConstantName(String name) {

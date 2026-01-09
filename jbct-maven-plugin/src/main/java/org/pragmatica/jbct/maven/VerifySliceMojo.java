@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 import java.util.jar.Manifest;
+import java.util.stream.Stream;
 
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -33,9 +34,6 @@ public class VerifySliceMojo extends AbstractMojo {
     @Parameter(property = "jbct.skip", defaultValue = "false")
     private boolean skip;
 
-    private final List<String> errors = new ArrayList<>();
-    private final List<String> warnings = new ArrayList<>();
-
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
         if (skip) {
@@ -45,39 +43,54 @@ public class VerifySliceMojo extends AbstractMojo {
         }
         getLog()
         .info("Validating slice configuration...");
-        checkManifestEntries();
-        checkSliceApiProperties();
-        // Report results
-        for (var warning : warnings) {
-            getLog()
-            .warn(warning);
+
+        var result = validateSlice();
+
+        for (var warning : result.warnings()) {
+            getLog().warn(warning);
         }
-        for (var error : errors) {
-            getLog()
-            .error(error);
+        for (var error : result.errors()) {
+            getLog().error(error);
         }
-        if (!errors.isEmpty()) {
+
+        if (!result.errors().isEmpty()) {
             throw new MojoFailureException(
-            "Slice validation failed with " + errors.size() + " error(s)");
+            "Slice validation failed with " + result.errors().size() + " error(s)");
         }
-        if (failOnWarning && !warnings.isEmpty()) {
+        if (failOnWarning && !result.warnings().isEmpty()) {
             throw new MojoFailureException(
-            "Slice validation failed with " + warnings.size() + " warning(s)");
+            "Slice validation failed with " + result.warnings().size() + " warning(s)");
         }
         getLog()
         .info("Slice validation passed");
     }
 
-    private void checkManifestEntries() {
+    private ValidationResult validateSlice() {
+        var manifestResult = checkManifestEntries();
+        var propsResult = checkSliceApiProperties();
+
+        var errors = new ArrayList<String>();
+        var warnings = new ArrayList<String>();
+
+        Stream.of(manifestResult, propsResult)
+              .forEach(partial -> {
+                  errors.addAll(partial.errors());
+                  warnings.addAll(partial.warnings());
+              });
+
+        return new ValidationResult(errors, warnings);
+    }
+
+    private PartialResult checkManifestEntries() {
         var manifestFile = new File(project.getBuild()
                                            .getOutputDirectory(),
                                     "META-INF/MANIFEST.MF");
         if (!manifestFile.exists()) {
-            warnings.add("MANIFEST.MF not found - will be created during packaging");
-            return;
+            return PartialResult.warning("MANIFEST.MF not found - will be created during packaging");
         }
         try (var input = new FileInputStream(manifestFile)) {
             var manifest = new Manifest(input);
+            var warnings = new ArrayList<String>();
             var attrs = manifest.getMainAttributes();
             if (attrs.getValue("Slice-Artifact") == null) {
                 warnings.add("Missing Slice-Artifact manifest entry");
@@ -85,34 +98,53 @@ public class VerifySliceMojo extends AbstractMojo {
             if (attrs.getValue("Slice-Class") == null) {
                 warnings.add("Missing Slice-Class manifest entry");
             }
+            return PartialResult.partialResult(List.of(), warnings);
         } catch (IOException e) {
-            errors.add("Failed to read MANIFEST.MF: " + e.getMessage());
+            return PartialResult.error("Failed to read MANIFEST.MF: " + e.getMessage());
         }
     }
 
-    private void checkSliceApiProperties() {
+    private PartialResult checkSliceApiProperties() {
         var propsFile = new File(project.getBuild()
                                         .getOutputDirectory(),
                                  "META-INF/slice-api.properties");
         if (!propsFile.exists()) {
-            errors.add("slice-api.properties not found. " + "Ensure annotation processor is configured.");
-            return;
+            return PartialResult.error("slice-api.properties not found. " + "Ensure annotation processor is configured.");
         }
         try (var input = new FileInputStream(propsFile)) {
             var props = new Properties();
             props.load(input);
-            checkRequired(props, "api.artifact");
-            checkRequired(props, "slice.artifact");
-            checkRequired(props, "api.interface");
-            checkRequired(props, "impl.interface");
+            var errors = new ArrayList<String>();
+            checkRequired(props, "api.artifact", errors);
+            checkRequired(props, "slice.artifact", errors);
+            checkRequired(props, "api.interface", errors);
+            checkRequired(props, "impl.interface", errors);
+            return PartialResult.partialResult(errors, List.of());
         } catch (IOException e) {
-            errors.add("Failed to read slice-api.properties: " + e.getMessage());
+            return PartialResult.error("Failed to read slice-api.properties: " + e.getMessage());
         }
     }
 
-    private void checkRequired(Properties props, String key) {
+    private void checkRequired(Properties props, String key, List<String> errors) {
         if (props.getProperty(key) == null) {
             errors.add("Missing required property '" + key + "' in slice-api.properties");
         }
+    }
+
+    private record PartialResult(List<String> errors, List<String> warnings) {
+        static PartialResult error(String error) {
+            return new PartialResult(List.of(error), List.of());
+        }
+
+        static PartialResult warning(String warning) {
+            return new PartialResult(List.of(), List.of(warning));
+        }
+
+        static PartialResult partialResult(List<String> errors, List<String> warnings) {
+            return new PartialResult(errors, warnings);
+        }
+    }
+
+    private record ValidationResult(List<String> errors, List<String> warnings) {
     }
 }

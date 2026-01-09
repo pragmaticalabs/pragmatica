@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.init;
 
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
@@ -9,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.stream.Stream;
 
 /**
  * Initializes a new Aether slice project structure.
@@ -64,99 +66,84 @@ public final class SliceProjectInitializer {
      * @return List of created files
      */
     public Result<List<Path>> initialize() {
+        return createDirectories()
+                      .flatMap(_ -> createAllFiles());
+    }
+
+    private Result<Unit> createDirectories() {
         try{
-            // Create directories
             var srcMainJava = projectDir.resolve("src/main/java");
             var srcTestJava = projectDir.resolve("src/test/java");
             var resources = projectDir.resolve("src/main/resources/META-INF/dependencies");
             Files.createDirectories(srcMainJava);
             Files.createDirectories(srcTestJava);
             Files.createDirectories(resources);
-            // Create package directories
             var packagePath = basePackage.replace(".", "/");
             Files.createDirectories(srcMainJava.resolve(packagePath));
             Files.createDirectories(srcTestJava.resolve(packagePath));
-            var createdFiles = new ArrayList<Path>();
-            var errors = new ArrayList<String>();
-            // Create pom.xml
-            createFile("pom.xml.template",
-                       projectDir.resolve("pom.xml"))
-                      .onSuccess(createdFiles::add)
-                      .onFailure(cause -> errors.add(cause.message()));
-            // Create jbct.toml
-            createFile("jbct.toml.template",
-                       projectDir.resolve("jbct.toml"))
-                      .onSuccess(createdFiles::add)
-                      .onFailure(cause -> errors.add(cause.message()));
-            // Create .gitignore
-            createFile("gitignore.template",
-                       projectDir.resolve(".gitignore"))
-                      .onSuccess(createdFiles::add)
-                      .onFailure(cause -> errors.add(cause.message()));
-            // Create slice interface
-            var slicePath = srcMainJava.resolve(packagePath)
-                                       .resolve(sliceName + ".java");
-            createFile("Slice.java.template", slicePath)
-                      .onSuccess(createdFiles::add)
-                      .onFailure(cause -> errors.add(cause.message()));
-            // Create slice implementation
-            var implPath = srcMainJava.resolve(packagePath)
-                                      .resolve(sliceName + "Impl.java");
-            createFile("SliceImpl.java.template", implPath)
-                      .onSuccess(createdFiles::add)
-                      .onFailure(cause -> errors.add(cause.message()));
-            // Create sample request
-            var requestPath = srcMainJava.resolve(packagePath)
-                                         .resolve("SampleRequest.java");
-            createFile("SampleRequest.java.template", requestPath)
-                      .onSuccess(createdFiles::add)
-                      .onFailure(cause -> errors.add(cause.message()));
-            // Create sample response
-            var responsePath = srcMainJava.resolve(packagePath)
-                                          .resolve("SampleResponse.java");
-            createFile("SampleResponse.java.template", responsePath)
-                      .onSuccess(createdFiles::add)
-                      .onFailure(cause -> errors.add(cause.message()));
-            // Create test
-            var testPath = srcTestJava.resolve(packagePath)
-                                      .resolve(sliceName + "Test.java");
-            createFile("SliceTest.java.template", testPath)
-                      .onSuccess(createdFiles::add)
-                      .onFailure(cause -> errors.add(cause.message()));
-            // Create deploy scripts
-            var deployForgePath = projectDir.resolve("deploy-forge.sh");
-            createFile("deploy-forge.sh.template", deployForgePath)
-                      .onSuccess(path -> {
-                          makeExecutable(path);
-                          createdFiles.add(path);
-                      })
-                      .onFailure(cause -> errors.add(cause.message()));
-            var deployTestPath = projectDir.resolve("deploy-test.sh");
-            createFile("deploy-test.sh.template", deployTestPath)
-                      .onSuccess(path -> {
-                          makeExecutable(path);
-                          createdFiles.add(path);
-                      })
-                      .onFailure(cause -> errors.add(cause.message()));
-            var deployProdPath = projectDir.resolve("deploy-prod.sh");
-            createFile("deploy-prod.sh.template", deployProdPath)
-                      .onSuccess(path -> {
-                          makeExecutable(path);
-                          createdFiles.add(path);
-                      })
-                      .onFailure(cause -> errors.add(cause.message()));
-            // Check for accumulated errors
-            if (!errors.isEmpty()) {
-                return Causes.cause("File creation errors: " + String.join("; ", errors))
-                             .result();
-            }
-            // Create dependency manifest placeholder
+            return Result.success(Unit.unit());
+        } catch (Exception e) {
+            return Causes.cause("Failed to create directories: " + e.getMessage())
+                         .result();
+        }
+    }
+
+    private Result<List<Path>> createAllFiles() {
+        // Fork-Join: Create all independent file groups in parallel
+        return Result.allOf(createProjectFiles(),
+                            createSourceFiles(),
+                            createDeployScripts())
+                     .flatMap(fileLists -> createDependencyManifest()
+                                          .map(manifest -> {
+                                              var allFiles = fileLists.stream()
+                                                                      .flatMap(List::stream)
+                                                                      .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+                                              allFiles.add(manifest);
+                                              return allFiles;
+                                          }));
+    }
+
+    private Result<List<Path>> createProjectFiles() {
+        // Fork-Join: Create project config files in parallel
+        return Result.allOf(createFile("pom.xml.template", projectDir.resolve("pom.xml")),
+                            createFile("jbct.toml.template", projectDir.resolve("jbct.toml")),
+                            createFile("gitignore.template", projectDir.resolve(".gitignore")));
+    }
+
+    private Result<List<Path>> createSourceFiles() {
+        var packagePath = basePackage.replace(".", "/");
+        var srcMainJava = projectDir.resolve("src/main/java");
+        var srcTestJava = projectDir.resolve("src/test/java");
+
+        // Fork-Join: Create source files in parallel
+        return Result.allOf(createFile("Slice.java.template",
+                                       srcMainJava.resolve(packagePath).resolve(sliceName + ".java")),
+                            createFile("SliceImpl.java.template",
+                                       srcMainJava.resolve(packagePath).resolve(sliceName + "Impl.java")),
+                            createFile("SampleRequest.java.template",
+                                       srcMainJava.resolve(packagePath).resolve("SampleRequest.java")),
+                            createFile("SampleResponse.java.template",
+                                       srcMainJava.resolve(packagePath).resolve("SampleResponse.java")),
+                            createFile("SliceTest.java.template",
+                                       srcTestJava.resolve(packagePath).resolve(sliceName + "Test.java")));
+    }
+
+    private Result<List<Path>> createDeployScripts() {
+        // Fork-Join: Create deploy scripts in parallel
+        return Result.allOf(createFile("deploy-forge.sh.template", projectDir.resolve("deploy-forge.sh")),
+                            createFile("deploy-test.sh.template", projectDir.resolve("deploy-test.sh")),
+                            createFile("deploy-prod.sh.template", projectDir.resolve("deploy-prod.sh")))
+                     .onSuccess(scripts -> scripts.forEach(SliceProjectInitializer::makeExecutable));
+    }
+
+    private Result<Path> createDependencyManifest() {
+        try{
+            var resources = projectDir.resolve("src/main/resources/META-INF/dependencies");
             var dependencyFile = resources.resolve(basePackage + "." + sliceName);
             Files.writeString(dependencyFile, "# Slice dependencies (one artifact per line)\n");
-            createdFiles.add(dependencyFile);
-            return Result.success(createdFiles);
+            return Result.success(dependencyFile);
         } catch (Exception e) {
-            return Causes.cause("Failed to initialize slice project: " + e.getMessage())
+            return Causes.cause("Failed to create dependency manifest: " + e.getMessage())
                          .result();
         }
     }
@@ -236,12 +223,17 @@ public final class SliceProjectInitializer {
     }
 
     private static void makeExecutable(Path path) {
+        // Best-effort to make file executable - may not be supported on all platforms
         try{
             var perms = Files.getPosixFilePermissions(path);
             perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
             perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
             Files.setPosixFilePermissions(path, perms);
-        } catch (UnsupportedOperationException | IOException e) {}
+        } catch (UnsupportedOperationException e) {
+            // Windows doesn't support POSIX permissions - ignored
+        } catch (IOException e) {
+            // Permission change is best-effort
+        }
     }
 
     // Inline templates

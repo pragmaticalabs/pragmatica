@@ -53,41 +53,58 @@ public final class ProjectInitializer {
      * @return List of created files
      */
     public Result<List<Path>> initialize() {
+        return createDirectories()
+                      .flatMap(_ -> createTemplateFiles())
+                      .flatMap(templateFiles -> createGitkeepFiles()
+                                               .map(gitkeepFiles -> {
+                                                   var allFiles = new ArrayList<Path>();
+                                                   allFiles.addAll(templateFiles);
+                                                   allFiles.addAll(gitkeepFiles);
+                                                   return allFiles;
+                                               }));
+    }
+
+    private Result<Path> createDirectories() {
         try{
-            // Create directories
             var srcMainJava = projectDir.resolve("src/main/java");
             var srcTestJava = projectDir.resolve("src/test/java");
             Files.createDirectories(srcMainJava);
             Files.createDirectories(srcTestJava);
-            // Create package directories
             var packagePath = basePackage.replace(".", "/");
             Files.createDirectories(srcMainJava.resolve(packagePath));
             Files.createDirectories(srcTestJava.resolve(packagePath));
-            var createdFiles = new ArrayList<Path>();
-            // Create pom.xml
-            createFile("pom.xml.template",
-                       projectDir.resolve("pom.xml"))
-                      .onSuccess(createdFiles::add);
-            // Create jbct.toml
-            createFile("jbct.toml.template",
-                       projectDir.resolve("jbct.toml"))
-                      .onSuccess(createdFiles::add);
-            // Create .gitignore
-            createFile("gitignore.template",
-                       projectDir.resolve(".gitignore"))
-                      .onSuccess(createdFiles::add);
-            // Create .gitkeep files
-            var srcKeep = srcMainJava.resolve(packagePath)
-                                     .resolve(".gitkeep");
-            var testKeep = srcTestJava.resolve(packagePath)
-                                      .resolve(".gitkeep");
-            Files.createFile(srcKeep);
-            createdFiles.add(srcKeep);
-            Files.createFile(testKeep);
-            createdFiles.add(testKeep);
-            return Result.success(createdFiles);
+            return Result.success(projectDir);
         } catch (Exception e) {
-            return Causes.cause("Failed to initialize project: " + e.getMessage())
+            return Causes.cause("Failed to create directories: " + e.getMessage())
+                         .result();
+        }
+    }
+
+    private Result<List<Path>> createTemplateFiles() {
+        // Fork-Join: Create template files in parallel
+        return Result.allOf(createFile("pom.xml.template", projectDir.resolve("pom.xml")),
+                            createFile("jbct.toml.template", projectDir.resolve("jbct.toml")),
+                            createFile("gitignore.template", projectDir.resolve(".gitignore")));
+    }
+
+    private Result<List<Path>> createGitkeepFiles() {
+        var packagePath = basePackage.replace(".", "/");
+        var srcKeep = projectDir.resolve("src/main/java")
+                                .resolve(packagePath)
+                                .resolve(".gitkeep");
+        var testKeep = projectDir.resolve("src/test/java")
+                                 .resolve(packagePath)
+                                 .resolve(".gitkeep");
+        try{
+            if (!Files.exists(srcKeep)) {
+                Files.createFile(srcKeep);
+            }
+            if (!Files.exists(testKeep)) {
+                Files.createFile(testKeep);
+            }
+            return Result.success(List.of(srcKeep, testKeep));
+        } catch (Exception e) {
+            return Causes.cause("Failed to create .gitkeep files: " + e.getMessage())
                          .result();
         }
     }

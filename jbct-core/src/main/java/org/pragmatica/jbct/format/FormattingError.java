@@ -31,7 +31,7 @@ public sealed interface FormattingError extends Cause {
         }
     }
 
-    record FormatterError(String details, Cause causeSource) implements FormattingError {
+    record FormatterError(String details, Option<Cause> causeSource) implements FormattingError {
         @Override
         public String message() {
             return "Formatting error: " + details;
@@ -39,7 +39,7 @@ public sealed interface FormattingError extends Cause {
 
         @Override
         public Option<Cause> source() {
-            return Option.option(causeSource);
+            return causeSource;
         }
     }
 
@@ -53,10 +53,10 @@ public sealed interface FormattingError extends Cause {
     }
 
     static FormattingError formatterError(String details) {
-        return new FormatterError(details, null);
+        return new FormatterError(details, Option.none());
     }
 
     static FormattingError formatterError(String details, Cause causeSource) {
-        return new FormatterError(details, causeSource);
+        return new FormatterError(details, Option.option(causeSource));
     }
 }

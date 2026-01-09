@@ -28,15 +28,12 @@ class JbctFormatterTest {
                 """
         );
 
-        formatter.format(source)
-                .onFailure(cause -> {
-                    throw new AssertionError("Format failed: " + cause.message());
-                })
-                .onSuccess(formatted -> {
-                    assertThat(formatted.content()).contains("package com.example;");
-                    assertThat(formatted.content()).contains("public class Test");
-                    assertThat(formatted.content()).contains("return \"world\"");
-                });
+        var result = formatter.format(source);
+        assertThat(result.isSuccess()).as("Format should succeed").isTrue();
+        var formatted = result.unwrap();
+        assertThat(formatted.content()).contains("package com.example;");
+        assertThat(formatted.content()).contains("public class Test");
+        assertThat(formatted.content()).contains("return \"world\"");
     }
 
     @Test
@@ -56,14 +53,11 @@ class JbctFormatterTest {
                 """
         );
 
-        formatter.format(source)
-                .onFailure(cause -> {
-                    throw new AssertionError("Format failed: " + cause.message());
-                })
-                .onSuccess(formatted -> {
-                    assertThat(formatted.content()).contains("Result.success");
-                    assertThat(formatted.content()).isNotEmpty();
-                });
+        var result = formatter.format(source);
+        assertThat(result.isSuccess()).as("Format should succeed").isTrue();
+        var formatted = result.unwrap();
+        assertThat(formatted.content()).contains("Result.success");
+        assertThat(formatted.content()).isNotEmpty();
     }
 
     @Test
@@ -78,14 +72,10 @@ class JbctFormatterTest {
                 """
         );
 
-        formatter.format(source)
-                .flatMap(formatter::isFormatted)
-                .onFailure(cause -> {
-                    throw new AssertionError("Check failed: " + cause.message());
-                })
-                .onSuccess(isFormatted -> {
-                    assertThat(isFormatted).isTrue();
-                });
+        var result = formatter.format(source)
+                              .flatMap(formatter::isFormatted);
+        assertThat(result.isSuccess()).as("Format check should succeed").isTrue();
+        assertThat(result.unwrap()).isTrue();
     }
 
     @Test
@@ -100,10 +90,8 @@ class JbctFormatterTest {
                 """
         );
 
-        formatter.format(source)
-                .onSuccessRun(Assertions::fail)
-                .onFailure(cause -> {
-                    assertThat(cause).isInstanceOf(FormattingError.ParseError.class);
-                });
+        var result = formatter.format(source);
+        assertThat(result.isFailure()).as("Format should fail for invalid syntax").isTrue();
+        result.onFailure(cause -> assertThat(cause).isInstanceOf(FormattingError.ParseError.class));
     }
 }
