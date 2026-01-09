@@ -138,7 +138,8 @@ public class CstPrinter {
     private void printNode(CstNode node, TriviaMode mode) {
         // Handle leading trivia
         // TypeArgs/TypeParams: skip leading whitespace to prevent errant space before '<'
-        var effectiveMode = (node.rule() instanceof RuleId.TypeArgs || node.rule() instanceof RuleId.TypeParams)
+        var isTypeArgsOrParams = node.rule() instanceof RuleId.TypeArgs || node.rule() instanceof RuleId.TypeParams;
+        var effectiveMode = isTypeArgsOrParams
                             ? TriviaMode.SKIP_LEADING
                             : mode;
         switch (effectiveMode) {
@@ -152,8 +153,12 @@ public class CstPrinter {
             case CstNode.NonTerminal nt -> printNonTerminal(nt);
             case CstNode.Error err -> print(err.skippedText());
         }
-        // Handle trailing trivia (use original mode)
-        switch (mode) {
+        // Handle trailing trivia
+        // TypeArgs/TypeParams: skip trailing whitespace to prevent blank line accumulation before return type
+        var trailingMode = isTypeArgsOrParams
+                           ? TriviaMode.COMMENTS_ONLY
+                           : mode;
+        switch (trailingMode) {
             case FULL, SKIP_LEADING -> printTrivia(node.trailingTrivia());
             case COMMENTS_ONLY -> printCommentsOnly(node.trailingTrivia());
         }
@@ -228,6 +233,7 @@ public class CstPrinter {
             case RuleId.Additive _ -> printAdditive(nt);
             case RuleId.TypeArgs _ -> printTypeArgs(nt);
             case RuleId.TypeParams _ -> printTypeParams(nt);
+            case RuleId.MethodDecl _ -> printMethodDecl(nt);
             default -> printChildren(nt);
         }
     }
@@ -1108,6 +1114,7 @@ public class CstPrinter {
         // TypeArgs <- '<' '>' / '<' TypeArg (',' TypeArg)* '>'
         // Print '<' directly without spacing rules to prevent errant space (e.g., router <> -> router<>)
         // The heuristic in SpacingRules can't distinguish lowercase type names from variables
+        // Print '>' with comments-only trailing trivia to prevent blank line accumulation
         var children = children(typeArgs);
         boolean first = true;
         for (var child : children) {
@@ -1117,6 +1124,11 @@ public class CstPrinter {
                 print("<");
                 printTrivia(child.trailingTrivia());
                 first = false;
+            } else if (isTerminalWithText(child, ">")) {
+                // Print '>' with comments-only trailing trivia to prevent newline accumulation
+                printTrivia(child.leadingTrivia());
+                print(">");
+                printCommentsOnly(child.trailingTrivia());
             } else {
                 printNode(child);
             }
@@ -1126,6 +1138,7 @@ public class CstPrinter {
     private void printTypeParams(CstNode.NonTerminal typeParams) {
         // TypeParams <- '<' TypeParam (',' TypeParam)* '>'
         // Print '<' directly without spacing rules to prevent errant space (e.g., record router <T> -> record router<T>)
+        // Print '>' with comments-only trailing trivia to prevent blank line accumulation before return type
         var children = children(typeParams);
         boolean first = true;
         for (var child : children) {
@@ -1135,8 +1148,124 @@ public class CstPrinter {
                 print("<");
                 printTrivia(child.trailingTrivia());
                 first = false;
+            } else if (isTerminalWithText(child, ">")) {
+                // Print '>' with comments-only trailing trivia to prevent newline accumulation
+                printTrivia(child.leadingTrivia());
+                print(">");
+                printCommentsOnly(child.trailingTrivia());
             } else {
                 printNode(child);
+            }
+        }
+    }
+
+    private void printMethodDecl(CstNode.NonTerminal methodDecl) {
+        // MethodDecl <- TypeParams? Type Identifier '(' ^ Params? ')' Dims? Throws? (Block / ';')
+        // When TypeParams is present, decide whether to put return type on same line or next line
+        var children = children(methodDecl);
+        // Find TypeParams index (-1 if not present)
+        int typeParamsIndex = - 1;
+        for (int i = 0; i < children.size(); i++) {
+            if (children.get(i)
+                        .rule() instanceof RuleId.TypeParams) {
+                typeParamsIndex = i;
+                break;
+            }
+        }
+        if (typeParamsIndex == - 1) {
+            // No type params - just print normally
+            printChildren(methodDecl);
+            return;
+        }
+        // Print children up to and including TypeParams
+        for (int i = 0; i <= typeParamsIndex; i++) {
+            printNode(children.get(i));
+        }
+        // Calculate if the method signature up to opening paren fits on the current line
+        // We only consider: space + Type + Identifier + '(' (params may be multi-line)
+        var signatureText = new StringBuilder();
+        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
+            var childText = text(children.get(i), source);
+            signatureText.append(childText);
+            // Stop after the opening paren
+            if (childText.contains("(")) {
+                break;
+            }
+        }
+        var signatureWidth = signatureText.toString()
+                                          .replaceAll("\\s+", " ")
+                                          .trim()
+                                          .length();
+        if (currentColumn + 1 + signatureWidth <= config.maxLineLength()) {
+            // Fits on same line - add single space
+            print(" ");
+        } else {
+            // Doesn't fit - newline and indent
+            println();
+            printIndent();
+        }
+        // Print remaining children (Type, Identifier, params, body, etc.)
+        // For the first child, we need to skip leading whitespace trivia at all levels
+        for (int i = typeParamsIndex + 1; i < children.size(); i++) {
+            var child = children.get(i);
+            if (i == typeParamsIndex + 1) {
+                // First child after TypeParams - skip all leading whitespace
+                printNodeSkipAllLeadingWhitespace(child);
+            } else {
+                printNode(child);
+            }
+        }
+    }
+
+    /**
+     * Print a node while skipping all leading whitespace trivia recursively.
+     * This finds the first terminal in the subtree and skips its leading whitespace.
+     * Unlike printNode, this doesn't apply special NonTerminal formatting rules
+     * to avoid double-processing. It only traverses to skip whitespace.
+     */
+    private void printNodeSkipAllLeadingWhitespace(CstNode node) {
+        // Find and print the first terminal with comments-only leading trivia
+        printFirstTerminalSkipWhitespace(node);
+    }
+
+    private void printFirstTerminalSkipWhitespace(CstNode node) {
+        switch (node) {
+            case CstNode.Terminal t -> {
+                // Found the first terminal - print with comments-only leading trivia
+                printCommentsOnly(t.leadingTrivia());
+                printWithSpacing(t.text());
+                printTrivia(t.trailingTrivia());
+            }
+            case CstNode.Token tok -> {
+                // Found the first token - print with comments-only leading trivia
+                printCommentsOnly(tok.leadingTrivia());
+                printWithSpacing(tok.text());
+                printTrivia(tok.trailingTrivia());
+            }
+            case CstNode.NonTerminal nt -> {
+                // Recurse to find first terminal, but handle NonTerminal trivia
+                var ntChildren = children(nt);
+                if (ntChildren.isEmpty()) {
+                    // Empty NonTerminal - just print trivia
+                    printCommentsOnly(nt.leadingTrivia());
+                    printTrivia(nt.trailingTrivia());
+                    return;
+                }
+                // Process first child specially, rest normally
+                boolean firstChild = true;
+                for (var child : ntChildren) {
+                    if (firstChild) {
+                        printFirstTerminalSkipWhitespace(child);
+                        firstChild = false;
+                    } else {
+                        printNode(child);
+                    }
+                }
+            }
+            case CstNode.Error err -> {
+                printCommentsOnly(err.leadingTrivia());
+                print(err.skippedText());
+                printTrivia(err.trailingTrivia());
             }
         }
     }
