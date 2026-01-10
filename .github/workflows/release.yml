@@ -20,10 +20,7 @@ jobs:
           cache: maven
 
       - name: Build
-        run: |
-          # Build modules separately to avoid cyclic dependency
-          cd jbct-core && mvn install -DskipTests -B && cd ..
-          cd jbct-cli && mvn package -DskipTests -B && cd ..
+        run: mvn package -DskipTests -Djbct.skip -B
 
       - name: Create or update release
         env:
