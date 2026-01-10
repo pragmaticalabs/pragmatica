@@ -18,7 +18,7 @@ public interface Route<T> extends RouteSource {
     ContentType contentType();
 
     @Override
-    default Stream<Route< ? >> routes() {
+    default Stream<Route< ?>> routes() {
         return Stream.of(this);
     }
 
@@ -208,37 +208,6 @@ public interface Route<T> extends RouteSource {
         }
 
         default <T1, T2, T3, T4, T5, T6, T7, T8, T9>
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
-        
         PathParameterBuilder9<R, T, T1, T2, T3, T4, T5, T6, T7, T8, T9> withPath(PathParameter<T1> pathParameter1,
                                                                                  PathParameter<T2> pathParameter2,
                                                                                  PathParameter<T3> pathParameter3,

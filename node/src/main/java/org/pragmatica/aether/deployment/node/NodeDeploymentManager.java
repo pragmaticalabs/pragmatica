@@ -383,7 +383,7 @@ public interface NodeDeploymentManager {
                                                                                                    .equals(artifact))
                                          .filter(e -> e.getValue() instanceof SliceNodeValue snv && snv.state() == SliceState.ACTIVE)
                                          .filter(e -> !((SliceNodeKey) e.getKey()).nodeId()
-                                                                        .equals(self))
+                                                                       .equals(self))
                                          .count();
                 if (activeCount == 0) {
                     // This is the last active instance, unregister routes
@@ -453,7 +453,7 @@ public interface NodeDeploymentManager {
 
             private void executeWithStateTransition(SliceNodeKey sliceKey,
                                                     SliceState currentState,
-                                                    Promise< ? > operation,
+                                                    Promise< ?> operation,
                                                     SliceState successState,
                                                     SliceState failureState) {
                 log.debug("executeWithStateTransition: {} current={} success={} failure={}, operation.isResolved={}",

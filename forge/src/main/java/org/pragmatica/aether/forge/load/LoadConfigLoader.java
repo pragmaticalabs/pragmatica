@@ -176,7 +176,7 @@ public sealed interface LoadConfigLoader {
             sb.append(value);
         } else if (value instanceof Map) {
             sb.append(mapToJsonString((Map<String, Object>) value));
-        } else if (value instanceof List< ? > list) {
+        } else if (value instanceof List< ?> list) {
             sb.append("[");
             var first = true;
             for (var item : list) {

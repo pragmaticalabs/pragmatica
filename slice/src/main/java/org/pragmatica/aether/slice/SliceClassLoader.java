@@ -41,7 +41,7 @@ public class SliceClassLoader extends URLClassLoader {
     }
 
     @Override
-    protected Class< ? > loadClass(String name, boolean resolve) throws ClassNotFoundException {
+    protected Class< ?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
         synchronized (getClassLoadingLock(name)) {
             // Check if already loaded
             var loaded = findLoadedClass(name);

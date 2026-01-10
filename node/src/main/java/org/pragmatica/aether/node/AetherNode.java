@@ -619,25 +619,25 @@ public interface AetherNode {
                                      deserializer);
     }
 
-    private static List<MessageRouter.Entry< ? >> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
-                                                                      NodeDeploymentManager nodeDeploymentManager,
-                                                                      ClusterDeploymentManager clusterDeploymentManager,
-                                                                      EndpointRegistry endpointRegistry,
-                                                                      RouteRegistry routeRegistry,
-                                                                      MetricsCollector metricsCollector,
-                                                                      MetricsScheduler metricsScheduler,
-                                                                      DeploymentMetricsCollector deploymentMetricsCollector,
-                                                                      DeploymentMetricsScheduler deploymentMetricsScheduler,
-                                                                      ControlLoop controlLoop,
-                                                                      SliceInvoker sliceInvoker,
-                                                                      InvocationHandler invocationHandler,
-                                                                      AlertManager alertManager,
-                                                                      TTMManager ttmManager,
-                                                                      RabiaMetricsCollector rabiaMetricsCollector,
-                                                                      RollingUpdateManagerImpl rollingUpdateManager,
-                                                                      RollbackManager rollbackManager,
-                                                                      ArtifactMetricsCollector artifactMetricsCollector) {
-        var entries = new ArrayList<MessageRouter.Entry< ? >>();
+    private static List<MessageRouter.Entry< ?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
+                                                                     NodeDeploymentManager nodeDeploymentManager,
+                                                                     ClusterDeploymentManager clusterDeploymentManager,
+                                                                     EndpointRegistry endpointRegistry,
+                                                                     RouteRegistry routeRegistry,
+                                                                     MetricsCollector metricsCollector,
+                                                                     MetricsScheduler metricsScheduler,
+                                                                     DeploymentMetricsCollector deploymentMetricsCollector,
+                                                                     DeploymentMetricsScheduler deploymentMetricsScheduler,
+                                                                     ControlLoop controlLoop,
+                                                                     SliceInvoker sliceInvoker,
+                                                                     InvocationHandler invocationHandler,
+                                                                     AlertManager alertManager,
+                                                                     TTMManager ttmManager,
+                                                                     RabiaMetricsCollector rabiaMetricsCollector,
+                                                                     RollingUpdateManagerImpl rollingUpdateManager,
+                                                                     RollbackManager rollbackManager,
+                                                                     ArtifactMetricsCollector artifactMetricsCollector) {
+        var entries = new ArrayList<MessageRouter.Entry< ?>>();
         // KVStore notifications to deployment managers
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, nodeDeploymentManager::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, clusterDeploymentManager::onValuePut));

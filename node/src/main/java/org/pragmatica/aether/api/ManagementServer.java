@@ -1175,8 +1175,8 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
             return "{\"error\":\"No comprehensive metrics available yet\"}";
         }
         var agg = recent.get(0);
-        return "{" + "\"minuteTimestamp\":" + agg.minuteTimestamp() + "," + "\"avgCpuUsage\":" + agg.avgCpuUsage()
-               + "," + "\"avgHeapUsage\":" + agg.avgHeapUsage() + "," + "\"avgEventLoopLagMs\":" + agg.avgEventLoopLagMs()
+        return "{" + "\"minuteTimestamp\":" + agg.minuteTimestamp() + "," + "\"avgCpuUsage\":" + agg.avgCpuUsage() + ","
+               + "\"avgHeapUsage\":" + agg.avgHeapUsage() + "," + "\"avgEventLoopLagMs\":" + agg.avgEventLoopLagMs()
                + "," + "\"avgLatencyMs\":" + agg.avgLatencyMs() + "," + "\"totalInvocations\":" + agg.totalInvocations()
                + "," + "\"totalGcPauseMs\":" + agg.totalGcPauseMs() + "," + "\"latencyP50\":" + agg.latencyP50() + ","
                + "\"latencyP95\":" + agg.latencyP95() + "," + "\"latencyP99\":" + agg.latencyP99() + ","

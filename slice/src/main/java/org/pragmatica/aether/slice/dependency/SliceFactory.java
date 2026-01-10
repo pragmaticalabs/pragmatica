@@ -34,7 +34,7 @@ public interface SliceFactory {
      *
      * @return Created slice instance
      */
-    static Result<Slice> createSlice(Class< ? > sliceClass,
+    static Result<Slice> createSlice(Class< ?> sliceClass,
                                      List<Slice> dependencies,
                                      List<DependencyDescriptor> descriptors) {
         return findFactoryMethod(sliceClass)
@@ -42,7 +42,7 @@ public interface SliceFactory {
                                 .flatMap(method -> invokeFactory(method, dependencies));
     }
 
-    private static Result<Method> findFactoryMethod(Class< ? > sliceClass) {
+    private static Result<Method> findFactoryMethod(Class< ?> sliceClass) {
         var expectedName = toLowercaseFirst(sliceClass.getSimpleName());
         return Arrays.stream(sliceClass.getDeclaredMethods())
                      .filter(m -> Modifier.isStatic(m.getModifiers()))

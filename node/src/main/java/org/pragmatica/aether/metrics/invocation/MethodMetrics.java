@@ -59,7 +59,7 @@ public final class MethodMetrics {
         }
         totalDurationNs.addAndGet(durationNs);
         histogram[bucketFor(durationNs)]
-                 .incrementAndGet();
+        .incrementAndGet();
     }
 
     /**

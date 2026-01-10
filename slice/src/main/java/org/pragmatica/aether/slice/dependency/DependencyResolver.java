@@ -228,7 +228,7 @@ public interface DependencyResolver {
     }
 
     private static Promise<Slice> resolveSliceDependencies(Artifact artifact,
-                                                           Class< ? > sliceClass,
+                                                           Class< ?> sliceClass,
                                                            List<ArtifactDependency> sliceDeps,
                                                            ClassLoader classLoader,
                                                            Repository repository,
@@ -256,7 +256,7 @@ public interface DependencyResolver {
     }
 
     private static Promise<Slice> createAndRegisterSlice(Artifact artifact,
-                                                         Class< ? > sliceClass,
+                                                         Class< ?> sliceClass,
                                                          List<Slice> resolvedSlices,
                                                          List<ArtifactDependency> sliceDeps,
                                                          SliceRegistry registry) {
@@ -333,7 +333,7 @@ public interface DependencyResolver {
         };
     }
 
-    private static Result<Slice> createSliceFromClass(Class< ? > sliceClass,
+    private static Result<Slice> createSliceFromClass(Class< ?> sliceClass,
                                                       List<Slice> dependencies,
                                                       List<ArtifactDependency> descriptors) {
         // Convert ArtifactDependency to DependencyDescriptor for SliceFactory compatibility
@@ -361,7 +361,7 @@ public interface DependencyResolver {
         return List.copyOf(newList);
     }
 
-    private static Promise<Class< ? >> loadClass(String className, ClassLoader classLoader) {
+    private static Promise<Class< ?>> loadClass(String className, ClassLoader classLoader) {
         return Promise.lift(Causes::fromThrowable, () -> classLoader.loadClass(className));
     }
 

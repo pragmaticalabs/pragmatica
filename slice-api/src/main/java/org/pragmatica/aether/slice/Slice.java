@@ -17,7 +17,7 @@ public interface Slice {
                      .async();
     }
 
-    List<SliceMethod< ?, ? >> methods();
+    List<SliceMethod< ?, ?>> methods();
 
     /**
      * HTTP routes this slice handles.

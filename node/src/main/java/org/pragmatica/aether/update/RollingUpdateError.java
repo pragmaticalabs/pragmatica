@@ -69,8 +69,8 @@ public sealed interface RollingUpdateError extends Cause {
                              HealthThresholds thresholds) implements RollingUpdateError {
         @Override
         public String message() {
-            return "Health check failed: error rate " + errorRate + " (max " + thresholds.maxErrorRate()
-                   + "), latency " + latencyMs + "ms (max " + thresholds.maxLatencyMs() + "ms)";
+            return "Health check failed: error rate " + errorRate + " (max " + thresholds.maxErrorRate() + "), latency " + latencyMs
+                   + "ms (max " + thresholds.maxLatencyMs() + "ms)";
         }
     }
 

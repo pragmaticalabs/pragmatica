@@ -704,8 +704,8 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 var body = "{\"artifactBase\":\"" + artifactBase + "\"," + "\"version\":\"" + version + "\","
                            + "\"instances\":" + instances + "," + "\"maxErrorRate\":" + errorRate + ","
-                           + "\"maxLatencyMs\":" + latencyMs + "," + "\"requireManualApproval\":" + manualApproval
-                           + "," + "\"cleanupPolicy\":\"" + cleanupPolicy + "\"}";
+                           + "\"maxLatencyMs\":" + latencyMs + "," + "\"requireManualApproval\":" + manualApproval + ","
+                           + "\"cleanupPolicy\":\"" + cleanupPolicy + "\"}";
                 var response = updateParent.parent.postToNode("/rolling-update/start", body);
                 System.out.println(formatJson(response));
                 return 0;

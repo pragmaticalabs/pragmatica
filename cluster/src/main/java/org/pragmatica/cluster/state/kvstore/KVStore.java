@@ -38,9 +38,9 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     @Override
     public Option<V> process(KVCommand command) {
         return switch (command) {
-            case Get< ? > get -> handleGet((Get<K>) get);
-            case Put< ?, ? > put -> handlePut((Put<K, V>) put);
-            case Remove< ? > remove -> handleRemove((Remove<K>) remove);
+            case Get< ?> get -> handleGet((Get<K>) get);
+            case Put< ?, ?> put -> handlePut((Put<K, V>) put);
+            case Remove< ?> remove -> handleRemove((Remove<K>) remove);
         };
     }
 

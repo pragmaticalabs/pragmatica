@@ -97,7 +97,7 @@ public record CancelOrderSlice() implements Slice {
 
     // === Slice Implementation ===
     @Override
-    public List<SliceMethod< ?, ? >> methods() {
+    public List<SliceMethod< ?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("cancelOrder")
                                                    .expect("Invalid method name: cancelOrder"),
                                          this::execute,

@@ -12,7 +12,7 @@ import java.util.function.Consumer;
 import static org.pragmatica.utility.HierarchyScanner.concreteSubtypes;
 
 public interface CustomClasses {
-    static void configure(Consumer<Class< ? >> consumer) {
+    static void configure(Consumer<Class< ?>> consumer) {
         concreteSubtypes(RabiaProtocolMessage.class)
                         .forEach(consumer);
         concreteSubtypes(NetworkMessage.class)
