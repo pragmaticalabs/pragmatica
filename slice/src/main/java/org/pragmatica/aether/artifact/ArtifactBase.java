@@ -46,7 +46,7 @@ public record ArtifactBase(GroupId groupId, ArtifactId artifactId) {
      * @param artifact the full artifact with version
      * @return the version-agnostic artifact base
      */
-    public static ArtifactBase fromArtifact(Artifact artifact) {
+    public static ArtifactBase artifactBase(Artifact artifact) {
         return new ArtifactBase(artifact.groupId(), artifact.artifactId());
     }
 

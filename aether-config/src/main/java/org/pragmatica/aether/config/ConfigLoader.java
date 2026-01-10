@@ -146,6 +146,10 @@ public final class ConfigLoader {
                                     .or(0.7);
                 builder.ttm(new TTMConfig(modelPath, inputWindow, predictionHorizon, evalInterval, confidence, true));
             }
+            // Slice config
+            doc.getStringList("slice", "repositories")
+               .map(SliceConfig::sliceConfig)
+               .onPresent(result -> result.onSuccess(builder::sliceConfig));
             // Apply CLI overrides (highest priority)
             if (overrides.containsKey("nodes")) {
                 builder.nodes(Integer.parseInt(overrides.get("nodes")));

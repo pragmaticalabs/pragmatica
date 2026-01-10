@@ -1,7 +1,7 @@
 package org.pragmatica.aether.metrics.eventloop;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -31,7 +31,7 @@ public final class EventLoopMetricsCollector {
     // Probe every 100ms
     private static final long HEALTH_THRESHOLD_NS = EventLoopMetrics.DEFAULT_HEALTH_THRESHOLD_NS;
 
-    private final List<EventLoopGroup> eventLoopGroups = new ArrayList<>();
+    private final List<EventLoopGroup> eventLoopGroups = new CopyOnWriteArrayList<>();
     private final AtomicLong maxLagNanos = new AtomicLong(0);
     private final AtomicInteger totalPendingTasks = new AtomicInteger(0);
     private final AtomicInteger totalActiveChannels = new AtomicInteger(0);

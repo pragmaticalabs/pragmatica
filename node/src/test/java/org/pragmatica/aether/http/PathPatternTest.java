@@ -9,7 +9,7 @@ class PathPatternTest {
 
     @Test
     void compile_exactPath_matchesExactly() {
-        PathPattern.compile("GET:/api/orders")
+        PathPattern.pathPattern("GET:/api/orders")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.GET, "/api/orders");
@@ -20,7 +20,7 @@ class PathPatternTest {
 
     @Test
     void compile_exactPath_rejectsWrongPath() {
-        PathPattern.compile("GET:/api/orders")
+        PathPattern.pathPattern("GET:/api/orders")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.GET, "/api/users");
@@ -30,7 +30,7 @@ class PathPatternTest {
 
     @Test
     void compile_exactPath_rejectsWrongMethod() {
-        PathPattern.compile("GET:/api/orders")
+        PathPattern.pathPattern("GET:/api/orders")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.POST, "/api/orders");
@@ -40,7 +40,7 @@ class PathPatternTest {
 
     @Test
     void compile_pathWithVariable_extractsVariable() {
-        PathPattern.compile("GET:/api/orders/{orderId}")
+        PathPattern.pathPattern("GET:/api/orders/{orderId}")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.GET, "/api/orders/ORD-12345678");
@@ -51,7 +51,7 @@ class PathPatternTest {
 
     @Test
     void compile_pathWithMultipleVariables_extractsAll() {
-        PathPattern.compile("GET:/api/customers/{customerId}/orders/{orderId}")
+        PathPattern.pathPattern("GET:/api/customers/{customerId}/orders/{orderId}")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.GET, "/api/customers/CUST-001/orders/ORD-002");
@@ -64,7 +64,7 @@ class PathPatternTest {
 
     @Test
     void compile_pathWithVariableInMiddle_matchesCorrectly() {
-        PathPattern.compile("GET:/api/users/{userId}/settings")
+        PathPattern.pathPattern("GET:/api/users/{userId}/settings")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.GET, "/api/users/123/settings");
@@ -75,7 +75,7 @@ class PathPatternTest {
 
     @Test
     void compile_postMethod_matchesPost() {
-        PathPattern.compile("POST:/api/orders")
+        PathPattern.pathPattern("POST:/api/orders")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.POST, "/api/orders");
@@ -85,7 +85,7 @@ class PathPatternTest {
 
     @Test
     void compile_deleteMethod_matchesDelete() {
-        PathPattern.compile("DELETE:/api/orders/{orderId}")
+        PathPattern.pathPattern("DELETE:/api/orders/{orderId}")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.DELETE, "/api/orders/123");
@@ -96,7 +96,7 @@ class PathPatternTest {
 
     @Test
     void compile_trailingSlashMismatch_doesNotMatch() {
-        PathPattern.compile("GET:/api/orders")
+        PathPattern.pathPattern("GET:/api/orders")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.GET, "/api/orders/");
@@ -106,7 +106,7 @@ class PathPatternTest {
 
     @Test
     void compile_partialPathMatch_doesNotMatch() {
-        PathPattern.compile("GET:/api/orders/{orderId}")
+        PathPattern.pathPattern("GET:/api/orders/{orderId}")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.GET, "/api/orders");
@@ -116,7 +116,7 @@ class PathPatternTest {
 
     @Test
     void compile_longerPathThanPattern_doesNotMatch() {
-        PathPattern.compile("GET:/api/orders/{orderId}")
+        PathPattern.pathPattern("GET:/api/orders/{orderId}")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(pattern -> {
                        var match = pattern.match(HttpMethod.GET, "/api/orders/123/items");
@@ -126,14 +126,14 @@ class PathPatternTest {
 
     @Test
     void compile_missingColon_fails() {
-        PathPattern.compile("GET/api/orders")
+        PathPattern.pathPattern("GET/api/orders")
                    .onSuccessRun(Assertions::fail)
                    .onFailure(cause -> assertThat(cause.message()).contains("must include method"));
     }
 
     @Test
     void compile_unknownMethod_fails() {
-        PathPattern.compile("UNKNOWN:/api/orders")
+        PathPattern.pathPattern("UNKNOWN:/api/orders")
                    .onSuccessRun(Assertions::fail)
                    .onFailure(cause -> assertThat(cause.message()).contains("Unknown HTTP method"));
     }

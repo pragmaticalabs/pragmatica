@@ -51,7 +51,7 @@ class LeaderManagerTest {
     }
 
     @Test
-    void nodesAddedThenQuorumReached() {
+    void onTopologyChange_nodesAddedThenQuorum_electsLeader() {
         var expected = simulateClusterStart();
 
         // When quorum disappears, we should see disappearance of the leader
@@ -62,7 +62,7 @@ class LeaderManagerTest {
     }
 
     @Test
-    void nodesAddedAndRemovedLeaderStaysStable() {
+    void onTopologyChange_nodesAddedAndRemoved_leaderStaysStable() {
         var expected = simulateClusterStart();
 
         // Use deterministic ID that sorts after existing nodes (a < b < c < d)
@@ -77,7 +77,7 @@ class LeaderManagerTest {
     }
 
     @Test
-    void leaderRemovedAndReplacedWithNewOne() {
+    void onTopologyChange_leaderRemoved_electsNewLeader() {
         var expected = simulateClusterStart();
 
         // Remove the leader (node-a, which is first in sorted order)

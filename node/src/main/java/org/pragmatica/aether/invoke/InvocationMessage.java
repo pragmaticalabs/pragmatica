@@ -13,6 +13,10 @@ import org.pragmatica.consensus.NodeId;
  *   <li>Fire-and-forget: expectResponse=false</li>
  *   <li>Request-response: expectResponse=true</li>
  * </ul>
+ *
+ * <p>All invocations carry a requestId for distributed tracing.
+ * The requestId remains constant through the entire invocation chain
+ * (slice A → slice B → slice C), while correlationId is unique per request/response pair.
  */
 public sealed interface InvocationMessage extends ProtocolMessage {
     /**
@@ -20,6 +24,7 @@ public sealed interface InvocationMessage extends ProtocolMessage {
      *
      * @param sender         Node sending the request
      * @param correlationId  Unique ID for matching request/response
+     * @param requestId      Distributed tracing ID (constant through chain)
      * @param targetSlice    The slice to invoke
      * @param method         Method name to call
      * @param payload        Serialized request parameter
@@ -27,6 +32,7 @@ public sealed interface InvocationMessage extends ProtocolMessage {
      */
     record InvokeRequest(NodeId sender,
                          String correlationId,
+                         String requestId,
                          Artifact targetSlice,
                          MethodName method,
                          byte[] payload,
@@ -37,11 +43,13 @@ public sealed interface InvocationMessage extends ProtocolMessage {
      *
      * @param sender        Node sending the response
      * @param correlationId Matches the request
+     * @param requestId     Distributed tracing ID (echoed from request)
      * @param success       Whether invocation succeeded
      * @param payload       Serialized response (if success) or error message (if failure)
      */
     record InvokeResponse(NodeId sender,
                           String correlationId,
+                          String requestId,
                           boolean success,
                           byte[] payload) implements InvocationMessage {}
 }

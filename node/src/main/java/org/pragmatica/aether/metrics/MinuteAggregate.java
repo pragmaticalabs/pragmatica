@@ -47,6 +47,37 @@ public record MinuteAggregate(long minuteTimestamp,
                                                                     0);
 
     /**
+     * Factory method following JBCT naming convention.
+     */
+    public static MinuteAggregate minuteAggregate(long minuteTimestamp,
+                                                  double avgCpuUsage,
+                                                  double avgHeapUsage,
+                                                  double avgEventLoopLagMs,
+                                                  double avgLatencyMs,
+                                                  long totalInvocations,
+                                                  long totalGcPauseMs,
+                                                  double latencyP50,
+                                                  double latencyP95,
+                                                  double latencyP99,
+                                                  double errorRate,
+                                                  int eventCount,
+                                                  int sampleCount) {
+        return new MinuteAggregate(minuteTimestamp,
+                                   avgCpuUsage,
+                                   avgHeapUsage,
+                                   avgEventLoopLagMs,
+                                   avgLatencyMs,
+                                   totalInvocations,
+                                   totalGcPauseMs,
+                                   latencyP50,
+                                   latencyP95,
+                                   latencyP99,
+                                   errorRate,
+                                   eventCount,
+                                   sampleCount);
+    }
+
+    /**
      * Align timestamp to minute boundary.
      */
     public static long alignToMinute(long timestamp) {

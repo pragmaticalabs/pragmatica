@@ -228,4 +228,56 @@ class ConfigLoaderTest {
                 assertThat(config.node().heap()).isEqualTo("256m");
             });
     }
+
+    @Test
+    void loadFromString_parsesSliceConfigWithSingleRepository() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [slice]
+            repositories = ["builtin"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.slice().repositories()).containsExactly(RepositoryType.BUILTIN);
+            });
+    }
+
+    @Test
+    void loadFromString_parsesSliceConfigWithMultipleRepositories() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+
+            [slice]
+            repositories = ["local", "builtin"]
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.slice().repositories())
+                    .containsExactly(RepositoryType.LOCAL, RepositoryType.BUILTIN);
+            });
+    }
+
+    @Test
+    void loadFromString_usesDefaultSliceConfigWhenNotSpecified() {
+        var toml = """
+            [cluster]
+            environment = "docker"
+            nodes = 3
+            """;
+
+        ConfigLoader.loadFromString(toml)
+            .onFailure(cause -> Assertions.fail(cause.message()))
+            .onSuccess(config -> {
+                assertThat(config.slice().repositories()).containsExactly(RepositoryType.LOCAL);
+            });
+    }
 }

@@ -2,12 +2,15 @@ package org.pragmatica.aether.controller;
 
 import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
 import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Unit.unit;
 
 /**
  * Simple rule-based controller for MVP.
@@ -31,14 +34,17 @@ public interface DecisionTreeController extends ClusterController {
 
     /**
      * Create a decision tree controller with custom thresholds.
+     *
+     * @return Result containing controller or validation error
      */
-    static DecisionTreeController decisionTreeController(double cpuScaleUpThreshold,
-                                                         double cpuScaleDownThreshold,
-                                                         double callRateScaleUpThreshold) {
-        return new DecisionTreeControllerImpl(ControllerConfig.controllerConfig(cpuScaleUpThreshold,
-                                                                                cpuScaleDownThreshold,
-                                                                                callRateScaleUpThreshold,
-                                                                                1000));
+    static org.pragmatica.lang.Result<DecisionTreeController> decisionTreeController(double cpuScaleUpThreshold,
+                                                                                     double cpuScaleDownThreshold,
+                                                                                     double callRateScaleUpThreshold) {
+        return ControllerConfig.controllerConfig(cpuScaleUpThreshold,
+                                                 cpuScaleDownThreshold,
+                                                 callRateScaleUpThreshold,
+                                                 1000)
+                               .map(DecisionTreeControllerImpl::new);
     }
 
     /**
@@ -56,7 +62,7 @@ public interface DecisionTreeController extends ClusterController {
     /**
      * Update configuration at runtime.
      */
-    void updateConfiguration(ControllerConfig config);
+    Unit updateConfiguration(ControllerConfig config);
 }
 
 class DecisionTreeControllerImpl implements DecisionTreeController {
@@ -74,9 +80,10 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
     }
 
     @Override
-    public void updateConfiguration(ControllerConfig config) {
+    public Unit updateConfiguration(ControllerConfig config) {
         log.info("Controller configuration updated: {}", config);
         this.config = config;
+        return unit();
     }
 
     @Override
@@ -106,7 +113,8 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
                                                     java.util.Map<org.pragmatica.consensus.NodeId, java.util.Map<String, Double>> metrics,
                                                     ControllerConfig currentConfig) {
         return evaluateCpuRules(artifact, blueprint, avgCpu, currentConfig)
-                               .or(() -> evaluateCallRateRule(artifact, metrics, currentConfig));
+                               .orElse(() -> evaluateCallRateRule(artifact, metrics, currentConfig))
+                               .or(List::of);
     }
 
     private org.pragmatica.lang.Option<List<BlueprintChange>> evaluateCpuRules(org.pragmatica.aether.artifact.Artifact artifact,
@@ -132,9 +140,9 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
         return org.pragmatica.lang.Option.empty();
     }
 
-    private List<BlueprintChange> evaluateCallRateRule(org.pragmatica.aether.artifact.Artifact artifact,
-                                                       java.util.Map<org.pragmatica.consensus.NodeId, java.util.Map<String, Double>> metrics,
-                                                       ControllerConfig currentConfig) {
+    private org.pragmatica.lang.Option<List<BlueprintChange>> evaluateCallRateRule(org.pragmatica.aether.artifact.Artifact artifact,
+                                                                                   java.util.Map<org.pragmatica.consensus.NodeId, java.util.Map<String, Double>> metrics,
+                                                                                   ControllerConfig currentConfig) {
         // Rule 3: High call rate → scale up
         var hasHighCallRate = metrics.values()
                                      .stream()
@@ -144,9 +152,9 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
                                      .anyMatch(entry -> entry.getValue() > currentConfig.callRateScaleUpThreshold());
         if (hasHighCallRate) {
             log.info("Rule triggered: High call rate, scaling up {}", artifact);
-            return List.of(new BlueprintChange.ScaleUp(artifact, 1));
+            return org.pragmatica.lang.Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
         }
-        return List.of();
+        return org.pragmatica.lang.Option.empty();
     }
 
     private boolean isCallMetric(String metricName) {

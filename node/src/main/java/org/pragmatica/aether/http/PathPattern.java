@@ -27,7 +27,7 @@ public record PathPattern(HttpMethod method,
 
     private static final Fn1<Cause, String> UNKNOWN_METHOD = Causes.forOneValue("Unknown HTTP method: {}");
 
-    public static Result<PathPattern> compile(String routePattern) {
+    public static Result<PathPattern> pathPattern(String routePattern) {
         // Parse "GET:/api/users/{userId}" format
         var colonIndex = routePattern.indexOf(':');
         if (colonIndex == - 1) {

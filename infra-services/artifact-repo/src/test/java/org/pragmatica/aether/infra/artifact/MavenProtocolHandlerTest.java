@@ -103,6 +103,11 @@ class MavenProtocolHandlerTest {
             }
 
             @Override
+            public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
+                return new ArtifactStoreError.NotFound(artifact).promise();
+            }
+
+            @Override
             public Promise<Boolean> exists(Artifact artifact) {
                 return Promise.success(false);
             }
@@ -117,6 +122,11 @@ class MavenProtocolHandlerTest {
             @Override
             public Promise<Unit> delete(Artifact artifact) {
                 return Promise.success(Unit.unit());
+            }
+
+            @Override
+            public Metrics metrics() {
+                return Metrics.empty();
             }
         };
     }

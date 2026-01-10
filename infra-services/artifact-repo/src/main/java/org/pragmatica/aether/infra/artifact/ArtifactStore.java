@@ -45,6 +45,17 @@ public interface ArtifactStore {
     Promise<byte[]> resolve(Artifact artifact);
 
     /**
+     * Resolve an artifact with its metadata.
+     * Allows callers to access verification details (hash, size, etc.).
+     */
+    Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact);
+
+    /**
+     * Resolved artifact with content and metadata.
+     */
+    record ResolvedArtifact(byte[] content, ArtifactMetadata metadata) {}
+
+    /**
      * Check if an artifact exists.
      */
     Promise<Boolean> exists(Artifact artifact);
@@ -58,6 +69,35 @@ public interface ArtifactStore {
      * Delete an artifact.
      */
     Promise<Unit> delete(Artifact artifact);
+
+    /**
+     * Get storage metrics for this artifact store.
+     */
+    Metrics metrics();
+
+    /**
+     * Artifact storage metrics snapshot.
+     */
+    record Metrics(int artifactCount, int chunkCount, long memoryBytes) {
+        /**
+         * Chunk size in bytes (64KB).
+         */
+        static final int CHUNK_SIZE = 64 * 1024;
+
+        /**
+         * Create metrics from artifact and chunk counts.
+         */
+        static Metrics metrics(int artifactCount, int chunkCount) {
+            return new Metrics(artifactCount, chunkCount, (long) chunkCount * CHUNK_SIZE);
+        }
+
+        /**
+         * Empty metrics.
+         */
+        static Metrics empty() {
+            return new Metrics(0, 0, 0);
+        }
+    }
 
     /**
      * Deployment result with checksums.
@@ -143,8 +183,17 @@ class ArtifactStoreImpl implements ArtifactStore {
     // 64KB chunks
     private final DHTClient dht;
 
+    // Metrics tracking
+    private final java.util.concurrent.atomic.AtomicInteger artifactCount = new java.util.concurrent.atomic.AtomicInteger(0);
+    private final java.util.concurrent.atomic.AtomicInteger chunkCount = new java.util.concurrent.atomic.AtomicInteger(0);
+
     ArtifactStoreImpl(DHTClient dht) {
         this.dht = dht;
+    }
+
+    @Override
+    public Metrics metrics() {
+        return Metrics.metrics(artifactCount.get(), chunkCount.get());
     }
 
     @Override
@@ -166,6 +215,8 @@ class ArtifactStoreImpl implements ArtifactStore {
                                             metadata.toBytes()))
                       .flatMap(_ -> updateVersionsList(artifact))
                       .map(_ -> {
+                               artifactCount.incrementAndGet();
+                               chunkCount.addAndGet(chunks.size());
                                log.info("Deployed artifact: {} ({} chunks)",
                                         artifact.asString(),
                                         chunks.size());
@@ -175,14 +226,20 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     @Override
     public Promise<byte[]> resolve(Artifact artifact) {
+        return resolveWithMetadata(artifact)
+                                  .map(ResolvedArtifact::content);
+    }
+
+    @Override
+    public Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact) {
         log.debug("Resolving artifact: {}", artifact.asString());
         return dht.get(metaKey(artifact))
                   .flatMap(metaOpt -> metaOpt.flatMap(ArtifactMetadata::fromBytes)
                                              .async(new ArtifactStoreError.NotFound(artifact))
-                                             .flatMap(meta -> resolveChunks(artifact, meta)));
+                                             .flatMap(meta -> resolveAndVerifyChunks(artifact, meta)));
     }
 
-    private Promise<byte[]> resolveChunks(Artifact artifact, ArtifactMetadata meta) {
+    private Promise<ResolvedArtifact> resolveAndVerifyChunks(Artifact artifact, ArtifactMetadata meta) {
         var corruptedError = new ArtifactStoreError.CorruptedArtifact(artifact);
         var chunkPromises = new ArrayList<Promise<byte[]>>();
         for (int i = 0; i < meta.chunkCount(); i++) {
@@ -193,7 +250,21 @@ class ArtifactStoreImpl implements ArtifactStore {
                       .map(results -> reassembleChunks(results.stream()
                                                               .map(Result::unwrap)
                                                               .toList(),
-                                                       (int) meta.size()));
+                                                       (int) meta.size()))
+                      .flatMap(content -> verifyIntegrity(artifact, content, meta));
+    }
+
+    private Promise<ResolvedArtifact> verifyIntegrity(Artifact artifact, byte[] content, ArtifactMetadata meta) {
+        var computedSha1 = computeHash(content, "SHA-1");
+        if (!computedSha1.equals(meta.sha1())) {
+            log.error("Integrity verification failed for {}: expected SHA1={}, computed={}",
+                      artifact.asString(),
+                      meta.sha1(),
+                      computedSha1);
+            return new ArtifactStoreError.CorruptedArtifact(artifact).promise();
+        }
+        log.debug("Integrity verified for {}: SHA1={}", artifact.asString(), computedSha1);
+        return Promise.success(new ResolvedArtifact(content, meta));
     }
 
     @Override
@@ -225,7 +296,11 @@ class ArtifactStoreImpl implements ArtifactStore {
         }
         deletePromises.add(dht.remove(metaKey(artifact)));
         return Promise.allOf(deletePromises)
-                      .mapToUnit();
+                      .map(_ -> {
+                               artifactCount.decrementAndGet();
+                               chunkCount.addAndGet(- meta.chunkCount());
+                               return org.pragmatica.lang.Unit.unit();
+                           });
     }
 
     private Promise<Unit> updateVersionsList(Artifact artifact) {

@@ -60,7 +60,7 @@ public interface BlueprintExpander {
                                                                      Map<Artifact, Set<Artifact>> allDeps) {
         var graph = buildDependencyGraph(allDeps);
         return checkCycles(graph)
-                          .map(_ -> buildLoadOrder(explicitSlices, allDeps, graph))
+                          .flatMap(_ -> buildLoadOrder(explicitSlices, allDeps, graph))
                           .map(loadOrder -> ExpandedBlueprint.expandedBlueprint(blueprint.id(),
                                                                                 loadOrder))
                           .async();
@@ -156,14 +156,14 @@ public interface BlueprintExpander {
     /**
      * Build topologically sorted load order.
      */
-    private static List<ResolvedSlice> buildLoadOrder(Map<Artifact, SliceSpec> explicitSlices,
-                                                      Map<Artifact, Set<Artifact>> allDependencies,
-                                                      Map<String, List<String>> graph) {
+    private static Result<List<ResolvedSlice>> buildLoadOrder(Map<Artifact, SliceSpec> explicitSlices,
+                                                              Map<Artifact, Set<Artifact>> allDependencies,
+                                                              Map<String, List<String>> graph) {
         var allArtifacts = collectAllArtifacts(explicitSlices.keySet(), allDependencies);
         var sorted = topologicalSort(allArtifacts, allDependencies);
-        return sorted.stream()
-                     .map(artifact -> createResolvedSlice(artifact, explicitSlices))
-                     .toList();
+        return Result.allOf(sorted.stream()
+                                  .map(artifact -> createResolvedSlice(artifact, explicitSlices))
+                                  .toList());
     }
 
     /**
@@ -208,7 +208,8 @@ public interface BlueprintExpander {
     /**
      * Create ResolvedSlice from artifact and explicit slices map.
      */
-    private static ResolvedSlice createResolvedSlice(Artifact artifact, Map<Artifact, SliceSpec> explicitSlices) {
+    private static Result<ResolvedSlice> createResolvedSlice(Artifact artifact,
+                                                             Map<Artifact, SliceSpec> explicitSlices) {
         return Option.option(explicitSlices.get(artifact))
                      .fold(() -> ResolvedSlice.resolvedSlice(artifact, 1, true),
                            spec -> ResolvedSlice.resolvedSlice(artifact,

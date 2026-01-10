@@ -27,7 +27,7 @@ public record ForgeConfig(int nodes,
     /**
      * Default configuration.
      */
-    public static ForgeConfig defaultConfig() {
+    public static ForgeConfig defaults() {
         return new ForgeConfig(DEFAULT_NODES, DEFAULT_MANAGEMENT_PORT, DEFAULT_DASHBOARD_PORT);
     }
 

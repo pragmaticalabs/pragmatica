@@ -104,35 +104,39 @@ public interface NodeDeploymentManager {
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
                 whenOurKeyMatches(valuePut.cause()
                                           .key(),
-                                  sliceKey -> {
-                                      var value = valuePut.cause()
-                                                          .value();
-                                      switch (value) {
+                                  sliceKey -> handleSliceValuePut(sliceKey,
+                                                                  valuePut.cause()
+                                                                          .value()));
+            }
+
+            private void handleSliceValuePut(SliceNodeKey sliceKey, AetherValue value) {
+                switch (value) {
                     case SliceNodeValue(SliceState state) -> {
-                                          log.info("ValuePut received for key: {}, state: {}", sliceKey, state);
-                                          recordDeployment(sliceKey, state);
-                                          processStateTransition(sliceKey, state);
-                                      }
+                        log.info("ValuePut received for key: {}, state: {}", sliceKey, state);
+                        recordDeployment(sliceKey, state);
+                        processStateTransition(sliceKey, state);
+                    }
                     default -> log.warn(UNEXPECTED_VALUE_TYPE.apply(value.getClass())
                                                              .message());
                 }
-                                  });
             }
 
             @Override
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
                 whenOurKeyMatches(valueRemove.cause()
                                              .key(),
-                                  sliceKey -> {
-                                      log.debug("ValueRemove received for key: {}", sliceKey);
-                                      // WARNING: Removal may happen during abrupt stop due to lack of consensus.
+                                  this::handleSliceValueRemove);
+            }
+
+            private void handleSliceValueRemove(SliceNodeKey sliceKey) {
+                log.debug("ValueRemove received for key: {}", sliceKey);
+                // WARNING: Removal may happen during abrupt stop due to lack of consensus.
                 // In this case slice might be active and we should immediately stop it,
                 // unload and remove, ignoring errors.
                 var deployment = Option.option(deployments.remove(sliceKey));
-                                      if (shouldForceCleanup(deployment)) {
-                                          forceCleanupSlice(sliceKey);
-                                      }
-                                  });
+                if (shouldForceCleanup(deployment)) {
+                    forceCleanupSlice(sliceKey);
+                }
             }
 
             private void recordDeployment(SliceNodeKey sliceKey, SliceState state) {
@@ -379,7 +383,7 @@ public interface NodeDeploymentManager {
                                                                                                    .equals(artifact))
                                          .filter(e -> e.getValue() instanceof SliceNodeValue snv && snv.state() == SliceState.ACTIVE)
                                          .filter(e -> !((SliceNodeKey) e.getKey()).nodeId()
-                                                                        .equals(self))
+                                                                       .equals(self))
                                          .count();
                 if (activeCount == 0) {
                     // This is the last active instance, unregister routes
@@ -436,11 +440,9 @@ public interface NodeDeploymentManager {
             private void handleFailed(SliceNodeKey sliceKey) {}
 
             private void handleUnloading(SliceNodeKey sliceKey) {
-                // TODO: move timeouts to SliceStore.
-                //  Timeouts should be inserted as close to actual operations as possible.
-                //  Otherwise they don't cancel the operation itself, but subsequent transformations.
-                //  This may result in incorrect handling of subsequent operations as they will
-                //  be executed only when original operation is completed.
+                // Design note: Timeouts remain in NodeDeploymentManager (not SliceStore) to keep
+                // SliceStore as a clean interface without configuration dependencies. The tradeoff
+                // is that timeouts wrap the entire operation chain rather than individual operations.
                 configuration.timeoutFor(SliceState.UNLOADING)
                              .onSuccess(timeout -> sliceStore.unloadSlice(sliceKey.artifact())
                                                              .timeout(timeout)
@@ -451,7 +453,7 @@ public interface NodeDeploymentManager {
 
             private void executeWithStateTransition(SliceNodeKey sliceKey,
                                                     SliceState currentState,
-                                                    Promise< ? > operation,
+                                                    Promise< ?> operation,
                                                     SliceState successState,
                                                     SliceState failureState) {
                 log.debug("executeWithStateTransition: {} current={} success={} failure={}, operation.isResolved={}",

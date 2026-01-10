@@ -55,7 +55,7 @@ public record Main(String[] args) {
         var config = AetherNodeConfig.aetherNodeConfig(nodeId,
                                                        port,
                                                        peers,
-                                                       AetherNodeConfig.defaultSliceConfig(),
+                                                       AetherNodeConfig.defaultSliceActionConfig(),
                                                        managementPort);
         var node = AetherNode.aetherNode(config)
                              .unwrap();

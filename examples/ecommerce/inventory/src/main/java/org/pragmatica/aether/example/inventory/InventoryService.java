@@ -117,90 +117,83 @@ public interface InventoryService {
 
     // === Factory ===
     static InventoryService inventoryService() {
-        return new InventoryServiceImpl();
-    }
-}
+        record inventoryService(Map<ProductId, Quantity> stock,
+                                Map<String, ReserveStockRequest> reservations) implements InventoryService {
+            @Override
+            public Promise<StockAvailability> checkStock(CheckStockRequest request) {
+                return Promise.success(calculateAvailability(request.items()));
+            }
 
-/**
- * In-memory implementation for demo purposes.
- */
-class InventoryServiceImpl implements InventoryService {
-    private final Map<ProductId, Quantity> stock = new ConcurrentHashMap<>();
-    private final Map<String, ReserveStockRequest> reservations = new ConcurrentHashMap<>();
+            @Override
+            public Promise<StockReservation> reserveStock(ReserveStockRequest request) {
+                var availability = calculateAvailability(request.items());
+                if (availability.hasUnavailableItems()) {
+                    return InventoryError.insufficientStock(availability.unavailableItems())
+                                         .promise();
+                }
+                var reservation = StockReservation.stockReservation(request.orderId());
+                reservations.put(reservation.reservationId(), request);
+                request.items()
+                       .forEach(this::decrementStock);
+                return Promise.success(reservation);
+            }
 
-    InventoryServiceImpl() {
-        initializeDemoStock();
-    }
+            @Override
+            public Promise<Unit> releaseStock(ReleaseStockRequest request) {
+                var reserved = reservations.remove(request.reservationId());
+                if (reserved != null) {
+                    reserved.items()
+                            .forEach(this::incrementStock);
+                }
+                return Promise.success(Unit.unit());
+            }
 
-    @Override
-    public Promise<StockAvailability> checkStock(CheckStockRequest request) {
-        return Promise.success(calculateAvailability(request.items()));
-    }
+            private StockAvailability calculateAvailability(List<LineItem> items) {
+                var available = items.stream()
+                                     .collect(Collectors.toMap(LineItem::productId,
+                                                               item -> stock.getOrDefault(item.productId(),
+                                                                                          Quantity.ZERO)));
+                var unavailable = items.stream()
+                                       .filter(item -> available.get(item.productId())
+                                                                .value() < item.quantity()
+                                                                               .value())
+                                       .map(LineItem::productId)
+                                       .toList();
+                return unavailable.isEmpty()
+                       ? StockAvailability.fullyAvailable(available)
+                       : StockAvailability.partiallyAvailable(available, unavailable);
+            }
 
-    @Override
-    public Promise<StockReservation> reserveStock(ReserveStockRequest request) {
-        var availability = calculateAvailability(request.items());
-        if (availability.hasUnavailableItems()) {
-            return InventoryError.insufficientStock(availability.unavailableItems())
-                                 .promise();
+            private void decrementStock(LineItem item) {
+                stock.computeIfPresent(item.productId(),
+                                       (_, current) -> current.subtract(item.quantity()));
+            }
+
+            private void incrementStock(LineItem item) {
+                stock.compute(item.productId(),
+                              (_, current) -> current == null
+                                              ? item.quantity()
+                                              : current.add(item.quantity()));
+            }
         }
-        var reservation = StockReservation.stockReservation(request.orderId());
-        reservations.put(reservation.reservationId(), request);
-        request.items()
-               .forEach(this::decrementStock);
-        return Promise.success(reservation);
+        var stock = new ConcurrentHashMap<ProductId, Quantity>();
+        var reservations = new ConcurrentHashMap<String, ReserveStockRequest>();
+        initializeDemoStock(stock);
+        return new inventoryService(stock, reservations);
     }
 
-    @Override
-    public Promise<Unit> releaseStock(ReleaseStockRequest request) {
-        var reserved = reservations.remove(request.reservationId());
-        if (reserved != null) {
-            reserved.items()
-                    .forEach(this::incrementStock);
-        }
-        return Promise.success(Unit.unit());
+    private static void initializeDemoStock(Map<ProductId, Quantity> stock) {
+        addStock(stock, "LAPTOP-PRO", 50);
+        addStock(stock, "MOUSE-WIRELESS", 200);
+        addStock(stock, "KEYBOARD-MECH", 100);
+        addStock(stock, "MONITOR-4K", 30);
+        addStock(stock, "HEADSET-BT", 75);
+        addStock(stock, "WEBCAM-HD", 60);
+        addStock(stock, "USB-HUB", 150);
+        addStock(stock, "CHARGER-65W", 120);
     }
 
-    private StockAvailability calculateAvailability(List<LineItem> items) {
-        var available = items.stream()
-                             .collect(Collectors.toMap(LineItem::productId,
-                                                       item -> stock.getOrDefault(item.productId(),
-                                                                                  Quantity.ZERO)));
-        var unavailable = items.stream()
-                               .filter(item -> available.get(item.productId())
-                                                        .value() < item.quantity()
-                                                                       .value())
-                               .map(LineItem::productId)
-                               .toList();
-        return unavailable.isEmpty()
-               ? StockAvailability.fullyAvailable(available)
-               : StockAvailability.partiallyAvailable(available, unavailable);
-    }
-
-    private void decrementStock(LineItem item) {
-        stock.computeIfPresent(item.productId(),
-                               (_, current) -> current.subtract(item.quantity()));
-    }
-
-    private void incrementStock(LineItem item) {
-        stock.compute(item.productId(),
-                      (_, current) -> current == null
-                                      ? item.quantity()
-                                      : current.add(item.quantity()));
-    }
-
-    private void initializeDemoStock() {
-        addStock("LAPTOP-PRO", 50);
-        addStock("MOUSE-WIRELESS", 200);
-        addStock("KEYBOARD-MECH", 100);
-        addStock("MONITOR-4K", 30);
-        addStock("HEADSET-BT", 75);
-        addStock("WEBCAM-HD", 60);
-        addStock("USB-HUB", 150);
-        addStock("CHARGER-65W", 120);
-    }
-
-    private void addStock(String productId, int quantity) {
+    private static void addStock(Map<ProductId, Quantity> stock, String productId, int quantity) {
         ProductId.productId(productId)
                  .flatMap(id -> Quantity.quantity(quantity)
                                         .map(qty -> Map.entry(id, qty)))

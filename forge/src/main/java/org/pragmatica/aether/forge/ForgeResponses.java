@@ -39,6 +39,8 @@ public final class ForgeResponses {
                                      Option<String> sliceArtifact,
                                      Option<Double> failureRate,
                                      Option<Integer> latencyMs) {
+        // JSON deserializers (Jackson, Gson, etc.) set missing fields to null.
+        // This compact constructor converts null to Option.none() at the boundary.
         public ChaosInjectRequest {
             nodeId = nodeId != null
                      ? nodeId
@@ -105,6 +107,8 @@ public final class ForgeResponses {
                                          Option<Double> latencyVariance,
                                          Option<Double> errorRate,
                                          Option<Double> timeoutRate) {
+        // JSON deserializers (Jackson, Gson, etc.) set missing fields to null.
+        // This compact constructor converts null to Option.none() at the boundary.
         public SimulatorConfigRequest {
             mode = mode != null
                    ? mode
@@ -143,6 +147,8 @@ public final class ForgeResponses {
                                        double avgLatencyMs,
                                        double successRate,
                                        Option<String> remaining) {
+        // JSON deserializers (Jackson, Gson, etc.) set missing fields to null.
+        // This compact constructor converts null to Option.none() at the boundary.
         public LoadRunnerTargetInfo {
             remaining = remaining != null
                         ? remaining

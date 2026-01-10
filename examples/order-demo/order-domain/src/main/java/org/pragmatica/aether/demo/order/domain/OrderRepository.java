@@ -141,10 +141,9 @@ final class InMemoryOrderRepository implements OrderRepository {
 
     @Override
     public Unit updateStatus(String orderId, OrderStatus newStatus) {
-        var order = orders.get(orderId);
-        if (order != null) {
-            orders.put(orderId, order.withStatus(newStatus));
-        }
+        Option.option(orders.get(orderId))
+              .onPresent(order -> orders.put(orderId,
+                                             order.withStatus(newStatus)));
         return Unit.unit();
     }
 

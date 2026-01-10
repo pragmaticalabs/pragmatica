@@ -8,13 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Production Readiness Features**
+  - Request ID propagation through inter-slice invocations (KSUID-based)
+  - Multi-instance failover - tries all endpoints before failing
+  - Slice failure alerting - CRITICAL alerts when all instances fail
+  - Webhook alert forwarding with retry (`AlertForwarder`)
+  - Automatic rollback on persistent slice failure (`RollbackManager`)
+  - Previous version tracking in KV-Store for rollback support
 - **Configurable Load Runner** - TOML-driven load testing for Forge
   - Pattern generators: `${uuid}`, `${random:PATTERN}`, `${range:MIN-MAX}`, `${choice:A,B,C}`, `${seq:START}`
   - Per-target rate limiting, optional duration, path/body templates
   - Dashboard "Load Testing" tab with config upload, controls, live metrics
   - API endpoints: `/api/load/config`, `/api/load/start|stop|pause|resume`, `/api/load/status`
+- **New Configuration Types**
+  - `RollbackConfig` - automatic rollback policy (cooldown, max rollbacks)
+  - `AlertConfig` - alert thresholds and webhook configuration
+  - `SliceConfig` - slice-specific configuration
+  - `RepositoryType` - artifact repository type enumeration
 
 ### Changed
+- **JBCT compliance fixes** - 102 issues resolved across codebase
+  - 8 error types wrapped in sealed hierarchies
+  - 6 value object factories now return `Result<T>`
+  - Thread safety fixes (CopyOnWriteArrayList, AtomicReference)
+  - Resource cleanup improvements (ByteBuf, OrtSession)
+  - Test method naming standardized to `method_scenario_expectation`
+  - Complex lambdas extracted to named methods
+- **jbct-maven-plugin** - Re-enabled (version 0.4.7)
 - **JBCT compliance refactoring** - Load generator code now fully JBCT-compliant
   - Factory methods on all pattern generators (`uuidGenerator()`, `randomGenerator()`, etc.)
   - Sealed interfaces for utility classes (`LoadConfigLoader`, `PatternParser`)

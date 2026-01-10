@@ -117,25 +117,31 @@ class InvocationHandlerImpl implements InvocationHandler {
 
     @Override
     public void onInvokeRequest(InvokeRequest request) {
-        log.debug("Received invocation request [{}]: {}.{}",
+        log.debug("[requestId={}] Received invocation request [{}]: {}.{}",
+                  request.requestId(),
                   request.correlationId(),
                   request.targetSlice(),
                   request.method());
-        Option.option(localSlices.get(request.targetSlice()))
-              .onEmpty(() -> {
-                           log.warn("Slice not found for invocation: {}",
-                                    request.targetSlice());
-                           if (request.expectResponse()) {
-                               sendErrorResponse(request,
-                                                 "Slice not found: " + request.targetSlice());
-                           }
-                       })
-              .onPresent(bridge -> invokeSliceMethod(request, bridge));
+        // Set the request ID in context for chain propagation
+        InvocationContext.setRequestId(request.requestId());
+        try{
+            Option.option(localSlices.get(request.targetSlice()))
+                  .onEmpty(() -> handleSliceNotFound(request))
+                  .onPresent(bridge -> invokeSliceMethod(request, bridge));
+        } finally{}
+    }
+
+    private void handleSliceNotFound(InvokeRequest request) {
+        log.warn("[requestId={}] Slice not found for invocation: {}", request.requestId(), request.targetSlice());
+        if (request.expectResponse()) {
+            sendErrorResponse(request, "Slice not found: " + request.targetSlice());
+        }
     }
 
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
+        var requestId = request.requestId();
         // SliceBridge uses byte[] directly - no ByteBuf conversion needed
         bridge.invoke(request.method()
                              .name(),
@@ -146,16 +152,24 @@ class InvocationHandlerImpl implements InvocationHandler {
                              if (request.expectResponse()) {
                                  sendSuccessResponse(request, responseData);
                              }
+                             log.debug("[requestId={}] Invocation completed in {}ms: {}.{}",
+                                       requestId,
+                                       durationNs / 1_000_000,
+                                       request.targetSlice(),
+                                       request.method());
                              // Record success metrics
         metricsCollector.onPresent(mc -> mc.recordSuccess(request.targetSlice(),
                                                           request.method(),
                                                           durationNs,
                                                           requestBytes,
                                                           responseBytes));
+                             // Clear context after async completion
+        InvocationContext.clear();
                          })
               .onFailure(cause -> {
                              var durationNs = System.nanoTime() - startTime;
-                             log.error("Invocation failed [{}]: {}",
+                             log.error("[requestId={}] Invocation failed [{}]: {}",
+                                       requestId,
                                        request.correlationId(),
                                        cause.message());
                              if (request.expectResponse()) {
@@ -169,21 +183,27 @@ class InvocationHandlerImpl implements InvocationHandler {
                                                           requestBytes,
                                                           cause.getClass()
                                                                .getSimpleName()));
+                             // Clear context after async completion
+        InvocationContext.clear();
                          });
     }
 
     private void sendSuccessResponse(InvokeRequest request, byte[] payload) {
-        var response = new InvokeResponse(self, request.correlationId(), true, payload);
+        var response = new InvokeResponse(self, request.correlationId(), request.requestId(), true, payload);
         network.send(request.sender(), response);
-        log.debug("Sent success response [{}]", request.correlationId());
+        log.debug("[requestId={}] Sent success response [{}]", request.requestId(), request.correlationId());
     }
 
     private void sendErrorResponse(InvokeRequest request, String errorMessage) {
         var response = new InvokeResponse(self,
                                           request.correlationId(),
+                                          request.requestId(),
                                           false,
                                           errorMessage.getBytes(StandardCharsets.UTF_8));
         network.send(request.sender(), response);
-        log.debug("Sent error response [{}]: {}", request.correlationId(), errorMessage);
+        log.debug("[requestId={}] Sent error response [{}]: {}",
+                  request.requestId(),
+                  request.correlationId(),
+                  errorMessage);
     }
 }

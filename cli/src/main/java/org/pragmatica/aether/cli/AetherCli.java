@@ -401,8 +401,12 @@ public class AetherCli implements Runnable {
     @Command(name = "artifact",
     description = "Artifact repository management",
     subcommands = {ArtifactCommand.DeployArtifactCommand.class,
+    ArtifactCommand.PushArtifactCommand.class,
     ArtifactCommand.ListArtifactsCommand.class,
-    ArtifactCommand.VersionsCommand.class})
+    ArtifactCommand.VersionsCommand.class,
+    ArtifactCommand.InfoCommand.class,
+    ArtifactCommand.DeleteCommand.class,
+    ArtifactCommand.MetricsCommand.class})
     static class ArtifactCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -456,6 +460,55 @@ public class AetherCli implements Runnable {
             }
         }
 
+        @Command(name = "push", description = "Push artifact from local Maven repository to cluster")
+        static class PushArtifactCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ArtifactCommand artifactParent;
+
+            @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
+            private String coordinates;
+
+            @Override
+            public Integer call() {
+                var parts = coordinates.split(":");
+                if (parts.length != 3) {
+                    System.err.println("Invalid coordinates format. Expected: group:artifact:version");
+                    return 1;
+                }
+                var groupId = parts[0];
+                var artifactId = parts[1];
+                var version = parts[2];
+                // Resolve from local Maven repository
+                var m2Home = System.getProperty("user.home") + "/.m2/repository";
+                var localPath = Path.of(m2Home,
+                                        groupId.replace('.', '/'),
+                                        artifactId,
+                                        version,
+                                        artifactId + "-" + version + ".jar");
+                if (!Files.exists(localPath)) {
+                    System.err.println("Artifact not found in local Maven repository: " + localPath);
+                    return 1;
+                }
+                try{
+                    byte[] content = Files.readAllBytes(localPath);
+                    var repoPath = "/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version + "/" + artifactId
+                                   + "-" + version + ".jar";
+                    var response = artifactParent.parent.putToNode(repoPath, content, "application/java-archive");
+                    if (response.startsWith("{\"error\":")) {
+                        System.out.println("Failed to push: " + response);
+                        return 1;
+                    }
+                    System.out.println("Pushed " + coordinates);
+                    System.out.println("  From: " + localPath);
+                    System.out.println("  Size: " + content.length + " bytes");
+                    return 0;
+                } catch (IOException e) {
+                    System.err.println("Error reading file: " + e.getMessage());
+                    return 1;
+                }
+            }
+        }
+
         @Command(name = "list", description = "List artifacts in the repository")
         static class ListArtifactsCommand implements Callable<Integer> {
             @CommandLine.ParentCommand
@@ -487,6 +540,73 @@ public class AetherCli implements Runnable {
                 var path = "/repository/" + parts[0].replace('.', '/') + "/" + parts[1] + "/maven-metadata.xml";
                 var response = artifactParent.parent.fetchFromNode(path);
                 System.out.println(response);
+                return 0;
+            }
+        }
+
+        @Command(name = "info", description = "Show artifact metadata")
+        static class InfoCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ArtifactCommand artifactParent;
+
+            @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
+            private String coordinates;
+
+            @Override
+            public Integer call() {
+                var parts = coordinates.split(":");
+                if (parts.length != 3) {
+                    System.err.println("Invalid coordinates format. Expected: group:artifact:version");
+                    return 1;
+                }
+                var groupId = parts[0];
+                var artifactId = parts[1];
+                var version = parts[2];
+                var path = "/repository/info/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version;
+                var response = artifactParent.parent.fetchFromNode(path);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "delete", description = "Delete an artifact from the repository")
+        static class DeleteCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ArtifactCommand artifactParent;
+
+            @Parameters(index = "0", description = "Artifact coordinates (group:artifact:version)")
+            private String coordinates;
+
+            @Override
+            public Integer call() {
+                var parts = coordinates.split(":");
+                if (parts.length != 3) {
+                    System.err.println("Invalid coordinates format. Expected: group:artifact:version");
+                    return 1;
+                }
+                var groupId = parts[0];
+                var artifactId = parts[1];
+                var version = parts[2];
+                var path = "/repository/" + groupId.replace('.', '/') + "/" + artifactId + "/" + version;
+                var response = artifactParent.parent.deleteFromNode(path);
+                if (response.startsWith("{\"error\":")) {
+                    System.out.println("Failed to delete: " + response);
+                    return 1;
+                }
+                System.out.println("Deleted " + coordinates);
+                return 0;
+            }
+        }
+
+        @Command(name = "metrics", description = "Show artifact storage metrics")
+        static class MetricsCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ArtifactCommand artifactParent;
+
+            @Override
+            public Integer call() {
+                var response = artifactParent.parent.fetchFromNode("/artifact-metrics");
+                System.out.println(formatJson(response));
                 return 0;
             }
         }
@@ -584,8 +704,8 @@ public class AetherCli implements Runnable {
             public Integer call() {
                 var body = "{\"artifactBase\":\"" + artifactBase + "\"," + "\"version\":\"" + version + "\","
                            + "\"instances\":" + instances + "," + "\"maxErrorRate\":" + errorRate + ","
-                           + "\"maxLatencyMs\":" + latencyMs + "," + "\"requireManualApproval\":" + manualApproval
-                           + "," + "\"cleanupPolicy\":\"" + cleanupPolicy + "\"}";
+                           + "\"maxLatencyMs\":" + latencyMs + "," + "\"requireManualApproval\":" + manualApproval + ","
+                           + "\"cleanupPolicy\":\"" + cleanupPolicy + "\"}";
                 var response = updateParent.parent.postToNode("/rolling-update/start", body);
                 System.out.println(formatJson(response));
                 return 0;

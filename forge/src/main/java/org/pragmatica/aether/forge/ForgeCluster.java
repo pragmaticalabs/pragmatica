@@ -7,6 +7,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -301,11 +302,13 @@ public final class ForgeCluster {
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
                                           SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider()),
+                                          org.pragmatica.aether.config.SliceConfig.defaults(),
                                           mgmtPort,
                                           Option.empty(),
                                           DHTConfig.FULL,
                                           Option.empty(),
-                                          org.pragmatica.aether.config.TTMConfig.disabled());
+                                          org.pragmatica.aether.config.TTMConfig.disabled(),
+                                          RollbackConfig.defaults());
         return AetherNode.aetherNode(config)
                          .unwrap();
     }

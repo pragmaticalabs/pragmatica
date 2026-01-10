@@ -42,25 +42,25 @@ public record TTMConfig(String modelPath,
                                               boolean enabled) {
         if (enabled) {
             if (modelPath == null || modelPath.isBlank()) {
-                return InvalidTTMConfig.invalidConfig("modelPath cannot be blank when TTM is enabled")
-                                       .result();
+                return TTMConfigError.InvalidTTMConfig.invalidConfig("modelPath cannot be blank when TTM is enabled")
+                                     .result();
             }
         }
         if (inputWindowMinutes < 1 || inputWindowMinutes > 120) {
-            return InvalidTTMConfig.invalidConfig("inputWindowMinutes must be 1-120")
-                                   .result();
+            return TTMConfigError.InvalidTTMConfig.invalidConfig("inputWindowMinutes must be 1-120")
+                                 .result();
         }
         if (predictionHorizon < 1 || predictionHorizon > 10) {
-            return InvalidTTMConfig.invalidConfig("predictionHorizon must be 1-10")
-                                   .result();
+            return TTMConfigError.InvalidTTMConfig.invalidConfig("predictionHorizon must be 1-10")
+                                 .result();
         }
         if (evaluationIntervalMs < 10_000L || evaluationIntervalMs > 300_000L) {
-            return InvalidTTMConfig.invalidConfig("evaluationIntervalMs must be 10000-300000")
-                                   .result();
+            return TTMConfigError.InvalidTTMConfig.invalidConfig("evaluationIntervalMs must be 10000-300000")
+                                 .result();
         }
         if (confidenceThreshold < 0.0 || confidenceThreshold > 1.0) {
-            return InvalidTTMConfig.invalidConfig("confidenceThreshold must be 0.0-1.0")
-                                   .result();
+            return TTMConfigError.InvalidTTMConfig.invalidConfig("confidenceThreshold must be 0.0-1.0")
+                                 .result();
         }
         return Result.success(new TTMConfig(modelPath,
                                             inputWindowMinutes,
@@ -116,16 +116,21 @@ public record TTMConfig(String modelPath,
     }
 
     /**
-     * Configuration error for TTM.
+     * Error hierarchy for TTM configuration failures.
      */
-    public record InvalidTTMConfig(String detail) implements Cause {
-        public static InvalidTTMConfig invalidConfig(String detail) {
-            return new InvalidTTMConfig(detail);
-        }
+    public sealed interface TTMConfigError extends Cause {
+        /**
+         * Configuration error for TTM.
+         */
+        record InvalidTTMConfig(String detail) implements TTMConfigError {
+            public static InvalidTTMConfig invalidConfig(String detail) {
+                return new InvalidTTMConfig(detail);
+            }
 
-        @Override
-        public String message() {
-            return "Invalid TTM configuration: " + detail;
+            @Override
+            public String message() {
+                return "Invalid TTM configuration: " + detail;
+            }
         }
     }
 }

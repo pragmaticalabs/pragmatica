@@ -59,13 +59,18 @@ final class TTMPredictorImpl implements TTMPredictor {
     private static TTMPredictorImpl createOnnxPredictor(TTMConfig config) throws OrtException {
         var env = OrtEnvironment.getEnvironment();
         var sessionOptions = new OrtSession.SessionOptions();
-        sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
-        sessionOptions.setIntraOpNumThreads(2);
-        var session = env.createSession(config.modelPath(), sessionOptions);
-        log.info("Loaded TTM model from {}", config.modelPath());
-        log.debug("Model inputs: {}", session.getInputNames());
-        log.debug("Model outputs: {}", session.getOutputNames());
-        return new TTMPredictorImpl(env, session, config);
+        try{
+            sessionOptions.setOptimizationLevel(OrtSession.SessionOptions.OptLevel.ALL_OPT);
+            sessionOptions.setIntraOpNumThreads(2);
+            var session = env.createSession(config.modelPath(), sessionOptions);
+            log.info("Loaded TTM model from {}", config.modelPath());
+            log.debug("Model inputs: {}", session.getInputNames());
+            log.debug("Model outputs: {}", session.getOutputNames());
+            return new TTMPredictorImpl(env, session, config);
+        } catch (OrtException e) {
+            sessionOptions.close();
+            throw e;
+        }
     }
 
     @Override
@@ -174,11 +179,12 @@ final class TTMPredictorImpl implements TTMPredictor {
     }
 
     @Override
-    public void close() {
+    public Unit close() {
         ready = false;
         Result.lift(e -> new TTMError.InferenceFailed("Error closing ONNX session: " + e.getMessage()),
                     this::closeSession)
               .onFailure(cause -> log.warn(cause.message()));
+        return Unit.unit();
     }
 
     private Unit closeSession() throws OrtException {

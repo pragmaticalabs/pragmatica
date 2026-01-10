@@ -275,63 +275,53 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
                      .map(this::collectHealthMetrics);
     }
 
+    private record AccumulatedMetrics(long requests, long errors, long totalLatencyMs, long maxP99Ms) {
+        static AccumulatedMetrics empty() {
+            return new AccumulatedMetrics(0, 0, 0, 0);
+        }
+
+        AccumulatedMetrics accumulate(InvocationMetricsCollector.MethodSnapshot snapshot) {
+            var metrics = snapshot.metrics();
+            long p99Ms = metrics.estimatePercentileNs(99) / 1_000_000;
+            return new AccumulatedMetrics(requests + metrics.count(),
+                                          errors + metrics.failureCount(),
+                                          totalLatencyMs + metrics.totalDurationNs() / 1_000_000,
+                                          Math.max(maxP99Ms, p99Ms));
+        }
+
+        VersionMetrics toVersionMetrics(Version version) {
+            double errorRate = requests > 0
+                               ? (double) errors / requests
+                               : 0.0;
+            long avgLatency = requests > 0
+                              ? totalLatencyMs / requests
+                              : 0;
+            return new VersionMetrics(version, requests, errors, errorRate, maxP99Ms, avgLatency);
+        }
+    }
+
     private VersionHealthMetrics collectHealthMetrics(RollingUpdate update) {
-        // Collect metrics from InvocationMetricsCollector
         var snapshots = metricsCollector.snapshot();
-        // Filter for old and new version metrics
-        long oldRequests = 0, oldErrors = 0, oldTotalLatency = 0, oldMaxP99 = 0;
-        long newRequests = 0, newErrors = 0, newTotalLatency = 0, newMaxP99 = 0;
         var oldArtifact = update.artifactBase()
                                 .withVersion(update.oldVersion());
         var newArtifact = update.artifactBase()
                                 .withVersion(update.newVersion());
-        for (var snapshot : snapshots) {
-            if (snapshot.artifact()
-                        .equals(oldArtifact)) {
-                oldRequests += snapshot.metrics()
-                                       .count();
-                oldErrors += snapshot.metrics()
-                                     .failureCount();
-                oldTotalLatency += snapshot.metrics()
-                                           .totalDurationNs() / 1_000_000;
-                // Track worst-case p99 across all methods
-                long p99Ns = snapshot.metrics()
-                                     .estimatePercentileNs(99);
-                oldMaxP99 = Math.max(oldMaxP99, p99Ns / 1_000_000);
-            } else if (snapshot.artifact()
-                               .equals(newArtifact)) {
-                newRequests += snapshot.metrics()
-                                       .count();
-                newErrors += snapshot.metrics()
-                                     .failureCount();
-                newTotalLatency += snapshot.metrics()
-                                           .totalDurationNs() / 1_000_000;
-                long p99Ns = snapshot.metrics()
-                                     .estimatePercentileNs(99);
-                newMaxP99 = Math.max(newMaxP99, p99Ns / 1_000_000);
-            }
-        }
-        var oldMetrics = new VersionMetrics(update.oldVersion(),
-                                            oldRequests,
-                                            oldErrors,
-                                            oldRequests > 0
-                                            ? (double) oldErrors / oldRequests
-                                            : 0.0,
-                                            oldMaxP99,
-                                            oldRequests > 0
-                                            ? oldTotalLatency / oldRequests
-                                            : 0);
-        var newMetrics = new VersionMetrics(update.newVersion(),
-                                            newRequests,
-                                            newErrors,
-                                            newRequests > 0
-                                            ? (double) newErrors / newRequests
-                                            : 0.0,
-                                            newMaxP99,
-                                            newRequests > 0
-                                            ? newTotalLatency / newRequests
-                                            : 0);
-        return new VersionHealthMetrics(update.updateId(), oldMetrics, newMetrics, System.currentTimeMillis());
+        var oldAccumulated = accumulateMetricsFor(snapshots, oldArtifact);
+        var newAccumulated = accumulateMetricsFor(snapshots, newArtifact);
+        return new VersionHealthMetrics(update.updateId(),
+                                        oldAccumulated.toVersionMetrics(update.oldVersion()),
+                                        newAccumulated.toVersionMetrics(update.newVersion()),
+                                        System.currentTimeMillis());
+    }
+
+    private AccumulatedMetrics accumulateMetricsFor(List<InvocationMetricsCollector.MethodSnapshot> snapshots,
+                                                    org.pragmatica.aether.artifact.Artifact artifact) {
+        return snapshots.stream()
+                        .filter(snapshot -> snapshot.artifact()
+                                                    .equals(artifact))
+                        .reduce(AccumulatedMetrics.empty(),
+                                AccumulatedMetrics::accumulate,
+                                (a, b) -> a);
     }
 
     // ===== Private helpers =====

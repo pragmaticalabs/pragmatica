@@ -68,7 +68,7 @@ public interface BlueprintParser {
         }
         return BlueprintId.blueprintId(idOpt.unwrap())
                           .flatMap(id -> parseSlices(doc)
-                                                    .map(slices -> Blueprint.blueprint(id, slices)));
+                                                    .flatMap(slices -> Blueprint.blueprint(id, slices)));
     }
 
     private static Result<List<SliceSpec>> parseSlices(TomlDocument doc) {

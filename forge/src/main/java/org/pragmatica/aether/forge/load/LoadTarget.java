@@ -35,9 +35,24 @@ public record LoadTarget(Option<String> name,
 
     /**
      * Rate specification with value and time unit.
+     *
+     * <p>Use the {@link #rate(String)} factory method to create instances with validation.
      */
     public record Rate(int value, TimeUnit unit) {
         private static final Pattern RATE_PATTERN = Pattern.compile("^(\\d+)/(s|m|h)$");
+        private static final Cause NON_POSITIVE_RATE = Causes.cause("Rate value must be positive");
+
+        /**
+         * Compact constructor with validation.
+         */
+        public Rate {
+            if (value <= 0) {
+                throw new IllegalArgumentException("Rate value must be positive, got: " + value);
+            }
+            if (unit == null) {
+                throw new IllegalArgumentException("Rate time unit cannot be null");
+            }
+        }
 
         public enum TimeUnit {
             SECOND("s", 1),
@@ -66,6 +81,12 @@ public record LoadTarget(Option<String> name,
             }
         }
 
+        /**
+         * Factory method to create a Rate from a string specification.
+         *
+         * @param rateStr Rate string in format "value/unit" where unit is s, m, or h
+         * @return Result containing valid Rate or error
+         */
         public static Result<Rate> rate(String rateStr) {
             var matcher = RATE_PATTERN.matcher(rateStr.trim());
             if (!matcher.matches()) {
@@ -73,6 +94,9 @@ public record LoadTarget(Option<String> name,
                                    .result();
             }
             var value = Integer.parseInt(matcher.group(1));
+            if (value <= 0) {
+                return NON_POSITIVE_RATE.result();
+            }
             return TimeUnit.fromSymbol(matcher.group(2))
                            .toResult(INVALID_RATE.apply(rateStr))
                            .map(unit -> new Rate(value, unit));

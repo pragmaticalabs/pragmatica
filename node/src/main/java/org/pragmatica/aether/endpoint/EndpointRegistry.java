@@ -8,6 +8,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
+import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.update.VersionRouting;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
@@ -55,6 +56,19 @@ public interface EndpointRegistry {
      * Returns empty if no endpoints available.
      */
     Option<Endpoint> selectEndpoint(Artifact artifact, MethodName methodName);
+
+    /**
+     * Select an endpoint excluding specified nodes.
+     * Used for failover when previous endpoints have failed.
+     *
+     * @param artifact the slice artifact
+     * @param methodName the method to invoke
+     * @param excludeNodes nodes to exclude from selection
+     * @return selected endpoint, or empty if none available after exclusions
+     */
+    Option<Endpoint> selectEndpointExcluding(Artifact artifact,
+                                             MethodName methodName,
+                                             java.util.Set<NodeId> excludeNodes);
 
     /**
      * Select an endpoint with version-aware weighted routing.
@@ -168,6 +182,25 @@ public interface EndpointRegistry {
             }
 
             @Override
+            public Option<Endpoint> selectEndpointExcluding(Artifact artifact,
+                                                            MethodName methodName,
+                                                            java.util.Set<NodeId> excludeNodes) {
+                var available = findEndpoints(artifact, methodName)
+                                             .stream()
+                                             .filter(e -> !excludeNodes.contains(e.nodeId()))
+                                             .sorted(Comparator.comparing(e -> e.nodeId()
+                                                                                .id()))
+                                             .toList();
+                if (available.isEmpty()) {
+                    return Option.none();
+                }
+                var lookupKey = artifact.asString() + "/" + methodName.name() + "/excluding";
+                var counter = roundRobinCounters.computeIfAbsent(lookupKey, _ -> new AtomicInteger(0));
+                var index = (counter.getAndIncrement() & 0x7FFFFFFF) % available.size();
+                return Option.option(available.get(index));
+            }
+
+            @Override
             public Option<Endpoint> selectEndpointWithRouting(ArtifactBase artifactBase,
                                                               MethodName methodName,
                                                               VersionRouting routing,
@@ -248,10 +281,16 @@ public interface EndpointRegistry {
                                                    List<Endpoint> oldEndpoints,
                                                    ArtifactBase artifactBase,
                                                    MethodName methodName) {
-                log.warn("Cannot satisfy routing {} with {} new and {} old instances, falling back to old",
-                         routing,
-                         newCount,
-                         oldCount);
+                InvocationContext.currentRequestId()
+                                 .onPresent(requestId -> log.warn("[requestId={}] Cannot satisfy routing {} with {} new and {} old instances, falling back to old",
+                                                                  requestId,
+                                                                  routing,
+                                                                  newCount,
+                                                                  oldCount))
+                                 .onEmpty(() -> log.warn("Cannot satisfy routing {} with {} new and {} old instances, falling back to old",
+                                                         routing,
+                                                         newCount,
+                                                         oldCount));
                 return selectFromList(oldEndpoints,
                                       artifactBase.asString() + "/old/" + methodName.name());
             }

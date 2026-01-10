@@ -13,7 +13,8 @@ import java.util.Set;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-// TODO: rework timeout handling, perhaps use existing values as defaults
+// Note: Enum timeouts are default values. SliceActionConfig is the single source of truth
+// for actual timeout configuration and can override these defaults.
 public enum SliceState {
     LOAD,
     LOADING(timeSpan(2)

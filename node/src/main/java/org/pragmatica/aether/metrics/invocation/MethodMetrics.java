@@ -59,7 +59,7 @@ public final class MethodMetrics {
         }
         totalDurationNs.addAndGet(durationNs);
         histogram[bucketFor(durationNs)]
-                 .incrementAndGet();
+        .incrementAndGet();
     }
 
     /**
@@ -76,12 +76,12 @@ public final class MethodMetrics {
         for (int i = 0; i < HISTOGRAM_SIZE; i++) {
             snapshotHistogram[i] = histogram[i].getAndSet(0);
         }
-        return new Snapshot(methodName,
-                            snapshotCount,
-                            snapshotSuccess,
-                            snapshotFailure,
-                            snapshotDuration,
-                            snapshotHistogram);
+        return Snapshot.snapshot(methodName,
+                                 snapshotCount,
+                                 snapshotSuccess,
+                                 snapshotFailure,
+                                 snapshotDuration,
+                                 snapshotHistogram);
     }
 
     /**
@@ -92,12 +92,12 @@ public final class MethodMetrics {
         for (int i = 0; i < HISTOGRAM_SIZE; i++) {
             snapshotHistogram[i] = histogram[i].get();
         }
-        return new Snapshot(methodName,
-                            count.get(),
-                            successCount.get(),
-                            failureCount.get(),
-                            totalDurationNs.get(),
-                            snapshotHistogram);
+        return Snapshot.snapshot(methodName,
+                                 count.get(),
+                                 successCount.get(),
+                                 failureCount.get(),
+                                 totalDurationNs.get(),
+                                 snapshotHistogram);
     }
 
     public MethodName methodName() {
@@ -129,6 +129,25 @@ public final class MethodMetrics {
                            long failureCount,
                            long totalDurationNs,
                            int[] histogram) {
+        /**
+         * Factory method with defensive copy of histogram array.
+         */
+        public static Snapshot snapshot(MethodName methodName,
+                                        long count,
+                                        long successCount,
+                                        long failureCount,
+                                        long totalDurationNs,
+                                        int[] histogram) {
+            return new Snapshot(methodName,
+                                count,
+                                successCount,
+                                failureCount,
+                                totalDurationNs,
+                                histogram == null
+                                ? new int[HISTOGRAM_SIZE]
+                                : histogram.clone());
+        }
+
         /**
          * Calculate average latency in nanoseconds.
          */

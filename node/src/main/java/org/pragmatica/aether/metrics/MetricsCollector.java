@@ -95,8 +95,8 @@ class MetricsCollectorImpl implements MetricsCollector {
     // Sliding window duration: 2 hours in milliseconds
     private static final long SLIDING_WINDOW_MS = 2 * 60 * 60 * 1000L;
 
-    // Ring buffer capacity: 2 hours at 1 sample/second = 7200 samples
-    private static final int RING_BUFFER_CAPACITY = 7200;
+    // Ring buffer capacity: 2 hours at 1 sample/second
+    private static final int RING_BUFFER_CAPACITY = (int)(SLIDING_WINDOW_MS / 1000);
 
     private final NodeId self;
     private final ClusterNetwork network;

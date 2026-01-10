@@ -28,7 +28,7 @@ class BlueprintExpanderTest {
                 3
                                         ).unwrap();
 
-        testBlueprint = Blueprint.blueprint(blueprintId, List.of(sliceA));
+        testBlueprint = Blueprint.blueprint(blueprintId, List.of(sliceA)).unwrap();
         loader = new MockDependencyLoader();
     }
 
@@ -64,7 +64,7 @@ class BlueprintExpanderTest {
                     1
                                             ).unwrap();
 
-            var blueprint = Blueprint.blueprint(blueprintId, List.of(sliceA, sliceB));
+            var blueprint = Blueprint.blueprint(blueprintId, List.of(sliceA, sliceB)).unwrap();
 
             loader.addSlice("org.example:slice-a:1.0.0", Set.of());
             loader.addSlice("org.example:slice-b:1.0.0", Set.of());
@@ -160,7 +160,7 @@ class BlueprintExpanderTest {
                     Artifact.artifact("org.example:slice-b:1.0.0").unwrap()
                                             ).unwrap();
 
-            var blueprint = Blueprint.blueprint(blueprintId, List.of(sliceA, sliceB));
+            var blueprint = Blueprint.blueprint(blueprintId, List.of(sliceA, sliceB)).unwrap();
 
             // Both A and B depend on C
             loader.addSlice("org.example:slice-a:1.0.0", Set.of(
@@ -205,7 +205,7 @@ class BlueprintExpanderTest {
                     2
                                             ).unwrap();
 
-            var blueprint = Blueprint.blueprint(blueprintId, List.of(sliceA, sliceB));
+            var blueprint = Blueprint.blueprint(blueprintId, List.of(sliceA, sliceB)).unwrap();
 
             // A and B both depend on C
             loader.addSlice("org.example:slice-a:1.0.0", Set.of(

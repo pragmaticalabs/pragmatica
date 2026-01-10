@@ -6,6 +6,7 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
+import org.pragmatica.aether.controller.RollbackManager;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.BlueprintServiceImpl;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
@@ -17,8 +18,10 @@ import org.pragmatica.aether.http.RouterConfig;
 import org.pragmatica.aether.http.SliceDispatcher;
 import org.pragmatica.aether.infra.artifact.ArtifactStore;
 import org.pragmatica.aether.infra.artifact.MavenProtocolHandler;
+import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationMessage;
+import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
 import org.pragmatica.aether.metrics.MetricsCollector;
@@ -30,6 +33,7 @@ import org.pragmatica.aether.metrics.consensus.RabiaMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.deployment.DeploymentMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentMetricsScheduler;
+import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
 import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
@@ -110,6 +114,11 @@ public interface AetherNode {
     MavenProtocolHandler mavenProtocolHandler();
 
     /**
+     * Get the artifact store for artifact storage operations.
+     */
+    ArtifactStore artifactStore();
+
+    /**
      * Get the invocation metrics collector for method-level metrics.
      */
     InvocationMetricsCollector invocationMetrics();
@@ -140,9 +149,19 @@ public interface AetherNode {
     TTMManager ttmManager();
 
     /**
+     * Get the rollback manager for automatic version rollback.
+     */
+    RollbackManager rollbackManager();
+
+    /**
      * Get the comprehensive snapshot collector for detailed metrics.
      */
     ComprehensiveSnapshotCollector snapshotCollector();
+
+    /**
+     * Get the artifact metrics collector for storage and deployment metrics.
+     */
+    ArtifactMetricsCollector artifactMetricsCollector();
 
     /**
      * Get the number of currently connected peer nodes in the cluster.
@@ -197,13 +216,25 @@ public interface AetherNode {
                                                  Deserializer deserializer) {
         // Create KVStore (state machine for consensus)
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
+        // Create DHT and artifact store (needed for BuiltinRepository)
+        var dhtStorage = MemoryStorageEngine.memoryStorageEngine();
+        var dhtRing = ConsistentHashRing.<String>consistentHashRing();
+        dhtRing.addNode(config.self()
+                              .id());
+        var dhtNode = DHTNode.dhtNode(config.self()
+                                            .id(),
+                                      dhtStorage,
+                                      dhtRing,
+                                      config.artifactRepo());
+        var dhtClient = LocalDHTClient.localDHTClient(dhtNode);
+        var artifactStore = ArtifactStore.artifactStore(dhtClient);
+        // Create repositories from SliceConfig using RepositoryFactory
+        var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
+        var repositories = repositoryFactory.createAll(config.sliceConfig());
         // Create slice management components
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var sharedLibraryLoader = createSharedLibraryLoader(config);
-        var sliceStore = SliceStore.sliceStore(sliceRegistry,
-                                               config.sliceAction()
-                                                     .repositories(),
-                                               sharedLibraryLoader);
+        var sliceStore = SliceStore.sliceStore(sliceRegistry, repositories, sharedLibraryLoader);
         // Create Rabia cluster node with metrics
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
@@ -225,7 +256,9 @@ public interface AetherNode {
                             rabiaMetricsCollector,
                             networkMetricsHandler,
                             serializer,
-                            deserializer);
+                            deserializer,
+                            artifactStore,
+                            repositories);
     }
 
     private static Result<AetherNode> assembleNode(AetherNodeConfig config,
@@ -237,7 +270,9 @@ public interface AetherNode {
                                                    RabiaMetricsCollector rabiaMetricsCollector,
                                                    NetworkMetricsHandler networkMetricsHandler,
                                                    Serializer serializer,
-                                                   Deserializer deserializer) {
+                                                   Deserializer deserializer,
+                                                   ArtifactStore artifactStore,
+                                                   List<Repository> repositories) {
         record aetherNodeImpl(AetherNodeConfig config,
                               MessageRouter.DelegateRouter router,
                               KVStore<AetherKey, AetherValue> kvStore,
@@ -256,12 +291,15 @@ public interface AetherNode {
                               InvocationHandler invocationHandler,
                               BlueprintService blueprintService,
                               MavenProtocolHandler mavenProtocolHandler,
+                              ArtifactStore artifactStore,
                               InvocationMetricsCollector invocationMetrics,
                               DecisionTreeController controller,
                               RollingUpdateManager rollingUpdateManager,
                               AlertManager alertManager,
                               TTMManager ttmManager,
+                              RollbackManager rollbackManager,
                               ComprehensiveSnapshotCollector snapshotCollector,
+                              ArtifactMetricsCollector artifactMetricsCollector,
                               EventLoopMetricsCollector eventLoopMetricsCollector,
                               Option<ManagementServer> managementServer,
                               Option<HttpRouter> httpRouter,
@@ -402,20 +440,8 @@ public interface AetherNode {
         // Create blueprint service using composite repository from configuration
         var blueprintService = BlueprintServiceImpl.blueprintService(clusterNode,
                                                                      kvStore,
-                                                                     compositeRepository(config.sliceAction()
-                                                                                               .repositories()));
-        // Create DHT and artifact repository
-        var dhtStorage = MemoryStorageEngine.memoryStorageEngine();
-        var dhtRing = ConsistentHashRing.<String>consistentHashRing();
-        dhtRing.addNode(config.self()
-                              .id());
-        var dhtNode = DHTNode.dhtNode(config.self()
-                                            .id(),
-                                      dhtStorage,
-                                      dhtRing,
-                                      config.artifactRepo());
-        var dhtClient = LocalDHTClient.localDHTClient(dhtNode);
-        var artifactStore = ArtifactStore.artifactStore(dhtClient);
+                                                                     compositeRepository(repositories));
+        // Create Maven protocol handler from artifact store (DHT created in createNode)
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         // Create invocation metrics collector
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
@@ -436,6 +462,8 @@ public interface AetherNode {
                                                                                               rabiaMetricsCollector,
                                                                                               invocationMetrics,
                                                                                               minuteAggregator);
+        // Create artifact metrics collector for storage and deployment tracking
+        var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
         // Create TTM manager (returns no-op if disabled in config)
         var ttmManager = TTMManager.ttmManager(config.ttm(),
                                                minuteAggregator,
@@ -446,6 +474,11 @@ public interface AetherNode {
                                                 ? AdaptiveDecisionTree.adaptiveDecisionTree(controller, ttmManager)
                                                 : controller;
         var controlLoop = ControlLoop.controlLoop(config.self(), effectiveController, metricsCollector, clusterNode);
+        // Create rollback manager for automatic version rollback on persistent failures
+        var rollbackManager = config.rollback()
+                                    .enabled()
+                              ? RollbackManager.rollbackManager(config.self(), config.rollback(), clusterNode, kvStore)
+                              : RollbackManager.disabled();
         // Create slice invoker (needs rollingUpdateManager for weighted routing during rolling updates)
         var sliceInvoker = SliceInvoker.sliceInvoker(config.self(),
                                                      clusterNode.network(),
@@ -470,7 +503,9 @@ public interface AetherNode {
                                                 alertManager,
                                                 ttmManager,
                                                 rabiaMetricsCollector,
-                                                rollingUpdateManager);
+                                                rollingUpdateManager,
+                                                rollbackManager,
+                                                artifactMetricsCollector);
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
         // Create HTTP router if configured
@@ -501,12 +536,15 @@ public interface AetherNode {
                                       invocationHandler,
                                       blueprintService,
                                       mavenProtocolHandler,
+                                      artifactStore,
                                       invocationMetrics,
                                       controller,
                                       rollingUpdateManager,
                                       alertManager,
                                       ttmManager,
+                                      rollbackManager,
                                       snapshotCollector,
+                                      artifactMetricsCollector,
                                       eventLoopMetricsCollector,
                                       Option.empty(),
                                       httpRouter,
@@ -538,12 +576,15 @@ public interface AetherNode {
                                                                invocationHandler,
                                                                blueprintService,
                                                                mavenProtocolHandler,
+                                                               artifactStore,
                                                                invocationMetrics,
                                                                controller,
                                                                rollingUpdateManager,
                                                                alertManager,
                                                                ttmManager,
+                                                               rollbackManager,
                                                                snapshotCollector,
+                                                               artifactMetricsCollector,
                                                                eventLoopMetricsCollector,
                                                                Option.some(managementServer),
                                                                httpRouter,
@@ -578,23 +619,25 @@ public interface AetherNode {
                                      deserializer);
     }
 
-    private static List<MessageRouter.Entry< ? >> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
-                                                                      NodeDeploymentManager nodeDeploymentManager,
-                                                                      ClusterDeploymentManager clusterDeploymentManager,
-                                                                      EndpointRegistry endpointRegistry,
-                                                                      RouteRegistry routeRegistry,
-                                                                      MetricsCollector metricsCollector,
-                                                                      MetricsScheduler metricsScheduler,
-                                                                      DeploymentMetricsCollector deploymentMetricsCollector,
-                                                                      DeploymentMetricsScheduler deploymentMetricsScheduler,
-                                                                      ControlLoop controlLoop,
-                                                                      SliceInvoker sliceInvoker,
-                                                                      InvocationHandler invocationHandler,
-                                                                      AlertManager alertManager,
-                                                                      TTMManager ttmManager,
-                                                                      RabiaMetricsCollector rabiaMetricsCollector,
-                                                                      RollingUpdateManagerImpl rollingUpdateManager) {
-        var entries = new ArrayList<MessageRouter.Entry< ? >>();
+    private static List<MessageRouter.Entry< ?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
+                                                                     NodeDeploymentManager nodeDeploymentManager,
+                                                                     ClusterDeploymentManager clusterDeploymentManager,
+                                                                     EndpointRegistry endpointRegistry,
+                                                                     RouteRegistry routeRegistry,
+                                                                     MetricsCollector metricsCollector,
+                                                                     MetricsScheduler metricsScheduler,
+                                                                     DeploymentMetricsCollector deploymentMetricsCollector,
+                                                                     DeploymentMetricsScheduler deploymentMetricsScheduler,
+                                                                     ControlLoop controlLoop,
+                                                                     SliceInvoker sliceInvoker,
+                                                                     InvocationHandler invocationHandler,
+                                                                     AlertManager alertManager,
+                                                                     TTMManager ttmManager,
+                                                                     RabiaMetricsCollector rabiaMetricsCollector,
+                                                                     RollingUpdateManagerImpl rollingUpdateManager,
+                                                                     RollbackManager rollbackManager,
+                                                                     ArtifactMetricsCollector artifactMetricsCollector) {
+        var entries = new ArrayList<MessageRouter.Entry< ?>>();
         // KVStore notifications to deployment managers
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, nodeDeploymentManager::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, clusterDeploymentManager::onValuePut));
@@ -606,6 +649,10 @@ public interface AetherNode {
                                               clusterDeploymentManager::onValueRemove));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, endpointRegistry::onValueRemove));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, routeRegistry::onValueRemove));
+        // Artifact metrics tracking via KV-Store
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, artifactMetricsCollector::onValuePut));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                              artifactMetricsCollector::onValueRemove));
         // ControlLoop blueprint sync via KV-Store
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, controlLoop::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, controlLoop::onValueRemove));
@@ -632,6 +679,11 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, ttmManager::onLeaderChange));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               rollingUpdateManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, rollbackManager::onLeaderChange));
+        // RollbackManager KV-Store notifications and slice failure events
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, rollbackManager::onValuePut));
+        entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
+                                              rollbackManager::onAllInstancesFailed));
         // Topology change notifications
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class,
                                               clusterDeploymentManager::onTopologyChange));

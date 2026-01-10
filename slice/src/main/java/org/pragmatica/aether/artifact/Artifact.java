@@ -24,6 +24,20 @@ public record Artifact(GroupId groupId, ArtifactId artifactId, Version version) 
         return new Artifact(groupId, artifactId, version);
     }
 
+    /**
+     * Creates an artifact from an artifact base and version.
+     */
+    public static Artifact artifact(ArtifactBase base, Version version) {
+        return new Artifact(base.groupId(), base.artifactId(), version);
+    }
+
+    /**
+     * Extracts the version-agnostic artifact base (groupId:artifactId).
+     */
+    public ArtifactBase base() {
+        return ArtifactBase.artifactBase(this);
+    }
+
     @Override
     public String toString() {
         return asString();

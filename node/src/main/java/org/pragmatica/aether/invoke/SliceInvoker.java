@@ -161,6 +161,20 @@ public interface SliceInvoker extends SliceInvokerFacade {
     long BASE_RETRY_DELAY_MS = 100;
 
     /**
+     * Listener for slice failure events.
+     */
+    @FunctionalInterface
+    interface SliceFailureListener {
+        void onSliceFailure(SliceFailureEvent event);
+    }
+
+    /**
+     * Set the failure listener for slice failure events.
+     * Called when all instances of a slice fail during invocation.
+     */
+    Unit setFailureListener(SliceFailureListener listener);
+
+    /**
      * Create a new SliceInvoker.
      */
     static SliceInvoker sliceInvoker(NodeId self,
@@ -225,8 +239,9 @@ class SliceInvokerImpl implements SliceInvoker {
     private final ConcurrentHashMap<String, PendingInvocation> pendingInvocations = new ConcurrentHashMap<>();
 
     private volatile boolean stopped = false;
+    private volatile Option<SliceFailureListener> failureListener = Option.empty();
 
-    record PendingInvocation(Promise<Object> promise, long createdAtMs) {}
+    record PendingInvocation(Promise<Object> promise, long createdAtMs, String requestId) {}
 
     SliceInvokerImpl(NodeId self,
                      ClusterNetwork network,
@@ -321,9 +336,14 @@ class SliceInvokerImpl implements SliceInvoker {
         var payload = serializeRequest(request);
         var correlationId = KSUID.ksuid()
                                  .toString();
-        var invokeRequest = new InvokeRequest(self, correlationId, slice, method, payload, false);
+        var requestId = InvocationContext.getOrGenerateRequestId();
+        var invokeRequest = new InvokeRequest(self, correlationId, requestId, slice, method, payload, false);
         network.send(endpoint.nodeId(), invokeRequest);
-        log.debug("Sent fire-and-forget invocation to {}: {}.{}", endpoint.nodeId(), slice, method);
+        log.debug("[requestId={}] Sent fire-and-forget invocation to {}: {}.{}",
+                  requestId,
+                  endpoint.nodeId(),
+                  slice,
+                  method);
         return Promise.success(unit());
     }
 
@@ -356,14 +376,20 @@ class SliceInvokerImpl implements SliceInvoker {
                                         Artifact slice,
                                         MethodName method,
                                         byte[] payload) {
-        var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis());
+        var requestId = InvocationContext.getOrGenerateRequestId();
+        var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), requestId);
         pendingInvocations.put(correlationId, pending);
         pendingPromise.timeout(timeSpan(timeoutMs)
                                        .millis())
                       .onResult(_ -> pendingInvocations.remove(correlationId));
-        var invokeRequest = new InvokeRequest(self, correlationId, slice, method, payload, true);
+        var invokeRequest = new InvokeRequest(self, correlationId, requestId, slice, method, payload, true);
         network.send(endpoint.nodeId(), invokeRequest);
-        log.debug("Sent request-response invocation to {}: {}.{} [{}]", endpoint.nodeId(), slice, method, correlationId);
+        log.debug("[requestId={}] Sent request-response invocation to {}: {}.{} [{}]",
+                  requestId,
+                  endpoint.nodeId(),
+                  slice,
+                  method,
+                  correlationId);
     }
 
     @Override
@@ -372,69 +398,210 @@ class SliceInvokerImpl implements SliceInvoker {
                                           Object request,
                                           Class<R> responseType,
                                           int maxRetries) {
-        return invokeWithRetryInternal(slice, method, request, responseType, 0, maxRetries);
-    }
-
-    private <R> Promise<R> invokeWithRetryInternal(Artifact slice,
-                                                   MethodName method,
-                                                   Object request,
-                                                   Class<R> responseType,
-                                                   int attempt,
-                                                   int maxRetries) {
         if (stopped) {
             return INVOKER_STOPPED.promise();
         }
-        var ctx = new RetryContext<>(slice, method, request, responseType, attempt, maxRetries);
-        return Promise.promise(promise -> executeWithRetry(promise, ctx));
+        var requestId = InvocationContext.getOrGenerateRequestId();
+        var ctx = new FailoverContext<>(slice,
+                                        method,
+                                        request,
+                                        responseType,
+                                        maxRetries,
+                                        requestId,
+                                        new java.util.HashSet<>(),
+                                        new java.util.ArrayList<>(),
+                                        null);
+        return Promise.promise(promise -> executeWithFailover(promise, ctx));
     }
 
-    private record RetryContext<R>(Artifact slice,
-                                   MethodName method,
-                                   Object request,
-                                   Class<R> responseType,
-                                   int attempt,
-                                   int maxRetries) {}
+    /**
+     * Context for multi-instance failover retry logic.
+     * Tracks which endpoints have been tried and failed.
+     */
+    private record FailoverContext<R>(Artifact slice,
+                                      MethodName method,
+                                      Object request,
+                                      Class<R> responseType,
+                                      int maxRetries,
+                                      String requestId,
+                                      java.util.Set<NodeId> failedNodes,
+                                      java.util.List<NodeId> attemptedNodes,
+                                      Cause lastError) {
+        FailoverContext<R> withFailure(NodeId failedNode, Cause error) {
+            var newFailed = new java.util.HashSet<>(failedNodes);
+            newFailed.add(failedNode);
+            var newAttempted = new java.util.ArrayList<>(attemptedNodes);
+            newAttempted.add(failedNode);
+            return new FailoverContext<>(slice,
+                                         method,
+                                         request,
+                                         responseType,
+                                         maxRetries,
+                                         requestId,
+                                         newFailed,
+                                         newAttempted,
+                                         error);
+        }
 
-    private <R> void executeWithRetry(Promise<R> promise, RetryContext<R> ctx) {
-        invokeAndWait(ctx.slice, ctx.method, ctx.request, ctx.responseType)
-                     .onSuccess(promise::succeed)
-                     .onFailure(cause -> handleRetryFailure(promise, ctx, cause));
+        int attemptCount() {
+            return attemptedNodes.size();
+        }
     }
 
-    private <R> void handleRetryFailure(Promise<R> promise, RetryContext<R> ctx, Cause cause) {
+    private <R> void executeWithFailover(Promise<R> promise, FailoverContext<R> ctx) {
+        // Select endpoint excluding failed ones
+        selectEndpointWithFailover(ctx.slice, ctx.method, ctx.failedNodes)
+                                  .onEmpty(() -> handleAllEndpointsFailed(promise, ctx))
+                                  .onPresent(endpoint -> invokeEndpointWithFailover(promise, ctx, endpoint));
+    }
+
+    private Option<Endpoint> selectEndpointWithFailover(Artifact slice,
+                                                        MethodName method,
+                                                        java.util.Set<NodeId> exclude) {
+        if (exclude.isEmpty()) {
+            // First attempt - check for rolling update routing
+            var artifactBase = ArtifactBase.artifactBase(slice.groupId(), slice.artifactId());
+            var updateEndpoint = rollingUpdateManager.getActiveUpdate(artifactBase)
+                                                     .flatMap(update -> endpointRegistry.selectEndpointWithRouting(artifactBase,
+                                                                                                                   method,
+                                                                                                                   update.routing(),
+                                                                                                                   update.oldVersion(),
+                                                                                                                   update.newVersion()));
+            // Fall back to regular selection if no rolling update or no routing endpoint
+            return updateEndpoint.isPresent()
+                   ? updateEndpoint
+                   : endpointRegistry.selectEndpoint(slice, method);
+        }
+        // Failover - exclude failed nodes
+        return endpointRegistry.selectEndpointExcluding(slice, method, exclude);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <R> void invokeEndpointWithFailover(Promise<R> promise, FailoverContext<R> ctx, Endpoint endpoint) {
+        var payload = serializeRequest(ctx.request);
+        var correlationId = KSUID.ksuid()
+                                 .toString();
+        var pendingPromise = Promise.<Object>promise();
+        var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), ctx.requestId);
+        pendingInvocations.put(correlationId, pending);
+        pendingPromise.timeout(timeSpan(timeoutMs)
+                                       .millis())
+                      .onResult(_ -> pendingInvocations.remove(correlationId));
+        var invokeRequest = new InvokeRequest(self, correlationId, ctx.requestId, ctx.slice, ctx.method, payload, true);
+        network.send(endpoint.nodeId(), invokeRequest);
+        log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
+                  ctx.requestId,
+                  endpoint.nodeId(),
+                  ctx.slice,
+                  ctx.method,
+                  correlationId,
+                  ctx.attemptCount() + 1);
+        pendingPromise.onSuccess(result -> promise.succeed((R) result))
+                      .onFailure(cause -> handleFailoverFailure(promise,
+                                                                ctx,
+                                                                endpoint.nodeId(),
+                                                                cause));
+    }
+
+    private <R> void handleFailoverFailure(Promise<R> promise, FailoverContext<R> ctx, NodeId failedNode, Cause cause) {
         if (stopped) {
             promise.fail(INVOKER_STOPPED);
             return;
         }
-        if (ctx.attempt < ctx.maxRetries) {
-            scheduleRetry(promise, ctx, cause);
-        } else {
-            log.warn("Invocation failed after {} retries: {}.{} - {}",
-                     ctx.maxRetries,
-                     ctx.slice,
-                     ctx.method,
-                     cause.message());
-            promise.fail(cause);
+        var newCtx = ctx.withFailure(failedNode, cause);
+        // Check if we've exceeded max retries
+        if (newCtx.attemptCount() > ctx.maxRetries) {
+            handleMaxRetriesExceeded(promise, newCtx);
+            return;
         }
-    }
-
-    private <R> void scheduleRetry(Promise<R> promise, RetryContext<R> ctx, Cause cause) {
-        var nextAttempt = ctx.attempt + 1;
-        var delayMs = BASE_RETRY_DELAY_MS * (1L<< ctx.attempt);
-        log.debug("Invocation failed, scheduling retry {}/{} in {}ms: {}.{} - {}",
-                  nextAttempt,
-                  ctx.maxRetries,
+        // Schedule retry with different endpoint
+        var delayMs = BASE_RETRY_DELAY_MS * (1L<< (newCtx.attemptCount() - 1));
+        log.debug("[requestId={}] Endpoint {} failed, scheduling failover retry in {}ms: {}.{} - {}",
+                  ctx.requestId,
+                  failedNode,
                   delayMs,
                   ctx.slice,
                   ctx.method,
                   cause.message());
-        var nextCtx = new RetryContext<>(ctx.slice,
-                                         ctx.method,
-                                         ctx.request,
-                                         ctx.responseType,
-                                         nextAttempt,
-                                         ctx.maxRetries);
-        scheduler.schedule(() -> executeWithRetry(promise, nextCtx), delayMs, TimeUnit.MILLISECONDS);
+        scheduler.schedule(() -> executeWithFailover(promise, newCtx), delayMs, TimeUnit.MILLISECONDS);
+    }
+
+    private <R> void handleAllEndpointsFailed(Promise<R> promise, FailoverContext<R> ctx) {
+        log.error("[requestId={}] All instances failed for {}.{}: {} nodes attempted",
+                  ctx.requestId,
+                  ctx.slice,
+                  ctx.method,
+                  ctx.attemptCount());
+        // Emit failure event for alerting/controller
+        var event = SliceFailureEvent.AllInstancesFailed.allInstancesFailed(ctx.requestId,
+                                                                            ctx.slice,
+                                                                            ctx.method,
+                                                                            ctx.lastError,
+                                                                            ctx.attemptedNodes);
+        publishFailureEvent(event);
+        promise.fail(new SliceInvokerError.AllInstancesFailedError(ctx.slice, ctx.attemptedNodes));
+    }
+
+    private <R> void handleMaxRetriesExceeded(Promise<R> promise, FailoverContext<R> ctx) {
+        log.warn("[requestId={}] Max retries ({}) exceeded for {}.{}: {} nodes attempted",
+                 ctx.requestId,
+                 ctx.maxRetries,
+                 ctx.slice,
+                 ctx.method,
+                 ctx.attemptCount());
+        // Also emit event since max retries exhausted indicates serious problem
+        if (ctx.attemptCount() >= endpointRegistry.findEndpoints(ctx.slice, ctx.method)
+                                                  .size()) {
+            var event = SliceFailureEvent.AllInstancesFailed.allInstancesFailed(ctx.requestId,
+                                                                                ctx.slice,
+                                                                                ctx.method,
+                                                                                ctx.lastError,
+                                                                                ctx.attemptedNodes);
+            publishFailureEvent(event);
+        }
+        promise.fail(ctx.lastError);
+    }
+
+    @Override
+    public Unit setFailureListener(SliceFailureListener listener) {
+        this.failureListener = Option.some(listener);
+        return unit();
+    }
+
+    private void publishFailureEvent(SliceFailureEvent event) {
+        log.warn("SliceFailureEvent: {}", event);
+        failureListener.onPresent(listener -> {
+                                      try{
+                                          listener.onSliceFailure(event);
+                                      } catch (Exception e) {
+                                          log.error("Error notifying failure listener: {}", e.getMessage());
+                                      }
+                                  });
+    }
+
+    /**
+     * Error hierarchy for SliceInvoker failures.
+     */
+    sealed interface SliceInvokerError extends Cause {
+        /**
+         * Error indicating all instances of a slice have failed.
+         */
+        record AllInstancesFailedError(Artifact slice, java.util.List<NodeId> attemptedNodes) implements SliceInvokerError {
+            @Override
+            public String message() {
+                return "All instances failed for " + slice + " after trying " + attemptedNodes.size() + " nodes";
+            }
+        }
+
+        /**
+         * Error from remote invocation.
+         */
+        record InvocationError(String errorMessage) implements SliceInvokerError {
+            @Override
+            public String message() {
+                return errorMessage;
+            }
+        }
     }
 
     @Override
@@ -464,23 +631,27 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private void handlePendingResponse(PendingInvocation pending, InvokeResponse response) {
         var promise = pending.promise();
+        var requestId = pending.requestId();
         if (response.success()) {
+            var buf = Unpooled.wrappedBuffer(response.payload());
             try{
-                var buf = Unpooled.wrappedBuffer(response.payload());
                 var result = deserializer.read(buf);
-                buf.release();
-                // Release the wrapped buffer
                 promise.resolve(Result.success(result));
-                log.debug("Completed invocation [{}]", response.correlationId());
+                log.debug("[requestId={}] Completed invocation [{}]", requestId, response.correlationId());
             } catch (Exception e) {
                 promise.resolve(Causes.fromThrowable(e)
                                       .result());
-                log.error("Failed to deserialize response [{}]: {}", response.correlationId(), e.getMessage());
+                log.error("[requestId={}] Failed to deserialize response [{}]: {}",
+                          requestId,
+                          response.correlationId(),
+                          e.getMessage());
+            } finally{
+                buf.release();
             }
         } else {
             var errorMessage = new String(response.payload());
-            promise.resolve(new InvocationError(errorMessage).result());
-            log.debug("Invocation failed [{}]: {}", response.correlationId(), errorMessage);
+            promise.resolve(new SliceInvokerError.InvocationError(errorMessage).result());
+            log.debug("[requestId={}] Invocation failed [{}]: {}", requestId, response.correlationId(), errorMessage);
         }
     }
 
@@ -513,15 +684,5 @@ class SliceInvokerImpl implements SliceInvoker {
         buf.readBytes(bytes);
         buf.release();
         return bytes;
-    }
-
-    /**
-     * Error from remote invocation.
-     */
-    record InvocationError(String errorMessage) implements Cause {
-        @Override
-        public String message() {
-            return errorMessage;
-        }
     }
 }

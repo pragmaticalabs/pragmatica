@@ -49,7 +49,7 @@ public class NominalOperationIT {
      * Assertion: identical state digest on all nodes, no gaps, latency ≤ 2×mean RTT
      */
     @Test
-    void singleClientSequentialCommands() {
+    void apply_singleClientSequential_allCommandsCommit() {
         log.info("Starting single client sequential test with {} requests", REQUEST_COUNT);
 
         // Get the first node to submit commands
@@ -140,7 +140,7 @@ public class NominalOperationIT {
      * Assertion: single global order, no duplicate execution, throughput linear to load until CPU saturation
      */
     @Test
-    void concurrentClients() {
+    void apply_concurrentClients_allCommandsCommit() {
         log.info("Starting concurrent clients test");
 
         final int CLIENT_COUNT = 100;

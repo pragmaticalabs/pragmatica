@@ -18,7 +18,7 @@ class SliceClassLoaderTest {
     // === JDK Class Delegation Tests ===
 
     @Test
-    void loads_java_classes_from_parent() throws ClassNotFoundException {
+    void loadClass_javaClasses_delegatesToParent() throws ClassNotFoundException {
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 
         var stringClass = classLoader.loadClass("java.lang.String");
@@ -28,7 +28,7 @@ class SliceClassLoaderTest {
     }
 
     @Test
-    void loads_javax_classes_from_parent() throws ClassNotFoundException {
+    void loadClass_javaxClasses_delegatesToParent() throws ClassNotFoundException {
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 
         // javax.management is standard JDK
@@ -40,7 +40,7 @@ class SliceClassLoaderTest {
     // === Framework Class Delegation Tests ===
 
     @Test
-    void loads_pragmatica_classes_from_parent() throws ClassNotFoundException {
+    void loadClass_pragmaticaClasses_delegatesToParent() throws ClassNotFoundException {
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 
         // Load a known framework class
@@ -52,7 +52,7 @@ class SliceClassLoaderTest {
     }
 
     @Test
-    void loads_aether_slice_api_from_parent() throws ClassNotFoundException {
+    void loadClass_aetherSliceApi_delegatesToParent() throws ClassNotFoundException {
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 
         var sliceClass = classLoader.loadClass("org.pragmatica.aether.slice.Slice");
@@ -63,7 +63,7 @@ class SliceClassLoaderTest {
     // === Child-First Loading Tests ===
 
     @Test
-    void attempts_child_first_for_non_framework_classes() throws ClassNotFoundException {
+    void loadClass_nonFrameworkClasses_attemptsChildFirst() throws ClassNotFoundException {
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 
         // This class exists in parent but should be tried child-first
@@ -76,7 +76,7 @@ class SliceClassLoaderTest {
     // === Resource Cleanup Tests ===
 
     @Test
-    void close_releases_resources() throws IOException {
+    void close_normalOperation_releasesResources() throws IOException {
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 
         classLoader.close();
@@ -85,7 +85,7 @@ class SliceClassLoaderTest {
     }
 
     @Test
-    void close_can_be_called_multiple_times() throws IOException {
+    void close_multipleCalls_succeedsIdempotently() throws IOException {
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 
         classLoader.close();
@@ -97,7 +97,7 @@ class SliceClassLoaderTest {
     // === URL Handling Tests ===
 
     @Test
-    void accepts_empty_url_array() throws ClassNotFoundException {
+    void constructor_emptyUrlArray_succeeds() throws ClassNotFoundException {
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 
         // Should still load framework classes
@@ -107,7 +107,7 @@ class SliceClassLoaderTest {
     }
 
     @Test
-    void accepts_jar_url() throws Exception {
+    void constructor_jarUrl_succeeds() throws Exception {
         // Create a dummy JAR file
         var jarFile = tempDir.resolve("test.jar");
         Files.createFile(jarFile);
@@ -125,7 +125,7 @@ class SliceClassLoaderTest {
     // === Class Loading Lock Tests ===
 
     @Test
-    void same_class_loaded_once() throws ClassNotFoundException {
+    void loadClass_sameClass_loadedOnce() throws ClassNotFoundException {
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 
         var first = classLoader.loadClass("java.lang.String");
@@ -137,7 +137,7 @@ class SliceClassLoaderTest {
     // === Isolation Verification Tests ===
 
     @Test
-    void different_classloaders_share_framework_classes() throws ClassNotFoundException {
+    void loadClass_differentClassLoaders_shareFrameworkClasses() throws ClassNotFoundException {
         var classLoader1 = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var classLoader2 = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 
@@ -149,7 +149,7 @@ class SliceClassLoaderTest {
     }
 
     @Test
-    void jdk_classes_shared_across_classloaders() throws ClassNotFoundException {
+    void loadClass_jdkClasses_sharedAcrossClassLoaders() throws ClassNotFoundException {
         var classLoader1 = new SliceClassLoader(new URL[0], getClass().getClassLoader());
         var classLoader2 = new SliceClassLoader(new URL[0], getClass().getClassLoader());
 

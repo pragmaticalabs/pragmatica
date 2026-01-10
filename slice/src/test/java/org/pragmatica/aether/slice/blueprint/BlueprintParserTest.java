@@ -190,17 +190,14 @@ class BlueprintParserTest {
         }
 
         @Test
-        void parse_succeeds_withNoSlices() {
+        void parse_fails_withNoSlices() {
             var dsl = """
                     id = "empty:1.0.0"
                     """;
 
             BlueprintParser.parse(dsl)
-                           .onFailureRun(Assertions::fail)
-                           .onSuccess(blueprint -> {
-                               assertThat(blueprint.id().asString()).isEqualTo("empty:1.0.0");
-                               assertThat(blueprint.slices()).isEmpty();
-                           });
+                           .onSuccessRun(Assertions::fail)
+                           .onFailure(cause -> assertThat(cause.message()).contains("empty"));
         }
     }
 

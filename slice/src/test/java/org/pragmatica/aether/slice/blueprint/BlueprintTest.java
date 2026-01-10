@@ -12,14 +12,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BlueprintTest {
 
     @Test
-    void blueprint_succeeds_withMinimalConfig() {
+    void blueprint_fails_withEmptySlices() {
         BlueprintId.blueprintId("my-app:1.0.0")
-                   .map(id -> Blueprint.blueprint(id, List.of()))
-                   .onFailureRun(Assertions::fail)
-                   .onSuccess(blueprint -> {
-                       assertThat(blueprint.id().asString()).isEqualTo("my-app:1.0.0");
-                       assertThat(blueprint.slices()).isEmpty();
-                   });
+                   .flatMap(id -> Blueprint.blueprint(id, List.of()))
+                   .onSuccessRun(Assertions::fail)
+                   .onFailure(cause -> assertThat(cause.message()).contains("empty"));
     }
 
     @Test
@@ -29,7 +26,7 @@ class BlueprintTest {
                                     Artifact.artifact("org.example:slice:1.0.0")
                                             .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 3))
                                             .map(spec -> List.of(spec))
-                                            .map(slices -> Blueprint.blueprint(id, slices))
+                                            .flatMap(slices -> Blueprint.blueprint(id, slices))
                            )
                    .onFailureRun(Assertions::fail)
                    .onSuccess(blueprint -> {
@@ -49,7 +46,7 @@ class BlueprintTest {
                                                                      .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 2))
                                                                      .map(specB -> List.of(specA, specB))
                                                     )
-                                            .map(slices -> Blueprint.blueprint(id, slices))
+                                            .flatMap(slices -> Blueprint.blueprint(id, slices))
                            )
                    .onFailureRun(Assertions::fail)
                    .onSuccess(blueprint -> {

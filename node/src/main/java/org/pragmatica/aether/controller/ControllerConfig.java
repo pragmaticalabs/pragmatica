@@ -1,4 +1,10 @@
 package org.pragmatica.aether.controller;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
 /**
  * Configuration for the cluster controller.
  *
@@ -6,13 +12,17 @@ package org.pragmatica.aether.controller;
  *
  * @param cpuScaleUpThreshold CPU usage above which to scale up (0.0-1.0)
  * @param cpuScaleDownThreshold CPU usage below which to scale down (0.0-1.0)
- * @param callRateScaleUpThreshold call rate above which to scale up
- * @param evaluationIntervalMs interval between controller evaluations in milliseconds
+ * @param callRateScaleUpThreshold call rate above which to scale up (must be positive)
+ * @param evaluationIntervalMs interval between controller evaluations in milliseconds (must be positive)
  */
 public record ControllerConfig(double cpuScaleUpThreshold,
                                double cpuScaleDownThreshold,
                                double callRateScaleUpThreshold,
                                long evaluationIntervalMs) {
+    private static final Fn1<Cause, String> INVALID_THRESHOLD = Causes.forOneValue("Invalid threshold: %s (must be between 0.0 and 1.0)");
+    private static final Fn1<Cause, String> INVALID_POSITIVE = Causes.forOneValue("Invalid value: %s (must be positive)");
+    private static final Cause INVALID_THRESHOLD_ORDER = Causes.cause("cpuScaleUpThreshold must be greater than cpuScaleDownThreshold");
+
     /**
      * Default configuration.
      */
@@ -26,16 +36,50 @@ public record ControllerConfig(double cpuScaleUpThreshold,
     }
 
     /**
-     * Factory method following JBCT naming convention.
+     * Factory method with validation following JBCT naming convention.
+     *
+     * @return Result containing valid config or validation error
      */
-    public static ControllerConfig controllerConfig(double cpuScaleUpThreshold,
-                                                    double cpuScaleDownThreshold,
-                                                    double callRateScaleUpThreshold,
-                                                    long evaluationIntervalMs) {
-        return new ControllerConfig(cpuScaleUpThreshold,
-                                    cpuScaleDownThreshold,
-                                    callRateScaleUpThreshold,
-                                    evaluationIntervalMs);
+    public static Result<ControllerConfig> controllerConfig(double cpuScaleUpThreshold,
+                                                            double cpuScaleDownThreshold,
+                                                            double callRateScaleUpThreshold,
+                                                            long evaluationIntervalMs) {
+        return validateThreshold(cpuScaleUpThreshold, "cpuScaleUpThreshold")
+                                .flatMap(_ -> validateThreshold(cpuScaleDownThreshold, "cpuScaleDownThreshold"))
+                                .flatMap(_ -> validatePositive(callRateScaleUpThreshold, "callRateScaleUpThreshold"))
+                                .flatMap(_ -> validatePositive(evaluationIntervalMs, "evaluationIntervalMs"))
+                                .flatMap(_ -> validateThresholdOrder(cpuScaleUpThreshold, cpuScaleDownThreshold))
+                                .map(_ -> new ControllerConfig(cpuScaleUpThreshold,
+                                                               cpuScaleDownThreshold,
+                                                               callRateScaleUpThreshold,
+                                                               evaluationIntervalMs));
+    }
+
+    private static Result<Double> validateThreshold(double value, String name) {
+        return value >= 0.0 && value <= 1.0
+               ? Result.success(value)
+               : INVALID_THRESHOLD.apply(name + "=" + value)
+                                  .result();
+    }
+
+    private static Result<Double> validatePositive(double value, String name) {
+        return value > 0
+               ? Result.success(value)
+               : INVALID_POSITIVE.apply(name + "=" + value)
+                                 .result();
+    }
+
+    private static Result<Long> validatePositive(long value, String name) {
+        return value > 0
+               ? Result.success(value)
+               : INVALID_POSITIVE.apply(name + "=" + value)
+                                 .result();
+    }
+
+    private static Result<Double> validateThresholdOrder(double up, double down) {
+        return up > down
+               ? Result.success(up)
+               : INVALID_THRESHOLD_ORDER.result();
     }
 
     /**

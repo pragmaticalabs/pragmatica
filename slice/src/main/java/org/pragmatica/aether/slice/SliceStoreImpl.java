@@ -53,6 +53,10 @@ public interface SliceStoreImpl {
         LoadedSliceEntry withState(EntryState newState) {
             return new LoadedSliceEntry(artifact, sliceInstance, classLoader, newState);
         }
+
+        SliceStore.LoadedSlice asLoadedSlice() {
+            return this;
+        }
     }
 
     static SliceStore sliceStore(SliceRegistry registry,
@@ -214,7 +218,7 @@ public interface SliceStoreImpl {
         public List<LoadedSlice> loaded() {
             return entries.values()
                           .stream()
-                          .map(entry -> (LoadedSlice) entry)
+                          .map(LoadedSliceEntry::asLoadedSlice)
                           .toList();
         }
 

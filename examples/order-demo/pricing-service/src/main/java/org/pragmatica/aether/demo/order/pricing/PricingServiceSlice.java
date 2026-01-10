@@ -67,7 +67,7 @@ public record PricingServiceSlice() implements Slice {
 
     // === Slice Implementation ===
     @Override
-    public List<SliceMethod< ?, ? >> methods() {
+    public List<SliceMethod< ?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("getPrice")
                                                    .expect("Invalid method name: getPrice"),
                                          this::getPrice,
@@ -112,12 +112,10 @@ public record PricingServiceSlice() implements Slice {
     }
 
     private Result<OrderTotal> applyDiscount(BigDecimal subtotal, String discountCode) {
-        var discountRate = discountCode != null
-                           ? DISCOUNTS.get(discountCode)
-                           : null;
-        var discount = discountRate != null
-                       ? subtotal.multiply(discountRate)
-                       : BigDecimal.ZERO;
+        var discount = Option.option(discountCode)
+                             .flatMap(code -> Option.option(DISCOUNTS.get(code)))
+                             .map(subtotal::multiply)
+                             .or(BigDecimal.ZERO);
         var total = subtotal.subtract(discount);
         return Result.all(Money.usd(subtotal),
                           Money.usd(discount),

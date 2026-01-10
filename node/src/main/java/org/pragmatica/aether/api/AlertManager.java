@@ -1,14 +1,19 @@
 package org.pragmatica.aether.api;
 
+import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.invoke.SliceFailureEvent;
+import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
 import java.util.Map;
@@ -356,6 +361,198 @@ public class AlertManager {
         return sb.toString();
     }
 
+    // ============================================
+    // Slice Failure Alerting
+    // ============================================
+    /**
+     * Handle slice failure event - all instances of a slice have failed.
+     *
+     * <p>This is a CRITICAL alert that may trigger automatic rollback.
+     */
+    @MessageReceiver
+    public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
+        var alertKey = "slice.all_failed:" + event.artifact()
+                                                 .asString() + "/" + event.method()
+                                                                         .name();
+        var alert = new SliceFailureAlert(event.artifact(),
+                                          event.method(),
+                                          event.lastError(),
+                                          event.attemptedNodes(),
+                                          event.requestId(),
+                                          event.timestamp());
+        activeSliceFailureAlerts.put(alertKey, alert);
+        addSliceFailureToHistory(event);
+        log.error("[requestId={}] CRITICAL: All instances failed for {}.{} - {} nodes attempted: {}",
+                  event.requestId(),
+                  event.artifact(),
+                  event.method(),
+                  event.attemptedNodes()
+                       .size(),
+                  event.lastError() != null
+                  ? event.lastError()
+                         .message()
+                  : "unknown error");
+    }
+
+    private final Map<String, SliceFailureAlert> activeSliceFailureAlerts = new ConcurrentHashMap<>();
+    private final ConcurrentLinkedDeque<SliceFailureHistoryEntry> sliceFailureHistory = new ConcurrentLinkedDeque<>();
+    private final AtomicInteger sliceFailureHistorySize = new AtomicInteger(0);
+
+    private void addSliceFailureToHistory(SliceFailureEvent.AllInstancesFailed event) {
+        var entry = new SliceFailureHistoryEntry(event.timestamp(),
+                                                 event.requestId(),
+                                                 event.artifact()
+                                                      .asString(),
+                                                 event.method()
+                                                      .name(),
+                                                 event.attemptedNodes()
+                                                      .stream()
+                                                      .map(NodeId::id)
+                                                      .toList(),
+                                                 event.lastError() != null
+                                                 ? event.lastError()
+                                                        .message()
+                                                 : "unknown");
+        sliceFailureHistory.addLast(entry);
+        if (sliceFailureHistorySize.incrementAndGet() > MAX_ALERT_HISTORY) {
+            if (sliceFailureHistory.pollFirst() != null) {
+                sliceFailureHistorySize.decrementAndGet();
+            }
+        }
+    }
+
+    /**
+     * Get active slice failure alerts.
+     */
+    public List<SliceFailureAlert> getActiveSliceFailureAlerts() {
+        return List.copyOf(activeSliceFailureAlerts.values());
+    }
+
+    /**
+     * Clear a slice failure alert (e.g., after rollback or manual resolution).
+     */
+    public void clearSliceFailureAlert(Artifact artifact, MethodName method) {
+        var alertKey = "slice.all_failed:" + artifact.asString() + "/" + method.name();
+        activeSliceFailureAlerts.remove(alertKey);
+        log.info("Cleared slice failure alert for {}.{}", artifact, method);
+    }
+
+    /**
+     * Get slice failure alerts as JSON.
+     */
+    public String sliceFailureAlertsAsJson() {
+        var sb = new StringBuilder();
+        sb.append("[");
+        boolean first = true;
+        for (var alert : activeSliceFailureAlerts.values()) {
+            if (!first) sb.append(",");
+            sb.append("{");
+            sb.append("\"type\":\"SLICE_ALL_INSTANCES_FAILED\",");
+            sb.append("\"severity\":\"CRITICAL\",");
+            sb.append("\"artifact\":\"")
+              .append(alert.artifact.asString())
+              .append("\",");
+            sb.append("\"method\":\"")
+              .append(alert.method.name())
+              .append("\",");
+            sb.append("\"requestId\":\"")
+              .append(alert.requestId)
+              .append("\",");
+            sb.append("\"attemptedNodes\":[");
+            boolean firstNode = true;
+            for (var nodeId : alert.attemptedNodes) {
+                if (!firstNode) sb.append(",");
+                sb.append("\"")
+                  .append(nodeId.id())
+                  .append("\"");
+                firstNode = false;
+            }
+            sb.append("],");
+            sb.append("\"lastError\":\"")
+              .append(alert.lastError != null
+                      ? escapeJson(alert.lastError.message())
+                      : "unknown")
+              .append("\",");
+            sb.append("\"timestamp\":")
+              .append(alert.triggeredAt);
+            sb.append("}");
+            first = false;
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    /**
+     * Get slice failure history as JSON.
+     */
+    public String sliceFailureHistoryAsJson() {
+        var sb = new StringBuilder();
+        sb.append("[");
+        boolean first = true;
+        for (var entry : sliceFailureHistory) {
+            if (!first) sb.append(",");
+            sb.append("{");
+            sb.append("\"timestamp\":")
+              .append(entry.timestamp)
+              .append(",");
+            sb.append("\"requestId\":\"")
+              .append(entry.requestId)
+              .append("\",");
+            sb.append("\"artifact\":\"")
+              .append(entry.artifact)
+              .append("\",");
+            sb.append("\"method\":\"")
+              .append(entry.method)
+              .append("\",");
+            sb.append("\"attemptedNodes\":[");
+            boolean firstNode = true;
+            for (var nodeId : entry.attemptedNodes) {
+                if (!firstNode) sb.append(",");
+                sb.append("\"")
+                  .append(nodeId)
+                  .append("\"");
+                firstNode = false;
+            }
+            sb.append("],");
+            sb.append("\"lastError\":\"")
+              .append(escapeJson(entry.lastError))
+              .append("\"");
+            sb.append("}");
+            first = false;
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    private String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
+    }
+
+    /**
+     * Record for tracking active slice failure alerts.
+     */
+    public record SliceFailureAlert(Artifact artifact,
+                                    MethodName method,
+                                    Cause lastError,
+                                    List<NodeId> attemptedNodes,
+                                    String requestId,
+                                    long triggeredAt) {}
+
+    private record SliceFailureHistoryEntry(long timestamp,
+                                            String requestId,
+                                            String artifact,
+                                            String method,
+                                            List<String> attemptedNodes,
+                                            String lastError) {}
+
+    // ============================================
+    // Threshold-based Alerting (CPU, Heap, etc.)
+    // ============================================
     private record Threshold(double warning, double critical) {
         Option<String> severity(double value) {
             if (value >= critical) return Option.option("CRITICAL");

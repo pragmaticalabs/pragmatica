@@ -68,7 +68,7 @@ public record GetOrderStatusSlice() implements Slice {
 
     // === Slice Implementation ===
     @Override
-    public List<SliceMethod< ?, ? >> methods() {
+    public List<SliceMethod< ?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("getOrderStatus")
                                                    .expect("Invalid method name: getOrderStatus"),
                                          this::execute,

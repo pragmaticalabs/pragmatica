@@ -113,6 +113,25 @@ public sealed interface AetherValue {
                               long createdAt,
                               long updatedAt) implements AetherValue {}
 
+    /// Previous version tracking for rollback support.
+    /// Stores the previous version of an artifact before a deployment update.
+    ///
+    /// @param artifactBase the artifact being tracked (version-agnostic)
+    /// @param previousVersion the version that was replaced
+    /// @param currentVersion the version that replaced it
+    /// @param updatedAt timestamp when the version changed
+    record PreviousVersionValue(ArtifactBase artifactBase,
+                                Version previousVersion,
+                                Version currentVersion,
+                                long updatedAt) implements AetherValue {
+        /// Creates a new previous version value with current timestamp.
+        public static PreviousVersionValue previousVersionValue(ArtifactBase artifactBase,
+                                                                Version previousVersion,
+                                                                Version currentVersion) {
+            return new PreviousVersionValue(artifactBase, previousVersion, currentVersion, System.currentTimeMillis());
+        }
+    }
+
     /// Alert threshold configuration stored in consensus.
     /// Allows thresholds to survive restarts and sync across cluster nodes.
     ///

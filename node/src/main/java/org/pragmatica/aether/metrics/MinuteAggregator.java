@@ -216,19 +216,19 @@ public final class MinuteAggregator {
             p99 = percentile(sorted, 99);
         }
         int events = 0;
-        var aggregate = new MinuteAggregate(currentMinute,
-                                            sumCpu / n,
-                                            sumHeap / n,
-                                            sumLag / n,
-                                            sumLatency / n,
-                                            sumInvocations,
-                                            sumGcPause,
-                                            p50,
-                                            p95,
-                                            p99,
-                                            sumErrorRate / n,
-                                            events,
-                                            n);
+        var aggregate = MinuteAggregate.minuteAggregate(currentMinute,
+                                                        sumCpu / n,
+                                                        sumHeap / n,
+                                                        sumLag / n,
+                                                        sumLatency / n,
+                                                        sumInvocations,
+                                                        sumGcPause,
+                                                        p50,
+                                                        p95,
+                                                        p99,
+                                                        sumErrorRate / n,
+                                                        events,
+                                                        n);
         aggregates.add(aggregate);
         // Reset accumulators
         currentSamples.clear();

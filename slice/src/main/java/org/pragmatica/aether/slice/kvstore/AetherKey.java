@@ -317,6 +317,47 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Previous version key format:
+    /// ```
+    /// previous-version/{groupId}:{artifactId}
+    /// ```
+    /// Stores the previous version of an artifact before a deployment update.
+    /// Used for automatic rollback support.
+    record PreviousVersionKey(ArtifactBase artifactBase) implements AetherKey {
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.PreviousVersionPattern previousVersionPattern -> previousVersionPattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return "previous-version/" + artifactBase.asString();
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static PreviousVersionKey previousVersionKey(ArtifactBase artifactBase) {
+            return new PreviousVersionKey(artifactBase);
+        }
+
+        public static Result<PreviousVersionKey> previousVersionKey(String key) {
+            if (!key.startsWith("previous-version/")) {
+                return PREVIOUS_VERSION_KEY_FORMAT_ERROR.apply(key)
+                                                        .result();
+            }
+            var artifactBasePart = key.substring(17);
+            // Remove "previous-version/"
+            return ArtifactBase.artifactBase(artifactBasePart)
+                               .map(PreviousVersionKey::new);
+        }
+    }
+
     /// Alert threshold key format:
     /// ```
     /// alert-threshold/{metricName}
@@ -363,6 +404,7 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid route key format: %s");
     Fn1<Cause, String> VERSION_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid version-routing key format: %s");
     Fn1<Cause, String> ROLLING_UPDATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid rolling-update key format: %s");
+    Fn1<Cause, String> PREVIOUS_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid previous-version key format: %s");
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
 
     /// Aether KV-Store structured patterns for key matching
@@ -412,6 +454,13 @@ public sealed interface AetherKey extends StructuredKey {
         /// Pattern for rolling-update keys: rolling-update/*
         record RollingUpdatePattern() implements AetherKeyPattern {
             public boolean matches(RollingUpdateKey key) {
+                return true;
+            }
+        }
+
+        /// Pattern for previous-version keys: previous-version/*
+        record PreviousVersionPattern() implements AetherKeyPattern {
+            public boolean matches(PreviousVersionKey key) {
                 return true;
             }
         }

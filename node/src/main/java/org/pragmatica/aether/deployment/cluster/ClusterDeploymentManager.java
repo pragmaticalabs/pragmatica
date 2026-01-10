@@ -99,46 +99,50 @@ public interface ClusterDeploymentManager {
             void rebuildStateFromKVStore() {
                 log.info("Rebuilding cluster deployment state from KVStore");
                 kvStore.snapshot()
-                       .forEach((key, value) -> {
-                                    switch (key) {
-                    case AppBlueprintKey appBlueprintKey when value instanceof AppBlueprintValue appBlueprintValue -> {
-                                        var expanded = appBlueprintValue.blueprint();
-                                        log.debug("Restored app blueprint: {} with {} slices",
-                                                  expanded.id()
-                                                          .name(),
-                                                  expanded.loadOrder()
-                                                          .size());
-                                        for (var slice : expanded.loadOrder()) {
-                                            var artifact = slice.artifact();
-                                            var instances = activeNodes.isEmpty()
-                                                            ? Math.min(1,
-                                                                       slice.instances())
-                                                            : Math.min(slice.instances(),
-                                                                       activeNodes.size());
-                                            blueprints.put(artifact,
-                                                           new Blueprint(artifact, instances));
-                                        }
-                                    }
-                    case BlueprintKey blueprintKey when value instanceof BlueprintValue blueprintValue -> {
-                                        var artifact = blueprintKey.artifact();
-                                        var instances = (int) blueprintValue.instanceCount();
-                                        blueprints.put(artifact,
-                                                       new Blueprint(artifact, instances));
-                                        log.debug("Restored blueprint: {} with {} instances", artifact, instances);
-                                    }
-                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue sliceNodeValue -> {
-                                        sliceStates.put(sliceNodeKey,
-                                                        sliceNodeValue.state());
-                                        log.debug("Restored slice state: {} = {}",
-                                                  sliceNodeKey,
-                                                  sliceNodeValue.state());
-                                    }
-                    default -> {}
-                }
-                                });
+                       .forEach(this::processKVEntry);
                 log.info("Restored {} blueprints and {} slice states from KVStore",
                          blueprints.size(),
                          sliceStates.size());
+            }
+
+            private void processKVEntry(AetherKey key, AetherValue value) {
+                switch (key) {
+                    case AppBlueprintKey _ when value instanceof AppBlueprintValue appBlueprintValue ->
+                    restoreAppBlueprint(appBlueprintValue);
+                    case BlueprintKey blueprintKey when value instanceof BlueprintValue blueprintValue ->
+                    restoreBlueprint(blueprintKey, blueprintValue);
+                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue sliceNodeValue ->
+                    restoreSliceState(sliceNodeKey, sliceNodeValue);
+                    default -> {}
+                }
+            }
+
+            private void restoreAppBlueprint(AppBlueprintValue appBlueprintValue) {
+                var expanded = appBlueprintValue.blueprint();
+                log.debug("Restored app blueprint: {} with {} slices",
+                          expanded.id()
+                                  .name(),
+                          expanded.loadOrder()
+                                  .size());
+                for (var slice : expanded.loadOrder()) {
+                    var artifact = slice.artifact();
+                    var instances = activeNodes.isEmpty()
+                                    ? Math.min(1, slice.instances())
+                                    : Math.min(slice.instances(), activeNodes.size());
+                    blueprints.put(artifact, new Blueprint(artifact, instances));
+                }
+            }
+
+            private void restoreBlueprint(BlueprintKey blueprintKey, BlueprintValue blueprintValue) {
+                var artifact = blueprintKey.artifact();
+                var instances = (int) blueprintValue.instanceCount();
+                blueprints.put(artifact, new Blueprint(artifact, instances));
+                log.debug("Restored blueprint: {} with {} instances", artifact, instances);
+            }
+
+            private void restoreSliceState(SliceNodeKey sliceNodeKey, SliceNodeValue sliceNodeValue) {
+                sliceStates.put(sliceNodeKey, sliceNodeValue.state());
+                log.debug("Restored slice state: {} = {}", sliceNodeKey, sliceNodeValue.state());
             }
 
             @Override

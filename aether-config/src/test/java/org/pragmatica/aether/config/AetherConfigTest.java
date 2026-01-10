@@ -152,4 +152,34 @@ class AetherConfigTest {
         assertThat(config.tlsEnabled()).isTrue();
         assertThat(config.cluster().ports().management()).isEqualTo(9000);
     }
+
+    @Test
+    void forEnvironment_includesDefaultSliceConfig() {
+        var config = AetherConfig.forEnvironment(Environment.DOCKER);
+
+        assertThat(config.slice()).isNotNull();
+        assertThat(config.slice().repositories()).containsExactly(RepositoryType.LOCAL);
+    }
+
+    @Test
+    void builder_overridesSliceConfig() {
+        var customSlice = SliceConfig.withTypes(RepositoryType.BUILTIN, RepositoryType.LOCAL);
+        var config = AetherConfig.builder()
+            .environment(Environment.DOCKER)
+            .sliceConfig(customSlice)
+            .build();
+
+        assertThat(config.slice().repositories())
+            .containsExactly(RepositoryType.BUILTIN, RepositoryType.LOCAL);
+    }
+
+    @Test
+    void builder_usesDefaultSliceConfigWhenNotOverridden() {
+        var config = AetherConfig.builder()
+            .environment(Environment.DOCKER)
+            .build();
+
+        assertThat(config.slice()).isNotNull();
+        assertThat(config.slice().repositories()).containsExactly(RepositoryType.LOCAL);
+    }
 }

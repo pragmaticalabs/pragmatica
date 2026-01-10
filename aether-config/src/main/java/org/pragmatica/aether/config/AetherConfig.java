@@ -31,13 +31,15 @@ package org.pragmatica.aether.config;
  * @param docker     Docker-specific settings
  * @param kubernetes Kubernetes-specific settings
  * @param ttm        TTM (Tiny Time Mixers) predictive scaling configuration
+ * @param slice      Slice loading and repository configuration
  */
 public record AetherConfig(ClusterConfig cluster,
                            NodeConfig node,
                            TlsConfig tls,
                            DockerConfig docker,
                            KubernetesConfig kubernetes,
-                           TTMConfig ttm) {
+                           TTMConfig ttm,
+                           SliceConfig slice) {
     /**
      * Create configuration with defaults for specified environment.
      */
@@ -53,7 +55,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 env == Environment.KUBERNETES
                                 ? KubernetesConfig.defaults()
                                 : null,
-                                TTMConfig.disabled());
+                                TTMConfig.disabled(),
+                                SliceConfig.defaults());
     }
 
     /**
@@ -95,6 +98,7 @@ public record AetherConfig(ClusterConfig cluster,
         private DockerConfig dockerConfig;
         private KubernetesConfig kubernetesConfig;
         private TTMConfig ttmConfig;
+        private SliceConfig sliceConfig;
 
         public Builder environment(Environment environment) {
             this.environment = environment;
@@ -146,6 +150,11 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder sliceConfig(SliceConfig sliceConfig) {
+            this.sliceConfig = sliceConfig;
+            return this;
+        }
+
         public AetherConfig build() {
             // Start with environment defaults
             var base = AetherConfig.forEnvironment(environment);
@@ -185,7 +194,10 @@ public record AetherConfig(ClusterConfig cluster,
             var finalTtm = ttmConfig != null
                            ? ttmConfig
                            : TTMConfig.disabled();
-            return new AetherConfig(clusterConfig, nodeConfig, finalTls, finalDocker, finalK8s, finalTtm);
+            var finalSlice = sliceConfig != null
+                             ? sliceConfig
+                             : SliceConfig.defaults();
+            return new AetherConfig(clusterConfig, nodeConfig, finalTls, finalDocker, finalK8s, finalTtm, finalSlice);
         }
     }
 }

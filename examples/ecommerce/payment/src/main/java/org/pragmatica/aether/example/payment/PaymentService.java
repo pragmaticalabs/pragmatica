@@ -218,87 +218,83 @@ public interface PaymentService {
 
     // === Factory ===
     static PaymentService paymentService() {
-        return new PaymentServiceImpl();
-    }
-}
+        record paymentService(Map<String, PaymentResult> transactions, Random random) implements PaymentService {
+            private static final double DECLINE_RATE = 0.05;
+            private static final long FRAUD_CHECK_DELAY_MS = 100;
 
-class PaymentServiceImpl implements PaymentService {
-    private final Map<String, PaymentResult> transactions = new ConcurrentHashMap<>();
-    private final Random random = new Random();
+            @Override
+            public Promise<PaymentResult> processPayment(ProcessPaymentRequest request) {
+                return simulateFraudCheck()
+                                         .flatMap(_ -> validatePaymentAmount(request.amount()))
+                                         .flatMap(_ -> simulateAuthorization(request));
+            }
 
-    private static final double DECLINE_RATE = 0.05;
-    private static final long FRAUD_CHECK_DELAY_MS = 100;
+            @Override
+            public Promise<RefundResult> processRefund(RefundRequest request) {
+                return Option.option(transactions.get(request.transactionId()))
+                             .toResult(new PaymentError.TransactionNotFound(request.transactionId()))
+                             .flatMap(original -> validateRefundAmount(request, original))
+                             .map(refund -> RefundResult.refundResult(request.transactionId(),
+                                                                      refund))
+                             .async();
+            }
 
-    @Override
-    public Promise<PaymentResult> processPayment(ProcessPaymentRequest request) {
-        return simulateFraudCheck()
-                                 .flatMap(_ -> validatePaymentAmount(request.amount()))
-                                 .flatMap(_ -> simulateAuthorization(request));
-    }
+            private Result<Money> validateRefundAmount(RefundRequest request, PaymentResult original) {
+                var refundAmount = request.partialAmount()
+                                          .or(original.amount());
+                return original.amount()
+                               .isGreaterThan(refundAmount)
+                               .flatMap(isGreater -> isGreater || refundAmount.amount()
+                                                                              .equals(original.amount()
+                                                                                              .amount())
+                                                     ? Result.success(refundAmount)
+                                                     : new PaymentError.RefundExceedsOriginal(refundAmount,
+                                                                                              original.amount()).result());
+            }
 
-    @Override
-    public Promise<RefundResult> processRefund(RefundRequest request) {
-        return Option.option(transactions.get(request.transactionId()))
-                     .toResult(new PaymentError.TransactionNotFound(request.transactionId()))
-                     .flatMap(original -> validateRefundAmount(request, original))
-                     .map(refund -> RefundResult.refundResult(request.transactionId(),
-                                                              refund))
-                     .async();
-    }
+            private Promise<Unit> simulateFraudCheck() {
+                return Promise.lift(PaymentError.ProcessingFailed::new, this::performFraudCheckDelay);
+            }
 
-    private Result<Money> validateRefundAmount(RefundRequest request, PaymentResult original) {
-        var refundAmount = request.partialAmount()
-                                  .or(original.amount());
-        return original.amount()
-                       .isGreaterThan(refundAmount)
-                       .flatMap(isGreater -> isGreater || refundAmount.amount()
-                                                                      .equals(original.amount()
-                                                                                      .amount())
-                                             ? Result.success(refundAmount)
-                                             : new PaymentError.RefundExceedsOriginal(refundAmount,
-                                                                                      original.amount()).result());
-    }
+            private Unit performFraudCheckDelay() throws InterruptedException {
+                Thread.sleep(FRAUD_CHECK_DELAY_MS);
+                return Unit.unit();
+            }
 
-    private Promise<Unit> simulateFraudCheck() {
-        return Promise.lift(PaymentError.ProcessingFailed::new, this::performFraudCheckDelay);
-    }
+            private Promise<Money> validatePaymentAmount(Money amount) {
+                if (amount.isZero()) {
+                    return new PaymentError.InvalidAmount("Amount cannot be zero").promise();
+                }
+                if (amount.amount()
+                          .compareTo(BigDecimal.valueOf(50000)) > 0) {
+                    return new PaymentError.InvalidAmount("Amount exceeds maximum ($50,000)").promise();
+                }
+                return Promise.success(amount);
+            }
 
-    private Unit performFraudCheckDelay() throws InterruptedException {
-        Thread.sleep(FRAUD_CHECK_DELAY_MS);
-        return Unit.unit();
-    }
-
-    private Promise<Money> validatePaymentAmount(Money amount) {
-        if (amount.isZero()) {
-            return new PaymentError.InvalidAmount("Amount cannot be zero").promise();
+            private Promise<PaymentResult> simulateAuthorization(ProcessPaymentRequest request) {
+                if (random.nextDouble() < DECLINE_RATE) {
+                    return new PaymentError.Declined("Card declined by issuer").promise();
+                }
+                var cardNumber = request.paymentMethod()
+                                        .cardNumber();
+                if (cardNumber.endsWith("0000")) {
+                    return new PaymentError.Declined("Insufficient funds").promise();
+                }
+                if (cardNumber.endsWith("1111")) {
+                    return new PaymentError.Declined("Card expired").promise();
+                }
+                if (cardNumber.endsWith("2222")) {
+                    return new PaymentError.FraudSuspected().promise();
+                }
+                var result = PaymentResult.authorized(request.orderId(),
+                                                      request.amount(),
+                                                      request.paymentMethod())
+                                          .capture();
+                transactions.put(result.transactionId(), result);
+                return Promise.success(result);
+            }
         }
-        if (amount.amount()
-                  .compareTo(BigDecimal.valueOf(50000)) > 0) {
-            return new PaymentError.InvalidAmount("Amount exceeds maximum ($50,000)").promise();
-        }
-        return Promise.success(amount);
-    }
-
-    private Promise<PaymentResult> simulateAuthorization(ProcessPaymentRequest request) {
-        if (random.nextDouble() < DECLINE_RATE) {
-            return new PaymentError.Declined("Card declined by issuer").promise();
-        }
-        var cardNumber = request.paymentMethod()
-                                .cardNumber();
-        if (cardNumber.endsWith("0000")) {
-            return new PaymentError.Declined("Insufficient funds").promise();
-        }
-        if (cardNumber.endsWith("1111")) {
-            return new PaymentError.Declined("Card expired").promise();
-        }
-        if (cardNumber.endsWith("2222")) {
-            return new PaymentError.FraudSuspected().promise();
-        }
-        var result = PaymentResult.authorized(request.orderId(),
-                                              request.amount(),
-                                              request.paymentMethod())
-                                  .capture();
-        transactions.put(result.transactionId(), result);
-        return Promise.success(result);
+        return new paymentService(new ConcurrentHashMap<>(), new Random());
     }
 }

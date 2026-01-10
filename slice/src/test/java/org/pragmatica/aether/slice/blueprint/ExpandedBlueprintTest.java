@@ -15,10 +15,10 @@ class ExpandedBlueprintTest {
         BlueprintId.blueprintId("my-app:1.0.0")
                    .flatMap(id ->
                                     Artifact.artifact("org.example:slice:1.0.0")
-                                            .map(artifact -> ResolvedSlice.resolvedSlice(artifact, 2, false))
+                                            .flatMap(artifact -> ResolvedSlice.resolvedSlice(artifact, 2, false))
                                             .flatMap(resolved ->
                                                              Artifact.artifact("org.example:dependency:2.0.0")
-                                                                     .map(depArtifact -> ResolvedSlice.resolvedSlice(
+                                                                     .flatMap(depArtifact -> ResolvedSlice.resolvedSlice(
                                                                              depArtifact,
                                                                              1,
                                                                              true))

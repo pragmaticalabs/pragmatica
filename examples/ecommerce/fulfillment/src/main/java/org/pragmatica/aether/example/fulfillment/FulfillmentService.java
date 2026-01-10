@@ -190,90 +190,93 @@ public interface FulfillmentService {
 
     // === Factory ===
     static FulfillmentService fulfillmentService() {
-        return new FulfillmentServiceImpl();
-    }
-}
+        record fulfillmentService(Map<String, Shipment> shipments) implements FulfillmentService {
+            private static final Set<String> NO_SAME_DAY_STATES = Set.of("AK", "HI", "PR", "VI");
+            private static final BigDecimal FREE_SHIPPING_THRESHOLD = BigDecimal.valueOf(100);
 
-class FulfillmentServiceImpl implements FulfillmentService {
-    private final Map<String, Shipment> shipments = new ConcurrentHashMap<>();
+            fulfillmentService() {
+                this(new ConcurrentHashMap<>());
+            }
 
-    private static final Set<String> NO_SAME_DAY_STATES = Set.of("AK", "HI", "PR", "VI");
-    private static final BigDecimal FREE_SHIPPING_THRESHOLD = BigDecimal.valueOf(100);
+            @Override
+            public Promise<ShippingQuote> calculateShipping(CalculateShippingRequest request) {
+                var options = calculateAvailableOptions(request.items(), request.destination());
+                return Promise.success(ShippingQuote.quote(options));
+            }
 
-    @Override
-    public Promise<ShippingQuote> calculateShipping(CalculateShippingRequest request) {
-        var options = calculateAvailableOptions(request.items(), request.destination());
-        return Promise.success(ShippingQuote.quote(options));
-    }
+            @Override
+            public Promise<Shipment> createShipment(CreateShipmentRequest request) {
+                if (request.shippingOption() == ShippingOption.SAME_DAY && NO_SAME_DAY_STATES.contains(request.shippingAddress()
+                                                                                                              .state()
+                                                                                                              .toUpperCase())) {
+                    return new FulfillmentError.SameDayNotAvailable(request.shippingAddress()
+                                                                           .state()).promise();
+                }
+                var shipment = Shipment.shipment(request.orderId(), request.shippingAddress(), request.shippingOption());
+                shipments.put(shipment.trackingNumber(), shipment);
+                return Promise.success(shipment);
+            }
 
-    @Override
-    public Promise<Shipment> createShipment(CreateShipmentRequest request) {
-        if (request.shippingOption() == ShippingOption.SAME_DAY && NO_SAME_DAY_STATES.contains(request.shippingAddress()
-                                                                                                      .state()
-                                                                                                      .toUpperCase())) {
-            return new FulfillmentError.SameDayNotAvailable(request.shippingAddress()
-                                                                   .state()).promise();
+            @Override
+            public Promise<TrackingInfo> trackShipment(TrackShipmentRequest request) {
+                return Option.option(shipments.get(request.trackingNumber()))
+                             .toResult(new FulfillmentError.ShipmentNotFound(request.trackingNumber()))
+                             .map(TrackingInfo::trackingInfo)
+                             .async();
+            }
+
+            private List<ShippingQuote.ShippingOptionQuote> calculateAvailableOptions(List<LineItem> items,
+                                                                                      Address destination) {
+                var itemValue = calculateItemValue(items);
+                var isFreeShippingEligible = itemValue.compareTo(FREE_SHIPPING_THRESHOLD) >= 0;
+                return Arrays.stream(ShippingOption.values())
+                             .filter(option -> isOptionAvailable(option, destination))
+                             .map(option -> createQuote(option, items, isFreeShippingEligible))
+                             .toList();
+            }
+
+            private boolean isOptionAvailable(ShippingOption option, Address destination) {
+                return option != ShippingOption.SAME_DAY || !NO_SAME_DAY_STATES.contains(destination.state()
+                                                                                                    .toUpperCase());
+            }
+
+            private ShippingQuote.ShippingOptionQuote createQuote(ShippingOption option,
+                                                                  List<LineItem> items,
+                                                                  boolean freeShippingEligible) {
+                var cost = calculateShippingCost(option, items, freeShippingEligible);
+                var estimatedDelivery = Instant.now()
+                                               .plus(option.estimatedDelivery()
+                                                           .duration());
+                return new ShippingQuote.ShippingOptionQuote(option, cost, estimatedDelivery);
+            }
+
+            private BigDecimal calculateItemValue(List<LineItem> items) {
+                return items.stream()
+                            .map(item -> BigDecimal.valueOf(item.quantity()
+                                                                .value() * 50L))
+                            .reduce(BigDecimal.ZERO, BigDecimal::add);
+            }
+
+            private Money calculateShippingCost(ShippingOption option,
+                                                List<LineItem> items,
+                                                boolean freeShippingEligible) {
+                if (option == ShippingOption.STANDARD && freeShippingEligible) {
+                    return Money.ZERO_USD;
+                }
+                var baseCost = option.cost();
+                var totalItems = items.stream()
+                                      .mapToInt(i -> i.quantity()
+                                                      .value())
+                                      .sum();
+                if (totalItems > 10) {
+                    var surchargeAmount = BigDecimal.valueOf(totalItems - 10)
+                                                    .multiply(BigDecimal.valueOf(0.5));
+                    return baseCost.add(new Money(surchargeAmount, Money.USD))
+                                   .or(baseCost);
+                }
+                return baseCost;
+            }
         }
-        var shipment = Shipment.shipment(request.orderId(), request.shippingAddress(), request.shippingOption());
-        shipments.put(shipment.trackingNumber(), shipment);
-        return Promise.success(shipment);
-    }
-
-    @Override
-    public Promise<TrackingInfo> trackShipment(TrackShipmentRequest request) {
-        return Option.option(shipments.get(request.trackingNumber()))
-                     .toResult(new FulfillmentError.ShipmentNotFound(request.trackingNumber()))
-                     .map(TrackingInfo::trackingInfo)
-                     .async();
-    }
-
-    private List<ShippingQuote.ShippingOptionQuote> calculateAvailableOptions(List<LineItem> items,
-                                                                              Address destination) {
-        var itemValue = calculateItemValue(items);
-        var isFreeShippingEligible = itemValue.compareTo(FREE_SHIPPING_THRESHOLD) >= 0;
-        return Arrays.stream(ShippingOption.values())
-                     .filter(option -> isOptionAvailable(option, destination))
-                     .map(option -> createQuote(option, items, isFreeShippingEligible))
-                     .toList();
-    }
-
-    private boolean isOptionAvailable(ShippingOption option, Address destination) {
-        return option != ShippingOption.SAME_DAY || !NO_SAME_DAY_STATES.contains(destination.state()
-                                                                                            .toUpperCase());
-    }
-
-    private ShippingQuote.ShippingOptionQuote createQuote(ShippingOption option,
-                                                          List<LineItem> items,
-                                                          boolean freeShippingEligible) {
-        var cost = calculateShippingCost(option, items, freeShippingEligible);
-        var estimatedDelivery = Instant.now()
-                                       .plus(option.estimatedDelivery()
-                                                   .duration());
-        return new ShippingQuote.ShippingOptionQuote(option, cost, estimatedDelivery);
-    }
-
-    private BigDecimal calculateItemValue(List<LineItem> items) {
-        return items.stream()
-                    .map(item -> BigDecimal.valueOf(item.quantity()
-                                                        .value() * 50L))
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-    }
-
-    private Money calculateShippingCost(ShippingOption option, List<LineItem> items, boolean freeShippingEligible) {
-        if (option == ShippingOption.STANDARD && freeShippingEligible) {
-            return Money.ZERO_USD;
-        }
-        var baseCost = option.cost();
-        var totalItems = items.stream()
-                              .mapToInt(i -> i.quantity()
-                                              .value())
-                              .sum();
-        if (totalItems > 10) {
-            var surchargeAmount = BigDecimal.valueOf(totalItems - 10)
-                                            .multiply(BigDecimal.valueOf(0.5));
-            return baseCost.add(new Money(surchargeAmount, Money.USD))
-                           .or(baseCost);
-        }
-        return baseCost;
+        return new fulfillmentService();
     }
 }

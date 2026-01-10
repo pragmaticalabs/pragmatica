@@ -71,11 +71,8 @@ public class SharedLibraryClassLoader extends URLClassLoader {
      */
     public Option<CompatibilityResult> checkCompatibility(String groupId, String artifactId, VersionPattern required) {
         var key = artifactKey(groupId, artifactId);
-        var loadedVersion = loadedArtifacts.get(key);
-        if (loadedVersion == null) {
-            return Option.empty();
-        }
-        return Option.some(CompatibilityResult.check(loadedVersion, required));
+        return Option.option(loadedArtifacts.get(key))
+                     .map(loadedVersion -> CompatibilityResult.check(loadedVersion, required));
     }
 
     /**

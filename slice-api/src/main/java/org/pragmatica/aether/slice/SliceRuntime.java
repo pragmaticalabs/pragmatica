@@ -27,25 +27,6 @@ public final class SliceRuntime {
 
     /**
      * Get the SliceInvoker for inter-slice communication.
-     * <p>
-     * <b>Note:</b> This method throws an exception if the invoker is not configured.
-     * Prefer using {@link #getSliceInvoker()} which returns a Result instead.
-     *
-     * @return the configured SliceInvoker
-     * @throws IllegalStateException if SliceInvoker not configured
-     * @deprecated Use {@link #getSliceInvoker()} for JBCT-compliant error handling
-     */
-    @Deprecated(since = "0.8.0", forRemoval = true)
-    public static SliceInvokerFacade sliceInvoker() {
-        var invoker = sliceInvoker;
-        if (invoker == null) {
-            throw new IllegalStateException(SliceRuntimeError.InvokerNotConfigured.INSTANCE.message());
-        }
-        return invoker;
-    }
-
-    /**
-     * Get the SliceInvoker for inter-slice communication.
      *
      * @return Result containing the SliceInvoker, or failure if not configured
      */

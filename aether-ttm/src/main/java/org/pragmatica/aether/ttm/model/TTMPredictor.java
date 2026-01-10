@@ -3,6 +3,9 @@ package org.pragmatica.aether.ttm.model;
 import org.pragmatica.aether.config.TTMConfig;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+
+import static org.pragmatica.lang.Unit.unit;
 
 /**
  * Interface for TTM model inference.
@@ -32,7 +35,7 @@ public interface TTMPredictor {
     /**
      * Close and release resources.
      */
-    void close();
+    Unit close();
 
     /**
      * Create predictor from config.
@@ -73,5 +76,7 @@ final class NoOpTTMPredictor implements TTMPredictor {
     }
 
     @Override
-    public void close() {}
+    public Unit close() {
+        return unit();
+    }
 }

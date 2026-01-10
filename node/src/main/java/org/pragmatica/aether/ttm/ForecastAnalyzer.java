@@ -118,19 +118,19 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
         int events = recent.stream()
                            .mapToInt(MinuteAggregate::eventCount)
                            .sum() / recent.size();
-        return new MinuteAggregate(System.currentTimeMillis(),
-                                   avgCpu,
-                                   avgHeap,
-                                   avgLag,
-                                   avgLatency,
-                                   totalInvocations,
-                                   totalGc,
-                                   p50,
-                                   p95,
-                                   p99,
-                                   errorRate,
-                                   events,
-                                   recent.size());
+        return MinuteAggregate.minuteAggregate(System.currentTimeMillis(),
+                                               avgCpu,
+                                               avgHeap,
+                                               avgLag,
+                                               avgLatency,
+                                               totalInvocations,
+                                               totalGc,
+                                               p50,
+                                               p95,
+                                               p99,
+                                               errorRate,
+                                               events,
+                                               recent.size());
     }
 
     private ScalingRecommendation determineRecommendation(MinuteAggregate current,

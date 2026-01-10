@@ -46,7 +46,7 @@ public class CrashStopFailuresIT {
      * Expected: Round completes; client reply delivered
      */
     @Test
-    void proposerCrashesAfterBroadcast() {
+    void apply_proposerCrashesAfterBroadcast_commandCommits() {
         log.info("Starting proposer crashes after broadcast test");
 
         // First, establish some baseline state
@@ -106,7 +106,7 @@ public class CrashStopFailuresIT {
      * Expected: Round completes if quorum present; recovering node resyncs the sequence and digest
      */
     @Test
-    void replicaCrashesPreCommit() {
+    void apply_replicaCrashesPreCommit_commandCommits() {
         log.info("Starting replica crashes pre-COMMIT test");
 
         // Pick a node to crash (not the proposer)
@@ -229,7 +229,7 @@ public class CrashStopFailuresIT {
      * Expected: Cluster maintains safety and liveness
      */
     @Test
-    void crashOfFReplicasSimultaneously() {
+    void apply_fReplicasCrashSimultaneously_commandCommits() {
         log.info("Starting crash of f replicas simultaneously test");
 
         // For a 5-node cluster, f = 2 (can tolerate 2 failures while maintaining the quorum of 3)

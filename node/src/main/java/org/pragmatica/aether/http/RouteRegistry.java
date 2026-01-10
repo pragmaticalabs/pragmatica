@@ -211,7 +211,7 @@ class RouteRegistryImpl implements RouteRegistry {
 
     private void addRoute(RouteKey key, RouteValue value) {
         // Create the pattern from "METHOD:path"
-        PathPattern.compile(value.httpMethod() + ":" + value.pathPattern())
+        PathPattern.pathPattern(value.httpMethod() + ":" + value.pathPattern())
                    .onSuccess(pattern -> {
                                   var registered = new RegisteredRoute(key, value, pattern);
                                   routes.put(key, registered);
@@ -245,7 +245,8 @@ class RouteRegistryImpl implements RouteRegistry {
                                                                                                     .map(Binding::param)
                                                                                                     .toList()),
                                       routeValue.bindings());
-                return matchOpt.map(vars -> MatchResult.matchResult(route, vars));
+                return matchOpt.flatMap(vars -> MatchResult.matchResult(route, vars)
+                                                           .option());
             }
         }
         return Option.none();

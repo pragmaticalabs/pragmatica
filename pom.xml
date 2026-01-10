@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>aether</artifactId>
-    <version>0.7.2</version>
+    <version>0.7.3</version>
     <packaging>pom</packaging>
     <name>Pragmatica Aether Distributed Runtime</name>
     <description>AI-driven distributed runtime environment for Java applications</description>
@@ -51,8 +51,8 @@
         <netty.version>4.2.9.Final</netty.version>
         <kryo.version>5.6.2</kryo.version>
         <fury-core.version>0.10.2</fury-core.version>
-        <jbct.version>0.4.6</jbct.version>
-        <jbct.skip>true</jbct.skip>
+        <jbct.version>0.4.7</jbct.version>
+        <jbct.skip>false</jbct.skip>
         <micrometer.version>1.16.1</micrometer.version>
         <onnxruntime.version>1.23.2</onnxruntime.version>
     </properties>
@@ -369,7 +369,10 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
             </plugin>
-            <!-- jbct-maven-plugin disabled due to bug in 0.4.6/0.4.7 -->
+            <plugin>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-maven-plugin</artifactId>
+            </plugin>
         </plugins>
     </build>
 </project>

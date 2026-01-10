@@ -23,12 +23,14 @@ In the current Aether runtime, inter-slice communication relies on string-based 
 
 ```java
 // Current approach - no compile-time type safety
-SliceRuntime.sliceInvoker().invokeAndWait(
-    "org.example:inventory-service:1.0.0",  // artifact as string
-    "checkStock",                            // method name as string
-    request,                                 // untyped request
-    StockAvailability.class                  // response type
-);
+SliceRuntime.getSliceInvoker()
+    .async()
+    .flatMap(inv -> inv.invokeAndWait(
+        "org.example:inventory-service:1.0.0",  // artifact as string
+        "checkStock",                            // method name as string
+        request,                                 // untyped request
+        StockAvailability.class                  // response type
+    ));
 ```
 
 This approach has several drawbacks:
@@ -1178,17 +1180,17 @@ Slice B requests: jackson:^2.16.0 → conflict! loads 2.16.0 into B's classloade
 public record PlaceOrderSlice() implements Slice {
     private static final String INVENTORY = "org.example:inventory-service:1.0.0";
 
-    private SliceInvokerFacade invoker() {
-        return SliceRuntime.sliceInvoker();
+    private Promise<SliceInvokerFacade> invoker() {
+        return SliceRuntime.getSliceInvoker().async();
     }
 
     public Promise<OrderResult> placeOrder(PlaceOrderRequest request) {
-        return invoker().invokeAndWait(
+        return invoker().flatMap(inv -> inv.invokeAndWait(
             INVENTORY,
             "checkStock",
             new CheckStockRequest(request.productId(), request.quantity()),
             StockAvailability.class
-        ).flatMap(stock -> {
+        )).flatMap(stock -> {
             // ...
         });
     }
@@ -1278,7 +1280,7 @@ record PlaceOrderImpl(InventoryService inventory) implements PlaceOrder {
    - Add dependency collector
 
 5. **Remove manual invocation code**
-   - Remove `SliceRuntime.sliceInvoker()` calls
+   - Remove `SliceRuntime.getSliceInvoker()` calls
    - Use injected interface methods
 
 6. **Update dependency file**

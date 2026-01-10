@@ -52,7 +52,7 @@ public interface LocalRepository extends Repository {
                 return Result.lift(Causes::fromThrowable,
                                    () -> jarPath.toUri()
                                                 .toURL())
-                             .map(url -> location(artifact, url));
+                             .flatMap(url -> location(artifact, url));
             }
 
             private Path resolvePath(Artifact artifact, String packaging) {

@@ -11,6 +11,7 @@ import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
 
 import java.util.HashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.Channel;
@@ -72,7 +73,7 @@ class HttpRouterImpl implements HttpRouter {
     private final MultiThreadIoEventLoopGroup bossGroup;
     private final MultiThreadIoEventLoopGroup workerGroup;
     private final Option<SslContext> sslContext;
-    private Channel serverChannel;
+    private final AtomicReference<Channel> serverChannel = new AtomicReference<>();
 
     HttpRouterImpl(RouterConfig config,
                    RouteRegistry routeRegistry,
@@ -113,7 +114,7 @@ class HttpRouterImpl implements HttpRouter {
                                    bootstrap.bind(config.port())
                                             .addListener(future -> {
                                                              if (future.isSuccess()) {
-                                                                 serverChannel = ((io.netty.channel.ChannelFuture) future).channel();
+                                                                 serverChannel.set(((io.netty.channel.ChannelFuture) future).channel());
                                                                  var protocol = sslContext.isPresent()
                                                                                 ? "HTTPS"
                                                                                 : "HTTP";
@@ -134,9 +135,10 @@ class HttpRouterImpl implements HttpRouter {
     @Override
     public Promise<Unit> stop() {
         return Promise.promise(promise -> {
-                                   if (serverChannel != null) {
-                                       serverChannel.close()
-                                                    .addListener(_ -> shutdownEventLoops(promise));
+                                   var channel = serverChannel.get();
+                                   if (channel != null) {
+                                       channel.close()
+                                              .addListener(_ -> shutdownEventLoops(promise));
                                    } else {
                                        shutdownEventLoops(promise);
                                    }

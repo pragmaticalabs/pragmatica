@@ -1,5 +1,18 @@
 # Pragmatica Aether Distributed Runtime - Development Guide
 
+## Agent Policy (MANDATORY)
+
+**ALWAYS use `jbct-coder` agent for ALL coding and fixing tasks.**
+
+This includes:
+- Writing new code (classes, methods, tests)
+- Fixing bugs and compilation errors
+- Refactoring existing code
+- Implementing features from plans
+- Any task that involves modifying Java source files
+
+Do NOT write code directly - delegate to `jbct-coder` agent.
+
 ## Project Overview
 
 **Pragmatica Aether Distributed Runtime** (v0.7.2) is an AI-driven distributed runtime environment for Java that enables predictive scaling,
@@ -16,6 +29,27 @@ intelligent orchestration, and seamless multi-cloud deployment without requiring
 - **Atomic inter-slice calls**: Reliable communication guaranteed by runtime
 - **Convergence model**: Runtime continuously reconciles actual state with desired state
 - **Multi-cloud ready**: AI decides deployment across clouds/regions
+
+### Distributed Communication Guarantee
+
+**CRITICAL DESIGN PRINCIPLE:** Every inter-slice call will **EVENTUALLY SUCCEED** if the cluster is alive.
+
+The runtime (SliceInvoker) handles all communication complexity:
+- Multi-instance failover (tries all available nodes)
+- Exponential backoff retry
+- Automatic rollback on persistent failure
+- Request ID propagation for tracing
+
+**Slices are intentionally NOT prepared for communication errors.** This is by design:
+- Business logic stays clean (no try-catch for network errors)
+- Runtime handles retries, failover, and recovery transparently
+- If a call fails after all retries, the cluster has a systemic problem (alerts trigger, rollback may occur)
+
+This means:
+- **DO NOT** add circuit breakers in slice code
+- **DO NOT** handle `CommunicationException` in business logic
+- **DO** trust that `Promise<T>` from inter-slice calls will resolve if cluster is healthy
+- **DO** design slices to be idempotent (calls may be retried)
 
 ## Module Structure
 
@@ -862,12 +896,20 @@ cd examples && mvn test
 - **ForgeServer**: `forge/src/main/java/org/pragmatica/aether/forge/ForgeServer.java` - Aether Forge main entry
 - **ForgeCluster**: `forge/src/main/java/org/pragmatica/aether/forge/ForgeCluster.java` - Forge cluster management
 - **ForgeApiHandler**: `forge/src/main/java/org/pragmatica/aether/forge/ForgeApiHandler.java` - Forge REST API
+- **ArtifactStore**: `infra-services/artifact-repo/src/main/java/org/pragmatica/aether/infra/artifact/ArtifactStore.java` - DHT-backed artifact storage
+- **BuiltinRepository**: `node/src/main/java/org/pragmatica/aether/repository/BuiltinRepository.java` - Repository adapter for ArtifactStore
+- **RepositoryFactory**: `node/src/main/java/org/pragmatica/aether/repository/RepositoryFactory.java` - Creates Repository instances from config
+- **ArtifactDeploymentTracker**: `node/src/main/java/org/pragmatica/aether/metrics/artifact/ArtifactDeploymentTracker.java` - Tracks deployed artifacts
+- **ArtifactMetricsCollector**: `node/src/main/java/org/pragmatica/aether/metrics/artifact/ArtifactMetricsCollector.java` - Storage and deployment metrics
+- **SliceConfig**: `aether-config/src/main/java/org/pragmatica/aether/config/SliceConfig.java` - Repository configuration
+- **RepositoryType**: `aether-config/src/main/java/org/pragmatica/aether/config/RepositoryType.java` - Repository type enum (LOCAL, BUILTIN)
 
 ### Documentation
 
 - **Architecture**: `docs/architecture-overview.md` - Comprehensive architecture documentation
 - **High-level**: `docs/aether-high-level-overview.md` - Project overview and concepts
 - **Infrastructure Services**: `docs/infrastructure-services.md` - Platform services (artifact repo, caching, etc.)
+- **Artifact Repository**: `docs/artifact-repository.md` - Artifact storage and deployment guide
 - **Slice lifecycle**: `docs/slice-lifecycle.md` - Detailed lifecycle documentation
 - **Cluster manager**: `docs/cluster-deployment-manager.md` - ClusterDeploymentManager design
 - **Invocation metrics**: `docs/invocation-metrics.md` - Per-method metrics and slow call capture
