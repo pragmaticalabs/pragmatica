@@ -7,7 +7,7 @@ import java.util.List;
  * Test class literals for various types including primitive arrays.
  */
 public interface ClassLiterals {
-    static void configure(java.util.function.Consumer<Class< ? >> consumer) {
+    static void configure(java.util.function.Consumer<Class< ?>> consumer) {
         // Primitive class literals
         consumer.accept(int.class);
         consumer.accept(byte.class);

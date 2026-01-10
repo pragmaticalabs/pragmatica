@@ -37,21 +37,19 @@ class CstLinterTest {
     }
 
     private void assertHasRule(List<Diagnostic> diagnostics, String ruleId) {
-        assertTrue(
-        diagnostics.stream()
-                   .anyMatch(d -> d.ruleId()
-                                   .equals(ruleId)),
-        () -> "Expected rule " + ruleId + " but found: " + diagnostics.stream()
-                                                                     .map(Diagnostic::ruleId)
-                                                                     .toList());
+        assertTrue(diagnostics.stream()
+                              .anyMatch(d -> d.ruleId()
+                                              .equals(ruleId)),
+                   () -> "Expected rule " + ruleId + " but found: " + diagnostics.stream()
+                                                                                 .map(Diagnostic::ruleId)
+                                                                                 .toList());
     }
 
     private void assertNoRule(List<Diagnostic> diagnostics, String ruleId) {
-        assertFalse(
-        diagnostics.stream()
-                   .anyMatch(d -> d.ruleId()
-                                   .equals(ruleId)),
-        () -> "Did not expect rule " + ruleId + " but it was triggered");
+        assertFalse(diagnostics.stream()
+                               .anyMatch(d -> d.ruleId()
+                                               .equals(ruleId)),
+                    () -> "Did not expect rule " + ruleId + " but it was triggered");
     }
 
     // ========== JBCT-RET-* Return Kind Rules ==========

@@ -2,6 +2,7 @@ package org.pragmatica.jbct.lint.cst;
 
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.lang.Option;
 
 import java.util.*;
 import java.util.regex.Pattern;
@@ -64,11 +65,11 @@ public final class SuppressionExtractor {
                 continue;
             }
             // Find the scope (declaration that this annotation applies to)
-            var scope = findAnnotatedDeclaration(root, annotation);
-            if (scope.isEmpty()) {
+            var scopeOpt = findAnnotatedDeclaration(root, annotation);
+            if (scopeOpt.isEmpty()) {
                 continue;
             }
-            var scopeNode = scope.get();
+            var scopeNode = scopeOpt.unwrap();
             var startLine = startLine(scopeNode);
             var endLine = endLine(scopeNode);
             suppressions.add(new Suppression(ruleIds, startLine, endLine));
@@ -105,17 +106,16 @@ public final class SuppressionExtractor {
         return ruleIds;
     }
 
-    private static Optional<CstNode> findAnnotatedDeclaration(CstNode root, CstNode annotation) {
+    private static Option<CstNode> findAnnotatedDeclaration(CstNode root, CstNode annotation) {
         // Walk up the tree from the annotation to find what it annotates
         // Annotations can appear on: TypeDecl, ClassMember, Param, LocalVar, etc.
         return findAncestorPath(root, annotation)
-                               .map(path -> findDeclarationInPath(path))
-                               .fold(Optional::empty, v -> v);
+                               .flatMap(SuppressionExtractor::findDeclarationInPath);
     }
 
-    private static Optional<CstNode> findDeclarationInPath(List<CstNode> path) {
+    private static Option<CstNode> findDeclarationInPath(List<CstNode> path) {
         // Walk up the path looking for a declaration
-        for (int i = path.size() - 1; i >= 0; i-- ) {
+        for (int i = path.size() - 1; i >= 0; i--) {
             var node = path.get(i);
             var rule = node.rule();
             // Type declarations
@@ -124,22 +124,22 @@ public final class SuppressionExtractor {
             rule instanceof RuleId.InterfaceDecl ||
             rule instanceof RuleId.EnumDecl ||
             rule instanceof RuleId.RecordDecl) {
-                return Optional.of(node);
+                return Option.some(node);
             }
             // Class members
             if (rule instanceof RuleId.ClassMember ||
             rule instanceof RuleId.MethodDecl ||
             rule instanceof RuleId.FieldDecl ||
             rule instanceof RuleId.ConstructorDecl) {
-                return Optional.of(node);
+                return Option.some(node);
             }
             // Local declarations
             if (rule instanceof RuleId.LocalVar ||
             rule instanceof RuleId.Param) {
-                return Optional.of(node);
+                return Option.some(node);
             }
         }
-        return Optional.empty();
+        return Option.none();
     }
 
     private static int endLine(CstNode node) {

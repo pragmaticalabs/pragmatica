@@ -1,5 +1,11 @@
 # JBCT CLI Project
 
+## AI Agent Policy
+
+**MANDATORY**: Use ONLY the `jbct-coder` agent for ALL coding and fixing tasks in this project. This ensures code follows JBCT patterns and conventions.
+
+To invoke: Use the `/jbct` skill or spawn the `jbct-coder` agent via the Task tool.
+
 ## Project Overview
 CLI tool and Maven plugin for JBCT (Java Backend Coding Technology) code formatting and linting.
 
@@ -53,9 +59,9 @@ JBCT-VO-01 = "warning"
 
 ## Key Dependencies
 
-- **pragmatica-lite:core** (0.9.4) - Result, Option, Promise types
-- **pragmatica-lite:http-client** (0.9.4) - HTTP operations for upgrade/update
-- **pragmatica-lite:toml** (0.9.4) - TOML configuration parsing
+- **pragmatica-lite:core** (0.9.10) - Result, Option, Promise types
+- **pragmatica-lite:http-client** (0.9.10) - HTTP operations for upgrade/update
+- **pragmatica-lite:toml** (0.9.10) - TOML configuration parsing
 - **java-peglib** - PEG parser generator for CST-based parsing
 - **picocli** - CLI framework
 
@@ -151,7 +157,7 @@ The CST preserves all source information including whitespace and comments, enab
 ### Linter Components (jbct-core/src/main/java/org/pragmatica/jbct/lint/cst/)
 - `CstLinter` - CST-based linter entry point
 - `CstLintRule` - Interface for CST-based lint rules
-- `rules/` - 36 CST-based lint rule implementations
+- `rules/` - 37 CST-based lint rule implementations
 
 ### HTTP Client Pattern
 Uses pragmatica-lite http-client:

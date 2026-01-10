@@ -63,8 +63,7 @@ public class LintCommand implements Callable<Integer> {
     @Override
     public Integer call() {
         // Load configuration
-        var config = ConfigLoader.load(
-        Option.option(configPath), Option.none());
+        var config = ConfigLoader.load(Option.option(configPath), Option.none());
         var context = createContext(config);
         var linter = JbctLinter.jbctLinter(context);
         var filesToProcess = collectJavaFiles();
@@ -123,15 +122,15 @@ public class LintCommand implements Callable<Integer> {
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
-                                 switch (d.severity()) {
+                                     switch (d.severity()) {
             case ERROR -> errors.incrementAndGet();
             case WARNING -> warnings.incrementAndGet();
             case INFO -> infos.incrementAndGet();
         }
-                             }
+                                 }
                                  if (verbose && diagnostics.isEmpty()) {
-                                 System.out.println("  ✓ " + file);
-                             }
+                                     System.out.println("  ✓ " + file);
+                                 }
                              })
                   .onFailure(cause -> {
                                  parseErrors.incrementAndGet();
@@ -160,7 +159,7 @@ public class LintCommand implements Callable<Integer> {
     private void printJsonResults(List<Diagnostic> diagnostics) {
         var sb = new StringBuilder();
         sb.append("[\n");
-        for (int i = 0; i < diagnostics.size(); i++ ) {
+        for (int i = 0; i < diagnostics.size(); i++) {
             var d = diagnostics.get(i);
             sb.append("  {\n");
             sb.append("    \"ruleId\": \"%s\",\n".formatted(d.ruleId()));
@@ -195,7 +194,7 @@ public class LintCommand implements Callable<Integer> {
         sb.append("      }\n");
         sb.append("    },\n");
         sb.append("    \"results\": [\n");
-        for (int i = 0; i < diagnostics.size(); i++ ) {
+        for (int i = 0; i < diagnostics.size(); i++) {
             var d = diagnostics.get(i);
             sb.append("      {\n");
             sb.append("        \"ruleId\": \"%s\",\n".formatted(d.ruleId()));
@@ -243,7 +242,7 @@ public class LintCommand implements Callable<Integer> {
         }
         if (errors == 0 && warnings == 0 && infos == 0) {
             System.out.println("✓ All " + filesChecked + " file(s) passed JBCT compliance check.");
-        }else {
+        } else {
             System.out.println("Checked " + filesChecked + " file(s): " + errors + " error(s), " + warnings
                                + " warning(s), " + infos + " info(s)");
         }

@@ -47,9 +47,9 @@ public class CstChainLengthRule implements CstLintRule {
             // Check if followed by method call pattern
             int nextParen = stmtText.indexOf("(", idx);
             if (nextParen > idx && nextParen - idx < 50) {
-                count++ ;
+                count++;
             }
-            idx++ ;
+            idx++;
         }
         return count;
     }

@@ -81,7 +81,7 @@ public class CstNestedOperationsRule implements CstLintRule {
             var opPattern = Pattern.compile("\\." + op + "\\s*\\(");
             var opMatcher = opPattern.matcher(body);
             while (opMatcher.find()) {
-                opCount++ ;
+                opCount++;
                 if (opCount > 1) {
                     return true;
                 }

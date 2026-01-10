@@ -25,11 +25,22 @@ public record JbctConfig(FormatterConfig formatter,
      * Default configuration.
      * Note: slicePackages is empty by default - must be configured for JBCT-SLICE-01 rule.
      */
-    public static final JbctConfig DEFAULT = new JbctConfig(FormatterConfig.DEFAULT,
-                                                            LintConfig.DEFAULT,
-                                                            List.of("src/main/java"),
-                                                            List.of("**.usecase.**", "**.domain.**"),
-                                                            List.of());
+    public static final JbctConfig DEFAULT = jbctConfig(FormatterConfig.DEFAULT,
+                                                        LintConfig.DEFAULT,
+                                                        List.of("src/main/java"),
+                                                        List.of("**.usecase.**", "**.domain.**"),
+                                                        List.of());
+
+    /**
+     * Factory method for creating JbctConfig.
+     */
+    public static JbctConfig jbctConfig(FormatterConfig formatter,
+                                        LintConfig lint,
+                                        List<String> sourceDirectories,
+                                        List<String> businessPackages,
+                                        List<String> slicePackages) {
+        return new JbctConfig(formatter, lint, sourceDirectories, businessPackages, slicePackages);
+    }
 
     /**
      * Create config from parsed TOML document.
@@ -77,7 +88,7 @@ public record JbctConfig(FormatterConfig formatter,
                 }
             }
         }
-        var lintConfig = new LintConfig(Map.copyOf(ruleSeverities), Set.copyOf(disabledRules), failOnWarning);
+        var lintConfig = LintConfig.lintConfig(Map.copyOf(ruleSeverities), Set.copyOf(disabledRules), failOnWarning);
         // Project section
         var sourceDirectories = toml.getStringList("project", "sourceDirectories")
                                     .or(List.of("src/main/java"));
@@ -86,7 +97,7 @@ public record JbctConfig(FormatterConfig formatter,
         // Slice packages - empty by default, must be explicitly configured
         var slicePackages = toml.getStringList("lint", "slicePackages")
                                 .or(List.of());
-        return new JbctConfig(formatterConfig, lintConfig, sourceDirectories, businessPackages, slicePackages);
+        return jbctConfig(formatterConfig, lintConfig, sourceDirectories, businessPackages, slicePackages);
     }
 
     /**
@@ -121,7 +132,7 @@ public record JbctConfig(FormatterConfig formatter,
         if (!other.slicePackages.isEmpty()) {
             mergedSlicePackages = other.slicePackages;
         }
-        return new JbctConfig(mergedFormatter, mergedLint, mergedSourceDirs, mergedBusinessPackages, mergedSlicePackages);
+        return jbctConfig(mergedFormatter, mergedLint, mergedSourceDirs, mergedBusinessPackages, mergedSlicePackages);
     }
 
     /**

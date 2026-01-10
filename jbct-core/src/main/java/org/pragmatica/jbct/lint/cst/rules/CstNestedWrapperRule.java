@@ -5,6 +5,7 @@ import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.lang.Option;
 
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -53,39 +54,39 @@ public class CstNestedWrapperRule implements CstLintRule {
         var typeText = text(returnType.getOrThrow("Return type expected"),
                             source)
                            .trim();
-        var nestedPattern = detectNestedWrapper(typeText);
-        if (nestedPattern != null) {
-            var methodName = childByRule(method, RuleId.Identifier.class)
-                                        .map(id -> text(id, source))
-                                        .or("(unknown)");
-            return Stream.of(createDiagnostic(method, methodName, nestedPattern, ctx));
-        }
-        return Stream.empty();
+        return detectNestedWrapper(typeText)
+                                  .map(nestedPattern -> {
+                                           var methodName = childByRule(method, RuleId.Identifier.class)
+                                                                       .map(id -> text(id, source))
+                                                                       .or("(unknown)");
+                                           return createDiagnostic(method, methodName, nestedPattern, ctx);
+                                       })
+                                  .stream();
     }
 
-    private String detectNestedWrapper(String typeText) {
+    private Option<String> detectNestedWrapper(String typeText) {
         var matcher = NESTED_PATTERN.matcher(typeText);
         if (!matcher.find()) {
-            return null;
+            return Option.none();
         }
         var outer = matcher.group(1);
         var inner = matcher.group(2);
         // Forbidden patterns
         if ("Promise".equals(outer) && "Result".equals(inner)) {
-            return "Promise<Result<T>>";
+            return Option.some("Promise<Result<T>>");
         }
         if ("Option".equals(outer) && "Option".equals(inner)) {
-            return "Option<Option<T>>";
+            return Option.some("Option<Option<T>>");
         }
         if ("Result".equals(outer) && "Result".equals(inner)) {
-            return "Result<Result<T>>";
+            return Option.some("Result<Result<T>>");
         }
         if ("Promise".equals(outer) && "Promise".equals(inner)) {
-            return "Promise<Promise<T>>";
+            return Option.some("Promise<Promise<T>>");
         }
         // Result<Option<T>> is allowed for optional validation
         // Promise<Option<T>> is allowed for optional async results
-        return null;
+        return Option.none();
     }
 
     private Diagnostic createDiagnostic(CstNode method, String methodName, String pattern, LintContext ctx) {

@@ -5,6 +5,7 @@ import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
+import org.pragmatica.lang.Option;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -109,18 +110,16 @@ public class CstZoneMixingRule implements CstLintRule {
                                          List<String> violations) {
         Matcher matcher = pattern.matcher(text);
         while (matcher.find()) {
-            var verb = extractVerb(matcher.group(verbGroup));
-            if (verb != null && ZONE_3_VERBS.contains(verb.toLowerCase())) {
-                if (!violations.contains(verb)) {
-                    violations.add(verb);
-                }
-            }
+            extractVerb(matcher.group(verbGroup))
+                       .filter(verb -> ZONE_3_VERBS.contains(verb.toLowerCase()))
+                       .filter(verb -> !violations.contains(verb))
+                       .onPresent(violations::add);
         }
     }
 
-    private String extractVerb(String methodName) {
+    private Option<String> extractVerb(String methodName) {
         if (methodName == null || methodName.isEmpty()) {
-            return null;
+            return Option.none();
         }
         // Extract first word from camelCase
         var sb = new StringBuilder();
@@ -131,8 +130,8 @@ public class CstZoneMixingRule implements CstLintRule {
             sb.append(c);
         }
         return sb.isEmpty()
-               ? null
-               : sb.toString();
+               ? Option.none()
+               : Option.some(sb.toString());
     }
 
     private Diagnostic createDiagnostic(CstNode node, List<String> violations, LintContext ctx) {

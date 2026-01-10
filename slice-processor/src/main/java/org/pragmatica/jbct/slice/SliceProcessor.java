@@ -6,6 +6,8 @@ import org.pragmatica.jbct.slice.generator.FactoryClassGenerator;
 import org.pragmatica.jbct.slice.generator.ManifestGenerator;
 import org.pragmatica.jbct.slice.generator.ProxyClassGenerator;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Processor;
@@ -67,29 +69,43 @@ public class SliceProcessor extends AbstractProcessor {
     }
 
     private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
-        try{
-            // 1. Generate API interface (if not exists)
-            if (!apiInterfaceExists(sliceModel)) {
-                apiGenerator.generate(sliceModel);
-                note(interfaceElement,
-                     "Generated API interface: " + sliceModel.apiPackage() + "." + sliceModel.simpleName());
-            }
-            // 2. If this slice has dependencies, generate proxies and factory
-            if (sliceModel.hasDependencies()) {
-                for (var dependency : sliceModel.dependencies()) {
-                    var resolved = versionResolver.resolve(dependency);
-                    proxyGenerator.generate(resolved, sliceModel);
-                    note(interfaceElement, "Generated proxy: " + resolved.proxyClassName());
-                }
-                factoryGenerator.generate(sliceModel);
-                note(interfaceElement, "Generated factory: " + sliceModel.simpleName() + "Factory");
-            }
-            // 3. Generate manifest
-            manifestGenerator.generate(sliceModel);
-            note(interfaceElement, "Generated manifest: META-INF/slice-api.properties");
-        } catch (Exception e) {
-            error(interfaceElement, "Failed to process @Slice: " + e.getMessage());
+        generateApiInterface(interfaceElement, sliceModel)
+                            .flatMap(_ -> generateDependencyArtifacts(interfaceElement, sliceModel))
+                            .flatMap(_ -> generateManifest(interfaceElement, sliceModel))
+                            .onFailure(cause -> error(interfaceElement,
+                                                      cause.message()));
+    }
+
+    private Result<Unit> generateApiInterface(TypeElement interfaceElement, SliceModel sliceModel) {
+        if (apiInterfaceExists(sliceModel)) {
+            return Result.success(Unit.unit());
         }
+        return apiGenerator.generate(sliceModel)
+                           .onSuccess(_ -> note(interfaceElement,
+                                                "Generated API interface: " + sliceModel.apiPackage() + "." + sliceModel.simpleName()));
+    }
+
+    private Result<Unit> generateDependencyArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
+        if (!sliceModel.hasDependencies()) {
+            return Result.success(Unit.unit());
+        }
+        for (var dependency : sliceModel.dependencies()) {
+            var resolved = versionResolver.resolve(dependency);
+            var proxyResult = proxyGenerator.generate(resolved, sliceModel);
+            if (proxyResult.isFailure()) {
+                return proxyResult;
+            }
+            note(interfaceElement, "Generated proxy: " + resolved.proxyClassName());
+        }
+        return factoryGenerator.generate(sliceModel)
+                               .onSuccess(_ -> note(interfaceElement,
+                                                    "Generated factory: " + sliceModel.simpleName() + "Factory"));
+    }
+
+    private Result<Unit> generateManifest(TypeElement interfaceElement, SliceModel sliceModel) {
+        return manifestGenerator.generate(sliceModel)
+                                .onSuccess(_ -> note(interfaceElement,
+                                                     "Generated manifest: META-INF/slice-api.properties"));
     }
 
     private boolean apiInterfaceExists(SliceModel model) {

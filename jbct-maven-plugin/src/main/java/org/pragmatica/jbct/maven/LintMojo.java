@@ -30,11 +30,11 @@ public class LintMojo extends AbstractJbctMojo {
         var filesToProcess = collectJavaFiles();
         if (filesToProcess.isEmpty()) {
             getLog()
-            .info("No Java files found.");
+                  .info("No Java files found.");
             return;
         }
         getLog()
-        .info("Linting " + filesToProcess.size() + " Java file(s)");
+              .info("Linting " + filesToProcess.size() + " Java file(s)");
         var allDiagnostics = new ArrayList<Diagnostic>();
         var errors = new AtomicInteger(0);
         var warnings = new AtomicInteger(0);
@@ -47,17 +47,17 @@ public class LintMojo extends AbstractJbctMojo {
         for (var d : allDiagnostics) {
             switch (d.severity()) {
                 case ERROR -> getLog()
-                              .error(formatDiagnostic(d));
+                                    .error(formatDiagnostic(d));
                 case WARNING -> getLog()
-                                .warn(formatDiagnostic(d));
+                                      .warn(formatDiagnostic(d));
                 case INFO -> getLog()
-                             .info(formatDiagnostic(d));
+                                   .info(formatDiagnostic(d));
             }
         }
         // Print summary
         getLog()
-        .info("Lint results: " + errors.get() + " error(s), " + warnings.get() + " warning(s), " + infos.get()
-              + " info(s)");
+              .info("Lint results: " + errors.get() + " error(s), " + warnings.get() + " warning(s), " + infos.get()
+                    + " info(s)");
         // Fail build if needed
         if (parseErrors.get() > 0 || errors.get() > 0) {
             throw new MojoFailureException("JBCT lint found " + errors.get() + " error(s)");
@@ -81,17 +81,17 @@ public class LintMojo extends AbstractJbctMojo {
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
-                                 switch (d.severity()) {
+                                     switch (d.severity()) {
             case ERROR -> errors.incrementAndGet();
             case WARNING -> warnings.incrementAndGet();
             case INFO -> infos.incrementAndGet();
         }
-                             }
+                                 }
                              })
                   .onFailure(cause -> {
                                  parseErrors.incrementAndGet();
                                  getLog()
-                                 .error("Parse error in " + file + ": " + cause.message());
+                                       .error("Parse error in " + file + ": " + cause.message());
                              });
     }
 

@@ -62,7 +62,7 @@ public class InitCommand implements Callable<Integer> {
         // Determine project directory
         if (projectDir == null) {
             projectDir = Path.of(System.getProperty("user.dir"));
-        }else {
+        } else {
             projectDir = projectDir.toAbsolutePath();
         }
         // Determine artifact ID from directory name if not specified
@@ -107,11 +107,11 @@ public class InitCommand implements Callable<Integer> {
                                               },
                                               installedFiles -> {
                                                   if (!installedFiles.isEmpty()) {
-                                                  System.out.println("Installed AI tools to: " + installer.claudeDir());
-                                                  System.out.println("  Skills: " + installer.skillsDir());
-                                                  System.out.println("  Agents: " + installer.agentsDir());
-                                                  return true;
-                                              }
+                                                      System.out.println("Installed AI tools to: " + installer.claudeDir());
+                                                      System.out.println("  Skills: " + installer.skillsDir());
+                                                      System.out.println("  Agents: " + installer.agentsDir());
+                                                      return true;
+                                                  }
                                                   return false;
                                               });
         }
@@ -146,9 +146,9 @@ public class InitCommand implements Callable<Integer> {
                                     System.out.println();
                                     System.out.println("Created project files:");
                                     for (var file : createdFiles) {
-                                    var relativePath = projectDir.relativize(file);
-                                    System.out.println("  " + relativePath);
-                                }
+                                        var relativePath = projectDir.relativize(file);
+                                        System.out.println("  " + relativePath);
+                                    }
                                     return true;
                                 });
     }
@@ -160,9 +160,9 @@ public class InitCommand implements Callable<Integer> {
                                                                                   System.out.println();
                                                                                   System.out.println("Created slice project files:");
                                                                                   for (var file : createdFiles) {
-                                                                                  var relativePath = projectDir.relativize(file);
-                                                                                  System.out.println("  " + relativePath);
-                                                                              }
+                                                                                      var relativePath = projectDir.relativize(file);
+                                                                                      System.out.println("  " + relativePath);
+                                                                                  }
                                                                                   System.out.println();
                                                                                   System.out.println("Slice: " + initializer.sliceName());
                                                                                   return true;

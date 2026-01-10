@@ -46,7 +46,7 @@ Add to your `pom.xml`:
         <plugin>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>jbct-maven-plugin</artifactId>
-            <version>0.4.6</version>
+            <version>0.4.7</version>
         </plugin>
     </plugins>
 </build>
@@ -69,9 +69,10 @@ jbct format --check src/main/java
 ```
 
 Options:
-- `--check` - Report files needing formatting, exit 1 if any found
-- `--dry-run` - Show what would be formatted without writing
-- `--verbose` - Show detailed output
+- `--check` / `-c` - Report files needing formatting, exit 1 if any found
+- `--dry-run` / `-n` - Show what would be formatted without writing
+- `--verbose` / `-v` - Show detailed output
+- `--config <path>` - Path to configuration file
 
 ### Lint
 
@@ -82,9 +83,10 @@ jbct lint src/main/java
 ```
 
 Options:
-- `--format <text|json|sarif>` - Output format (default: text)
-- `--fail-on-warning` - Treat warnings as errors
-- `--verbose` - Show detailed output
+- `--format` / `-f` `<text|json|sarif>` - Output format (default: text)
+- `--fail-on-warning` / `-w` - Treat warnings as errors
+- `--verbose` / `-v` - Show detailed output
+- `--config <path>` - Path to configuration file
 
 ### Check
 
@@ -95,8 +97,9 @@ jbct check src/main/java
 ```
 
 Options:
-- `--fail-on-warning` - Treat warnings as errors
-- `--verbose` - Show detailed output
+- `--fail-on-warning` / `-w` - Treat warnings as errors
+- `--verbose` / `-v` - Show detailed output
+- `--config <path>` - Path to configuration file
 
 Exit codes:
 - `0` - All checks passed
@@ -108,9 +111,11 @@ Exit codes:
 Self-update to the latest version:
 
 ```bash
-jbct upgrade           # Check and install latest
-jbct upgrade --check   # Check only, don't install
-jbct upgrade --force   # Force reinstall
+jbct upgrade                    # Check and install latest
+jbct upgrade --check            # Check only, don't install
+jbct upgrade --force            # Force reinstall
+jbct upgrade --version 0.4.5    # Install specific version
+jbct upgrade --install          # First-time installation to ~/.jbct/
 ```
 
 ### Init
@@ -121,7 +126,11 @@ Create a new JBCT-compliant project:
 jbct init my-project                           # Create in new directory
 jbct init .                                    # Initialize current directory
 jbct init --group-id com.example my-project    # Custom group ID
+jbct init --artifact-id myapp my-project       # Custom artifact ID
 jbct init --slice my-slice                     # Create Aether slice project
+jbct init --ai-only                            # Only install AI tools
+jbct init --no-ai my-project                   # Skip AI tools installation
+jbct init --force my-project                   # Overwrite existing files
 ```
 
 Creates Maven project with:
@@ -234,7 +243,7 @@ Add executions to run automatically:
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.4.6</version>
+    <version>0.4.7</version>
     <executions>
         <execution>
             <id>check</id>
@@ -255,7 +264,7 @@ All formatting and linting settings are shared between CLI and Maven plugin.
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.4.6</version>
+    <version>0.4.7</version>
     <configuration>
         <!-- Skip JBCT processing -->
         <skip>false</skip>

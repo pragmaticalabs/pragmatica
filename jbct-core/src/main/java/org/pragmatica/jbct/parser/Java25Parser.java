@@ -1724,7 +1724,7 @@ public final class Java25Parser {
             sb.append(" ".repeat(gutterWidth + 1))
               .append("|\n");
             // Display source lines with labels
-            for (int lineNum = minLine; lineNum <= maxLine; lineNum++ ) {
+            for (int lineNum = minLine; lineNum <= maxLine; lineNum++) {
                 if (lineNum < 1 || lineNum > lines.length) continue;
                 String lineContent = lines[lineNum - 1];
                 String lineNumStr = String.format("%" + gutterWidth + "d", lineNum);
@@ -1804,7 +1804,7 @@ public final class Java25Parser {
                              : lineContent.length() + 1;
                 while (currentCol < startCol) {
                     sb.append(" ");
-                    currentCol++ ;
+                    currentCol++;
                 }
                 char underlineChar = label.primary()
                                      ? '^'
@@ -1870,15 +1870,15 @@ public final class Java25Parser {
         }
 
         public int errorCount() {
-            return ( int) diagnostics.stream()
-                                    .filter(d -> d.severity() == Severity.ERROR)
-                                    .count();
+            return (int) diagnostics.stream()
+                                   .filter(d -> d.severity() == Severity.ERROR)
+                                   .count();
         }
 
         public int warningCount() {
-            return ( int) diagnostics.stream()
-                                    .filter(d -> d.severity() == Severity.WARNING)
-                                    .count();
+            return (int) diagnostics.stream()
+                                   .filter(d -> d.severity() == Severity.WARNING)
+                                   .count();
         }
     }
 
@@ -1936,12 +1936,12 @@ public final class Java25Parser {
     }
 
     private char advance() {
-        char c = input.charAt(pos++ );
+        char c = input.charAt(pos++);
         if (c == '\n') {
-            line++ ;
+            line++;
             column = 1;
         } else {
-            column++ ;
+            column++;
         }
         return c;
     }
@@ -1955,7 +1955,7 @@ public final class Java25Parser {
     }
 
     private long cacheKey(int ruleId, int position) {
-        return ( ( long) ruleId<< 32) | position;
+        return ( (long) ruleId<< 32) | position;
     }
 
     private void restoreLocation(SourceLocation loc) {
@@ -25011,7 +25011,7 @@ public final class Java25Parser {
             return CstParseResult.failure("'" + text + "'");
         }
         var startLoc = location();
-        for (int i = 0; i < text.length(); i++ ) {
+        for (int i = 0; i < text.length(); i++) {
             char expected = text.charAt(i);
             char actual = peek(i);
             if (caseInsensitive) {
@@ -25026,7 +25026,7 @@ public final class Java25Parser {
                 }
             }
         }
-        for (int i = 0; i < text.length(); i++ ) {
+        for (int i = 0; i < text.length(); i++) {
             advance();
         }
         var span = SourceSpan.of(startLoc, location());
@@ -25048,7 +25048,7 @@ public final class Java25Parser {
             return CstParseResult.failure("dictionary word");
         }
         var startLoc = location();
-        for (int i = 0; i < longestLen; i++ ) {
+        for (int i = 0; i < longestLen; i++) {
             advance();
         }
         var span = SourceSpan.of(startLoc, location());
@@ -25058,7 +25058,7 @@ public final class Java25Parser {
 
     private boolean matchesWord(String word, boolean caseInsensitive) {
         if (remaining() < word.length()) return false;
-        for (int i = 0; i < word.length(); i++ ) {
+        for (int i = 0; i < word.length(); i++) {
             char expected = word.charAt(i);
             char actual = peek(i);
             if (caseInsensitive) {
@@ -25116,7 +25116,7 @@ public final class Java25Parser {
                             try{
                                 var hex = pattern.substring(i + 2, i + 4);
                                 consumed = 4;
-                                yield ( char) Integer.parseInt(hex, 16);
+                                yield (char) Integer.parseInt(hex, 16);
                             } catch (NumberFormatException e) {
                                 yield 'x';
                             }
@@ -25128,7 +25128,7 @@ public final class Java25Parser {
                             try{
                                 var hex = pattern.substring(i + 2, i + 6);
                                 consumed = 6;
-                                yield ( char) Integer.parseInt(hex, 16);
+                                yield (char) Integer.parseInt(hex, 16);
                             } catch (NumberFormatException e) {
                                 yield 'u';
                             }
@@ -25153,7 +25153,7 @@ public final class Java25Parser {
             } else {
                 if (caseInsensitive) start = Character.toLowerCase(start);
                 if (testChar == start) return true;
-                i++ ;
+                i++;
             }
         }
         return false;

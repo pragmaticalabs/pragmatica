@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.init;
 
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
@@ -52,24 +53,32 @@ public final class AiToolsInstaller {
      * @return List of installed files
      */
     public Result<List<Path>> install() {
+        return createDirectories()
+                                .flatMap(_ -> installAllResources());
+    }
+
+    private Result<Unit> createDirectories() {
         try{
-            var installedFiles = new ArrayList<Path>();
-            // Create directories
             var skillsDir = claudeDir.resolve("skills/jbct");
             var agentsDir = claudeDir.resolve("agents");
             Files.createDirectories(skillsDir);
             Files.createDirectories(agentsDir);
-            // Install skills
-            installFromResources(AI_TOOLS_PATH + SKILLS_SUBPATH, skillsDir)
-                                .onSuccess(installedFiles::addAll);
-            // Install agents
-            installFromResources(AI_TOOLS_PATH + AGENTS_SUBPATH, agentsDir)
-                                .onSuccess(installedFiles::addAll);
-            return Result.success(installedFiles);
+            return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to install AI tools: " + e.getMessage())
+            return Causes.cause("Failed to create directories: " + e.getMessage())
                          .result();
         }
+    }
+
+    private Result<List<Path>> installAllResources() {
+        var skillsDir = claudeDir.resolve("skills/jbct");
+        var agentsDir = claudeDir.resolve("agents");
+        // Fork-Join: Install skills and agents in parallel
+        return Result.allOf(installFromResources(AI_TOOLS_PATH + SKILLS_SUBPATH, skillsDir),
+                            installFromResources(AI_TOOLS_PATH + AGENTS_SUBPATH, agentsDir))
+                     .map(lists -> lists.stream()
+                                        .flatMap(List::stream)
+                                        .toList());
     }
 
     private Result<List<Path>> installFromResources(String resourcePath, Path targetDir) {

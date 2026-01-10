@@ -32,11 +32,11 @@ public class CheckMojo extends AbstractJbctMojo {
         var filesToProcess = collectJavaFiles();
         if (filesToProcess.isEmpty()) {
             getLog()
-            .info("No Java files found.");
+                  .info("No Java files found.");
             return;
         }
         getLog()
-        .info("Running JBCT check on " + filesToProcess.size() + " Java file(s)");
+              .info("Running JBCT check on " + filesToProcess.size() + " Java file(s)");
         // Format check
         var needsFormatting = new ArrayList<Path>();
         var formatErrors = new AtomicInteger(0);
@@ -52,27 +52,27 @@ public class CheckMojo extends AbstractJbctMojo {
         // Report format issues
         if (!needsFormatting.isEmpty()) {
             getLog()
-            .error("Files not properly formatted:");
+                  .error("Files not properly formatted:");
             for (var file : needsFormatting) {
                 getLog()
-                .error("  " + file);
+                      .error("  " + file);
             }
         }
         // Report lint issues
         for (var d : allDiagnostics) {
             switch (d.severity()) {
                 case ERROR -> getLog()
-                              .error(formatDiagnostic(d));
+                                    .error(formatDiagnostic(d));
                 case WARNING -> getLog()
-                                .warn(formatDiagnostic(d));
+                                      .warn(formatDiagnostic(d));
                 case INFO -> getLog()
-                             .info(formatDiagnostic(d));
+                                   .info(formatDiagnostic(d));
             }
         }
         // Summary
         getLog()
-        .info("Check results: " + needsFormatting.size() + " format issue(s), " + lintErrors.get() + " lint error(s), " + warnings.get()
-              + " warning(s)");
+              .info("Check results: " + needsFormatting.size() + " format issue(s), " + lintErrors.get()
+                    + " lint error(s), " + warnings.get() + " warning(s)");
         // Fail build if needed
         var hasFailures = false;
         var failures = new ArrayList<String>();
@@ -101,7 +101,7 @@ public class CheckMojo extends AbstractJbctMojo {
             throw new MojoFailureException("JBCT check failed: " + String.join(", ", failures));
         }
         getLog()
-        .info("JBCT check passed.");
+              .info("JBCT check passed.");
     }
 
     private void checkFormat(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {
@@ -109,13 +109,13 @@ public class CheckMojo extends AbstractJbctMojo {
                   .flatMap(formatter::isFormatted)
                   .onSuccess(isFormatted -> {
                       if (!isFormatted) {
-                      needsFormatting.add(file);
-                  }
+                          needsFormatting.add(file);
+                      }
                   })
                   .onFailure(cause -> {
                                  errors.incrementAndGet();
                                  getLog()
-                                 .error("Error checking format of " + file + ": " + cause.message());
+                                       .error("Error checking format of " + file + ": " + cause.message());
                              });
     }
 
@@ -130,17 +130,17 @@ public class CheckMojo extends AbstractJbctMojo {
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
-                                 switch (d.severity()) {
+                                     switch (d.severity()) {
             case ERROR -> errors.incrementAndGet();
             case WARNING -> warnings.incrementAndGet();
             default -> {}
         }
-                             }
+                                 }
                              })
                   .onFailure(cause -> {
                                  parseErrors.incrementAndGet();
                                  getLog()
-                                 .error("Parse error in " + file + ": " + cause.message());
+                                       .error("Parse error in " + file + ": " + cause.message());
                              });
     }
 

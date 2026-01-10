@@ -5,6 +5,7 @@ import org.pragmatica.http.HttpResult;
 import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
@@ -16,6 +17,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * Updates AI tools from the coding-technology GitHub repository.
@@ -122,32 +124,63 @@ public final class AiToolsUpdater {
     }
 
     private Result<List<Path>> downloadFiles(String commitSha) {
-        var downloadedFiles = new ArrayList<Path>();
+        return createDirectories()
+                                .flatMap(_ -> downloadAllFiles())
+                                .flatMap(files -> saveCurrentVersion(commitSha)
+                                                                    .map(_ -> files));
+    }
+
+    private Result<Unit> createDirectories() {
         try{
-            // Ensure directories exist
             var skillsDir = claudeDir.resolve("skills/jbct");
             var agentsDir = claudeDir.resolve("agents");
             Files.createDirectories(skillsDir);
             Files.createDirectories(agentsDir);
-            // Download skill files
-            for (var file : SKILL_FILES) {
-                var targetPath = claudeDir.resolve(file);
-                downloadFile(file, targetPath)
-                            .onSuccess(downloadedFiles::add);
-            }
-            // Download agent files
-            for (var file : AGENT_FILES) {
-                var targetPath = agentsDir.resolve(file);
-                downloadFile(file, targetPath)
-                            .onSuccess(downloadedFiles::add);
-            }
-            // Save version
-            saveCurrentVersion(commitSha);
-            return Result.success(downloadedFiles);
+            return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to download files: " + e.getMessage())
+            return Causes.cause("Failed to create directories: " + e.getMessage())
                          .result();
         }
+    }
+
+    private Result<List<Path>> downloadAllFiles() {
+        var agentsDir = claudeDir.resolve("agents");
+        // Fork-Join: Download skill files and agent files in parallel
+        return Result.allOf(downloadSkillFiles(),
+                            downloadAgentFiles(agentsDir))
+                     .map(lists -> lists.stream()
+                                        .flatMap(List::stream)
+                                        .toList());
+    }
+
+    private Result<List<Path>> downloadSkillFiles() {
+        var results = Stream.of(SKILL_FILES)
+                            .map(file -> downloadFile(file,
+                                                      claudeDir.resolve(file)))
+                            .toList();
+        // Collect successful downloads
+        var files = new ArrayList<Path>();
+        for (var result : results) {
+            if (result.isSuccess()) {
+                files.add(result.unwrap());
+            }
+        }
+        return Result.success(files);
+    }
+
+    private Result<List<Path>> downloadAgentFiles(Path agentsDir) {
+        var results = Stream.of(AGENT_FILES)
+                            .map(file -> downloadFile(file,
+                                                      agentsDir.resolve(file)))
+                            .toList();
+        // Collect successful downloads
+        var files = new ArrayList<Path>();
+        for (var result : results) {
+            if (result.isSuccess()) {
+                files.add(result.unwrap());
+            }
+        }
+        return Result.success(files);
     }
 
     private Result<Path> downloadFile(String remotePath, Path targetPath) {
@@ -187,11 +220,16 @@ public final class AiToolsUpdater {
         }
     }
 
-    private void saveCurrentVersion(String commitSha) {
+    private Result<Path> saveCurrentVersion(String commitSha) {
         try{
             Files.createDirectories(jbctDir);
-            Files.writeString(jbctDir.resolve(VERSION_FILE), commitSha);
-        } catch (IOException e) {}
+            var versionFile = jbctDir.resolve(VERSION_FILE);
+            Files.writeString(versionFile, commitSha);
+            return Result.success(versionFile);
+        } catch (IOException e) {
+            return Causes.cause("Failed to save version file: " + e.getMessage())
+                         .result();
+        }
     }
 
     /**

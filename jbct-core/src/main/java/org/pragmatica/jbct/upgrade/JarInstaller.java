@@ -106,9 +106,10 @@ public final class JarInstaller {
                                     if (response.isSuccess()) {
                                         return Result.success(response.body());
                                     } else {
-                                        try{
+                                        // Best-effort cleanup of temp file on failure
+            try{
                                             Files.deleteIfExists(tempFile);
-                                        } catch (IOException ignored) {}
+                                        } catch (IOException cleanupError) {}
                                         return response.toResult();
                                     }
                                 });
@@ -140,11 +141,11 @@ public final class JarInstaller {
                 Files.copy(tempFile, targetPath, StandardCopyOption.REPLACE_EXISTING);
                 Files.deleteIfExists(tempFile);
             }
-            // Remove backup on success
+            // Remove backup on success - best effort cleanup
             backup.onPresent(backupPath -> {
                 try{
                     Files.deleteIfExists(backupPath);
-                } catch (IOException ignored) {}
+                } catch (IOException cleanupError) {}
             });
             return Result.success(targetPath);
         } catch (Exception e) {

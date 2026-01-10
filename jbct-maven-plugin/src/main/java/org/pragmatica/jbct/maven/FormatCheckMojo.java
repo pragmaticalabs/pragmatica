@@ -33,11 +33,11 @@ public class FormatCheckMojo extends AbstractJbctMojo {
         var filesToProcess = collectJavaFiles();
         if (filesToProcess.isEmpty()) {
             getLog()
-            .info("No Java files found.");
+                  .info("No Java files found.");
             return;
         }
         getLog()
-        .info("Checking format of " + filesToProcess.size() + " Java file(s)");
+              .info("Checking format of " + filesToProcess.size() + " Java file(s)");
         var needsFormatting = new ArrayList<Path>();
         var errors = new AtomicInteger(0);
         for (var file : filesToProcess) {
@@ -45,10 +45,10 @@ public class FormatCheckMojo extends AbstractJbctMojo {
         }
         if (!needsFormatting.isEmpty()) {
             getLog()
-            .error("The following files are not properly formatted:");
+                  .error("The following files are not properly formatted:");
             for (var file : needsFormatting) {
                 getLog()
-                .error("  " + file);
+                      .error("  " + file);
             }
             throw new MojoFailureException(needsFormatting.size()
                                            + " file(s) are not properly formatted. Run 'mvn jbct:format' to fix.");
@@ -57,7 +57,7 @@ public class FormatCheckMojo extends AbstractJbctMojo {
             throw new MojoFailureException("Format check failed for " + errors.get() + " file(s)");
         }
         getLog()
-        .info("All files are properly formatted.");
+              .info("All files are properly formatted.");
     }
 
     private void checkFile(Path file, JbctFormatter formatter, List<Path> needsFormatting, AtomicInteger errors) {
@@ -65,13 +65,13 @@ public class FormatCheckMojo extends AbstractJbctMojo {
                   .flatMap(formatter::isFormatted)
                   .onSuccess(isFormatted -> {
                       if (!isFormatted) {
-                      needsFormatting.add(file);
-                  }
+                          needsFormatting.add(file);
+                      }
                   })
                   .onFailure(cause -> {
                                  errors.incrementAndGet();
                                  getLog()
-                                 .error("Error checking " + file + ": " + cause.message());
+                                       .error("Error checking " + file + ": " + cause.message());
                              });
     }
 }

@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.7] - 2026-01-10
+
+### Added
+
+### Changed
+- Build: bump Pragmatica Lite to 0.9.10
+- Docs: update README with missing CLI options (--config, --version, --artifact-id, etc.)
+- Docs: fix CLAUDE.md pragmatica-lite version (0.9.4 → 0.9.10) and lint rule count (36 → 37)
+
+### Fixed
+- Performance: eliminate O(n²) measurement patterns in formatter causing memory spikes on complex generic files
+  - Skip measureWidth when hasComplexArgs/hasExistingBreaks already triggers breaking (printArgs, printParams, printRecordComponents)
+  - Replace text() extraction with CST structure checks for method call detection (printPostfix)
+  - Pre-compute operand info to avoid per-child measurements in string concatenation wrapping (printAdditive)
+  - Combine duplicate loops in hasComplexArguments to single pass
+- Formatter: prevent blank line accumulation between TypeParams and return type in method declarations
+- Formatter: prevent leading newline accumulation in files without package declaration
+
 ## [0.4.6] - 2026-01-05
 
 ### Added
