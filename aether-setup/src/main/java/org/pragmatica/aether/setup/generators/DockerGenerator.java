@@ -110,10 +110,11 @@ public final class DockerGenerator implements Generator {
     private String generateDockerCompose(AetherConfig config) {
         var nodes = config.cluster()
                           .nodes();
-        var network = config.docker()
-                            .network();
-        var image = config.docker()
-                          .image();
+        // docker() is guaranteed present by supports() check
+        var dockerConfig = config.docker()
+                                 .expect("Docker config expected");
+        var network = dockerConfig.network();
+        var image = dockerConfig.image();
         var mgmtPort = config.cluster()
                              .ports()
                              .management();
@@ -158,7 +159,9 @@ public final class DockerGenerator implements Generator {
                                              int clusterPort,
                                              String peerList,
                                              AetherConfig config) {
+        // docker() is guaranteed present by supports() check
         var network = config.docker()
+                            .expect("Docker config expected")
                             .network();
         var hostMgmtPort = mgmtPort + index;
         var hostClusterPort = clusterPort + index;
@@ -210,6 +213,9 @@ public final class DockerGenerator implements Generator {
     }
 
     private String generateEnvFile(AetherConfig config) {
+        // docker() is guaranteed present by supports() check
+        var dockerConfig = config.docker()
+                                 .expect("Docker config expected");
         return String.format("""
             # Aether Cluster Environment
             NODES=%d
@@ -228,10 +234,8 @@ public final class DockerGenerator implements Generator {
                              config.cluster()
                                    .ports()
                                    .cluster(),
-                             config.docker()
-                                   .network(),
-                             config.docker()
-                                   .image(),
+                             dockerConfig.network(),
+                             dockerConfig.image(),
                              config.node()
                                    .heap(),
                              config.node()

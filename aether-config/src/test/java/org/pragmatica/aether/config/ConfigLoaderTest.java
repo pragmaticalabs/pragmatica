@@ -56,8 +56,8 @@ class ConfigLoaderTest {
                 assertThat(config.cluster().ports().cluster()).isEqualTo(9090);
                 assertThat(config.node().heap()).isEqualTo("1g");
                 assertThat(config.node().gc()).isEqualTo("g1");
-                assertThat(config.docker().network()).isEqualTo("custom-network");
-                assertThat(config.docker().image()).isEqualTo("custom-image:latest");
+                assertThat(config.docker().unwrap().network()).isEqualTo("custom-network");
+                assertThat(config.docker().unwrap().image()).isEqualTo("custom-image:latest");
             });
     }
 
@@ -95,10 +95,10 @@ class ConfigLoaderTest {
             .onFailure(cause -> Assertions.fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.environment()).isEqualTo(Environment.KUBERNETES);
-                assertThat(config.kubernetes()).isNotNull();
-                assertThat(config.kubernetes().namespace()).isEqualTo("production");
-                assertThat(config.kubernetes().serviceType()).isEqualTo("LoadBalancer");
-                assertThat(config.kubernetes().storageClass()).isEqualTo("ssd");
+                assertThat(config.kubernetes().isPresent()).isTrue();
+                assertThat(config.kubernetes().unwrap().namespace()).isEqualTo("production");
+                assertThat(config.kubernetes().unwrap().serviceType()).isEqualTo("LoadBalancer");
+                assertThat(config.kubernetes().unwrap().storageClass()).isEqualTo("ssd");
             });
     }
 
@@ -118,8 +118,8 @@ class ConfigLoaderTest {
             .onFailure(cause -> Assertions.fail(cause.message()))
             .onSuccess(config -> {
                 assertThat(config.tlsEnabled()).isTrue();
-                assertThat(config.tls()).isNotNull();
-                assertThat(config.tls().autoGenerate()).isTrue();
+                assertThat(config.tls().isPresent()).isTrue();
+                assertThat(config.tls().unwrap().autoGenerate()).isTrue();
             });
     }
 

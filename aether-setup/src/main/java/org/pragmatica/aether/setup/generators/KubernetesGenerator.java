@@ -76,6 +76,9 @@ public final class KubernetesGenerator implements Generator {
             Files.writeString(deletePath, generateDeleteScript(config));
             makeExecutable(deletePath);
             generatedFiles.add(Path.of("delete.sh"));
+            // kubernetes() is guaranteed present by supports() check
+            var k8sConfig = config.kubernetes()
+                                  .expect("Kubernetes config expected");
             var instructions = String.format("""
                 Kubernetes manifests generated in: %s
 
@@ -94,12 +97,10 @@ public final class KubernetesGenerator implements Generator {
                 """,
                                              outputDir,
                                              outputDir,
-                                             config.kubernetes()
-                                                   .namespace(),
+                                             k8sConfig.namespace(),
                                              config.cluster()
                                                    .nodes(),
-                                             config.kubernetes()
-                                                   .serviceType());
+                                             k8sConfig.serviceType());
             return Result.success(GeneratorOutput.generatorOutput(outputDir, generatedFiles, instructions));
         } catch (IOException e) {
             return GeneratorError.ioError(e.getMessage())
@@ -108,6 +109,9 @@ public final class KubernetesGenerator implements Generator {
     }
 
     private String generateNamespace(AetherConfig config) {
+        // kubernetes() is guaranteed present by supports() check
+        var k8sConfig = config.kubernetes()
+                              .expect("Kubernetes config expected");
         return String.format("""
             apiVersion: v1
             kind: Namespace
@@ -117,12 +121,13 @@ public final class KubernetesGenerator implements Generator {
                 app.kubernetes.io/name: aether
                 app.kubernetes.io/component: runtime
             """,
-                             config.kubernetes()
-                                   .namespace());
+                             k8sConfig.namespace());
     }
 
     private String generateConfigMap(AetherConfig config) {
+        // kubernetes() is guaranteed present by supports() check
         var namespace = config.kubernetes()
+                              .expect("Kubernetes config expected")
                               .namespace();
         var nodes = config.cluster()
                           .nodes();
@@ -166,7 +171,9 @@ public final class KubernetesGenerator implements Generator {
     }
 
     private String generateStatefulSet(AetherConfig config) {
+        // kubernetes() is guaranteed present by supports() check
         var namespace = config.kubernetes()
+                              .expect("Kubernetes config expected")
                               .namespace();
         var nodes = config.cluster()
                           .nodes();
@@ -242,6 +249,9 @@ public final class KubernetesGenerator implements Generator {
     }
 
     private String generateHeadlessService(AetherConfig config) {
+        // kubernetes() is guaranteed present by supports() check
+        var k8sConfig = config.kubernetes()
+                              .expect("Kubernetes config expected");
         return String.format("""
             apiVersion: v1
             kind: Service
@@ -262,8 +272,7 @@ public final class KubernetesGenerator implements Generator {
                 port: %d
                 targetPort: cluster
             """,
-                             config.kubernetes()
-                                   .namespace(),
+                             k8sConfig.namespace(),
                              config.cluster()
                                    .ports()
                                    .management(),
@@ -273,6 +282,9 @@ public final class KubernetesGenerator implements Generator {
     }
 
     private String generateService(AetherConfig config) {
+        // kubernetes() is guaranteed present by supports() check
+        var k8sConfig = config.kubernetes()
+                              .expect("Kubernetes config expected");
         return String.format("""
             apiVersion: v1
             kind: Service
@@ -288,16 +300,17 @@ public final class KubernetesGenerator implements Generator {
                 port: %d
                 targetPort: management
             """,
-                             config.kubernetes()
-                                   .namespace(),
-                             config.kubernetes()
-                                   .serviceType(),
+                             k8sConfig.namespace(),
+                             k8sConfig.serviceType(),
                              config.cluster()
                                    .ports()
                                    .management());
     }
 
     private String generatePdb(AetherConfig config) {
+        // kubernetes() is guaranteed present by supports() check
+        var k8sConfig = config.kubernetes()
+                              .expect("Kubernetes config expected");
         // Allow at most one node to be unavailable (maintain quorum)
         var maxUnavailable = 1;
         return String.format("""
@@ -312,12 +325,15 @@ public final class KubernetesGenerator implements Generator {
                 matchLabels:
                   app: aether-node
             """,
-                             config.kubernetes()
-                                   .namespace(),
+                             k8sConfig.namespace(),
                              maxUnavailable);
     }
 
     private String generateApplyScript(AetherConfig config) {
+        // kubernetes() is guaranteed present by supports() check
+        var namespace = config.kubernetes()
+                              .expect("Kubernetes config expected")
+                              .namespace();
         return String.format("""
             #!/bin/bash
             set -e
@@ -338,12 +354,9 @@ public final class KubernetesGenerator implements Generator {
             echo "Cluster deployed successfully!"
             kubectl -n %s get pods
             """,
-                             config.kubernetes()
-                                   .namespace(),
-                             config.kubernetes()
-                                   .namespace(),
-                             config.kubernetes()
-                                   .namespace());
+                             namespace,
+                             namespace,
+                             namespace);
     }
 
     private String generateDeleteScript(AetherConfig config) {

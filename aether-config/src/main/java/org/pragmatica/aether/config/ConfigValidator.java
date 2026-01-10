@@ -36,8 +36,9 @@ public final class ConfigValidator {
         var errors = new ArrayList<String>();
         validateCluster(config.cluster(), errors);
         validateNode(config.node(), errors);
-        if (config.tlsEnabled() && config.tls() != null) {
-            validateTls(config.tls(), errors);
+        if (config.tlsEnabled()) {
+            config.tls()
+                  .onPresent(tls -> validateTls(tls, errors));
         }
         if (errors.isEmpty()) {
             return Result.success(config);

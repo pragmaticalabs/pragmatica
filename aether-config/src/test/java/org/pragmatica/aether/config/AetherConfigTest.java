@@ -14,8 +14,8 @@ class AetherConfigTest {
         assertThat(config.cluster().nodes()).isEqualTo(3);
         assertThat(config.node().heap()).isEqualTo("256m");
         assertThat(config.tlsEnabled()).isFalse();
-        assertThat(config.docker()).isNull();
-        assertThat(config.kubernetes()).isNull();
+        assertThat(config.docker().isEmpty()).isTrue();
+        assertThat(config.kubernetes().isEmpty()).isTrue();
     }
 
     @Test
@@ -26,9 +26,9 @@ class AetherConfigTest {
         assertThat(config.cluster().nodes()).isEqualTo(5);
         assertThat(config.node().heap()).isEqualTo("512m");
         assertThat(config.tlsEnabled()).isFalse();
-        assertThat(config.docker()).isNotNull();
-        assertThat(config.docker().network()).isEqualTo(DockerConfig.DEFAULT_NETWORK);
-        assertThat(config.kubernetes()).isNull();
+        assertThat(config.docker().isPresent()).isTrue();
+        assertThat(config.docker().unwrap().network()).isEqualTo(DockerConfig.DEFAULT_NETWORK);
+        assertThat(config.kubernetes().isEmpty()).isTrue();
     }
 
     @Test
@@ -39,11 +39,11 @@ class AetherConfigTest {
         assertThat(config.cluster().nodes()).isEqualTo(5);
         assertThat(config.node().heap()).isEqualTo("1g");
         assertThat(config.tlsEnabled()).isTrue();
-        assertThat(config.tls()).isNotNull();
-        assertThat(config.tls().autoGenerate()).isTrue();
-        assertThat(config.docker()).isNull();
-        assertThat(config.kubernetes()).isNotNull();
-        assertThat(config.kubernetes().namespace()).isEqualTo(KubernetesConfig.DEFAULT_NAMESPACE);
+        assertThat(config.tls().isPresent()).isTrue();
+        assertThat(config.tls().unwrap().autoGenerate()).isTrue();
+        assertThat(config.docker().isEmpty()).isTrue();
+        assertThat(config.kubernetes().isPresent()).isTrue();
+        assertThat(config.kubernetes().unwrap().namespace()).isEqualTo(KubernetesConfig.DEFAULT_NAMESPACE);
     }
 
     @Test
@@ -85,8 +85,8 @@ class AetherConfigTest {
             .build();
 
         assertThat(config.tlsEnabled()).isTrue();
-        assertThat(config.tls()).isNotNull();
-        assertThat(config.tls().autoGenerate()).isTrue();
+        assertThat(config.tls().isPresent()).isTrue();
+        assertThat(config.tls().unwrap().autoGenerate()).isTrue();
     }
 
     @Test
@@ -118,8 +118,8 @@ class AetherConfigTest {
             .dockerConfig(customDocker)
             .build();
 
-        assertThat(config.docker().network()).isEqualTo("my-network");
-        assertThat(config.docker().image()).isEqualTo("my-image:v1");
+        assertThat(config.docker().unwrap().network()).isEqualTo("my-network");
+        assertThat(config.docker().unwrap().image()).isEqualTo("my-image:v1");
     }
 
     @Test
@@ -130,9 +130,9 @@ class AetherConfigTest {
             .kubernetesConfig(customK8s)
             .build();
 
-        assertThat(config.kubernetes().namespace()).isEqualTo("prod");
-        assertThat(config.kubernetes().serviceType()).isEqualTo("LoadBalancer");
-        assertThat(config.kubernetes().storageClass()).isEqualTo("fast-ssd");
+        assertThat(config.kubernetes().unwrap().namespace()).isEqualTo("prod");
+        assertThat(config.kubernetes().unwrap().serviceType()).isEqualTo("LoadBalancer");
+        assertThat(config.kubernetes().unwrap().storageClass()).isEqualTo("fast-ssd");
     }
 
     @Test
