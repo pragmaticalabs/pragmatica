@@ -34,6 +34,7 @@
         <module>e2e-tests</module>
         <module>aether-ttm</module>
         <module>http-routing</module>
+        <module>infra-slices</module>
     </modules>
 
     <properties>

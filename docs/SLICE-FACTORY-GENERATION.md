@@ -1,0 +1,667 @@
+# Slice Factory Generation Design
+
+## Overview
+
+This document describes the automatic generation of slice factory methods following JBCT conventions. The goal is to eliminate boilerplate while maintaining type safety and predictability.
+
+## Design Decisions
+
+### D1: Factory Return Type
+
+**Decision**: Factory methods return `Promise<SliceType>`, never `Result<Promise<...>>` or `Promise<Result<...>>`.
+
+**Rationale**: Promise is the asynchronous version of Result by design. Wrapping one in the other is redundant and violates JBCT principles.
+
+```java
+// CORRECT
+static Promise<MySlice> mySlice(Aspect aspect, UserRepository repo) { ... }
+
+// WRONG - never wrap Result in Promise or vice versa
+static Promise<Result<MySlice>> mySlice(...) { ... }
+```
+
+### D2: Aspect Parameter
+
+**Decision**: First parameter is always `Aspect<SliceType> aspect`. Identity aspect is used when no decoration is needed.
+
+**Rationale**:
+- Eliminates conditional logic in factory
+- Single vtable indirect call (Java is optimized for this)
+- Identity aspect costs nothing at runtime
+- Simpler, more predictable code
+
+### D3: Aspect Semantics (Minimal Invasivity)
+
+**Decision**: Aspect intercepts method invocations at two points:
+1. **Before execution**: Receives ALL method parameters (can log, validate, transform, apply transaction, metrics, etc.)
+2. **After execution**: Receives result of execution (can log, transform, or return something completely different)
+
+**Interface Design**:
+```java
+@FunctionalInterface
+public interface Aspect<T> {
+    /**
+     * Wrap a slice instance with aspect behavior.
+     * The returned instance intercepts all method calls.
+     *
+     * @param instance The slice instance to wrap
+     * @return Wrapped instance with aspect behavior
+     */
+    T apply(T instance);
+
+    /**
+     * Identity aspect - passes through unchanged.
+     */
+    static <T> Aspect<T> identity() {
+        return instance -> instance;
+    }
+}
+```
+
+**Method Interception Pattern** (internal to aspect implementation):
+```java
+// Pseudo-code for what aspect.apply() returns
+return new SliceProxy(instance) {
+    @Override
+    public Promise<Response> process(Request request) {
+        // BEFORE: aspect can inspect/modify/log all parameters
+        var modifiedRequest = aspectBefore(request);
+
+        // EXECUTE: call actual implementation
+        return delegate.process(modifiedRequest)
+            // AFTER: aspect can inspect/modify/log result
+            .map(result -> aspectAfter(result));
+    }
+};
+```
+
+### D4: Dynamic Aspect Slice (Major Feature)
+
+**Decision**: Provide a dedicated factory for creating Dynamic Aspect Slices - instances where each dependency is wrapped in dynamically configurable aspects.
+
+**Purpose**:
+- Enable/disable logging and metrics at runtime without disruption
+- Quick diagnosis: "where might be an issue?"
+- Route to AI for automatic investigation
+- Dashboard integration with enable/disable buttons
+
+**Default Configuration**: Wrap only inputs and adapters (the interesting places for debugging).
+
+**Factory Signature**:
+```java
+public final class MySliceFactory {
+    // Standard factory - static aspect
+    public static Promise<MySlice> create(Aspect<MySlice> aspect,
+                                           SliceInvokerFacade invoker) { ... }
+
+    // Dynamic factory - runtime-configurable aspects
+    public static Promise<MySlice> createDynamic(DynamicAspectConfig config,
+                                                   SliceInvokerFacade invoker) { ... }
+}
+```
+
+**DynamicAspectConfig**:
+```java
+public interface DynamicAspectConfig {
+    // Runtime toggles
+    boolean isLoggingEnabled();
+    boolean isMetricsEnabled();
+
+    // Per-dependency aspect configuration
+    <T> Aspect<T> aspectFor(Class<T> dependencyType);
+
+    // Configuration updates (thread-safe)
+    void enableLogging(boolean enabled);
+    void enableMetrics(boolean enabled);
+}
+```
+
+**Dashboard Integration Points**:
+- GET /slices/{sliceId}/aspects - list current aspect configuration
+- PUT /slices/{sliceId}/aspects/logging - enable/disable logging
+- PUT /slices/{sliceId}/aspects/metrics - enable/disable metrics
+- GET /slices/{sliceId}/aspects/logs - recent intercepted calls (when logging enabled)
+
+### D5: Adapter Dependency Discovery
+
+**Decision**: Adapter dependencies are identified by being **external to the slice's base package**. They are exclusively other slices (external or infrastructure).
+
+**Discovery Algorithm**:
+1. Start from `@Slice` interface
+2. Find factory method (follows `TypeName.typeName(...)` naming)
+3. Trace implementation dependencies
+4. Filter to dependencies outside base package
+5. These are adapter leaf dependencies
+
+**Package Rule**:
+- Same base package = internal implementation detail
+- Different base package = external dependency = adapter leaf
+
+### D6: Maven Artifact Mapping
+
+**Decision**: External dependencies map to Maven artifacts via the `slice-deps.properties` file generated by `jbct:collect-slice-deps`.
+
+**Format**:
+```properties
+# Generated by jbct:collect-slice-deps
+org.example:inventory-service:api=1.0.0
+org.example:pricing-service:api=1.2.0
+```
+
+**Resolution**: When generating factory, class imports are matched against known artifacts to determine version.
+
+### D7: Generated Factory Structure
+
+**Decision**: Generate complete factory body following JBCT coding rules. Internal structure is implementation detail.
+
+**Generated Pattern**:
+```java
+public final class MySliceFactory {
+    private MySliceFactory() {}
+
+    /**
+     * Create slice with static aspect configuration.
+     */
+    public static Promise<MySlice> create(Aspect<MySlice> aspect,
+                                           SliceInvokerFacade invoker) {
+        // Create proxies for all adapter dependencies
+        var inventoryService = new InventoryServiceProxy(invoker,
+            "org.example:inventory-service:1.0.0");
+        var pricingService = new PricingServiceProxy(invoker,
+            "org.example:pricing-service:1.2.0");
+
+        // Create instance via original factory
+        var instance = MySlice.mySlice(inventoryService, pricingService);
+
+        // Apply aspect and return
+        return Promise.successful(aspect.apply(instance));
+    }
+
+    /**
+     * Create slice with dynamic runtime-configurable aspects.
+     * Enables runtime toggling of logging/metrics without restart.
+     */
+    public static Promise<MySlice> createDynamic(DynamicAspectConfig config,
+                                                   SliceInvokerFacade invoker) {
+        // Wrap each dependency with dynamic aspect
+        var inventoryAspect = config.aspectFor(InventoryService.class);
+        var inventoryService = inventoryAspect.apply(
+            new InventoryServiceProxy(invoker, "org.example:inventory-service:1.0.0"));
+
+        var pricingAspect = config.aspectFor(PricingService.class);
+        var pricingService = pricingAspect.apply(
+            new PricingServiceProxy(invoker, "org.example:pricing-service:1.2.0"));
+
+        // Create instance
+        var instance = MySlice.mySlice(inventoryService, pricingService);
+
+        // Wrap slice itself with dynamic aspect
+        var sliceAspect = config.aspectFor(MySlice.class);
+        return Promise.successful(sliceAspect.apply(instance));
+    }
+
+    public static final class Dependencies {
+        public static final String INVENTORY_SERVICE = "org.example:inventory-service:1.0.0";
+        public static final String PRICING_SERVICE = "org.example:pricing-service:1.2.0";
+        private Dependencies() {}
+    }
+}
+```
+
+### D8: No Impl Classes
+
+**Decision**: Following JBCT conventions, implementations are lambdas or local records, not separate `XxxImpl` classes.
+
+**Rationale**:
+- Factory methods encapsulate construction
+- Implementation details stay internal
+- Cleaner public API
+
+## Dependency Discovery Algorithm
+
+### Phase 1: Interface Analysis
+
+```
+Input: @Slice annotated interface
+Output: SliceModel with methods, factory method, base package
+
+1. Extract package name → base package
+2. Find static factory method (lowercase-first naming convention)
+3. Extract factory method parameters → initial dependency list
+4. Extract interface methods → public API
+```
+
+### Phase 2: Dependency Classification
+
+```
+Input: Factory method parameters
+Output: Classified dependencies (internal vs external)
+
+For each parameter type:
+1. Resolve full qualified name
+2. Compare package to base package
+3. If different package → external dependency (adapter leaf)
+4. If same package → internal (skip, already assembled)
+```
+
+### Phase 3: Artifact Resolution
+
+```
+Input: External dependency types
+Output: Maven artifact coordinates
+
+For each external dependency:
+1. Find in slice-deps.properties by class name
+2. Extract groupId:artifactId:version
+3. Store for proxy generation
+```
+
+### Phase 4: Factory Generation
+
+```
+Input: SliceModel + resolved dependencies
+Output: Generated factory class
+
+1. Generate factory class with private constructor
+2. Generate create() method:
+   a. First param: Aspect<SliceType> aspect
+   b. Second param: SliceInvokerFacade invoker
+   c. Create proxy for each external dependency
+   d. Call original factory method
+   e. Apply aspect
+   f. Return Promise
+3. Generate createDynamic() method:
+   a. First param: DynamicAspectConfig config
+   b. Second param: SliceInvokerFacade invoker
+   c. Create proxy for each external dependency with dynamic aspect
+   d. Call original factory method
+   e. Apply slice-level dynamic aspect
+   f. Return Promise
+```
+
+## Infrastructure Slices (Growing Nomenclature)
+
+Known infrastructure slice categories:
+- **Caching**: CacheService, DistributedCache
+- **Logging**: LoggingService, AuditLog
+- **Metrics**: MetricsCollector, TelemetryService
+- **Storage**: BlobStorage, FileStorage
+- **Messaging**: MessageQueue, EventBus
+- **Security**: AuthenticationService, AuthorizationService
+
+Infrastructure slices follow same patterns but provide cross-cutting capabilities.
+
+## File Structure
+
+```
+slice-processor/
+├── src/main/java/org/pragmatica/jbct/slice/
+│   ├── SliceProcessor.java           # Annotation processor entry point
+│   ├── model/
+│   │   ├── SliceModel.java           # Slice metadata
+│   │   ├── MethodModel.java          # Method info
+│   │   └── DependencyModel.java      # Dependency info with classification
+│   ├── analyzer/
+│   │   └── DependencyAnalyzer.java   # Traces dependencies to adapters
+│   └── generator/
+│       ├── ApiInterfaceGenerator.java
+│       ├── ProxyClassGenerator.java
+│       ├── FactoryClassGenerator.java # Generates both static and dynamic factories
+│       ├── ManifestGenerator.java
+│       └── DependencyVersionResolver.java
+└── docs/
+    └── SLICE-FACTORY-GENERATION.md   # This document
+```
+
+## Aether Runtime Requirements
+
+The following types must be provided by `slice-api` module:
+
+### Aspect<T>
+```java
+package org.pragmatica.aether.slice;
+
+@FunctionalInterface
+public interface Aspect<T> {
+    T apply(T instance);
+
+    static <T> Aspect<T> identity() {
+        return instance -> instance;
+    }
+
+    default <R> Aspect<R> compose(Aspect<R> other) {
+        // Compose two aspects
+    }
+}
+```
+
+### DynamicAspectConfig
+```java
+package org.pragmatica.aether.slice;
+
+public interface DynamicAspectConfig {
+    boolean isLoggingEnabled();
+    boolean isMetricsEnabled();
+    <T> Aspect<T> aspectFor(Class<T> dependencyType);
+    void enableLogging(boolean enabled);
+    void enableMetrics(boolean enabled);
+
+    static DynamicAspectConfig defaultConfig() {
+        return new DefaultDynamicAspectConfig();
+    }
+}
+```
+
+### LoggingAspect / MetricsAspect (Infrastructure)
+```java
+package org.pragmatica.aether.slice.aspect;
+
+public final class LoggingAspect {
+    public static <T> Aspect<T> logging(Logger logger, String name) {
+        // Returns aspect that logs all method invocations
+    }
+}
+
+public final class MetricsAspect {
+    public static <T> Aspect<T> metrics(MetricsRegistry registry, String name) {
+        // Returns aspect that records timing/counts
+    }
+}
+```
+
+## Example
+
+### Input: Slice Interface
+
+```java
+package org.example.order;
+
+@Slice
+public interface PlaceOrder {
+    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
+
+    // Factory method - parameters are external slice dependencies
+    static PlaceOrder placeOrder(InventoryService inventory,
+                                  PricingService pricing) {
+        return new PlaceOrderImpl(inventory, pricing);
+    }
+}
+```
+
+### Analysis Result
+
+```
+Base package: org.example.order
+Factory method: placeOrder(InventoryService, PricingService)
+External dependencies:
+  - org.example.inventory.api.InventoryService → org.example:inventory-service:1.0.0
+  - org.example.pricing.api.PricingService → org.example:pricing-service:1.2.0
+```
+
+### Generated Factory
+
+```java
+package org.example.order;
+
+import org.pragmatica.aether.slice.Aspect;
+import org.pragmatica.aether.slice.DynamicAspectConfig;
+import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.lang.Promise;
+import org.example.inventory.api.InventoryService;
+import org.example.inventory.api.InventoryServiceProxy;
+import org.example.pricing.api.PricingService;
+import org.example.pricing.api.PricingServiceProxy;
+
+/**
+ * Factory for PlaceOrder slice.
+ * Creates proxy instances, applies aspect, and returns Promise.
+ * Generated by slice-processor - do not edit manually.
+ */
+public final class PlaceOrderFactory {
+    private PlaceOrderFactory() {}
+
+    /**
+     * Create PlaceOrder slice with static aspect.
+     *
+     * @param aspect Aspect to apply (use Aspect.identity() for none)
+     * @param invoker The slice invoker for remote calls
+     * @return Promise of configured PlaceOrder instance
+     */
+    public static Promise<PlaceOrder> create(Aspect<PlaceOrder> aspect,
+                                              SliceInvokerFacade invoker) {
+        var inventory = new InventoryServiceProxy(invoker,
+            "org.example:inventory-service:1.0.0");
+        var pricing = new PricingServiceProxy(invoker,
+            "org.example:pricing-service:1.2.0");
+
+        var instance = PlaceOrder.placeOrder(inventory, pricing);
+        return Promise.successful(aspect.apply(instance));
+    }
+
+    /**
+     * Create PlaceOrder slice with dynamic runtime-configurable aspects.
+     * Enables runtime toggling of logging/metrics without restart.
+     *
+     * @param config Dynamic aspect configuration (runtime-updatable)
+     * @param invoker The slice invoker for remote calls
+     * @return Promise of configured PlaceOrder instance
+     */
+    public static Promise<PlaceOrder> createDynamic(DynamicAspectConfig config,
+                                                     SliceInvokerFacade invoker) {
+        var inventory = config.aspectFor(InventoryService.class).apply(
+            new InventoryServiceProxy(invoker, "org.example:inventory-service:1.0.0"));
+        var pricing = config.aspectFor(PricingService.class).apply(
+            new PricingServiceProxy(invoker, "org.example:pricing-service:1.2.0"));
+
+        var instance = PlaceOrder.placeOrder(inventory, pricing);
+        return Promise.successful(config.aspectFor(PlaceOrder.class).apply(instance));
+    }
+
+    public static final class Dependencies {
+        public static final String INVENTORY_SERVICE = "org.example:inventory-service:1.0.0";
+        public static final String PRICING_SERVICE = "org.example:pricing-service:1.2.0";
+        private Dependencies() {}
+    }
+}
+```
+
+## Use Cases for Dynamic Aspect
+
+### 1. Production Debugging
+```java
+// Normal operation - aspects disabled
+config.enableLogging(false);
+config.enableMetrics(false);
+
+// Issue detected - enable logging for specific slice
+config.enableLogging(true);
+// ... observe logs ...
+config.enableLogging(false);
+```
+
+### 2. Performance Analysis
+```java
+// Enable metrics to find bottleneck
+config.enableMetrics(true);
+// ... collect metrics ...
+// Dashboard shows: InventoryService.checkStock taking 500ms average
+```
+
+### 3. AI-Assisted Debugging
+```java
+// Route logs to AI investigation agent
+config.setLogDestination(aiInvestigator);
+config.enableLogging(true);
+// AI analyzes patterns and suggests root cause
+```
+
+### 4. Dashboard Integration
+```
+┌──────────────────────────────────────────────────────────┐
+│ PlaceOrder Slice - Aspect Configuration                   │
+├──────────────────────────────────────────────────────────┤
+│ Slice-Level Aspects:                                      │
+│   [x] Logging    [ ] Metrics                              │
+│                                                           │
+│ Dependency Aspects:                                       │
+│   InventoryService:  [x] Logging  [x] Metrics            │
+│   PricingService:    [ ] Logging  [x] Metrics            │
+│                                                           │
+│ Recent Calls (logging enabled):                          │
+│   10:45:32 placeOrder({customerId: "C123", ...})         │
+│            → InventoryService.checkStock(...)            │
+│            → PricingService.calculateTotal(...)          │
+│            ← OrderResult{orderId: "O456", status: OK}    │
+└──────────────────────────────────────────────────────────┘
+```
+
+## D9: Factory Return Type Handling
+
+**Decision**: Generated code handles all valid factory return types: `Promise<T>`, `Result<T>`, `Option<T>`, and plain `T`.
+
+**Rationale**: Real factories may validate inputs or check preconditions, returning different wrapper types. Generated code must handle plumbing transparently.
+
+**Generated Patterns**:
+
+```java
+// Plain return type
+static PlaceOrder placeOrder(...) { ... }
+// Generated: wrap in Promise
+return Promise.successful(aspect.apply(instance));
+
+// Result return type
+static Result<PlaceOrder> placeOrder(...) { ... }
+// Generated: map success, log failure
+return instance
+    .onFailure(cause -> log.error("Factory failed: {}", cause))
+    .map(aspect::apply)
+    .toPromise();
+
+// Option return type
+static Option<PlaceOrder> placeOrder(...) { ... }
+// Generated: map present, log missing
+return instance
+    .onMissing(() -> log.warn("Factory returned empty"))
+    .map(aspect::apply)
+    .toResult(FactoryError.MISSING)
+    .toPromise();
+
+// Promise return type
+static Promise<PlaceOrder> placeOrder(...) { ... }
+// Generated: map success
+return instance.map(aspect::apply);
+```
+
+### D9.1: Frequency-Based Logging Strategy
+
+**Decision**: Log rare cases, skip common ones. One-shot slices can log failures freely (rare = zero cost). High-frequency paths log selectively.
+
+**Configuration**:
+```java
+@Slice(logging = LogStrategy.FAILURES_ONLY)     // Default - log failures
+@Slice(logging = LogStrategy.SUCCESSES_ONLY)    // Rare success path
+@Slice(logging = LogStrategy.ALL)               // Debug mode
+@Slice(logging = LogStrategy.NONE)              // Performance critical
+@Slice(logging = LogStrategy.SAMPLED)           // 1% sampling
+```
+
+**Rationale**:
+- Failure in one-shot operation = definitely want to know
+- Success in one-shot operation = probably don't need to log
+- High-frequency success = definitely don't log (noise)
+- High-frequency failure = something is wrong, need visibility
+
+## D10: Sliding Window Log Buffer
+
+**Decision**: Provide in-memory sliding window that keeps recent N log entries per slice, enabling focused AI investigation without external log infrastructure.
+
+**Purpose**:
+- Narrow, focused context for AI analysis
+- No need to search through global logs
+- Immediate access to relevant history
+- Works without external log collectors
+
+**Interface**:
+```java
+public interface SliceLogBuffer {
+    // Configuration
+    int capacity();                              // Default: 100 entries
+
+    // Write
+    void log(LogEntry entry);
+
+    // Read
+    List<LogEntry> recent(int count);           // Last N entries
+    List<LogEntry> since(Instant timestamp);    // Since time
+    List<LogEntry> failures();                  // Failures only
+
+    // AI integration
+    String toContext();                         // Formatted for AI prompt
+    void onThresholdExceeded(Consumer<List<LogEntry>> handler);
+}
+
+public record LogEntry(
+    Instant timestamp,
+    LogLevel level,
+    String sliceId,
+    String method,
+    String requestSummary,
+    String responseSummary,
+    Duration duration,
+    Option<Cause> failure
+) {}
+```
+
+**Threshold-Triggered AI Investigation**:
+```java
+logBuffer.onThresholdExceeded(entries -> {
+    // Threshold: 5 failures in 1 minute
+    var context = logBuffer.toContext();
+    aiAgent.investigate(context)
+        .onSuccess(diagnosis -> alerts.send("AI Diagnosis", diagnosis));
+});
+```
+
+**Dashboard Integration**:
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ PlaceOrder Slice - Log Buffer (last 100 entries)                 │
+├──────────────────────────────────────────────────────────────────┤
+│ Summary: 94 success, 6 failures (last 5 min)                     │
+│ Threshold: 5 failures/min [EXCEEDED - AI investigating]          │
+│                                                                  │
+│ Recent Failures:                                                 │
+│   10:45:32 placeOrder({customerId: "C123"})                     │
+│            → FAILURE: InventoryService timeout after 5000ms      │
+│   10:45:28 placeOrder({customerId: "C456"})                     │
+│            → FAILURE: PricingService returned UNAVAILABLE        │
+│                                                                  │
+│ [View All] [Export to Collector] [Trigger AI Analysis]          │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Routing to External Collectors**:
+```java
+// Optional forwarding to standard infrastructure
+logBuffer.forwardTo(logCollector);      // e.g., Loki, Elasticsearch
+logBuffer.forwardTo(metricsRegistry);   // Extract metrics from logs
+logBuffer.forwardTo(alertManager);      // Threshold-based alerts
+```
+
+**Memory Considerations**:
+- Fixed capacity ring buffer (O(1) add, bounded memory)
+- Configurable per-slice (high-traffic = smaller buffer or sampling)
+- Entries are lightweight records, not full stack traces
+- Old entries evicted automatically
+
+## Revision History
+
+| Date | Author | Changes |
+|------|--------|---------|
+| 2026-01-11 | Claude | Initial design document |
+| 2026-01-11 | Claude | Added Aspect semantics clarification (before/after interception) |
+| 2026-01-11 | Claude | Added Dynamic Aspect Slice feature design |
+| 2026-01-11 | Claude | Added dashboard integration concepts |
+| 2026-01-11 | Claude | Added D9: Factory return type handling (Option/Result/Promise/plain) |
+| 2026-01-11 | Claude | Added D9.1: Frequency-based logging strategy |
+| 2026-01-11 | Claude | Added D10: Sliding window log buffer with AI integration |
