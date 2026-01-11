@@ -1,7 +1,6 @@
 package org.pragmatica.aether.slice.blueprint;
 
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.routing.SliceSpec;
 import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;

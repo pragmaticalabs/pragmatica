@@ -12,10 +12,6 @@ import org.pragmatica.aether.deployment.cluster.BlueprintServiceImpl;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
-import org.pragmatica.aether.http.HttpRouter;
-import org.pragmatica.aether.http.RouteRegistry;
-import org.pragmatica.aether.http.RouterConfig;
-import org.pragmatica.aether.http.SliceDispatcher;
 import org.pragmatica.aether.infra.artifact.ArtifactStore;
 import org.pragmatica.aether.infra.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
@@ -106,8 +102,6 @@ public interface AetherNode {
     SliceInvoker sliceInvoker();
 
     InvocationHandler invocationHandler();
-
-    Option<HttpRouter> httpRouter();
 
     BlueprintService blueprintService();
 
@@ -302,7 +296,6 @@ public interface AetherNode {
                               ArtifactMetricsCollector artifactMetricsCollector,
                               EventLoopMetricsCollector eventLoopMetricsCollector,
                               Option<ManagementServer> managementServer,
-                              Option<HttpRouter> httpRouter,
                               long startTimeMs) implements AetherNode {
             private static final Logger log = LoggerFactory.getLogger(aetherNodeImpl.class);
 
@@ -319,10 +312,8 @@ public interface AetherNode {
                 SliceRuntime.setSliceInvoker(sliceInvoker);
                 return managementServer.map(ManagementServer::start)
                                        .or(Promise.unitPromise())
-                                       .flatMap(_ -> httpRouter.map(HttpRouter::start)
-                                                               .or(Promise.unitPromise()))
                                        .flatMap(_ -> startClusterAsync())
-                                       .onSuccess(_ -> log.info("Aether node {} HTTP server started, cluster forming...",
+                                       .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
             }
 
@@ -335,14 +326,12 @@ public interface AetherNode {
                 ttmManager.stop();
                 snapshotCollector.stop();
                 SliceRuntime.clear();
-                return httpRouter.map(HttpRouter::stop)
-                                 .or(Promise.unitPromise())
-                                 .flatMap(_ -> managementServer.map(ManagementServer::stop)
-                                                               .or(Promise.unitPromise()))
-                                 .flatMap(_ -> sliceInvoker.stop())
-                                 .flatMap(_ -> clusterNode.stop())
-                                 .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                          self()));
+                return managementServer.map(ManagementServer::stop)
+                                       .or(Promise.unitPromise())
+                                       .flatMap(_ -> sliceInvoker.stop())
+                                       .flatMap(_ -> clusterNode.stop())
+                                       .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                                self()));
             }
 
             private Promise<Unit> startClusterAsync() {
@@ -402,8 +391,6 @@ public interface AetherNode {
         }
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
         var invocationHandler = InvocationHandler.invocationHandler(config.self(), clusterNode.network());
-        // Create route registry for dynamic route registration (before node deployment manager)
-        var routeRegistry = RouteRegistry.routeRegistry(clusterNode);
         // Create deployment metrics components
         var deploymentMetricsCollector = DeploymentMetricsCollector.deploymentMetricsCollector(config.self(),
                                                                                                clusterNode.network());
@@ -417,7 +404,6 @@ public interface AetherNode {
                                                                                 clusterNode,
                                                                                 kvStore,
                                                                                 invocationHandler,
-                                                                                routeRegistry,
                                                                                 config.sliceAction());
         // Extract initial topology from config (node IDs from core nodes)
         var initialTopology = config.topology()
@@ -492,7 +478,6 @@ public interface AetherNode {
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
                                                 endpointRegistry,
-                                                routeRegistry,
                                                 metricsCollector,
                                                 metricsScheduler,
                                                 deploymentMetricsCollector,
@@ -508,14 +493,6 @@ public interface AetherNode {
                                                 artifactMetricsCollector);
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
-        // Create HTTP router if configured
-        Option<HttpRouter> httpRouter = config.httpRouter()
-                                              .map(routerConfig -> createHttpRouter(config,
-                                                                                    routerConfig,
-                                                                                    routeRegistry,
-                                                                                    sliceInvoker,
-                                                                                    serializer,
-                                                                                    deserializer));
         // Create the node first (without management server reference)
         var startTimeMs = System.currentTimeMillis();
         var node = new aetherNodeImpl(config,
@@ -547,7 +524,6 @@ public interface AetherNode {
                                       artifactMetricsCollector,
                                       eventLoopMetricsCollector,
                                       Option.empty(),
-                                      httpRouter,
                                       startTimeMs);
         // Build and wire ImmutableRouter, then create final node
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
@@ -587,43 +563,16 @@ public interface AetherNode {
                                                                artifactMetricsCollector,
                                                                eventLoopMetricsCollector,
                                                                Option.some(managementServer),
-                                                               httpRouter,
                                                                startTimeMs);
                                  }
                                  return node;
                              });
     }
 
-    private static HttpRouter createHttpRouter(AetherNodeConfig config,
-                                               RouterConfig routerConfig,
-                                               RouteRegistry routeRegistry,
-                                               SliceInvoker sliceInvoker,
-                                               Serializer serializer,
-                                               Deserializer deserializer) {
-        // Apply TLS from main config if RouterConfig doesn't have its own TLS
-        var effectiveConfig = routerConfig.tls()
-                                          .isEmpty() && config.tls()
-                                                              .isPresent()
-                              ? config.tls()
-                                      .map(routerConfig::withTls)
-                                      .or(routerConfig)
-                              : routerConfig;
-        // Create artifact resolver that parses slice ID strings to Artifact
-        SliceDispatcher.ArtifactResolver artifactResolver = sliceId -> Artifact.artifact(sliceId)
-                                                                               .option();
-        return HttpRouter.httpRouter(effectiveConfig,
-                                     routeRegistry,
-                                     sliceInvoker,
-                                     artifactResolver,
-                                     serializer,
-                                     deserializer);
-    }
-
     private static List<MessageRouter.Entry< ?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
                                                                      NodeDeploymentManager nodeDeploymentManager,
                                                                      ClusterDeploymentManager clusterDeploymentManager,
                                                                      EndpointRegistry endpointRegistry,
-                                                                     RouteRegistry routeRegistry,
                                                                      MetricsCollector metricsCollector,
                                                                      MetricsScheduler metricsScheduler,
                                                                      DeploymentMetricsCollector deploymentMetricsCollector,
@@ -642,13 +591,11 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, nodeDeploymentManager::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, clusterDeploymentManager::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, endpointRegistry::onValuePut));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, routeRegistry::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
                                               nodeDeploymentManager::onValueRemove));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
                                               clusterDeploymentManager::onValueRemove));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, endpointRegistry::onValueRemove));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, routeRegistry::onValueRemove));
         // Artifact metrics tracking via KV-Store
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, artifactMetricsCollector::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,

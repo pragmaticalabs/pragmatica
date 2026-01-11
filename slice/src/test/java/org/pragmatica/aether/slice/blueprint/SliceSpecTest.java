@@ -1,4 +1,4 @@
-package org.pragmatica.aether.slice.routing;
+package org.pragmatica.aether.slice.blueprint;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;

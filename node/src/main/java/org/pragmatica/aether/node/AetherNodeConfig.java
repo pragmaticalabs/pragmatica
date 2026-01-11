@@ -3,7 +3,6 @@ package org.pragmatica.aether.node;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TTMConfig;
-import org.pragmatica.aether.http.RouterConfig;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
 import org.pragmatica.consensus.NodeId;
@@ -30,7 +29,6 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  * @param sliceAction     Slice lifecycle configuration
  * @param sliceConfig     Slice repository configuration (types to create at runtime)
  * @param managementPort  Port for HTTP management API (0 to disable)
- * @param httpRouter      HTTP router configuration (empty to disable)
  * @param artifactRepo    DHT configuration for artifact repository (replication factor, 0 = full)
  * @param tls             TLS configuration for secure connections (empty for plain TCP/HTTP)
  * @param ttm             TTM (Tiny Time Mixers) predictive scaling configuration
@@ -41,7 +39,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                SliceActionConfig sliceAction,
                                SliceConfig sliceConfig,
                                int managementPort,
-                               Option<RouterConfig> httpRouter,
                                DHTConfig artifactRepo,
                                Option<TlsConfig> tls,
                                TTMConfig ttm,
@@ -62,7 +59,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 defaultSliceActionConfig(),
                                 SliceConfig.defaults(),
                                 DEFAULT_MANAGEMENT_PORT,
-                                Option.empty(),
                                 DHTConfig.DEFAULT);
     }
 
@@ -76,7 +72,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 sliceActionConfig,
                                 SliceConfig.defaults(),
                                 DEFAULT_MANAGEMENT_PORT,
-                                Option.empty(),
                                 DHTConfig.DEFAULT);
     }
 
@@ -91,23 +86,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                 sliceActionConfig,
                                 SliceConfig.defaults(),
                                 managementPort,
-                                Option.empty(),
-                                DHTConfig.DEFAULT);
-    }
-
-    public static AetherNodeConfig aetherNodeConfig(NodeId self,
-                                                    int port,
-                                                    List<NodeInfo> coreNodes,
-                                                    SliceActionConfig sliceActionConfig,
-                                                    int managementPort,
-                                                    Option<RouterConfig> httpRouter) {
-        return aetherNodeConfig(self,
-                                port,
-                                coreNodes,
-                                sliceActionConfig,
-                                SliceConfig.defaults(),
-                                managementPort,
-                                httpRouter,
                                 DHTConfig.DEFAULT);
     }
 
@@ -117,7 +95,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                                     SliceActionConfig sliceActionConfig,
                                                     SliceConfig sliceConfig,
                                                     int managementPort,
-                                                    Option<RouterConfig> httpRouter,
                                                     DHTConfig artifactRepoConfig) {
         var topology = new TopologyConfig(self, timeSpan(5)
                                                         .seconds(), timeSpan(1)
@@ -127,7 +104,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     sliceActionConfig,
                                     sliceConfig,
                                     managementPort,
-                                    httpRouter,
                                     artifactRepoConfig,
                                     Option.empty(),
                                     TTMConfig.disabled(),
@@ -144,7 +120,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     defaultSliceActionConfig(),
                                     SliceConfig.defaults(),
                                     MANAGEMENT_DISABLED,
-                                    Option.empty(),
                                     DHTConfig.FULL,
                                     Option.empty(),
                                     TTMConfig.disabled(),
@@ -168,7 +143,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     sliceAction,
                                     sliceConfig,
                                     managementPort,
-                                    httpRouter,
                                     artifactRepo,
                                     tlsOption,
                                     ttm,
@@ -184,7 +158,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     sliceAction,
                                     sliceConfig,
                                     managementPort,
-                                    httpRouter,
                                     artifactRepo,
                                     tls,
                                     ttmConfig,
@@ -200,7 +173,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     sliceAction,
                                     sliceConfig,
                                     managementPort,
-                                    httpRouter,
                                     artifactRepo,
                                     tls,
                                     ttm,
@@ -216,7 +188,6 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     sliceAction,
                                     newSliceConfig,
                                     managementPort,
-                                    httpRouter,
                                     artifactRepo,
                                     tls,
                                     ttm,

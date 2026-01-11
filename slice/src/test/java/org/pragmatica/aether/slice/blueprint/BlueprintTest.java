@@ -3,7 +3,6 @@ package org.pragmatica.aether.slice.blueprint;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
-import org.pragmatica.aether.slice.routing.SliceSpec;
 
 import java.util.List;
 

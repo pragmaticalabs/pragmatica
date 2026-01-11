@@ -323,7 +323,6 @@ class ManagementApiIT {
                         org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider.furySerializerFactoryProvider()),
                 org.pragmatica.aether.config.SliceConfig.defaults(),
                 managementPort,
-                Option.empty(),
                 org.pragmatica.dht.DHTConfig.FULL,
                 Option.empty(),
                 org.pragmatica.aether.config.TTMConfig.disabled(),

@@ -9,10 +9,6 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
-import org.pragmatica.aether.slice.routing.Binding;
-import org.pragmatica.aether.slice.routing.BindingSource;
-import org.pragmatica.aether.slice.routing.Route;
-import org.pragmatica.aether.slice.routing.RouteTarget;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.invoke.InvocationMessage;
@@ -49,11 +45,6 @@ public interface AetherCustomClasses {
         consumer.accept(BlueprintId.class);
         consumer.accept(ExpandedBlueprint.class);
         consumer.accept(ResolvedSlice.class);
-        consumer.accept(Route.class);
-        consumer.accept(RouteTarget.class);
-        consumer.accept(Binding.class);
-        concreteSubtypes(BindingSource.class)
-                        .forEach(consumer);
         // Metrics types
         concreteSubtypes(MetricsMessage.class)
                         .forEach(consumer);

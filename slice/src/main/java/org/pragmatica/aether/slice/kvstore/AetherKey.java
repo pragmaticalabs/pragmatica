@@ -191,53 +191,6 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    /// Route key format:
-    /// ```
-    /// routes/{method}:{pathHash}
-    /// ```
-    /// Routes use path hash for key uniqueness while storing original pattern in value.
-    record RouteKey(String method, int pathHash) implements AetherKey {
-        @Override
-        public boolean matches(StructuredPattern pattern) {
-            return switch (pattern) {
-                case AetherKeyPattern.RoutePattern routePattern -> routePattern.matches(this);
-                default -> false;
-            };
-        }
-
-        @Override
-        public String asString() {
-            return "routes/" + method + ":" + pathHash;
-        }
-
-        @Override
-        public String toString() {
-            return asString();
-        }
-
-        public static RouteKey routeKey(String method, String pathPattern) {
-            return new RouteKey(method.toUpperCase(java.util.Locale.ROOT), pathPattern.hashCode());
-        }
-
-        public static Result<RouteKey> routeKey(String key) {
-            if (!key.startsWith("routes/")) {
-                return ROUTE_KEY_FORMAT_ERROR.apply(key)
-                                             .result();
-            }
-            var content = key.substring(7);
-            // Remove "routes/"
-            var colonIndex = content.indexOf(':');
-            if (colonIndex == - 1) {
-                return ROUTE_KEY_FORMAT_ERROR.apply(key)
-                                             .result();
-            }
-            var method = content.substring(0, colonIndex);
-            var hashPart = content.substring(colonIndex + 1);
-            return Number.parseInt(hashPart)
-                         .map(hash -> new RouteKey(method, hash));
-        }
-    }
-
     /// Version routing key format:
     /// ```
     /// version-routing/{groupId}:{artifactId}
@@ -401,7 +354,6 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
     Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");
     Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid endpoint key format: %s");
-    Fn1<Cause, String> ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid route key format: %s");
     Fn1<Cause, String> VERSION_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid version-routing key format: %s");
     Fn1<Cause, String> ROLLING_UPDATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid rolling-update key format: %s");
     Fn1<Cause, String> PREVIOUS_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid previous-version key format: %s");
@@ -433,13 +385,6 @@ public sealed interface AetherKey extends StructuredKey {
         /// Pattern for endpoint keys: endpoints/*/*
         record EndpointPattern() implements AetherKeyPattern {
             public boolean matches(EndpointKey key) {
-                return true;
-            }
-        }
-
-        /// Pattern for route keys: routes/*
-        record RoutePattern() implements AetherKeyPattern {
-            public boolean matches(RouteKey key) {
                 return true;
             }
         }
