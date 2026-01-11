@@ -2,14 +2,14 @@
 
 Status: **IN PROGRESS**
 
-## Completed (13/21)
+## Completed (16/21)
 
 | # | Component | Package | Key Classes | Tests |
 |---|-----------|---------|-------------|-------|
 | 1 | Aspect<T> | `slice-api/.../slice` | `Aspect`, `DynamicAspectConfig`, `DefaultDynamicAspectConfig` | N/A (interface) |
 | 2 | LoggingAspectFactory | `infra-slices/.../aspect` | `LogConfig`, `LoggingAspectFactory`, `DefaultLoggingAspectFactory` | `LoggingAspectFactoryTest` |
 | 3 | MetricsAspectFactory | `infra-slices/.../aspect` | `MetricsConfig`, `MetricSnapshot`, `MetricsAspectFactory`, `DefaultMetricsAspectFactory` | `MetricsAspectFactoryTest` |
-| 4 | CacheService | `infra-slices/.../cache` | `CacheService`, `InMemoryCacheService` | `CacheServiceTest` |
+| 4 | CacheService | `infra-slices/.../cache` | `CacheService`, `CacheConfig`, `CacheStats`, `CacheServiceError`, `InMemoryCacheService` | `CacheServiceTest` |
 | 5 | RetryAspectFactory | `infra-slices/.../aspect` | `RetryConfig`, `RetryAspectFactory`, `DefaultRetryAspectFactory` | `RetryAspectFactoryTest` |
 | 6 | CircuitBreakerFactory | `infra-slices/.../circuit` | `CircuitBreakerConfig`, `CircuitBreakerFactory`, `DefaultCircuitBreakerFactory` | `CircuitBreakerFactoryTest` |
 | 7 | DistributedLock | `infra-slices/.../lock` | `LockHandle`, `LockError`, `DistributedLock`, `InMemoryDistributedLock` | `DistributedLockTest` |
@@ -19,15 +19,11 @@ Status: **IN PROGRESS**
 | 11 | HttpClientSlice | `infra-slices/.../http` | `HttpClientConfig`, `HttpClientSlice`, `JdkHttpClientSlice` | `HttpClientSliceTest` |
 | 12 | ConfigService | `infra-slices/.../config` | `ConfigScope`, `ConfigError`, `ConfigSubscription`, `ConfigService`, `InMemoryConfigService` | `ConfigServiceTest` |
 | 13 | Scheduler | `infra-slices/.../scheduler` | `ScheduledTaskHandle`, `SchedulerError`, `Scheduler`, `DefaultScheduler` | `SchedulerTest` |
+| 14 | HttpServerSlice | `infra-slices/.../server` | `HttpServerSliceConfig`, `HttpServerSliceError`, `HttpServerSlice`, `DefaultHttpServerSlice` | `HttpServerSliceTest` |
+| 15 | CacheService Extensions | `infra-slices/.../cache` | Batch ops, counters, patterns, stats | `CacheServiceTest` |
+| 16 | StreamingService | `infra-slices/.../streaming` | `StreamingConfig`, `StreamingError`, `StreamMessage`, `TopicInfo`, `ConsumerGroupInfo`, `StreamingService`, `InMemoryStreamingService` | `StreamingServiceTest` |
 
-## Remaining (8)
-
-### Phase 1: Foundation
-- [ ] **HTTP Server** - Self-registering routes, Route builder API
-- [ ] **CacheService extensions** - Hash/List/Set ops, TypedCache, consistency modes
-
-### Phase 2: Communication
-- [ ] **Streaming** - Kafka-like partitioned messaging with consumer groups
+## Remaining (5)
 
 ### Phase 4: Configuration
 - [ ] **SecretsManager** - Encrypted storage, rotation, metadata-only listing
