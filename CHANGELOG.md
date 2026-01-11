@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Route handling via http-routing module integration
   - Configurable port, timeouts, content length
   - JBCT-compliant sealed error hierarchy
+- **CacheService extensions** - Extended cache functionality
+  - Batch operations: getMulti, setMulti, deleteMulti
+  - Counter operations: increment, incrementBy, decrement
+  - Pattern operations: keys, deletePattern
+  - Statistics: CacheStats with hit/miss tracking
+  - Configuration: CacheConfig with eviction policies
+  - JBCT-compliant error types (CacheServiceError)
 
 ## [0.7.3] - 2026-01-10
 

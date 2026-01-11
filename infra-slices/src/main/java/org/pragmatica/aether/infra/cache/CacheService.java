@@ -8,12 +8,15 @@ import org.pragmatica.lang.Unit;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
- * Cache service providing basic key-value operations.
+ * Cache service providing key-value operations with TTL support.
  * Built on Aether primitives, in-memory first implementation.
  */
 public interface CacheService extends Slice {
+    // ========== Basic Operations ==========
     /**
      * Set a value for the given key.
      *
@@ -57,6 +60,7 @@ public interface CacheService extends Slice {
      */
     Promise<Boolean> exists(String key);
 
+    // ========== TTL Operations ==========
     /**
      * Set TTL on an existing key.
      *
@@ -74,15 +78,119 @@ public interface CacheService extends Slice {
      */
     Promise<Option<Duration>> ttl(String key);
 
+    // ========== Batch Operations ==========
     /**
-     * Factory method for in-memory implementation.
+     * Get multiple values at once.
+     *
+     * @param keys The keys to retrieve
+     * @return Map of key to value (only existing keys included)
+     */
+    Promise<Map<String, String>> getMulti(Set<String> keys);
+
+    /**
+     * Set multiple key-value pairs at once.
+     *
+     * @param entries Map of key-value pairs
+     * @return Unit on success
+     */
+    Promise<Unit> setMulti(Map<String, String> entries);
+
+    /**
+     * Set multiple key-value pairs with TTL.
+     *
+     * @param entries Map of key-value pairs
+     * @param ttl     Time to live for all entries
+     * @return Unit on success
+     */
+    Promise<Unit> setMulti(Map<String, String> entries, Duration ttl);
+
+    /**
+     * Delete multiple keys at once.
+     *
+     * @param keys The keys to delete
+     * @return Number of keys deleted
+     */
+    Promise<Integer> deleteMulti(Set<String> keys);
+
+    // ========== Counter Operations ==========
+    /**
+     * Increment a counter by 1.
+     *
+     * @param key The counter key
+     * @return The new value after increment
+     */
+    Promise<Long> increment(String key);
+
+    /**
+     * Increment a counter by a specific amount.
+     *
+     * @param key   The counter key
+     * @param delta The amount to increment by
+     * @return The new value after increment
+     */
+    Promise<Long> incrementBy(String key, long delta);
+
+    /**
+     * Decrement a counter by 1.
+     *
+     * @param key The counter key
+     * @return The new value after decrement
+     */
+    Promise<Long> decrement(String key);
+
+    // ========== Pattern Operations ==========
+    /**
+     * Get all keys matching a pattern.
+     *
+     * @param pattern The pattern (supports * wildcard)
+     * @return Set of matching keys
+     */
+    Promise<Set<String>> keys(String pattern);
+
+    /**
+     * Delete all keys matching a pattern.
+     *
+     * @param pattern The pattern (supports * wildcard)
+     * @return Number of keys deleted
+     */
+    Promise<Integer> deletePattern(String pattern);
+
+    // ========== Statistics ==========
+    /**
+     * Get cache statistics.
+     *
+     * @return Current cache statistics
+     */
+    Promise<CacheStats> stats();
+
+    /**
+     * Clear all entries from the cache.
+     *
+     * @return Unit on success
+     */
+    Promise<Unit> clear();
+
+    // ========== Factory Methods ==========
+    /**
+     * Factory method for in-memory implementation with default config.
      *
      * @return CacheService instance
      */
     static CacheService cacheService() {
-        return new InMemoryCacheService();
+        return InMemoryCacheService.inMemoryCacheService();
     }
 
+    /**
+     * Factory method for in-memory implementation with custom config.
+     *
+     * @param config Cache configuration
+     * @return CacheService instance
+     */
+    static CacheService cacheService(CacheConfig config) {
+        return InMemoryCacheService.inMemoryCacheService(config);
+    }
+
+    // ========== Slice Lifecycle ==========
     @Override
     default Promise<Unit> start() {
         return Promise.success(Unit.unit());
