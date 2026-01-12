@@ -19,6 +19,7 @@ This creates a complete slice project with:
 - `@Slice` interface with factory method
 - Implementation class
 - Request/response records
+- Slice config (`src/main/resources/slices/GreetingService.toml`)
 - Unit test
 - Deploy scripts
 
@@ -105,7 +106,7 @@ Start a local Aether Forge (if not running), then:
 ./deploy-forge.sh
 ```
 
-Your slice is now running and accessible.
+Your slice is now running and accessible at `http://localhost:8080`.
 
 ## What Just Happened?
 
@@ -118,9 +119,11 @@ Your slice is now running and accessible.
    - `greeting-service-api.jar` - just the API interface
    - `greeting-service.jar` - implementation + factory + types
 
-3. **Blueprint generator** created `blueprint.toml` with your slice listed
+3. **Blueprint generator** created `blueprint.toml` with your slice listed (properties from `src/main/resources/slices/GreetingService.toml`)
 
-4. **Deploy script** sent the JARs to Aether Forge
+4. **Deploy script** ran `mvn install` to install JARs to your local Maven repository (`~/.m2/repository`)
+
+5. **Aether Forge** detected the new slice and loaded it automatically
 
 ## Next Steps
 

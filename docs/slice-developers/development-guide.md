@@ -324,6 +324,41 @@ public sealed class OrderException extends RuntimeException {
 }
 ```
 
+## Slice Configuration
+
+Each slice can have a configuration file that controls runtime properties like instance count and timeout.
+
+### Config File Location
+
+`src/main/resources/slices/{SliceName}.toml`
+
+### Example Configuration
+
+```toml
+# src/main/resources/slices/OrderService.toml
+
+[blueprint]
+instances = 3
+timeout_ms = 30000
+memory_mb = 512
+load_balancing = "round_robin"
+affinity_key = "customerId"
+```
+
+### Available Properties
+
+| Property | Type | Default | Description |
+|----------|------|---------|-------------|
+| `instances` | int | `1` | Number of slice instances |
+| `timeout_ms` | int | - | Request timeout in milliseconds |
+| `memory_mb` | int | - | Memory per instance |
+| `load_balancing` | string | - | `round_robin` or `least_connections` |
+| `affinity_key` | string | - | Request field for sticky routing |
+
+### When Config is Missing
+
+If no config file exists, default values are used (logged as info). This is intentional - you don't need a config file for simple slices.
+
 ## Build Workflow
 
 ### Standard Build
@@ -349,9 +384,11 @@ mvn package jbct:generate-blueprint -DskipTests
 ### Local Development Cycle
 
 ```bash
-# Make changes, then:
-mvn verify && ./deploy-forge.sh
+# Make changes, then deploy to Forge:
+./deploy-forge.sh
 ```
+
+Forge automatically detects changes in your local Maven repository and reloads.
 
 ### Verify Slice Configuration
 
