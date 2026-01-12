@@ -1,221 +1,130 @@
-# Getting Started with Aether
+# Quickstart: Your First Slice
 
-This guide walks you through running your first Aether cluster and deploying a slice.
+Create and deploy a slice in 5 minutes.
 
 ## Prerequisites
 
-- **Java 25** (required - Aether uses modern JVM features)
-- **Maven 3.9+**
-- **~10 minutes**
+- Java 21+
+- Maven 3.8+
+- JBCT CLI installed (`jbct --version` should work)
 
-## Quick Start
-
-### 1. Build the Project
+## Step 1: Create Project
 
 ```bash
-git clone https://github.com/pragmatica-lite/aether.git
-cd aether
-mvn package -DskipTests
+jbct init --slice greeting-service
+cd greeting-service
 ```
 
-### 2. Start Forge (Easiest Option)
+This creates a complete slice project with:
+- `@Slice` interface with factory method
+- Implementation class
+- Request/response records
+- Unit test
+- Deploy scripts
 
-Forge is the fastest way to see Aether in action:
+## Step 2: Explore the Generated Code
 
-```bash
-./script/aether-forge.sh
-```
-
-Open [http://localhost:8888](http://localhost:8888) to see the dashboard.
-
-Forge runs a simulated cluster with:
-- 5 nodes (configurable via `CLUSTER_SIZE`)
-- Load generator
-- Real-time metrics visualization
-- Chaos testing controls
-
-### 3. Or Start a Real Cluster
-
-Start a 3-node cluster (each in a separate terminal):
-
-```bash
-# Terminal 1
-./script/aether-node.sh --node-id=node-1 --port=8091 \
-  --peers=localhost:8091,localhost:8092,localhost:8093
-
-# Terminal 2
-./script/aether-node.sh --node-id=node-2 --port=8092 \
-  --peers=localhost:8091,localhost:8092,localhost:8093
-
-# Terminal 3
-./script/aether-node.sh --node-id=node-3 --port=8093 \
-  --peers=localhost:8091,localhost:8092,localhost:8093
-```
-
-### 4. Use the CLI
-
-Check cluster status:
-
-```bash
-./script/aether.sh --connect localhost:8080 status
-./script/aether.sh --connect localhost:8080 nodes
-```
-
-Or use interactive mode:
-
-```bash
-./script/aether.sh --connect localhost:8080
-
-aether> status
-aether> nodes
-aether> metrics
-aether> exit
-```
-
-## Project Structure
-
-```
-aether/
-├── script/                    # Run scripts
-│   ├── aether.sh             # CLI tool
-│   ├── aether-node.sh        # Node runner
-│   └── aether-forge.sh       # Forge simulator
-├── cli/                       # CLI module
-├── node/                      # Node runtime
-├── forge/                     # Forge simulator
-├── slice/                     # Slice management
-├── slice-api/                 # Slice API (for slice developers)
-├── cluster/                   # Consensus layer
-├── example-slice/             # Example slice implementation
-└── examples/order-demo/       # Complete demo application
-```
-
-## Creating Your First Slice
-
-### 1. Add Dependencies
-
-```xml
-<dependency>
-    <groupId>org.pragmatica-lite.aether</groupId>
-    <artifactId>slice-api</artifactId>
-    <version>0.7.2</version>
-</dependency>
-<dependency>
-    <groupId>org.pragmatica-lite</groupId>
-    <artifactId>core</artifactId>
-    <version>0.9.0</version>
-</dependency>
-```
-
-### 2. Implement the Slice Interface
-
+**GreetingService.java** - The slice interface:
 ```java
-package com.example.hello;
+@Slice
+public interface GreetingService {
+    Promise<GreetingResponse> greet(GreetingRequest request);
 
-import org.pragmatica.aether.slice.Slice;
-import org.pragmatica.aether.slice.SliceMethod;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
-
-import java.util.List;
-
-public class HelloWorld implements Slice {
-
-    @Override
-    public List<SliceMethod<?, ?>> methods() {
-        return List.of(
-            SliceMethod.sliceMethod(
-                "greet",
-                GreetRequest.class,
-                GreetResponse.class,
-                this::greet
-            )
-        );
+    static GreetingService greetingService() {
+        return new GreetingServiceImpl();
     }
-
-    private Promise<GreetResponse> greet(GreetRequest request) {
-        var name = request.name() != null ? request.name() : "World";
-        return Promise.success(new GreetResponse("Hello, " + name + "!"));
-    }
-
-    @Override
-    public Promise<Unit> start() {
-        System.out.println("HelloWorld slice started");
-        return Promise.success(Unit.unit());
-    }
-
-    @Override
-    public Promise<Unit> stop() {
-        System.out.println("HelloWorld slice stopped");
-        return Promise.success(Unit.unit());
-    }
-
-    public record GreetRequest(String name) {}
-    public record GreetResponse(String message) {}
 }
 ```
 
-### 3. Configure the JAR Manifest
-
-```xml
-<build>
-    <plugins>
-        <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-jar-plugin</artifactId>
-            <configuration>
-                <archive>
-                    <manifestEntries>
-                        <Slice-Class>com.example.hello.HelloWorld</Slice-Class>
-                        <Slice-Artifact>${project.groupId}:${project.artifactId}:${project.version}</Slice-Artifact>
-                    </manifestEntries>
-                </archive>
-            </configuration>
-        </plugin>
-    </plugins>
-</build>
+**GreetingRequest.java** - Input record:
+```java
+public record GreetingRequest(String name) {}
 ```
 
-### 4. Deploy
+**GreetingResponse.java** - Output record:
+```java
+public record GreetingResponse(String message) {}
+```
+
+**GreetingServiceImpl.java** - Implementation:
+```java
+public class GreetingServiceImpl implements GreetingService {
+    @Override
+    public Promise<GreetingResponse> greet(GreetingRequest request) {
+        var message = "Hello, " + request.name() + "!";
+        return Promise.successful(new GreetingResponse(message));
+    }
+}
+```
+
+## Step 3: Build and Test
 
 ```bash
-mvn install
-./script/aether.sh deploy com.example:hello-world:1.0.0
+mvn verify
 ```
 
-## Running the Order Demo
+This:
+1. Compiles the source
+2. Runs annotation processing (generates API interface, factory, manifest)
+3. Runs tests
+4. Packages into API + Impl JARs
 
-The easiest way to run the full order demo with slice deployment:
+Check the generated files:
+```bash
+ls target/classes/META-INF/slice/
+# GreetingService.manifest
+
+ls target/classes/org/example/greetingservice/api/
+# GreetingService.class (generated API interface)
+
+ls target/classes/org/example/greetingservice/
+# GreetingServiceFactory.class (generated)
+```
+
+## Step 4: Generate Blueprint
 
 ```bash
-# Start 5-node cluster
-./script/demo-cluster.sh start
-
-# Deploy order-demo slices
-./script/demo-cluster.sh deploy
-
-# Check status
-./script/demo-cluster.sh status
-
-# Open dashboard
-open http://localhost:8081/dashboard
-
-# Clean up when done
-./script/demo-cluster.sh clean
+./generate-blueprint.sh
 ```
 
-This demonstrates:
-- Real multi-process cluster with consensus
-- Slice deployment across nodes
-- Inter-slice communication
-- Management dashboard
+Output:
+```toml
+# Generated by jbct:generate-blueprint
+id = "org.example:greeting-service:1.0.0-SNAPSHOT"
 
-See [Demos Guide](../demos.md#real-cluster-demo) for detailed walkthrough.
+[[slices]]
+artifact = "org.example:greeting-service:1.0.0-SNAPSHOT"
+instances = 1
+```
+
+## Step 5: Deploy to Local Forge
+
+Start a local Aether Forge (if not running), then:
+
+```bash
+./deploy-forge.sh
+```
+
+Your slice is now running and accessible.
+
+## What Just Happened?
+
+1. **Annotation processor** read your `@Slice` interface and generated:
+   - `api/GreetingService.java` - clean interface for consumers
+   - `GreetingServiceFactory.java` - factory that wires dependencies
+   - `META-INF/slice/GreetingService.manifest` - metadata for packaging
+
+2. **Maven plugin** packaged two JARs:
+   - `greeting-service-api.jar` - just the API interface
+   - `greeting-service.jar` - implementation + factory + types
+
+3. **Blueprint generator** created `blueprint.toml` with your slice listed
+
+4. **Deploy script** sent the JARs to Aether Forge
 
 ## Next Steps
 
-- [CLI Reference](../reference/cli.md) - All CLI commands
-- [Forge Guide](forge-guide.md) - Load and chaos testing
-- [Slice Developer Guide](../slice-developers/slice-patterns.md) - Writing slices
-- [Scaling Guide](../operators/scaling.md) - Auto-scaling configuration
-- [Architecture Overview](../contributors/architecture.md) - How it works
+- [Add a dependency](development-guide.md#adding-dependencies) to another slice
+- [Create multiple slices](development-guide.md#multiple-slices) in one module
+- [Configure deployment](deployment.md) for test/prod environments
+- [Understand the internals](architecture.md) of how slices work
