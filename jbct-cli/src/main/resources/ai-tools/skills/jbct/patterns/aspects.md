@@ -389,6 +389,78 @@ return withRetry(retryPolicy, loadUser.apply(id));
 - Caching for performance
 - Rate limiting for API calls
 
+## Logging Philosophy
+
+**Principle**: Logging belongs only at **leaves** and **external boundaries**. Composition code has zero logging.
+
+### Rationale
+
+- Leaves perform real work - they're the only places where operations can fail
+- Boundaries are where we interact with external systems - points of uncertainty
+- Everything else is composition - deterministic routing of values
+
+### Implementation
+
+Wrap leaf implementations in logging aspects at construction:
+
+```java
+public interface UserRepository {
+    Promise<User> findById(UserId id);
+
+    static UserRepository create(DataSource ds, Logger log) {
+        var impl = new UserRepositoryImpl(ds);
+        return withLogging(log, "UserRepository", impl);
+    }
+}
+
+public static UserRepository withLogging(Logger log, String name, UserRepository impl) {
+    return id -> {
+        var correlationId = CorrelationContext.current();
+        log.debug("[{}] {}.findById input: {}", correlationId, name, id);
+
+        return impl.findById(id)
+                   .onSuccess(user -> log.debug("[{}] {}.findById success", correlationId, name))
+                   .onFailure(cause -> log.warn("[{}] {}.findById failure: {}", correlationId, name, cause.message()));
+    };
+}
+```
+
+### What Gets Logged
+
+- Input parameters (sanitized)
+- Outcome (success or failure cause)
+- Correlation ID for request tracing
+
+### Sensitive Data
+
+Aspects must sanitize inputs:
+
+```java
+private String sanitize(Object input) {
+    return switch (input) {
+        case Password ignored -> "[REDACTED]";
+        case Email email -> maskEmail(email);
+        default -> String.valueOf(input);
+    };
+}
+```
+
+### Anti-Patterns
+
+```java
+// DON'T: Logging in composition code
+return validateInput(request)
+    .onSuccess(v -> log.info("Validated"))  // Noise
+    .flatMap(this::fetchUser)
+    .onSuccess(u -> log.info("Fetched"))    // Noise
+    .flatMap(this::processOrder);
+
+// DO: Wrap leaves at construction
+static ProcessOrder processOrder(UserRepository users, Logger log) {
+    return new ProcessOrderImpl(withLogging(log, "users", users));
+}
+```
+
 ## Related
 
 - [leaf.md](leaf.md) - Core operations wrapped by aspects

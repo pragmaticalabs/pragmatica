@@ -4,7 +4,7 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.util.Properties;
-import java.util.Set;
+import java.util.jar.JarFile;
 
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -15,23 +15,34 @@ import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 
 /**
- * Collects provided dependencies with specified classifiers and writes them to a properties file.
+ * Scans compile dependencies for slice manifests and writes interface-to-artifact mappings.
  * This allows the annotation processor to resolve slice dependency versions.
+ *
+ * <p>For each dependency JAR containing META-INF/slice-api.properties, extracts:
+ * <ul>
+ *   <li>api.interface - the slice API interface fully qualified name</li>
+ *   <li>slice.artifact - the slice artifact coordinates (groupId:artifactId)</li>
+ * </ul>
+ *
+ * <p>Writes mappings to slice-deps.properties in format:
+ * <pre>
+ * # Key: interface qualified name
+ * # Value: groupId:artifactId:version
+ * org.example.api.InventoryService=org.example:inventory:1.0.0
+ * </pre>
  */
 @Mojo(name = "collect-slice-deps",
  defaultPhase = LifecyclePhase.GENERATE_SOURCES,
  requiresDependencyResolution = ResolutionScope.COMPILE)
 public class CollectSliceDepsMojo extends AbstractMojo {
+    private static final String MANIFEST_PATH = "META-INF/slice-api.properties";
+
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
 
     @Parameter(property = "jbct.outputFile",
-    defaultValue = "${project.build.directory}/slice-deps.properties")
+    defaultValue = "${project.build.outputDirectory}/slice-deps.properties")
     private File outputFile;
-
-    @Parameter(property = "jbct.includeClassifiers",
-    defaultValue = "api")
-    private String includeClassifiers;
 
     @Parameter(property = "jbct.skip", defaultValue = "false")
     private boolean skip;
@@ -43,39 +54,78 @@ public class CollectSliceDepsMojo extends AbstractMojo {
                   .info("Skipping slice dependency collection");
             return;
         }
-        var props = new Properties();
-        var classifiers = Set.of(includeClassifiers.split(","));
+
+        var mappings = new Properties();
+
         for (var artifact : project.getArtifacts()) {
-            if (!"provided".equals(artifact.getScope())) {
+            var file = artifact.getFile();
+            if (file == null || !file.exists() || !file.getName()
+                                                       .endsWith(".jar")) {
                 continue;
             }
-            var classifier = artifact.getClassifier();
-            if (classifier == null || !classifiers.contains(classifier)) {
-                continue;
+
+            try {
+                extractSliceManifest(file, artifact.getVersion(), mappings);
+            } catch (IOException e) {
+                getLog()
+                      .debug("Could not read JAR: " + file + " - " + e.getMessage());
             }
-            // Key: groupId:artifactId:classifier (escaped for properties format)
-            var key = escapeKey(artifact.getGroupId() + ":" + artifact.getArtifactId() + ":" + classifier);
-            // Value: resolved version
-            props.setProperty(key, artifact.getVersion());
-            getLog()
-                  .debug("Collected: " + key + "=" + artifact.getVersion());
         }
-        // Ensure directory exists
+
+        writeOutput(mappings);
+    }
+
+    private void extractSliceManifest(File jarFile, String version, Properties mappings) throws IOException {
+        try (var jar = new JarFile(jarFile)) {
+            var entry = jar.getEntry(MANIFEST_PATH);
+            if (entry == null) {
+                return;
+            }
+
+            var props = new Properties();
+            try (var stream = jar.getInputStream(entry)) {
+                props.load(stream);
+            }
+
+            var apiInterface = props.getProperty("api.interface");
+            var implInterface = props.getProperty("impl.interface");
+            var sliceArtifact = props.getProperty("slice.artifact");
+
+            if (sliceArtifact == null) {
+                getLog()
+                      .warn("Incomplete slice manifest in " + jarFile.getName() + ": missing slice.artifact");
+                return;
+            }
+
+            // Value: groupId:artifactId:version
+            var value = sliceArtifact + ":" + version;
+
+            // Map both API and impl interfaces to support both usage patterns
+            if (apiInterface != null) {
+                mappings.setProperty(apiInterface, value);
+                getLog()
+                      .debug("Found slice API: " + apiInterface + " -> " + value);
+            }
+            if (implInterface != null) {
+                mappings.setProperty(implInterface, value);
+                getLog()
+                      .debug("Found slice impl: " + implInterface + " -> " + value);
+            }
+        }
+    }
+
+    private void writeOutput(Properties mappings) throws MojoExecutionException {
         var parentDir = outputFile.getParentFile();
         if (parentDir != null && !parentDir.exists()) {
             parentDir.mkdirs();
         }
-        try (var writer = new FileWriter(outputFile)) {
-            props.store(writer, "Generated by jbct:collect-slice-deps");
-            getLog()
-                  .info("Wrote " + props.size() + " dependencies to " + outputFile);
-        } catch (IOException e) {
-            throw new MojoExecutionException("Failed to write dependencies", e);
-        }
-    }
 
-    private String escapeKey(String key) {
-        // Escape : for properties file format
-        return key.replace(":", "\\:");
+        try (var writer = new FileWriter(outputFile)) {
+            mappings.store(writer, "Generated by jbct:collect-slice-deps\n# Key: API interface FQN\n# Value: groupId:artifactId:version");
+            getLog()
+                  .info("Wrote " + mappings.size() + " slice dependencies to " + outputFile);
+        } catch (IOException e) {
+            throw new MojoExecutionException("Failed to write slice dependencies", e);
+        }
     }
 }

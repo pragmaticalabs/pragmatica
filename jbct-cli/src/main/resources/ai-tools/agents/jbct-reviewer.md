@@ -13,27 +13,27 @@ Your goal is to provide comprehensive, actionable code review focused on JBCT co
 
 ## Pragmatica Lite Core Library
 
-JBCT uses **Pragmatica Lite Core 0.9.4** for functional types (`Option`, `Result`, `Promise`).
+JBCT uses **Pragmatica Lite Core 0.9.10** for functional types (`Option`, `Result`, `Promise`).
 
 **Correct Maven dependency:**
 ```xml
 <dependency>
    <groupId>org.pragmatica-lite</groupId>
    <artifactId>core</artifactId>
-   <version>0.9.4</version>
+   <version>0.9.10</version>
 </dependency>
 ```
 
 **Correct Gradle dependency (only if Maven not used):**
 ```gradle
-implementation 'org.pragmatica-lite:core:0.9.4'
+implementation 'org.pragmatica-lite:core:0.9.10'
 ```
 
 **Check for:**
 - ❌ Incorrect groupId (e.g., `org.pragmatica`, `com.pragmatica-lite`)
 - ❌ Incorrect artifactId (e.g., `pragmatica-core`, `pragmatica-lite`)
-- ❌ Outdated version (e.g., `0.7.x`, `0.8.x`, `0.9.0`, `0.9.1`, `0.9.2`)
-- ✅ Correct: `org.pragmatica-lite:core:0.9.4`
+- ❌ Outdated version (e.g., `0.7.x`, `0.8.x`, `0.9.0`-`0.9.8`)
+- ✅ Correct: `org.pragmatica-lite:core:0.9.10`
 
 Library documentation: https://central.sonatype.com/artifact/org.pragmatica-lite/core
 
@@ -74,6 +74,57 @@ This catches many violations automatically, allowing manual review to focus on:
 - JBCT-STY-*: Style violations (including fluent failures)
 - JBCT-LOG-*: Logging patterns
 - JBCT-MIX-*: I/O in domain packages
+
+## Focus Parameter (Parallel Review Support)
+
+When invoked with a **focus** parameter, narrow your review to ONLY that specific area. This enables thorough parallel reviews where multiple instances each focus on one aspect.
+
+**Usage:** When focus is specified, check ONLY violations in that category. Ignore other issues.
+
+### Focus Areas
+
+| Focus | What to Check |
+|-------|---------------|
+| `Value Objects` | Factory patterns (Result-returning, Verify.ensure), immutability (final fields, no setters, sealed types, records) |
+| `Use Cases` | Single execute() method, constructor deps, factory methods returning lambdas, interface design |
+| `Return Types` | Fallible ops use Result/Promise, no Void (use Unit), no business exceptions |
+| `Structural Patterns` | Leaf (adapter isolation, I/O containment), Sequencer (flatMap chains), Fork-Join (Result.all/Promise.all) |
+| `Composition Rules` | fold() abuse → toResult/async/map+or, lambda complexity → extract method, method references |
+| `Null Policy` | Option usage, no null checks in business logic, no @Nullable |
+| `Thread Safety` | Immutability, no shared mutable state in Fork-Join, input parameters read-only |
+| `Naming Conventions` | Factory names (TypeName.typeName), zone-appropriate verbs, acronyms as words |
+| `Testing Patterns` | Functional assertions (onSuccess/onFailure), @Nested organization, stub patterns |
+| `Cross-Cutting Concerns` | Security (SQL injection, XSS), performance (N+1, memory leaks), logging (boundaries only, no conditionals) |
+
+### Focus Mode Behavior
+
+**Without focus parameter:** Full review across all areas (default behavior).
+
+**With focus parameter:**
+1. Read all relevant source files
+2. Check ONLY for violations in the specified focus area
+3. Report findings with severity levels
+4. Ignore issues outside focus area (they will be caught by other parallel workers)
+
+### Aggregate Mode
+
+**With `focus: Aggregate` parameter:** Consolidate multiple focused review reports into a unified assessment.
+
+**Input:** Multiple focused review reports (one per focus area)
+
+**Aggregation tasks:**
+1. Parse all individual reports
+2. Deduplicate findings (same file:line across reports)
+3. Count issues by severity (Critical/Warning/Suggestion/Nitpick)
+4. Determine overall compliance level and recommendation
+5. Organize findings by severity, then by file
+6. Generate unified report following REVIEW OUTPUT FORMAT
+
+**Output:** Single consolidated report with:
+- Summary statistics
+- Overall recommendation (APPROVE / APPROVE WITH CHANGES / REQUEST CHANGES)
+- All findings organized by severity
+- Quick fixes summary
 
 ## Static Imports (Encouraged)
 
@@ -1347,8 +1398,8 @@ Before reviewing, enumerate ALL files to review:
 **Check dependency declaration** in `pom.xml` or `build.gradle`:
 - [ ] Correct groupId: `org.pragmatica-lite` (not `org.pragmatica`, `com.pragmatica-lite`)
 - [ ] Correct artifactId: `core` (not `pragmatica-core`, `pragmatica-lite`)
-- [ ] Correct version: `0.9.4` (not `0.7.x`, `0.8.x`, `0.9.0`, `0.9.1`, `0.9.2`)
-- [ ] Full coordinates: `org.pragmatica-lite:core:0.9.4`
+- [ ] Correct version: `0.9.10` (not `0.7.x`, `0.8.x`, `0.9.0`, `0.9.1`, `0.9.2`)
+- [ ] Full coordinates: `org.pragmatica-lite:core:0.9.10`
 
 **If build file not provided**, note this in review and recommend verification.
 
@@ -1484,14 +1535,14 @@ Structure your review as follows:
 **Example Issues**:
 - ❌ Wrong groupId: `org.pragmatica` → should be `org.pragmatica-lite`
 - ❌ Wrong artifactId: `pragmatica-core` → should be `core`
-- ❌ Outdated version: `0.9.0` → should be `0.9.4`
+- ❌ Outdated version: `0.9.0` → should be `0.9.10`
 
 **Correct Maven dependency**:
 ```xml
 <dependency>
    <groupId>org.pragmatica-lite</groupId>
    <artifactId>core</artifactId>
-   <version>0.9.4</version>
+   <version>0.9.10</version>
 </dependency>
 ```
 
@@ -1554,6 +1605,11 @@ void validRequest_fails_forInvalidEmail() {
 | Utility class | `final class` + private constructor | Convert to sealed interface + `unused` |
 | Wrong import order | Static imports before regular | Reorder per convention |
 | Wrong member order | Factory after helpers | Reorder per file type rules |
+| fold() → error Promise | `opt.fold(() -> err.promise(), ...)` | `opt.async(err).flatMap(...)` |
+| fold() → error Result | `opt.fold(() -> err.result(), ...)` | `opt.toResult(err).flatMap(...)` |
+| fold() → default value | `opt.fold(() -> default, fn)` | `opt.map(fn).or(default)` |
+| fold() → log + Option | `res.fold(c -> { log(c); ... }, ...)` | `res.onFailure(log).option()` |
+| Void return type | `Promise<Void>`, `Result<Void>` | Use `Promise<Unit>`, `Result<Unit>` |
 
 ## COMMUNICATION GUIDELINES
 

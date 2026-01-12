@@ -15,6 +15,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -27,36 +28,30 @@ public final class AiToolsUpdater {
     private static final String RAW_CONTENT_BASE = "https://raw.githubusercontent.com/siy/coding-technology/main/";
     private static final Pattern SHA_PATTERN = Pattern.compile("\"sha\"\\s*:\\s*\"([^\"]+)\"");
 
-    private static final String VERSION_FILE = "ai-tools-version.txt";
+    private static final String VERSION_FILE = ".ai-tools-version";
 
-    // Files to download
-    private static final String[] SKILL_FILES = {"skills/jbct/SKILL.md", "skills/jbct/README.md", "skills/jbct/fundamentals/four-return-kinds.md", "skills/jbct/fundamentals/parse-dont-validate.md", "skills/jbct/fundamentals/no-business-exceptions.md", "skills/jbct/patterns/leaf.md", "skills/jbct/patterns/sequencer.md", "skills/jbct/patterns/fork-join.md", "skills/jbct/patterns/condition.md", "skills/jbct/patterns/iteration.md", "skills/jbct/patterns/aspects.md", "skills/jbct/project-structure/organization.md", "skills/jbct/testing/patterns.md", "skills/jbct/use-cases/structure.md", "skills/jbct/use-cases/complete-example.md"};
+    // Files to download - skills/jbct/
+    private static final String[] JBCT_SKILL_FILES = {"skills/jbct/SKILL.md", "skills/jbct/README.md", "skills/jbct/fundamentals/four-return-kinds.md", "skills/jbct/fundamentals/parse-dont-validate.md", "skills/jbct/fundamentals/no-business-exceptions.md", "skills/jbct/patterns/leaf.md", "skills/jbct/patterns/sequencer.md", "skills/jbct/patterns/fork-join.md", "skills/jbct/patterns/condition.md", "skills/jbct/patterns/iteration.md", "skills/jbct/patterns/aspects.md", "skills/jbct/patterns/fold-alternatives.md", "skills/jbct/project-structure/organization.md", "skills/jbct/testing/patterns.md", "skills/jbct/use-cases/structure.md", "skills/jbct/use-cases/complete-example.md"};
+
+    // Files to download - skills/jbct-review/
+    private static final String[] JBCT_REVIEW_SKILL_FILES = {"skills/jbct-review/SKILL.md"};
 
     private static final String[] AGENT_FILES = {"jbct-coder.md", "jbct-reviewer.md"};
 
     private final HttpOperations http;
     private final Path claudeDir;
-    private final Path jbctDir;
 
-    private AiToolsUpdater(HttpOperations http, Path claudeDir, Path jbctDir) {
+    private AiToolsUpdater(HttpOperations http, Path claudeDir) {
         this.http = http;
         this.claudeDir = claudeDir;
-        this.jbctDir = jbctDir;
     }
 
     /**
-     * Create updater with default settings.
+     * Create updater for project directory.
+     * AI tools will be updated in projectDir/.claude/
      */
-    public static AiToolsUpdater aiToolsUpdater() {
-        var userHome = System.getProperty("user.home");
-        return new AiToolsUpdater(HttpClients.httpOperations(), Path.of(userHome, ".claude"), Path.of(userHome, ".jbct"));
-    }
-
-    /**
-     * Create updater with custom directories.
-     */
-    public static AiToolsUpdater aiToolsUpdater(Path claudeDir, Path jbctDir) {
-        return new AiToolsUpdater(HttpClients.httpOperations(), claudeDir, jbctDir);
+    public static AiToolsUpdater aiToolsUpdater(Path projectDir) {
+        return new AiToolsUpdater(HttpClients.httpOperations(), projectDir.resolve(".claude"));
     }
 
     /**
@@ -132,10 +127,9 @@ public final class AiToolsUpdater {
 
     private Result<Unit> createDirectories() {
         try{
-            var skillsDir = claudeDir.resolve("skills/jbct");
-            var agentsDir = claudeDir.resolve("agents");
-            Files.createDirectories(skillsDir);
-            Files.createDirectories(agentsDir);
+            Files.createDirectories(claudeDir.resolve("skills/jbct"));
+            Files.createDirectories(claudeDir.resolve("skills/jbct-review"));
+            Files.createDirectories(claudeDir.resolve("agents"));
             return Result.success(Unit.unit());
         } catch (Exception e) {
             return Causes.cause("Failed to create directories: " + e.getMessage())
@@ -154,10 +148,12 @@ public final class AiToolsUpdater {
     }
 
     private Result<List<Path>> downloadSkillFiles() {
-        var results = Stream.of(SKILL_FILES)
-                            .map(file -> downloadFile(file,
-                                                      claudeDir.resolve(file)))
-                            .toList();
+        // Combine all skill file arrays
+        var allSkillFiles = Stream.concat(Arrays.stream(JBCT_SKILL_FILES), Arrays.stream(JBCT_REVIEW_SKILL_FILES))
+                                  .toList();
+        var results = allSkillFiles.stream()
+                                   .map(file -> downloadFile(file, claudeDir.resolve(file)))
+                                   .toList();
         // Collect successful downloads
         var files = new ArrayList<Path>();
         for (var result : results) {
@@ -207,7 +203,7 @@ public final class AiToolsUpdater {
     }
 
     private Option<String> getCurrentVersion() {
-        var versionFile = jbctDir.resolve(VERSION_FILE);
+        var versionFile = claudeDir.resolve(VERSION_FILE);
         if (!Files.exists(versionFile)) {
             return Option.none();
         }
@@ -222,8 +218,8 @@ public final class AiToolsUpdater {
 
     private Result<Path> saveCurrentVersion(String commitSha) {
         try{
-            Files.createDirectories(jbctDir);
-            var versionFile = jbctDir.resolve(VERSION_FILE);
+            Files.createDirectories(claudeDir);
+            var versionFile = claudeDir.resolve(VERSION_FILE);
             Files.writeString(versionFile, commitSha);
             return Result.success(versionFile);
         } catch (IOException e) {
@@ -237,12 +233,5 @@ public final class AiToolsUpdater {
      */
     public Path claudeDir() {
         return claudeDir;
-    }
-
-    /**
-     * Get the JBCT configuration directory.
-     */
-    public Path jbctDir() {
-        return jbctDir;
     }
 }

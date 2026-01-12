@@ -14,9 +14,9 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        <maven.compiler.release>25</maven.compiler.release>
-        <pragmatica-lite.version>0.9.4</pragmatica-lite.version>
-        <jbct.version>0.3.12</jbct.version>
+        <maven.compiler.release>21</maven.compiler.release>
+        <pragmatica-lite.version>{{pragmaticaVersion}}</pragmatica-lite.version>
+        <jbct.version>{{jbctVersion}}</jbct.version>
     </properties>
 
     <dependencies>
@@ -37,7 +37,7 @@
         <dependency>
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
-            <version>3.26.0</version>
+            <version>3.26.3</version>
             <scope>test</scope>
         </dependency>
     </dependencies>

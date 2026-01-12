@@ -58,7 +58,25 @@ public record DependencyModel(String parameterName,
                      .map((artifact, ver) -> artifact + ":" + ver);
     }
 
-    public String proxyClassName() {
-        return interfaceSimpleName + "Proxy";
+    /**
+     * Check if this dependency is external (different base package).
+     * External dependencies need proxies; internal ones are called directly.
+     */
+    public boolean isExternal(String basePackage) {
+        return !interfacePackage.startsWith(basePackage);
+    }
+
+    /**
+     * Get lowercase name for local proxy record (JBCT naming convention).
+     */
+    public String localRecordName() {
+        return Character.toLowerCase(interfaceSimpleName.charAt(0)) + interfaceSimpleName.substring(1);
+    }
+
+    /**
+     * Get factory method name for internal dependency (JBCT naming convention).
+     */
+    public String factoryMethodName() {
+        return localRecordName();
     }
 }

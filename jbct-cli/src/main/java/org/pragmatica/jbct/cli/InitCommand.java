@@ -97,23 +97,27 @@ public class InitCommand implements Callable<Integer> {
         }
         // Install AI tools unless --no-ai
         if (!noAi) {
-            System.out.println();
-            System.out.println("Installing AI tools...");
-            var installer = AiToolsInstaller.aiToolsInstaller();
-            aiToolsInstalled = installer.install()
-                                        .fold(cause -> {
-                                                  System.err.println("Warning: Failed to install AI tools: " + cause.message());
-                                                  return false;
-                                              },
-                                              installedFiles -> {
-                                                  if (!installedFiles.isEmpty()) {
-                                                      System.out.println("Installed AI tools to: " + installer.claudeDir());
-                                                      System.out.println("  Skills: " + installer.skillsDir());
-                                                      System.out.println("  Agents: " + installer.agentsDir());
-                                                      return true;
-                                                  }
-                                                  return false;
-                                              });
+            var installer = AiToolsInstaller.aiToolsInstaller(projectDir);
+            if (Files.exists(installer.claudeDir()) && !force) {
+                System.out.println();
+                System.out.println("Skipped: .claude/ (already exists, use --force to overwrite)");
+            } else {
+                System.out.println();
+                System.out.println("Installing AI tools...");
+                aiToolsInstalled = installer.install()
+                                            .fold(cause -> {
+                                                      System.err.println("Warning: Failed to install AI tools: " + cause.message());
+                                                      return false;
+                                                  },
+                                                  installedFiles -> {
+                                                      if (!installedFiles.isEmpty()) {
+                                                          System.out.println("Installed AI tools to: .claude/");
+                                                          return true;
+                                                      }
+                                                      System.out.println("No AI tools files to install.");
+                                                      return false;
+                                                  });
+            }
         }
         // Print summary
         System.out.println();

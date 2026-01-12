@@ -2,6 +2,7 @@ package org.pragmatica.jbct.cli;
 
 import org.pragmatica.jbct.update.AiToolsUpdater;
 
+import java.nio.file.Path;
 import java.util.concurrent.Callable;
 
 import picocli.CommandLine.Command;
@@ -27,7 +28,8 @@ public class UpdateCommand implements Callable<Integer> {
 
     @Override
     public Integer call() {
-        var updater = AiToolsUpdater.aiToolsUpdater();
+        var projectDir = Path.of(System.getProperty("user.dir"));
+        var updater = AiToolsUpdater.aiToolsUpdater(projectDir);
         if (checkOnly) {
             return checkForUpdates(updater);
         }

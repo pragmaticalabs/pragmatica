@@ -504,20 +504,20 @@ void execute_succeeds_forValidInput() {
 
 ## Pragmatica Lite Core Library
 
-JBCT uses **Pragmatica Lite Core 0.9.4** for functional types.
+JBCT uses **Pragmatica Lite Core 0.9.10** for functional types.
 
 **Maven (preferred):**
 ```xml
 <dependency>
    <groupId>org.pragmatica-lite</groupId>
    <artifactId>core</artifactId>
-   <version>0.9.4</version>
+   <version>0.9.10</version>
 </dependency>
 ```
 
 **Gradle (only if explicitly requested):**
 ```gradle
-implementation 'org.pragmatica-lite:core:0.9.4'
+implementation 'org.pragmatica-lite:core:0.9.10'
 ```
 
 Library documentation: https://central.sonatype.com/artifact/org.pragmatica-lite/core

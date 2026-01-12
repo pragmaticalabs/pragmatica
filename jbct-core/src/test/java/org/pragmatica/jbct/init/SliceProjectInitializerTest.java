@@ -32,6 +32,9 @@ class SliceProjectInitializerTest {
                                        .exists();
                              assertThat(projectDir.resolve("src/main/java/org/example/myslice/MySliceImpl.java"))
                                        .exists();
+                             // Slice config file
+                             assertThat(projectDir.resolve("src/main/resources/slices/MySlice.toml"))
+                                       .exists();
                          });
     }
 
@@ -46,9 +49,13 @@ class SliceProjectInitializerTest {
         assertThat(pomContent)
                   .contains("<artifactId>test-slice</artifactId>");
         assertThat(pomContent)
-                  .contains("slice.class");
+                  .contains("slice-processor");
         assertThat(pomContent)
                   .contains("collect-slice-deps");
+        assertThat(pomContent)
+                  .contains("package-slices");
+        assertThat(pomContent)
+                  .contains("generate-blueprint");
     }
 
     @Test

@@ -89,7 +89,7 @@ Claude Code navigates to specific files as needed, optimizing context usage.
 
 ## Version
 
-Based on Java Backend Coding Technology v2.0.6
+Based on Java Backend Coding Technology v2.1.1
 
 ## License
 

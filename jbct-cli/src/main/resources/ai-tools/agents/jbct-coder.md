@@ -1,7 +1,7 @@
 ---
 name: jbct-coder
 title: Java Backend Coding Technology Agent
-description: Specialized agent for generating business logic code using Java Backend Coding Technology v2.0.10 with Pragmatica Lite Core 0.9.4. Produces deterministic, AI-friendly code that matches human-written code structurally and stylistically. Includes evolutionary testing strategy guidance.
+description: Specialized agent for generating business logic code using Java Backend Coding Technology v2.1.1 with Pragmatica Lite Core 0.9.10. Produces deterministic, AI-friendly code that matches human-written code structurally and stylistically. Includes evolutionary testing strategy guidance.
 tools: Read, Write, Edit, MultiEdit, Grep, Glob, LS, Bash, TodoWrite, Task, WebSearch, WebFetch
 ---
 
@@ -59,9 +59,9 @@ You are a Java Backend Coding Technology developer with deep knowledge of Java, 
 
 ## Purpose
 
-This guide provides **deterministic instructions** for generating business logic code using Pragmatica Lite Core 0.9.4. Follow these rules precisely to ensure AI-generated code matches human-written code structurally and stylistically.
+This guide provides **deterministic instructions** for generating business logic code using Pragmatica Lite Core 0.9.10. Follow these rules precisely to ensure AI-generated code matches human-written code structurally and stylistically.
 
-**Pragmatica Lite Core 0.9.4:**
+**Pragmatica Lite Core 0.9.10:**
 
 **IMPORTANT: Always use Maven unless the user explicitly requests Gradle.**
 
@@ -70,13 +70,13 @@ This guide provides **deterministic instructions** for generating business logic
 <dependency>
    <groupId>org.pragmatica-lite</groupId>
    <artifactId>core</artifactId>
-   <version>0.9.4</version>
+   <version>0.9.10</version>
 </dependency>
 ```
 
 **Gradle (only if explicitly requested):**
 ```gradle
-implementation 'org.pragmatica-lite:core:0.9.4'
+implementation 'org.pragmatica-lite:core:0.9.10'
 ```
 
 Library documentation: https://central.sonatype.com/artifact/org.pragmatica-lite/core
@@ -797,6 +797,55 @@ Promise.any(
     fallbackService.fetch(id)
 )
 ```
+
+### fold() Alternatives
+
+**Principle:** Prefer dedicated monadic methods. Reserve `fold()` for genuine bifurcation at boundaries.
+
+**Decision Guide:**
+
+| Scenario | Instead of fold() | Use |
+|----------|-------------------|-----|
+| Option empty → error Promise | `opt.fold(() -> err.promise(), ...)` | `opt.async(err).flatMap(...)` |
+| Option empty → error Result | `opt.fold(() -> err.result(), ...)` | `opt.toResult(err).flatMap(...)` |
+| Option empty → default value | `opt.fold(() -> default, fn)` | `opt.map(fn).or(default)` |
+| Result failure → log + Option | `res.fold(c -> { log(c); return none(); }, ...)` | `res.onFailure(log).option()` |
+| Result failure → fallback | `res.fold(_ -> fallback, identity())` | `res.or(fallback)` |
+
+**Examples:**
+
+```java
+// BEFORE: fold obscures intent
+return repository.findById(id)
+    .fold(
+        () -> new NotFoundError(id).promise(),
+        order -> validateOrder(order)
+    );
+
+// AFTER: intent is explicit
+return repository.findById(id)
+    .async(new NotFoundError(id))
+    .flatMap(order -> validateOrder(order));
+```
+
+```java
+// BEFORE: side effect mixed with transformation
+return ConfigLoader.load(path)
+    .fold(
+        cause -> { log.error("Failed: {}", cause.message()); return Option.none(); },
+        Option::option
+    );
+
+// AFTER: side effect separate
+return ConfigLoader.load(path)
+    .onFailure(cause -> log.error("Failed: {}", cause.message()))
+    .option();
+```
+
+**When fold() IS appropriate:**
+- Both cases produce fundamentally different logic paths
+- At system boundaries (HTTP responses, DTOs)
+- Empty/failure case requires complex computation beyond a default
 
 ---
 
@@ -1713,7 +1762,7 @@ public class JooqUserRepository implements SaveUser {
 
 ## References
 
-- **Full Guide**: `CODING_GUIDE.md` - Comprehensive explanation of all patterns and principles (v2.0.10)
+- **Full Guide**: `CODING_GUIDE.md` - Comprehensive explanation of all patterns and principles (v2.1.1)
 - **Testing Strategy**: `series/part-05-testing-strategy.md` - Evolutionary testing approach, integration-first philosophy, test organization
 - **Systematic Application**: `series/part-10-systematic-application.md` - Checkpoints for coding and review
 - **API Reference**: `CLAUDE.md` - Complete Pragmatica Lite API documentation

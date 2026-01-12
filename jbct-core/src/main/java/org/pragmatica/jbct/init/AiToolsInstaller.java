@@ -19,11 +19,11 @@ import java.util.jar.JarFile;
 import java.util.zip.ZipEntry;
 
 /**
- * Installs AI tools (Claude Code skills and agents) to ~/.claude/.
+ * Installs AI tools (Claude Code skills and agents) to project's .claude/ directory.
  */
 public final class AiToolsInstaller {
     private static final String AI_TOOLS_PATH = "/ai-tools/";
-    private static final String SKILLS_SUBPATH = "skills/jbct/";
+    private static final String SKILLS_SUBPATH = "skills/";
     private static final String AGENTS_SUBPATH = "agents/";
 
     private final Path claudeDir;
@@ -33,18 +33,11 @@ public final class AiToolsInstaller {
     }
 
     /**
-     * Create installer with default Claude directory (~/.claude/).
+     * Create installer for project directory.
+     * AI tools will be installed to projectDir/.claude/
      */
-    public static AiToolsInstaller aiToolsInstaller() {
-        var userHome = System.getProperty("user.home");
-        return new AiToolsInstaller(Path.of(userHome, ".claude"));
-    }
-
-    /**
-     * Create installer with custom Claude directory.
-     */
-    public static AiToolsInstaller aiToolsInstaller(Path claudeDir) {
-        return new AiToolsInstaller(claudeDir);
+    public static AiToolsInstaller aiToolsInstaller(Path projectDir) {
+        return new AiToolsInstaller(projectDir.resolve(".claude"));
     }
 
     /**
@@ -59,7 +52,7 @@ public final class AiToolsInstaller {
 
     private Result<Unit> createDirectories() {
         try{
-            var skillsDir = claudeDir.resolve("skills/jbct");
+            var skillsDir = claudeDir.resolve("skills");
             var agentsDir = claudeDir.resolve("agents");
             Files.createDirectories(skillsDir);
             Files.createDirectories(agentsDir);
@@ -71,7 +64,7 @@ public final class AiToolsInstaller {
     }
 
     private Result<List<Path>> installAllResources() {
-        var skillsDir = claudeDir.resolve("skills/jbct");
+        var skillsDir = claudeDir.resolve("skills");
         var agentsDir = claudeDir.resolve("agents");
         // Fork-Join: Install skills and agents in parallel
         return Result.allOf(installFromResources(AI_TOOLS_PATH + SKILLS_SUBPATH, skillsDir),
@@ -176,7 +169,7 @@ public final class AiToolsInstaller {
      * Get the path where skills are installed.
      */
     public Path skillsDir() {
-        return claudeDir.resolve("skills/jbct");
+        return claudeDir.resolve("skills");
     }
 
     /**

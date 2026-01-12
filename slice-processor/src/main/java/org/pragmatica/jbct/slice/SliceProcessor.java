@@ -4,7 +4,6 @@ import org.pragmatica.jbct.slice.generator.ApiInterfaceGenerator;
 import org.pragmatica.jbct.slice.generator.DependencyVersionResolver;
 import org.pragmatica.jbct.slice.generator.FactoryClassGenerator;
 import org.pragmatica.jbct.slice.generator.ManifestGenerator;
-import org.pragmatica.jbct.slice.generator.ProxyClassGenerator;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -13,6 +12,7 @@ import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Processor;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
+import javax.annotation.processing.SupportedOptions;
 import javax.annotation.processing.SupportedSourceVersion;
 import javax.lang.model.SourceVersion;
 import javax.lang.model.element.Element;
@@ -25,10 +25,10 @@ import com.google.auto.service.AutoService;
 
 @AutoService(Processor.class)
 @SupportedAnnotationTypes("org.pragmatica.aether.slice.annotation.Slice")
+@SupportedOptions({"slice.groupId", "slice.artifactId"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class SliceProcessor extends AbstractProcessor {
     private ApiInterfaceGenerator apiGenerator;
-    private ProxyClassGenerator proxyGenerator;
     private FactoryClassGenerator factoryGenerator;
     private ManifestGenerator manifestGenerator;
     private DependencyVersionResolver versionResolver;
@@ -39,11 +39,11 @@ public class SliceProcessor extends AbstractProcessor {
         var filer = processingEnv.getFiler();
         var elements = processingEnv.getElementUtils();
         var types = processingEnv.getTypeUtils();
+        var options = processingEnv.getOptions();
         this.versionResolver = new DependencyVersionResolver(processingEnv);
         this.apiGenerator = new ApiInterfaceGenerator(filer, elements, types);
-        this.proxyGenerator = new ProxyClassGenerator(filer, elements, types);
         this.factoryGenerator = new FactoryClassGenerator(filer, elements, types, versionResolver);
-        this.manifestGenerator = new ManifestGenerator(filer);
+        this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
     }
 
     @Override
@@ -70,8 +70,9 @@ public class SliceProcessor extends AbstractProcessor {
 
     private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
         generateApiInterface(interfaceElement, sliceModel)
-                            .flatMap(_ -> generateDependencyArtifacts(interfaceElement, sliceModel))
+                            .flatMap(_ -> generateFactory(interfaceElement, sliceModel))
                             .flatMap(_ -> generateManifest(interfaceElement, sliceModel))
+                            .flatMap(_ -> generateSliceManifest(interfaceElement, sliceModel))
                             .onFailure(cause -> error(interfaceElement,
                                                       cause.message()));
     }
@@ -85,18 +86,7 @@ public class SliceProcessor extends AbstractProcessor {
                                                 "Generated API interface: " + sliceModel.apiPackage() + "." + sliceModel.simpleName()));
     }
 
-    private Result<Unit> generateDependencyArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
-        if (!sliceModel.hasDependencies()) {
-            return Result.success(Unit.unit());
-        }
-        for (var dependency : sliceModel.dependencies()) {
-            var resolved = versionResolver.resolve(dependency);
-            var proxyResult = proxyGenerator.generate(resolved, sliceModel);
-            if (proxyResult.isFailure()) {
-                return proxyResult;
-            }
-            note(interfaceElement, "Generated proxy: " + resolved.proxyClassName());
-        }
+    private Result<Unit> generateFactory(TypeElement interfaceElement, SliceModel sliceModel) {
         return factoryGenerator.generate(sliceModel)
                                .onSuccess(_ -> note(interfaceElement,
                                                     "Generated factory: " + sliceModel.simpleName() + "Factory"));
@@ -106,6 +96,12 @@ public class SliceProcessor extends AbstractProcessor {
         return manifestGenerator.generate(sliceModel)
                                 .onSuccess(_ -> note(interfaceElement,
                                                      "Generated manifest: META-INF/slice-api.properties"));
+    }
+
+    private Result<Unit> generateSliceManifest(TypeElement interfaceElement, SliceModel sliceModel) {
+        return manifestGenerator.generateSliceManifest(sliceModel)
+                                .onSuccess(_ -> note(interfaceElement,
+                                                     "Generated slice manifest: META-INF/slice/" + sliceModel.simpleName() + ".manifest"));
     }
 
     private boolean apiInterfaceExists(SliceModel model) {

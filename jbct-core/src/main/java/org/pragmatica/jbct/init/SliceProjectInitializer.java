@@ -18,18 +18,27 @@ import java.util.stream.Stream;
 public final class SliceProjectInitializer {
     private static final String TEMPLATES_PATH = "/templates/slice/";
 
+    // Default versions - updated on each release
+    private static final String DEFAULT_JBCT_VERSION = "0.4.8";
+    private static final String DEFAULT_PRAGMATICA_VERSION = "0.9.10";
+
     private final Path projectDir;
     private final String groupId;
     private final String artifactId;
     private final String basePackage;
     private final String sliceName;
+    private final String jbctVersion;
+    private final String pragmaticaVersion;
 
-    private SliceProjectInitializer(Path projectDir, String groupId, String artifactId, String basePackage) {
+    private SliceProjectInitializer(Path projectDir, String groupId, String artifactId, String basePackage,
+                                    String jbctVersion, String pragmaticaVersion) {
         this.projectDir = projectDir;
         this.groupId = groupId;
         this.artifactId = artifactId;
         this.basePackage = basePackage;
         this.sliceName = toCamelCase(artifactId);
+        this.jbctVersion = jbctVersion;
+        this.pragmaticaVersion = pragmaticaVersion;
     }
 
     /**
@@ -47,7 +56,8 @@ public final class SliceProjectInitializer {
                          .result();
         }
         var basePackage = groupId + "." + artifactId.replace("-", "");
-        return Result.success(new SliceProjectInitializer(projectDir, groupId, artifactId, basePackage));
+        return Result.success(new SliceProjectInitializer(projectDir, groupId, artifactId, basePackage,
+                                                          DEFAULT_JBCT_VERSION, DEFAULT_PRAGMATICA_VERSION));
     }
 
     /**
@@ -57,7 +67,8 @@ public final class SliceProjectInitializer {
                                                                   String groupId,
                                                                   String artifactId,
                                                                   String basePackage) {
-        return new SliceProjectInitializer(projectDir, groupId, artifactId, basePackage);
+        return new SliceProjectInitializer(projectDir, groupId, artifactId, basePackage,
+                                           DEFAULT_JBCT_VERSION, DEFAULT_PRAGMATICA_VERSION);
     }
 
     /**
@@ -74,10 +85,12 @@ public final class SliceProjectInitializer {
         try{
             var srcMainJava = projectDir.resolve("src/main/java");
             var srcTestJava = projectDir.resolve("src/test/java");
-            var resources = projectDir.resolve("src/main/resources/META-INF/dependencies");
+            var metaInfDeps = projectDir.resolve("src/main/resources/META-INF/dependencies");
+            var slicesDir = projectDir.resolve("src/main/resources/slices");
             Files.createDirectories(srcMainJava);
             Files.createDirectories(srcTestJava);
-            Files.createDirectories(resources);
+            Files.createDirectories(metaInfDeps);
+            Files.createDirectories(slicesDir);
             var packagePath = basePackage.replace(".", "/");
             Files.createDirectories(srcMainJava.resolve(packagePath));
             Files.createDirectories(srcTestJava.resolve(packagePath));
@@ -92,7 +105,8 @@ public final class SliceProjectInitializer {
         // Fork-Join: Create all independent file groups in parallel
         return Result.allOf(createProjectFiles(),
                             createSourceFiles(),
-                            createDeployScripts())
+                            createDeployScripts(),
+                            createSliceConfigFiles())
                      .flatMap(fileLists -> createDependencyManifest()
                                                                    .map(manifest -> {
                                                                             var allFiles = fileLists.stream()
@@ -103,11 +117,27 @@ public final class SliceProjectInitializer {
                                                                         }));
     }
 
+    private Result<List<Path>> createSliceConfigFiles() {
+        var slicesDir = projectDir.resolve("src/main/resources/slices");
+        return createFile("slice.toml.template", slicesDir.resolve(sliceName + ".toml"))
+                                                                                        .map(path -> List.of(path));
+    }
+
     private Result<List<Path>> createProjectFiles() {
         // Fork-Join: Create project config files in parallel
         return Result.allOf(createFile("pom.xml.template", projectDir.resolve("pom.xml")),
                             createFile("jbct.toml.template", projectDir.resolve("jbct.toml")),
-                            createFile("gitignore.template", projectDir.resolve(".gitignore")));
+                            createFile("gitignore.template", projectDir.resolve(".gitignore")),
+                            createClaudeMd());
+    }
+
+    private Result<Path> createClaudeMd() {
+        var targetPath = projectDir.resolve("CLAUDE.md");
+        if (Files.exists(targetPath)) {
+            System.out.println("  Skipped: CLAUDE.md (already exists)");
+            return Result.success(targetPath);
+        }
+        return createFile("CLAUDE.md", targetPath);
     }
 
     private Result<List<Path>> createSourceFiles() {
@@ -133,13 +163,15 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> createDeployScripts() {
-        // Fork-Join: Create deploy scripts in parallel
+        // Fork-Join: Create deploy and utility scripts in parallel
         return Result.allOf(createFile("deploy-forge.sh.template",
                                        projectDir.resolve("deploy-forge.sh")),
                             createFile("deploy-test.sh.template",
                                        projectDir.resolve("deploy-test.sh")),
                             createFile("deploy-prod.sh.template",
-                                       projectDir.resolve("deploy-prod.sh")))
+                                       projectDir.resolve("deploy-prod.sh")),
+                            createFile("generate-blueprint.sh.template",
+                                       projectDir.resolve("generate-blueprint.sh")))
                      .onSuccess(scripts -> scripts.forEach(SliceProjectInitializer::makeExecutable));
     }
 
@@ -196,6 +228,7 @@ public final class SliceProjectInitializer {
             case "pom.xml.template" -> SLICE_POM_TEMPLATE;
             case "jbct.toml.template" -> JBCT_TOML_TEMPLATE;
             case "gitignore.template" -> GITIGNORE_TEMPLATE;
+            case "CLAUDE.md" -> CLAUDE_MD_TEMPLATE;
             case "Slice.java.template" -> SLICE_INTERFACE_TEMPLATE;
             case "SliceImpl.java.template" -> SLICE_IMPL_TEMPLATE;
             case "SampleRequest.java.template" -> SAMPLE_REQUEST_TEMPLATE;
@@ -204,6 +237,8 @@ public final class SliceProjectInitializer {
             case "deploy-forge.sh.template" -> DEPLOY_FORGE_TEMPLATE;
             case "deploy-test.sh.template" -> DEPLOY_TEST_TEMPLATE;
             case "deploy-prod.sh.template" -> DEPLOY_PROD_TEMPLATE;
+            case "generate-blueprint.sh.template" -> GENERATE_BLUEPRINT_TEMPLATE;
+            case "slice.toml.template" -> SLICE_CONFIG_TEMPLATE;
             default -> null;
         };
     }
@@ -214,7 +249,9 @@ public final class SliceProjectInitializer {
                       .replace("{{sliceName}}", sliceName)
                       .replace("{{basePackage}}", basePackage)
                       .replace("{{factoryMethodName}}",
-                               Character.toLowerCase(sliceName.charAt(0)) + sliceName.substring(1));
+                               Character.toLowerCase(sliceName.charAt(0)) + sliceName.substring(1))
+                      .replace("{{jbctVersion}}", jbctVersion)
+                      .replace("{{pragmaticaVersion}}", pragmaticaVersion);
     }
 
     private static String toCamelCase(String s) {
@@ -248,42 +285,99 @@ public final class SliceProjectInitializer {
                                      http://maven.apache.org/xsd/maven-4.0.0.xsd">
             <modelVersion>4.0.0</modelVersion>
 
-            <parent>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>slice-parent</artifactId>
-                <version>0.1.0</version>
-            </parent>
-
             <groupId>{{groupId}}</groupId>
             <artifactId>{{artifactId}}</artifactId>
             <version>1.0.0-SNAPSHOT</version>
+            <packaging>jar</packaging>
+
+            <name>{{sliceName}} Slice</name>
+            <description>Aether slice: {{sliceName}}</description>
 
             <properties>
-                <slice.class>{{basePackage}}.{{sliceName}}</slice.class>
-                <aether.forge.url>http://localhost:8080</aether.forge.url>
-                <aether.test.url>http://test.example.com:8080</aether.test.url>
-                <aether.prod.url>http://prod.example.com:8080</aether.prod.url>
+                <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+                <maven.compiler.release>21</maven.compiler.release>
+                <pragmatica-lite.version>{{pragmaticaVersion}}</pragmatica-lite.version>
+                <jbct.version>{{jbctVersion}}</jbct.version>
             </properties>
 
             <dependencies>
-                <!-- Add slice API dependencies here with scope=provided, classifier=api -->
+                <!-- Pragmatica Lite Core -->
+                <dependency>
+                    <groupId>org.pragmatica-lite</groupId>
+                    <artifactId>core</artifactId>
+                    <version>${pragmatica-lite.version}</version>
+                </dependency>
+
+                <!-- Slice Annotation Processor -->
+                <dependency>
+                    <groupId>org.pragmatica-lite</groupId>
+                    <artifactId>slice-processor</artifactId>
+                    <version>${jbct.version}</version>
+                    <scope>provided</scope>
+                </dependency>
+
+                <!-- Add slice API dependencies here with scope=provided -->
+
+                <!-- Testing -->
+                <dependency>
+                    <groupId>org.junit.jupiter</groupId>
+                    <artifactId>junit-jupiter</artifactId>
+                    <version>5.11.0</version>
+                    <scope>test</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.assertj</groupId>
+                    <artifactId>assertj-core</artifactId>
+                    <version>3.26.3</version>
+                    <scope>test</scope>
+                </dependency>
             </dependencies>
 
             <build>
                 <plugins>
                     <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-compiler-plugin</artifactId>
+                        <version>3.14.0</version>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <version>3.5.2</version>
+                    </plugin>
+                    <plugin>
                         <groupId>org.pragmatica-lite</groupId>
                         <artifactId>jbct-maven-plugin</artifactId>
-                        <version>0.4.7</version>
+                        <version>${jbct.version}</version>
                         <executions>
                             <execution>
-                                <id>collect-deps</id>
+                                <id>jbct-check</id>
+                                <goals>
+                                    <goal>format-check</goal>
+                                    <goal>lint</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>slice-deps</id>
                                 <goals>
                                     <goal>collect-slice-deps</goal>
                                 </goals>
                             </execution>
                             <execution>
-                                <id>verify-slice</id>
+                                <id>slice-package</id>
+                                <goals>
+                                    <goal>package-slices</goal>
+                                    <goal>generate-blueprint</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>slice-install</id>
+                                <goals>
+                                    <goal>install-slices</goal>
+                                </goals>
+                            </execution>
+                            <execution>
+                                <id>slice-verify</id>
                                 <goals>
                                     <goal>verify-slice</goal>
                                 </goals>
@@ -292,78 +386,6 @@ public final class SliceProjectInitializer {
                     </plugin>
                 </plugins>
             </build>
-
-            <profiles>
-                <profile>
-                    <id>deploy-forge</id>
-                    <properties>
-                        <aether.deploy.url>${aether.forge.url}</aether.deploy.url>
-                    </properties>
-                    <build>
-                        <plugins>
-                            <plugin>
-                                <groupId>org.pragmatica-lite.aether</groupId>
-                                <artifactId>aether-maven-plugin</artifactId>
-                                <executions>
-                                    <execution>
-                                        <id>deploy-slice</id>
-                                        <phase>deploy</phase>
-                                        <goals>
-                                            <goal>deploy-slice</goal>
-                                        </goals>
-                                    </execution>
-                                </executions>
-                            </plugin>
-                        </plugins>
-                    </build>
-                </profile>
-                <profile>
-                    <id>deploy-test</id>
-                    <properties>
-                        <aether.deploy.url>${aether.test.url}</aether.deploy.url>
-                    </properties>
-                    <build>
-                        <plugins>
-                            <plugin>
-                                <groupId>org.pragmatica-lite.aether</groupId>
-                                <artifactId>aether-maven-plugin</artifactId>
-                                <executions>
-                                    <execution>
-                                        <id>deploy-slice</id>
-                                        <phase>deploy</phase>
-                                        <goals>
-                                            <goal>deploy-slice</goal>
-                                        </goals>
-                                    </execution>
-                                </executions>
-                            </plugin>
-                        </plugins>
-                    </build>
-                </profile>
-                <profile>
-                    <id>deploy-prod</id>
-                    <properties>
-                        <aether.deploy.url>${aether.prod.url}</aether.deploy.url>
-                    </properties>
-                    <build>
-                        <plugins>
-                            <plugin>
-                                <groupId>org.pragmatica-lite.aether</groupId>
-                                <artifactId>aether-maven-plugin</artifactId>
-                                <executions>
-                                    <execution>
-                                        <id>deploy-slice</id>
-                                        <phase>deploy</phase>
-                                        <goals>
-                                            <goal>deploy-slice</goal>
-                                        </goals>
-                                    </execution>
-                                </executions>
-                            </plugin>
-                        </plugins>
-                    </build>
-                </profile>
-            </profiles>
         </project>
         """;
 
@@ -385,6 +407,64 @@ public final class SliceProjectInitializer {
         .idea/
         *.iml
         .DS_Store
+        """;
+
+    private static final String CLAUDE_MD_TEMPLATE = """
+        # JBCT Project
+
+        ## AI Agent Policy (MANDATORY)
+
+        **Use `jbct-coder` agent for ALL coding and fixing tasks.** This ensures code follows JBCT patterns and conventions.
+
+        To invoke: Use `/jbct` skill or spawn `jbct-coder` agent via Task tool.
+
+        ## Implementation Workflow
+
+        1. **Clarify** - Ask questions if requirements are ambiguous or multiple approaches exist
+        2. **Plan** - Create implementation plan before coding
+        3. **Implement** - Execute plan stages using `jbct-coder`
+        4. **Commit** - Commit after each plan stage completion
+        5. **Review** - After plan completion, review ALL updated files using `/jbct-review`
+        6. **Fix** - Fix all found issues using `/fix-all`
+
+        ### Review Strategy
+
+        - **Small/medium plans** (1-5 stages): Review after all stages complete
+        - **Large plans** (6+ stages): Review after every 2-3 stages, then final review after all complete
+
+        ## Git Commits
+
+        - **Format**: Conventional commits (`feat:`, `fix:`, `refactor:`, `docs:`, `test:`, `chore:`)
+        - **Style**: Single line, imperative mood, no period at end
+        - **Examples**:
+          - `feat: add user authentication endpoint`
+          - `fix: handle null response in API client`
+          - `refactor: extract validation logic to separate class`
+
+        ## Conversation Style
+
+        **Core Principles:**
+        1. **Extreme brevity** - Answer directly without preamble. No "Let me help you" or "Great question!". Just the answer.
+        2. **Action-first** - Execute immediately. Explain only when necessary for safety or clarity.
+        3. **No fluff** - Skip politeness markers, acknowledgments, and summaries unless requested.
+        4. **Ask when needed** - If requirements are ambiguous or multiple valid approaches exist, ask before acting.
+
+        **When to Ask:**
+        - Ambiguous requirements with multiple valid interpretations
+        - Missing critical information (file paths, values, choices)
+        - Destructive operations with risk of data loss
+        - Technical decisions requiring user preference
+
+        **When NOT to Ask:**
+        - Clear, unambiguous requests
+        - Standard patterns following project conventions
+        - Recoverable operations (git, file edits)
+        - Obvious next steps (99% certain of intent)
+
+        **Execution Pattern:**
+        - Read → Act → Verify (show work incrementally)
+        - Parallel operations when independent
+        - Immediate verification after significant actions
         """;
 
     private static final String SLICE_INTERFACE_TEMPLATE = """
@@ -478,25 +558,124 @@ public final class SliceProjectInitializer {
 
     private static final String DEPLOY_FORGE_TEMPLATE = """
         #!/bin/bash
-        # Deploy slice to local Aether Forge instance
+        # Deploy slice to local Aether Forge (development)
+        # Uses local Maven repository - Forge reads from ~/.m2/repository
         set -e
-        mvn clean deploy -Pdeploy-forge -DskipTests
+
+        echo "Building and installing to local repository..."
+        mvn clean install -DskipTests
+
+        echo ""
+        echo "Slice installed to local Maven repository."
+        echo "Forge (with repositories=[\"local\"]) will automatically pick up changes."
+        echo ""
+        echo "If Forge is running, the slice is now available."
         """;
 
     private static final String DEPLOY_TEST_TEMPLATE = """
         #!/bin/bash
-        # Deploy slice to test Aether instance
+        # Deploy slice to test Aether cluster
+        # Requires: aether CLI configured for test environment
         set -e
-        mvn clean deploy -Pdeploy-test -DskipTests
+
+        echo "Building and installing..."
+        mvn clean install -DskipTests
+
+        BLUEPRINT="target/blueprint.toml"
+        if [ ! -f "$BLUEPRINT" ]; then
+            echo "ERROR: Blueprint not found. Run: mvn package jbct:generate-blueprint"
+            exit 1
+        fi
+
+        echo ""
+        echo "Pushing artifacts to test cluster..."
+        aether artifact push --env test
+
+        echo ""
+        echo "Deployed to test environment."
         """;
 
     private static final String DEPLOY_PROD_TEMPLATE = """
         #!/bin/bash
-        # Deploy slice to production Aether instance
+        # Deploy slice to production Aether cluster
+        # Requires: aether CLI configured for production environment
         set -e
-        echo "Deploying to PRODUCTION. Press Ctrl+C to cancel, or Enter to continue..."
-        read -r
-        mvn clean deploy -Pdeploy-prod -DskipTests
+
+        echo "WARNING: Deploying to PRODUCTION"
+        echo ""
+        read -p "Are you sure? (yes/no): " confirm
+
+        if [ "$confirm" != "yes" ]; then
+            echo "Deployment cancelled."
+            exit 1
+        fi
+
+        echo ""
+        echo "Building and verifying..."
+        mvn clean verify
+
+        BLUEPRINT="target/blueprint.toml"
+        if [ ! -f "$BLUEPRINT" ]; then
+            echo "ERROR: Blueprint not found."
+            exit 1
+        fi
+
+        echo ""
+        echo "Pushing artifacts to production cluster..."
+        aether artifact push --env prod
+
+        echo ""
+        echo "Deployed to production."
+        """;
+
+    private static final String SLICE_CONFIG_TEMPLATE = """
+        # Slice configuration for {{sliceName}}
+        # This file is read by the annotation processor and blueprint generator
+
+        [blueprint]
+        # Number of instances to deploy
+        instances = 1
+
+        # Request timeout in milliseconds
+        # timeout_ms = 30000
+
+        # Memory allocation in MB
+        # memory_mb = 512
+
+        # Load balancing strategy: round_robin, least_connections, consistent_hash, random
+        # load_balancing = "round_robin"
+
+        # For consistent_hash load balancing, specify the request field to hash on
+        # affinity_key = "customerId"
+
+        # [transport]
+        # Transport configuration (future)
+        # type = "http"
+
+        # [transport.http]
+        # HTTP-specific settings (future)
+        # port = 8080
+        """;
+
+    private static final String GENERATE_BLUEPRINT_TEMPLATE = """
+        #!/bin/bash
+        # Generate blueprint.toml from slice manifests
+        set -e
+
+        echo "Generating blueprint..."
+        mvn package jbct:generate-blueprint -DskipTests
+
+        BLUEPRINT="target/blueprint.toml"
+
+        if [ -f "$BLUEPRINT" ]; then
+            echo ""
+            echo "Blueprint generated: $BLUEPRINT"
+            echo ""
+            cat "$BLUEPRINT"
+        else
+            echo "ERROR: Blueprint generation failed"
+            exit 1
+        fi
         """;
 
     public Path projectDir() {

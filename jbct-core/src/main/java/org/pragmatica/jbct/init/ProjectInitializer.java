@@ -17,24 +17,44 @@ import java.util.List;
 public final class ProjectInitializer {
     private static final String TEMPLATES_PATH = "/templates/";
 
+    // Default versions - updated on each release
+    private static final String DEFAULT_JBCT_VERSION = "0.4.8";
+    private static final String DEFAULT_PRAGMATICA_VERSION = "0.9.10";
+
     private final Path projectDir;
     private final String groupId;
     private final String artifactId;
     private final String basePackage;
+    private final String jbctVersion;
+    private final String pragmaticaVersion;
 
-    private ProjectInitializer(Path projectDir, String groupId, String artifactId, String basePackage) {
+    private ProjectInitializer(Path projectDir, String groupId, String artifactId, String basePackage,
+                               String jbctVersion, String pragmaticaVersion) {
         this.projectDir = projectDir;
         this.groupId = groupId;
         this.artifactId = artifactId;
         this.basePackage = basePackage;
+        this.jbctVersion = jbctVersion;
+        this.pragmaticaVersion = pragmaticaVersion;
     }
 
     /**
-     * Create initializer with project parameters.
+     * Create initializer with project parameters and default versions.
      */
     public static ProjectInitializer projectInitializer(Path projectDir, String groupId, String artifactId) {
         var basePackage = groupId + "." + artifactId.replace("-", "");
-        return new ProjectInitializer(projectDir, groupId, artifactId, basePackage);
+        return new ProjectInitializer(projectDir, groupId, artifactId, basePackage,
+                                      DEFAULT_JBCT_VERSION, DEFAULT_PRAGMATICA_VERSION);
+    }
+
+    /**
+     * Create initializer with project parameters and custom versions.
+     */
+    public static ProjectInitializer projectInitializer(Path projectDir, String groupId, String artifactId,
+                                                        String jbctVersion, String pragmaticaVersion) {
+        var basePackage = groupId + "." + artifactId.replace("-", "");
+        return new ProjectInitializer(projectDir, groupId, artifactId, basePackage,
+                                      jbctVersion, pragmaticaVersion);
     }
 
     /**
@@ -44,7 +64,8 @@ public final class ProjectInitializer {
                                                         String groupId,
                                                         String artifactId,
                                                         String basePackage) {
-        return new ProjectInitializer(projectDir, groupId, artifactId, basePackage);
+        return new ProjectInitializer(projectDir, groupId, artifactId, basePackage,
+                                      DEFAULT_JBCT_VERSION, DEFAULT_PRAGMATICA_VERSION);
     }
 
     /**
@@ -84,7 +105,17 @@ public final class ProjectInitializer {
         // Fork-Join: Create template files in parallel
         return Result.allOf(createFile("pom.xml.template", projectDir.resolve("pom.xml")),
                             createFile("jbct.toml.template", projectDir.resolve("jbct.toml")),
-                            createFile("gitignore.template", projectDir.resolve(".gitignore")));
+                            createFile("gitignore.template", projectDir.resolve(".gitignore")),
+                            createClaudeMd());
+    }
+
+    private Result<Path> createClaudeMd() {
+        var targetPath = projectDir.resolve("CLAUDE.md");
+        if (Files.exists(targetPath)) {
+            System.out.println("  Skipped: CLAUDE.md (already exists)");
+            return Result.success(targetPath);
+        }
+        return createFile("CLAUDE.md", targetPath);
     }
 
     private Result<List<Path>> createGitkeepFiles() {
@@ -133,9 +164,10 @@ public final class ProjectInitializer {
     private String substituteVariables(String content) {
         return content.replace("{{groupId}}", groupId)
                       .replace("{{artifactId}}", artifactId)
-                      .replace("{{projectName}}",
-                               capitalizeWords(artifactId))
-                      .replace("{{basePackage}}", basePackage);
+                      .replace("{{projectName}}", capitalizeWords(artifactId))
+                      .replace("{{basePackage}}", basePackage)
+                      .replace("{{jbctVersion}}", jbctVersion)
+                      .replace("{{pragmaticaVersion}}", pragmaticaVersion);
     }
 
     private String capitalizeWords(String s) {
