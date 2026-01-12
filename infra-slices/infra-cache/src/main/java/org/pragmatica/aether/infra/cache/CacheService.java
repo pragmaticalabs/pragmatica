@@ -1,5 +1,6 @@
 package org.pragmatica.aether.infra.cache;
 
+import org.pragmatica.aether.infra.InfraStore;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.lang.Option;
@@ -171,23 +172,41 @@ public interface CacheService extends Slice {
     Promise<Unit> clear();
 
     // ========== Factory Methods ==========
+    String ARTIFACT_KEY = "org.pragmatica-lite.aether:infra-cache";
+    String VERSION = "0.7.0";
+
     /**
-     * Factory method for in-memory implementation with default config.
+     * Factory method for shared in-memory implementation with default config.
+     * <p>
+     * Uses InfraStore to ensure all slices share the same CacheService instance.
      *
-     * @return CacheService instance
+     * @return Shared CacheService instance
      */
     static CacheService cacheService() {
-        return InMemoryCacheService.inMemoryCacheService();
+        return InfraStore.instance()
+                         .map(store -> store.getOrCreate(ARTIFACT_KEY,
+                                                         VERSION,
+                                                         CacheService.class,
+                                                         InMemoryCacheService::inMemoryCacheService))
+                         .or(InMemoryCacheService::inMemoryCacheService);
     }
 
     /**
-     * Factory method for in-memory implementation with custom config.
+     * Factory method for shared in-memory implementation with custom config.
+     * <p>
+     * Uses InfraStore to ensure all slices share the same CacheService instance.
+     * Note: Config is only applied on first creation; subsequent calls return existing instance.
      *
-     * @param config Cache configuration
-     * @return CacheService instance
+     * @param config Cache configuration (used only on first creation)
+     * @return Shared CacheService instance
      */
     static CacheService cacheService(CacheConfig config) {
-        return InMemoryCacheService.inMemoryCacheService(config);
+        return InfraStore.instance()
+                         .map(store -> store.getOrCreate(ARTIFACT_KEY,
+                                                         VERSION,
+                                                         CacheService.class,
+                                                         () -> InMemoryCacheService.inMemoryCacheService(config)))
+                         .or(() -> InMemoryCacheService.inMemoryCacheService(config));
     }
 
     // ========== Slice Lifecycle ==========

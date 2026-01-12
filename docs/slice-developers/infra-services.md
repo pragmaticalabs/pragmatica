@@ -98,6 +98,90 @@ curl -X PUT http://localhost:8888/repository/com/example/test/1.0.0/test-1.0.0.j
   --data-binary @test.jar
 ```
 
+## InfraStore: Instance Sharing
+
+Infrastructure services share instances across slices via `InfraStore`. This enables:
+- Singleton services (cache, database connections)
+- Resource pooling
+- Configuration sharing
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Slice A                      Slice B                            │
+│  ─────────                    ─────────                          │
+│  CacheService.cacheService()  CacheService.cacheService()        │
+│         │                            │                           │
+│         └───────────┬────────────────┘                           │
+│                     ▼                                            │
+│              ┌─────────────┐                                     │
+│              │ InfraStore  │ ← Per-node singleton                │
+│              │ getOrCreate │                                     │
+│              └──────┬──────┘                                     │
+│                     │                                            │
+│         ┌───────────┴───────────┐                                │
+│         ▼                       ▼                                │
+│  First call: create      Subsequent: return existing             │
+│  └─ factory.get()        └─ cached instance                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Usage in Infra Services
+
+```java
+public interface CacheService extends Slice {
+    // Factory using InfraStore for instance sharing
+    static CacheService cacheService() {
+        return InfraStore.instance()
+            .map(store -> store.getOrCreate(
+                "org.pragmatica-lite.aether:infra-cache",
+                "0.7.0",
+                CacheService.class,
+                InMemoryCacheService::inMemoryCacheService))
+            .or(InMemoryCacheService::inMemoryCacheService);  // fallback
+    }
+}
+```
+
+### getOrCreate Behavior
+
+| Aspect | Behavior |
+|--------|----------|
+| Thread-safety | Atomic creation, only one instance per (key, version) |
+| Version matching | Qualifiers stripped (`1.0.0-SNAPSHOT` = `1.0.0`) |
+| Return type | `T` directly (not wrapped) |
+| Factory errors | Exceptions propagate to caller |
+
+**Best practice**: Factories should handle initialization errors internally:
+
+```java
+static CacheService cacheService() {
+    return InfraStore.instance()
+        .map(store -> store.getOrCreate(KEY, VERSION, CacheService.class,
+            () -> {
+                try {
+                    return RedisCacheService.redisCacheService();
+                } catch (Exception e) {
+                    return InMemoryCacheService.inMemoryCacheService();
+                }
+            }))
+        .or(InMemoryCacheService::inMemoryCacheService);
+}
+```
+
+### Declaring Infra Dependencies
+
+Slices declare infra dependencies in their dependency file:
+
+```
+[infra]
+org.pragmatica-lite.aether:infra-cache:^0.7.0
+org.pragmatica-lite.aether:infra-database:^0.7.0
+```
+
+This ensures infra JARs are loaded before the slice attempts to use them.
+
 ## Planned Infrastructure Services
 
 ### HTTP Routing Service (Future)

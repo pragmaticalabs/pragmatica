@@ -162,6 +162,12 @@
 
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>infra-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>slice</artifactId>
                 <version>${project.version}</version>
             </dependency>

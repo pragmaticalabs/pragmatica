@@ -144,7 +144,10 @@ public record DependencyFile(List<ArtifactDependency> api,
                                   .result();
             }
         }
-        return Result.success(new DependencyFile(List.copyOf(api), List.copyOf(shared), List.copyOf(infra), List.copyOf(slices)));
+        return Result.success(new DependencyFile(List.copyOf(api),
+                                                 List.copyOf(shared),
+                                                 List.copyOf(infra),
+                                                 List.copyOf(slices)));
     }
 
     /**

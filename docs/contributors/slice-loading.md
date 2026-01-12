@@ -252,15 +252,72 @@ static CacheService cacheService() {
             "0.7.0",
             CacheService.class,
             InMemoryCacheService::inMemoryCacheService))
-        .unwrap();
+        .or(InMemoryCacheService::inMemoryCacheService);  // fallback if InfraStore not configured
 }
 ```
 
-**Three sharing patterns supported:**
+#### InfraStore.getOrCreate() Behavior
 
-1. **Singleton**: All slices share same instance (default)
-2. **Shared Core + Adapter**: Core singleton wrapped with per-slice adapter
-3. **Factory**: Infra service is a factory, produces new instances per call
+The `getOrCreate` method provides atomic instance creation with the following guarantees:
+
+| Aspect | Behavior |
+|--------|----------|
+| **Thread-safety** | Only one instance created per (artifactKey, version) pair, even under concurrent access |
+| **Version matching** | Qualifiers are stripped (e.g., `1.0.0-SNAPSHOT` matches `1.0.0`) |
+| **Return type** | Returns `T` directly (not wrapped in Result) |
+| **Factory exceptions** | If factory throws, exception propagates to caller |
+
+**Important**: Infra service factories should handle their own initialization errors. The `getOrCreate` method does not wrap factory exceptions - a throwing factory will cause the exception to propagate to all concurrent callers waiting for that instance.
+
+```java
+// Safe factory pattern - handles initialization errors
+static CacheService cacheService() {
+    return InfraStore.instance()
+        .map(store -> store.getOrCreate(
+            KEY, VERSION, CacheService.class,
+            () -> {
+                // Factory should not throw - return fallback on error
+                try {
+                    return RedisCacheService.redisCacheService();
+                } catch (Exception e) {
+                    log.warn("Redis unavailable, using in-memory cache", e);
+                    return InMemoryCacheService.inMemoryCacheService();
+                }
+            }))
+        .or(InMemoryCacheService::inMemoryCacheService);
+}
+```
+
+#### Three Sharing Patterns
+
+**1. Singleton** (default): All slices share same instance
+```java
+static CacheService cacheService() {
+    return InfraStore.instance()
+        .map(store -> store.getOrCreate(KEY, VERSION, CacheService.class,
+            InMemoryCacheService::inMemoryCacheService))
+        .or(InMemoryCacheService::inMemoryCacheService);
+}
+```
+
+**2. Shared Core + Adapter**: Core singleton wrapped with per-slice adapter
+```java
+static DatabaseAdapter databaseAdapter() {
+    var core = DatabaseCore.databaseCore(); // singleton via InfraStore
+    return new DatabaseAdapter(core);       // fresh adapter each call
+}
+```
+
+**3. Factory Pattern**: Infra service is a factory, produces new instances
+```java
+static HttpClient httpClient() {
+    var factory = InfraStore.instance()
+        .map(store -> store.getOrCreate(KEY, VERSION, HttpClientFactory.class,
+            HttpClientFactory::httpClientFactory))
+        .or(HttpClientFactory::httpClientFactory);
+    return factory.create(); // new client each call
+}
+```
 
 ## JAR Manifest
 

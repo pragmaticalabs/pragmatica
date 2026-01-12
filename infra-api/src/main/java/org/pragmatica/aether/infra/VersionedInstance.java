@@ -15,7 +15,6 @@ import java.util.List;
  * @param <T>      Instance type
  */
 public record VersionedInstance<T>(String version, T instance) {
-
     /**
      * Create a new VersionedInstance.
      *
@@ -43,14 +42,14 @@ public record VersionedInstance<T>(String version, T instance) {
      */
     public boolean isCompatibleWith(String requested) {
         return parseVersion(version)
-                         .flatMap(thisV -> parseVersion(requested).map(reqV -> isCompatible(thisV, reqV)))
-                         .or(() -> stripQualifier(version).equals(stripQualifier(requested)));
+                           .flatMap(thisV -> parseVersion(requested)
+                                                         .map(reqV -> isCompatible(thisV, reqV)))
+                           .or(() -> stripQualifier(version)
+                                                   .equals(stripQualifier(requested)));
     }
 
     private static boolean isCompatible(ParsedVersion thisV, ParsedVersion reqV) {
-        return thisV.major() == reqV.major()
-               && thisV.minor() >= reqV.minor()
-               && (thisV.minor() > reqV.minor() || thisV.patch() >= reqV.patch());
+        return thisV.major() == reqV.major() && thisV.minor() >= reqV.minor() && (thisV.minor() > reqV.minor() || thisV.patch() >= reqV.patch());
     }
 
     /**
@@ -60,7 +59,8 @@ public record VersionedInstance<T>(String version, T instance) {
      * @return true if versions match exactly (ignoring qualifier)
      */
     public boolean isExactMatch(String requested) {
-        return stripQualifier(version).equals(stripQualifier(requested));
+        return stripQualifier(version)
+                             .equals(stripQualifier(requested));
     }
 
     /**
@@ -75,7 +75,6 @@ public record VersionedInstance<T>(String version, T instance) {
      */
     public static <T> Option<T> findCompatible(List<VersionedInstance<T>> instances, String version) {
         var exact = findExact(instances, version);
-
         return exact.isPresent()
                ? exact
                : instances.stream()
@@ -112,19 +111,19 @@ public record VersionedInstance<T>(String version, T instance) {
     private static Option<ParsedVersion> parseVersion(String version) {
         var stripped = stripQualifier(version);
         var parts = stripped.split("\\.");
-
         if (parts.length < 3) {
             return Option.none();
         }
-
         return parseInteger(parts[0])
-                         .flatMap(major -> parseInteger(parts[1])
-                                                     .flatMap(minor -> parseInteger(parts[2])
-                                                                                 .map(patch -> new ParsedVersion(major, minor, patch))));
+                           .flatMap(major -> parseInteger(parts[1])
+                                                         .flatMap(minor -> parseInteger(parts[2])
+                                                                                       .map(patch -> new ParsedVersion(major,
+                                                                                                                       minor,
+                                                                                                                       patch))));
     }
 
     private static Option<Integer> parseInteger(String value) {
-        try {
+        try{
             return Option.some(Integer.parseInt(value));
         } catch (NumberFormatException e) {
             return Option.none();

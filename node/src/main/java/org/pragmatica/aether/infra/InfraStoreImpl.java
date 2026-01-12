@@ -18,7 +18,7 @@ public final class InfraStoreImpl implements InfraStore {
     private static final Logger log = LoggerFactory.getLogger(InfraStoreImpl.class);
 
     // Map: artifactKey -> list of versioned instances
-    private final ConcurrentHashMap<String, List<VersionedInstance<?>>> store = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, List<VersionedInstance< ? >>> store = new ConcurrentHashMap<>();
 
     // Lock for atomic getOrCreate operations
     private final Object createLock = new Object();
@@ -38,7 +38,8 @@ public final class InfraStoreImpl implements InfraStore {
         // Type-safe cast with filtering
         return instances.stream()
                         .filter(vi -> type.isInstance(vi.instance()))
-                        .map(vi -> new VersionedInstance<>(vi.version(), type.cast(vi.instance())))
+                        .map(vi -> new VersionedInstance<>(vi.version(),
+                                                           type.cast(vi.instance())))
                         .toList();
     }
 
@@ -63,13 +64,14 @@ public final class InfraStoreImpl implements InfraStore {
             var instance = factory.get();
             var versionedInstance = new VersionedInstance<>(version, instance);
             // Add to store
-            store.compute(artifactKey, (_, existing_) -> {
-                var list = existing_ == null
-                           ? new ArrayList<VersionedInstance<?>>()
-                           : new ArrayList<>(existing_);
-                list.add(versionedInstance);
-                return list;
-            });
+            store.compute(artifactKey,
+                          (_, existing_) -> {
+                              var list = existing_ == null
+                                         ? new ArrayList<VersionedInstance< ?>>()
+                                         : new ArrayList<>(existing_);
+                              list.add(versionedInstance);
+                              return list;
+                          });
             return instance;
         }
     }
@@ -81,7 +83,8 @@ public final class InfraStoreImpl implements InfraStore {
         }
         var strippedVersion = stripQualifier(version);
         for (var vi : instances) {
-            if (stripQualifier(vi.version()).equals(strippedVersion) && type.isInstance(vi.instance())) {
+            if (stripQualifier(vi.version())
+                              .equals(strippedVersion) && type.isInstance(vi.instance())) {
                 return type.cast(vi.instance());
             }
         }

@@ -19,6 +19,10 @@
             <artifactId>slice-api</artifactId>
         </dependency>
         <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>infra-api</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
         </dependency>
