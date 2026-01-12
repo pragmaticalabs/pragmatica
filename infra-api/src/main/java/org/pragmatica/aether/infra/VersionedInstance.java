@@ -3,7 +3,6 @@ package org.pragmatica.aether.infra;
 import org.pragmatica.lang.Option;
 
 import java.util.List;
-import java.util.regex.Pattern;
 
 /**
  * Version-tagged instance stored in InfraStore.
@@ -16,7 +15,18 @@ import java.util.regex.Pattern;
  * @param <T>      Instance type
  */
 public record VersionedInstance<T>(String version, T instance) {
-    private static final Pattern VERSION_PATTERN = Pattern.compile("^(\\d+)\\.(\\d+)\\.(\\d+)(?:-(.+))?$");
+
+    /**
+     * Create a new VersionedInstance.
+     *
+     * @param version  Semantic version string
+     * @param instance The infrastructure service instance
+     * @param <T>      Instance type
+     * @return New VersionedInstance
+     */
+    public static <T> VersionedInstance<T> versionedInstance(String version, T instance) {
+        return new VersionedInstance<>(version, instance);
+    }
 
     /**
      * Check if this instance is compatible with requested version.
@@ -33,23 +43,14 @@ public record VersionedInstance<T>(String version, T instance) {
      */
     public boolean isCompatibleWith(String requested) {
         return parseVersion(version)
-                           .flatMap(thisV -> parseVersion(requested)
-                                                         .map(reqV -> isCompatible(thisV, reqV)))
-                           .or(() -> stripQualifier(version)
-                                                   .equals(stripQualifier(requested)));
+                         .flatMap(thisV -> parseVersion(requested).map(reqV -> isCompatible(thisV, reqV)))
+                         .or(() -> stripQualifier(version).equals(stripQualifier(requested)));
     }
 
     private static boolean isCompatible(ParsedVersion thisV, ParsedVersion reqV) {
-        // Major must match
-        if (thisV.major() != reqV.major()) {
-            return false;
-        }
-        // This minor must be >= requested minor
-        if (thisV.minor() < reqV.minor()) {
-            return false;
-        }
-        // If minor matches, this patch must be >= requested patch
-        return thisV.minor() != reqV.minor() || thisV.patch() >= reqV.patch();
+        return thisV.major() == reqV.major()
+               && thisV.minor() >= reqV.minor()
+               && (thisV.minor() > reqV.minor() || thisV.patch() >= reqV.patch());
     }
 
     /**
@@ -59,8 +60,7 @@ public record VersionedInstance<T>(String version, T instance) {
      * @return true if versions match exactly (ignoring qualifier)
      */
     public boolean isExactMatch(String requested) {
-        return stripQualifier(version)
-                             .equals(stripQualifier(requested));
+        return stripQualifier(version).equals(stripQualifier(requested));
     }
 
     /**
@@ -73,21 +73,17 @@ public record VersionedInstance<T>(String version, T instance) {
      * @param <T>       Instance type
      * @return Compatible instance if found
      */
-    public static <T> Option<T> findCompatible(List<VersionedInstance<T>> instances,
-                                               String version) {
-        // First try exact match
-        for (var vi : instances) {
-            if (vi.isExactMatch(version)) {
-                return Option.some(vi.instance());
-            }
-        }
-        // Then try compatible
-        for (var vi : instances) {
-            if (vi.isCompatibleWith(version)) {
-                return Option.some(vi.instance());
-            }
-        }
-        return Option.none();
+    public static <T> Option<T> findCompatible(List<VersionedInstance<T>> instances, String version) {
+        var exact = findExact(instances, version);
+
+        return exact.isPresent()
+               ? exact
+               : instances.stream()
+                          .filter(vi -> vi.isCompatibleWith(version))
+                          .findFirst()
+                          .map(VersionedInstance::instance)
+                          .map(Option::some)
+                          .orElse(Option.none());
     }
 
     /**
@@ -98,40 +94,38 @@ public record VersionedInstance<T>(String version, T instance) {
      * @param <T>       Instance type
      * @return Exact match if found
      */
-    public static <T> Option<T> findExact(List<VersionedInstance<T>> instances,
-                                          String version) {
-        for (var vi : instances) {
-            if (vi.isExactMatch(version)) {
-                return Option.some(vi.instance());
-            }
-        }
-        return Option.none();
+    public static <T> Option<T> findExact(List<VersionedInstance<T>> instances, String version) {
+        return instances.stream()
+                        .filter(vi -> vi.isExactMatch(version))
+                        .findFirst()
+                        .map(VersionedInstance::instance)
+                        .map(Option::some)
+                        .orElse(Option.none());
     }
 
-    private record ParsedVersion(int major, int minor, int patch) {}
+    private record ParsedVersion(int major, int minor, int patch) {
+        static Option<ParsedVersion> parsedVersion(int major, int minor, int patch) {
+            return Option.some(new ParsedVersion(major, minor, patch));
+        }
+    }
 
     private static Option<ParsedVersion> parseVersion(String version) {
         var stripped = stripQualifier(version);
-        var matcher = VERSION_PATTERN.matcher(stripped + "-x");
-        // Add dummy qualifier for regex
-        if (!matcher.matches()) {
-            // Try without qualifier pattern
-            var parts = stripped.split("\\.");
-            if (parts.length >= 3) {
-                try{
-                    return Option.some(new ParsedVersion(Integer.parseInt(parts[0]),
-                                                         Integer.parseInt(parts[1]),
-                                                         Integer.parseInt(parts[2])));
-                } catch (NumberFormatException e) {
-                    return Option.none();
-                }
-            }
+        var parts = stripped.split("\\.");
+
+        if (parts.length < 3) {
             return Option.none();
         }
-        try{
-            return Option.some(new ParsedVersion(Integer.parseInt(matcher.group(1)),
-                                                 Integer.parseInt(matcher.group(2)),
-                                                 Integer.parseInt(matcher.group(3))));
+
+        return parseInteger(parts[0])
+                         .flatMap(major -> parseInteger(parts[1])
+                                                     .flatMap(minor -> parseInteger(parts[2])
+                                                                                 .map(patch -> new ParsedVersion(major, minor, patch))));
+    }
+
+    private static Option<Integer> parseInteger(String value) {
+        try {
+            return Option.some(Integer.parseInt(value));
         } catch (NumberFormatException e) {
             return Option.none();
         }
