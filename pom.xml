@@ -54,7 +54,7 @@
         <kryo.version>5.6.2</kryo.version>
         <fury-core.version>0.10.2</fury-core.version>
         <jbct.version>0.4.8</jbct.version>
-        <jbct.skip>true</jbct.skip>
+        <jbct.skip>false</jbct.skip>
         <micrometer.version>1.16.1</micrometer.version>
         <onnxruntime.version>1.23.2</onnxruntime.version>
     </properties>
@@ -377,7 +377,10 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
             </plugin>
-            <!-- jbct-maven-plugin disabled: 0.4.8 not available in Maven Central -->
+            <plugin>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-maven-plugin</artifactId>
+            </plugin>
         </plugins>
     </build>
 </project>

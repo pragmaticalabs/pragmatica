@@ -92,10 +92,18 @@
                         </goals>
                     </execution>
                     <execution>
-                        <id>generate-blueprint</id>
+                        <id>package-slices</id>
                         <phase>package</phase>
                         <goals>
+                            <goal>package-slices</goal>
                             <goal>generate-blueprint</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>install-slices</id>
+                        <phase>install</phase>
+                        <goals>
+                            <goal>install-slices</goal>
                         </goals>
                     </execution>
                 </executions>
