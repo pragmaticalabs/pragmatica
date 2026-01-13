@@ -15,6 +15,7 @@
 
 ### Fixed
 - SliceManifest: nested class path conversion (`Outer.Inner` → `Outer$Inner.class`)
+- Slice packaging: Aether runtime libs (`slice-annotations`, `slice-api`, `infra-api`) excluded from bundling and dependency file
 
 ## [0.4.8] - 2026-01-10
 

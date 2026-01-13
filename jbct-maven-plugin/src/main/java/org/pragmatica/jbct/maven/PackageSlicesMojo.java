@@ -111,6 +111,10 @@ public class PackageSlicesMojo extends AbstractMojo {
         for (var artifact : project.getArtifacts()) {
             var artifactId = artifact.getArtifactId();
             var scope = artifact.getScope();
+            // Skip Aether runtime libs - always provided by platform
+            if (isAetherRuntime(artifact)) {
+                continue;
+            }
             if (artifactId.startsWith("infra-")) {
                 // Infrastructure dependencies
                 infraDeps.add(toArtifactInfo(artifact));
@@ -127,6 +131,14 @@ public class PackageSlicesMojo extends AbstractMojo {
             }
         }
         return new DependencyClassification(apiDeps, sharedDeps, infraDeps, sliceDeps, externalDeps);
+    }
+
+    private boolean isAetherRuntime(Artifact artifact) {
+        var groupId = artifact.getGroupId();
+        var artifactId = artifact.getArtifactId();
+        // Aether runtime libraries - always provided by platform, skip entirely
+        return "org.pragmatica-lite.aether".equals(groupId) &&
+               ("slice-annotations".equals(artifactId) || "slice-api".equals(artifactId) || "infra-api".equals(artifactId));
     }
 
     private boolean isSliceDependency(Artifact artifact) {
