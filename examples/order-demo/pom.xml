@@ -53,6 +53,7 @@
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>slice-api</artifactId>
                 <version>${aether.version}</version>
+                <scope>compile</scope>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
@@ -68,6 +69,7 @@
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>infra-api</artifactId>
                 <version>${aether.version}</version>
+                <scope>compile</scope>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>

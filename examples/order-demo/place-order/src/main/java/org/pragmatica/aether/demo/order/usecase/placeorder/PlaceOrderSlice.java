@@ -17,7 +17,6 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceMethod;
-import org.pragmatica.aether.slice.SliceRoute;
 import org.pragmatica.aether.slice.SliceRuntime;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
@@ -121,13 +120,6 @@ public record PlaceOrderSlice() implements Slice {
                                          this::execute,
                                          new TypeToken<PlaceOrderResponse>() {},
                                          new TypeToken<PlaceOrderRequest>() {}));
-    }
-
-    @Override
-    public List<SliceRoute> routes() {
-        return List.of(SliceRoute.post("/api/orders", "placeOrder")
-                                 .withBody()
-                                 .build());
     }
 
     private Promise<PlaceOrderResponse> execute(PlaceOrderRequest request) {

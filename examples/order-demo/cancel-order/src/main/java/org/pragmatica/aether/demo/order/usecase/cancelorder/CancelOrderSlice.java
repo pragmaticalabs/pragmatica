@@ -10,7 +10,6 @@ import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceMethod;
-import org.pragmatica.aether.slice.SliceRoute;
 import org.pragmatica.aether.slice.SliceRuntime;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
@@ -103,14 +102,6 @@ public record CancelOrderSlice() implements Slice {
                                          this::execute,
                                          new TypeToken<CancelOrderResponse>() {},
                                          new TypeToken<CancelOrderRequest>() {}));
-    }
-
-    @Override
-    public List<SliceRoute> routes() {
-        return List.of(SliceRoute.delete("/api/orders/{orderId}", "cancelOrder")
-                                 .withPathVar("orderId")
-                                 .withBody()
-                                 .build());
     }
 
     private Promise<CancelOrderResponse> execute(CancelOrderRequest request) {

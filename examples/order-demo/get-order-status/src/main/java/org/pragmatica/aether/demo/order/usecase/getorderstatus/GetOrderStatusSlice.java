@@ -7,7 +7,6 @@ import org.pragmatica.aether.demo.order.domain.OrderStatus;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceMethod;
-import org.pragmatica.aether.slice.SliceRoute;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -74,13 +73,6 @@ public record GetOrderStatusSlice() implements Slice {
                                          this::execute,
                                          new TypeToken<GetOrderStatusResponse>() {},
                                          new TypeToken<GetOrderStatusRequest>() {}));
-    }
-
-    @Override
-    public List<SliceRoute> routes() {
-        return List.of(SliceRoute.get("/api/orders/{orderId}", "getOrderStatus")
-                                 .withPathVar("orderId")
-                                 .build());
     }
 
     private Promise<GetOrderStatusResponse> execute(GetOrderStatusRequest request) {
