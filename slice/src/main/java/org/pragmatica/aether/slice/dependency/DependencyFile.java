@@ -144,11 +144,52 @@ public record DependencyFile(List<ArtifactDependency> api,
                                   .result();
             }
         }
-        return Result.success(new DependencyFile(List.copyOf(api),
-                                                 List.copyOf(shared),
-                                                 List.copyOf(infra),
-                                                 List.copyOf(slices)));
+        var result = new DependencyFile(List.copyOf(api), List.copyOf(shared), List.copyOf(infra), List.copyOf(slices));
+        return result.validateNoFrameworkDependencies();
     }
+
+    /**
+     * Validate that framework dependencies (slice-api, infra-api) are not declared.
+     * These are provided by the runtime and should never be in slice dependency files.
+     */
+    private Result<DependencyFile> validateNoFrameworkDependencies() {
+        var frameworkDep = findFrameworkDependency();
+        if (frameworkDep != null) {
+            return FRAMEWORK_DEPENDENCY_ERROR.apply(frameworkDep)
+                                             .result();
+        }
+        return Result.success(this);
+    }
+
+    private String findFrameworkDependency() {
+        for (var dep : api) {
+            if (isFrameworkArtifact(dep)) {
+                return "[api] " + dep.asString();
+            }
+        }
+        for (var dep : shared) {
+            if (isFrameworkArtifact(dep)) {
+                return "[shared] " + dep.asString();
+            }
+        }
+        for (var dep : infra) {
+            if (isFrameworkArtifact(dep)) {
+                return "[infra] " + dep.asString();
+            }
+        }
+        return null;
+    }
+
+    private static boolean isFrameworkArtifact(ArtifactDependency dep) {
+        return AETHER_GROUP.equals(dep.groupId()) && FRAMEWORK_ARTIFACTS.contains(dep.artifactId());
+    }
+
+    private static final String AETHER_GROUP = "org.pragmatica-lite.aether";
+    private static final java.util.Set<String> FRAMEWORK_ARTIFACTS = java.util.Set.of("slice-api",
+                                                                                      "infra-api",
+                                                                                      "slice-annotations");
+    private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. "
+                                                                                            + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
 
     /**
      * Parse dependency file from input stream.

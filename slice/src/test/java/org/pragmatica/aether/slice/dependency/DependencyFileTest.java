@@ -316,4 +316,95 @@ class DependencyFileTest {
                           assertThat(file.shared().get(4).versionPattern()).isInstanceOf(VersionPattern.Comparison.class);
                       });
     }
+
+    @Test
+    void parse_rejects_slice_api_in_api_section() {
+        var content = """
+                [api]
+                org.pragmatica-lite.aether:slice-api:^0.7.0
+                """;
+
+        DependencyFile.dependencyFile(content)
+                      .onSuccessRun(Assertions::fail)
+                      .onFailure(cause -> {
+                          assertThat(cause.message()).contains("Slice incorrectly packaged");
+                          assertThat(cause.message()).contains("[api]");
+                          assertThat(cause.message()).contains("slice-api");
+                      });
+    }
+
+    @Test
+    void parse_rejects_slice_api_in_shared_section() {
+        var content = """
+                [shared]
+                org.pragmatica-lite.aether:slice-api:^0.7.0
+                """;
+
+        DependencyFile.dependencyFile(content)
+                      .onSuccessRun(Assertions::fail)
+                      .onFailure(cause -> {
+                          assertThat(cause.message()).contains("Slice incorrectly packaged");
+                          assertThat(cause.message()).contains("[shared]");
+                      });
+    }
+
+    @Test
+    void parse_rejects_infra_api_in_infra_section() {
+        var content = """
+                [infra]
+                org.pragmatica-lite.aether:infra-api:^0.7.0
+                """;
+
+        DependencyFile.dependencyFile(content)
+                      .onSuccessRun(Assertions::fail)
+                      .onFailure(cause -> {
+                          assertThat(cause.message()).contains("Slice incorrectly packaged");
+                          assertThat(cause.message()).contains("[infra]");
+                          assertThat(cause.message()).contains("infra-api");
+                      });
+    }
+
+    @Test
+    void parse_rejects_infra_api_in_shared_section() {
+        var content = """
+                [shared]
+                org.pragmatica-lite.aether:infra-api:^0.7.0
+                """;
+
+        DependencyFile.dependencyFile(content)
+                      .onSuccessRun(Assertions::fail)
+                      .onFailure(cause -> {
+                          assertThat(cause.message()).contains("Slice incorrectly packaged");
+                          assertThat(cause.message()).contains("[shared]");
+                      });
+    }
+
+    @Test
+    void parse_rejects_slice_annotations_in_shared_section() {
+        var content = """
+                [shared]
+                org.pragmatica-lite.aether:slice-annotations:^0.7.0
+                """;
+
+        DependencyFile.dependencyFile(content)
+                      .onSuccessRun(Assertions::fail)
+                      .onFailure(cause -> {
+                          assertThat(cause.message()).contains("Slice incorrectly packaged");
+                          assertThat(cause.message()).contains("[shared]");
+                          assertThat(cause.message()).contains("slice-annotations");
+                      });
+    }
+
+    @Test
+    void parse_allows_other_aether_dependencies() {
+        var content = """
+                [infra]
+                org.pragmatica-lite.aether:infra-cache:^0.7.0
+                org.pragmatica-lite.aether:infra-database:^0.7.0
+                """;
+
+        DependencyFile.dependencyFile(content)
+                      .onFailureRun(Assertions::fail)
+                      .onSuccess(file -> assertThat(file.infra()).hasSize(2));
+    }
 }
