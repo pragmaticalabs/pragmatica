@@ -18,6 +18,7 @@
 - Slice packaging: request/response classes handled as API types when nested
 - AI tools: fetch from coding-technology repo using GitHub Tree API (dynamic file discovery)
 - AI tools: removed bundled copies, now fetched from GitHub on demand
+- Build: added tinylog 2.7.0 as SLF4J provider (eliminates "No SLF4J providers" warnings)
 
 ### Fixed
 - SliceManifest: nested class path conversion (`Outer.Inner` → `Outer$Inner.class`)
