@@ -5,6 +5,12 @@ import org.pragmatica.jbct.slice.generator.DependencyVersionResolver;
 import org.pragmatica.jbct.slice.generator.FactoryClassGenerator;
 import org.pragmatica.jbct.slice.generator.ManifestGenerator;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.jbct.slice.routing.ErrorPatternConfig;
+import org.pragmatica.jbct.slice.routing.ErrorTypeDiscovery;
+import org.pragmatica.jbct.slice.routing.RouteConfig;
+import org.pragmatica.jbct.slice.routing.RouteConfigLoader;
+import org.pragmatica.jbct.slice.routing.RouteSourceGenerator;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
@@ -19,6 +25,10 @@ import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.TypeElement;
 import javax.tools.Diagnostic;
+import javax.tools.StandardLocation;
+import java.io.IOException;
+import java.nio.file.FileSystemNotFoundException;
+import java.nio.file.Path;
 import java.util.Set;
 
 import com.google.auto.service.AutoService;
@@ -32,6 +42,8 @@ public class SliceProcessor extends AbstractProcessor {
     private FactoryClassGenerator factoryGenerator;
     private ManifestGenerator manifestGenerator;
     private DependencyVersionResolver versionResolver;
+    private RouteSourceGenerator routeGenerator;
+    private ErrorTypeDiscovery errorDiscovery;
 
     @Override
     public synchronized void init(javax.annotation.processing.ProcessingEnvironment processingEnv) {
@@ -44,6 +56,8 @@ public class SliceProcessor extends AbstractProcessor {
         this.apiGenerator = new ApiInterfaceGenerator(filer, elements, types);
         this.factoryGenerator = new FactoryClassGenerator(filer, elements, types, versionResolver);
         this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
+        this.errorDiscovery = new ErrorTypeDiscovery(processingEnv);
+        this.routeGenerator = new RouteSourceGenerator(filer);
     }
 
     @Override
@@ -73,6 +87,7 @@ public class SliceProcessor extends AbstractProcessor {
                             .flatMap(_ -> generateFactory(interfaceElement, sliceModel))
                             .flatMap(_ -> generateManifest(interfaceElement, sliceModel))
                             .flatMap(_ -> generateSliceManifest(interfaceElement, sliceModel))
+                            .flatMap(_ -> generateRoutes(interfaceElement, sliceModel))
                             .onFailure(cause -> error(interfaceElement,
                                                       cause.message()));
     }
@@ -102,6 +117,36 @@ public class SliceProcessor extends AbstractProcessor {
         return manifestGenerator.generateSliceManifest(sliceModel)
                                 .onSuccess(_ -> note(interfaceElement,
                                                      "Generated slice manifest: META-INF/slice/" + sliceModel.simpleName() + ".manifest"));
+    }
+
+    private Result<Unit> generateRoutes(TypeElement interfaceElement, SliceModel sliceModel) {
+        var packageName = sliceModel.packageName();
+        return loadRouteConfig(packageName)
+                   .flatMap(configOpt -> configOpt
+                       .fold(() -> Result.success(Unit.unit()),
+                             config -> generateRoutesFromConfig(interfaceElement, sliceModel, config)));
+    }
+
+    private Result<Option<RouteConfig>> loadRouteConfig(String packageName) {
+        try {
+            var packagePath = packageName.replace('.', '/');
+            var resource = processingEnv.getFiler()
+                                        .getResource(StandardLocation.CLASS_OUTPUT, "", packagePath + "/" + RouteConfigLoader.CONFIG_FILE);
+            var configPath = Path.of(resource.toUri());
+            return RouteConfigLoader.load(configPath)
+                                    .map(Option::some);
+        } catch (IOException | IllegalArgumentException | UnsupportedOperationException | FileSystemNotFoundException _) {
+            // routes.toml not found or not accessible (e.g., in test environment) - routes are optional
+            return Result.success(Option.none());
+        }
+    }
+
+    private Result<Unit> generateRoutesFromConfig(TypeElement interfaceElement, SliceModel sliceModel, RouteConfig config) {
+        var packageName = sliceModel.packageName();
+        return errorDiscovery.discover(packageName, config.errors())
+                             .flatMap(errorMappings -> routeGenerator.generate(sliceModel, config, errorMappings))
+                             .onSuccess(_ -> note(interfaceElement,
+                                                  "Generated routes: " + sliceModel.simpleName() + "Routes"));
     }
 
     private boolean apiInterfaceExists(SliceModel model) {

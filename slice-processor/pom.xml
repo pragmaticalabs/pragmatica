@@ -29,6 +29,12 @@
             <artifactId>core</artifactId>
         </dependency>
 
+        <!-- Pragmatica Lite TOML Parser -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>toml</artifactId>
+        </dependency>
+
         <!-- Annotation processing API -->
         <dependency>
             <groupId>com.google.auto.service</groupId>
