@@ -121,30 +121,35 @@ public static Promise<Slice> createSlice(Aspect<OrderService> aspect,
 
 ### D6: Proxy Method Parameter Handling
 
-**Decision**: Proxy methods handle 0, 1, or multiple parameters differently:
+**Decision**: All slice methods require at least one parameter. Multi-parameter methods use synthetic request records (see D8).
 
 | Params | Request Argument |
 |--------|------------------|
-| 0 | `Unit.unit()` |
-| 1 | Parameter directly |
-| 2+ | `new Object[]{param1, param2, ...}` |
+| 0 | **Not supported** - methods must have at least one parameter |
+| 1 (record) | Parameter directly |
+| 1 (primitive) | Synthetic record wrapping the value |
+| 2+ | Synthetic record with all parameters |
 
 ```java
-// Zero params
-public Promise<String> healthCheck() {
-    return invoker.invoke(ARTIFACT, "healthCheck", Unit.unit(), String.class);
-}
-
-// One param
+// Single record param - uses directly
 public Promise<Stock> checkStock(StockRequest request) {
     return invoker.invoke(ARTIFACT, "checkStock", request, Stock.class);
 }
 
-// Multiple params
+// Single primitive - synthetic record
+public Promise<Stock> getStock(String sku) {
+    // Uses GetStock_0_Request(String sku)
+    return invoker.invoke(ARTIFACT, "getStock", new GetStock_0_Request(sku), Stock.class);
+}
+
+// Multiple params - synthetic record
 public Promise<Boolean> transfer(String from, String to, int amount) {
-    return invoker.invoke(ARTIFACT, "transfer", new Object[]{from, to, amount}, Boolean.class);
+    // Uses Transfer_0_Request(String from, String to, int amount)
+    return invoker.invoke(ARTIFACT, "transfer", new Transfer_0_Request(from, to, amount), Boolean.class);
 }
 ```
+
+See **D8: Synthetic Request Records** for naming conventions and deterministic ordering.
 
 ### D7: Artifact Resolution
 

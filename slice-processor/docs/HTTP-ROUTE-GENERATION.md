@@ -255,9 +255,10 @@ public final class UserServiceRoutes implements RouteSource, SliceRouterFactory<
                  .withBody(new TypeToken<CreateUserRequest>() {})
                  .toJson(request -> delegate.createUser(request)),
 
-            Route.<List<User>, SearchUsersRequest>get("/api/v1/users/")
-                 .withBody(new TypeToken<SearchUsersRequest>() {})
-                 .toJson(request -> delegate.searchUsers(request))
+            // Query params: extracted from request context (see Limitations section)
+            Route.<List<User>, Void>get("/api/v1/users/")
+                 .withoutParameters()
+                 .toJson(() -> delegate.searchUsers(null))
         );
     }
 
@@ -399,6 +400,22 @@ var factory = loader.stream()
 
 var router = factory.create(userServiceImpl);
 ```
+
+## Current Limitations
+
+### Query Parameters (Not Yet Implemented)
+
+Query parameters are parsed by the DSL but **not yet wired** in generated routes. Current behavior:
+- DSL accepts query params: `"GET /?name&limit:Integer"`
+- Generated route ignores them, uses `withoutParameters()`
+
+**Workaround**: Handle query params manually in slice method by accessing `RequestContext`.
+
+**Planned**: Generate query param extraction with `Option` wrapping for optional params.
+
+### Path + Body Combined
+
+Routes with both path params and body (e.g., `PUT /{id}` with JSON body) generate a TODO comment. The body is used but path params need manual extraction.
 
 ## File Structure
 
