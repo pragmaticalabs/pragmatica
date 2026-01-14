@@ -271,6 +271,31 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     timeoutMs,
                                     rollingUpdateManager);
     }
+
+    /**
+     * Error hierarchy for SliceInvoker failures.
+     */
+    sealed interface SliceInvokerError extends Cause {
+        /**
+         * Error indicating all instances of a slice have failed.
+         */
+        record AllInstancesFailedError(Artifact slice, java.util.List<NodeId> attemptedNodes) implements SliceInvokerError {
+            @Override
+            public String message() {
+                return "All instances failed for " + slice + " after trying " + attemptedNodes.size() + " nodes";
+            }
+        }
+
+        /**
+         * Error from remote invocation.
+         */
+        record InvocationError(String errorMessage) implements SliceInvokerError {
+            @Override
+            public String message() {
+                return errorMessage;
+            }
+        }
+    }
 }
 
 class SliceInvokerImpl implements SliceInvoker {
@@ -634,31 +659,6 @@ class SliceInvokerImpl implements SliceInvoker {
                                           log.error("Error notifying failure listener: {}", e.getMessage());
                                       }
                                   });
-    }
-
-    /**
-     * Error hierarchy for SliceInvoker failures.
-     */
-    sealed interface SliceInvokerError extends Cause {
-        /**
-         * Error indicating all instances of a slice have failed.
-         */
-        record AllInstancesFailedError(Artifact slice, java.util.List<NodeId> attemptedNodes) implements SliceInvokerError {
-            @Override
-            public String message() {
-                return "All instances failed for " + slice + " after trying " + attemptedNodes.size() + " nodes";
-            }
-        }
-
-        /**
-         * Error from remote invocation.
-         */
-        record InvocationError(String errorMessage) implements SliceInvokerError {
-            @Override
-            public String message() {
-                return errorMessage;
-            }
-        }
     }
 
     @Override

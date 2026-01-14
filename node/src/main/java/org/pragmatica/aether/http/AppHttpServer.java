@@ -4,7 +4,9 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.invoke.SliceInvoker;
+import org.pragmatica.aether.invoke.SliceInvoker.SliceInvokerError;
 import org.pragmatica.aether.slice.MethodHandle;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.ProblemDetail;
 import org.pragmatica.lang.Option;
@@ -275,16 +277,26 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         methodHandle.unwrap()
                     .invoke(httpRequestContext)
                     .onSuccess(responseData -> sendResponse(ctx, responseData, requestId))
-                    .onFailure(cause -> {
-                                   log.error("Slice invocation failed [{}]: {}",
-                                             requestId,
-                                             cause.message());
-                                   sendProblem(ctx,
-                                               HttpStatus.BAD_GATEWAY,
-                                               "Slice invocation failed: " + cause.message(),
-                                               path,
-                                               requestId);
-                               });
+                    .onFailure(cause -> handleInvocationError(ctx, cause, path, requestId));
+    }
+
+    private void handleInvocationError(ChannelHandlerContext ctx, Cause cause, String path, String requestId) {
+        log.error("Slice invocation failed [{}]: {}", requestId, cause.message());
+        // Map error types to appropriate HTTP status codes
+        var status = switch (cause) {
+            case SliceInvokerError.AllInstancesFailedError _ -> HttpStatus.SERVICE_UNAVAILABLE;
+            case SliceInvokerError.InvocationError _ -> HttpStatus.BAD_GATEWAY;
+            default -> {
+                // Check for timeout in message (best effort since no specific type)
+                if (cause.message() != null && cause.message()
+                                                    .toLowerCase()
+                                                    .contains("timeout")) {
+                    yield HttpStatus.GATEWAY_TIMEOUT;
+                }
+                yield HttpStatus.BAD_GATEWAY;
+            }
+        };
+        sendProblem(ctx, status, "Slice invocation failed: " + cause.message(), path, requestId);
     }
 
     private Option<MethodHandle<HttpRequestContext, HttpResponseData>> getOrCreateMethodHandle(String cacheKey,
