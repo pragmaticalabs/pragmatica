@@ -2,9 +2,12 @@ package org.pragmatica.aether.http.handler;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Raw HTTP response data returned through SliceInvoker.
+ * <p>
+ * Note: The body byte array is defensively copied to ensure immutability.
  *
  * @param statusCode HTTP status code (e.g., 200, 404, 500)
  * @param headers    response headers
@@ -13,8 +16,29 @@ import java.util.Map;
 public record HttpResponseData(int statusCode,
                                Map<String, String> headers,
                                byte[] body) {
+    private static final byte[] EMPTY_BODY = new byte[0];
     private static final Map<String, String> JSON_HEADERS = Map.of("Content-Type", "application/json; charset=UTF-8");
     private static final Map<String, String> TEXT_HEADERS = Map.of("Content-Type", "text/plain; charset=UTF-8");
+
+    /**
+     * Canonical constructor with defensive copy of body.
+     */
+    public HttpResponseData {
+        Objects.requireNonNull(headers, "headers");
+        body = (body == null || body.length == 0)
+               ? EMPTY_BODY
+               : body.clone();
+    }
+
+    /**
+     * Defensive copy on access.
+     */
+    @Override
+    public byte[] body() {
+        return body.length == 0
+               ? EMPTY_BODY
+               : body.clone();
+    }
 
     /**
      * Create successful JSON response.
@@ -41,7 +65,7 @@ public record HttpResponseData(int statusCode,
      * Create 204 No Content response.
      */
     public static HttpResponseData noContent() {
-        return new HttpResponseData(204, Map.of(), new byte[0]);
+        return new HttpResponseData(204, Map.of(), EMPTY_BODY);
     }
 
     /**

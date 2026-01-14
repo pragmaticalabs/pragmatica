@@ -77,7 +77,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         var iterator = factories.iterator();
         if (!iterator.hasNext()) {
             log.debug("No HttpRequestHandlerFactory found for slice {}", artifact);
-            return Promise.success(Unit.unit());
+            return Promise.unitPromise();
         }
         // Use first factory found
         var factory = iterator.next();
@@ -92,11 +92,11 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         var routes = handler.routes();
         if (routes.isEmpty()) {
             log.debug("No HTTP routes defined for slice {}", artifact);
-            return Promise.success(Unit.unit());
+            return Promise.unitPromise();
         }
         // Create KV commands for route publication
         var commands = routes.stream()
-                             .map(route -> createRoutePutCommand(route))
+                             .map(this::createRoutePutCommand)
                              .toList();
         // Store published routes for unpublishing later
         publishedRoutes.put(artifact, routes);
@@ -113,21 +113,22 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     @Override
     public Promise<Unit> unpublishRoutes(Artifact artifact) {
-        var routes = publishedRoutes.remove(artifact);
         handlers.remove(artifact);
-        if (routes == null || routes.isEmpty()) {
-            return Promise.success(Unit.unit());
-        }
+        return Option.option(publishedRoutes.remove(artifact))
+                     .filter(routes -> !routes.isEmpty())
+                     .map(this::unpublishRoutesToCluster)
+                     .or(Promise.unitPromise());
+    }
+
+    private Promise<Unit> unpublishRoutesToCluster(List<HttpRouteDefinition> routes) {
         var commands = routes.stream()
-                             .map(route -> createRouteRemoveCommand(route))
+                             .map(this::createRouteRemoveCommand)
                              .toList();
         return cluster.apply(commands)
                       .mapToUnit()
-                      .onSuccess(_ -> log.info("Unpublished {} HTTP routes for slice {}",
-                                               routes.size(),
-                                               artifact))
-                      .onFailure(cause -> log.error("Failed to unpublish HTTP routes for {}: {}",
-                                                    artifact,
+                      .onSuccess(_ -> log.info("Unpublished {} HTTP routes",
+                                               routes.size()))
+                      .onFailure(cause -> log.error("Failed to unpublish HTTP routes: {}",
                                                     cause.message()));
     }
 

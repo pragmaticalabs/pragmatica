@@ -117,42 +117,45 @@ class AppHttpServerImpl implements AppHttpServer {
             log.info("App HTTP server is disabled");
             return Promise.success(unit());
         }
-        return Promise.promise(promise -> {
-                                   var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
-                                                                        .channel(NioServerSocketChannel.class)
-                                                                        .childHandler(new ChannelInitializer<SocketChannel>() {
+        return Promise.promise(promise -> configureAndBind(promise));
+    }
+
+    private void configureAndBind(Promise<Unit> promise) {
+        var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
+                                             .channel(NioServerSocketChannel.class)
+                                             .childHandler(createChannelInitializer());
+        bootstrap.bind(config.port())
+                 .addListener(future -> handleBindResult(future, promise));
+    }
+
+    private ChannelInitializer<SocketChannel> createChannelInitializer() {
+        return new ChannelInitializer<>() {
             @Override
             protected void initChannel(SocketChannel ch) {
-                                                                                          ChannelPipeline p = ch.pipeline();
-                                                                                          sslContext.onPresent(ctx -> p.addLast(ctx.newHandler(ch.alloc())));
-                                                                                          p.addLast(new HttpServerCodec());
-                                                                                          p.addLast(new HttpObjectAggregator(MAX_CONTENT_LENGTH));
-                                                                                          p.addLast(new AppHttpRequestHandler(routeRegistry,
-                                                                                                                              sliceInvoker));
-                                                                                      }
-        });
-                                   bootstrap.bind(config.port())
-                                            .addListener(future -> {
-                                                             if (future.isSuccess()) {
-                                                                 var channel = ((io.netty.channel.ChannelFuture) future).channel();
-                                                                 serverChannel.set(channel);
-                                                                 var addr = (java.net.InetSocketAddress) channel.localAddress();
-                                                                 boundPortRef.set(addr.getPort());
-                                                                 var protocol = sslContext.isPresent()
-                                                                                ? "HTTPS"
-                                                                                : "HTTP";
-                                                                 log.info("{} app server started on port {}",
-                                                                          protocol,
-                                                                          addr.getPort());
-                                                                 promise.succeed(unit());
-                                                             } else {
-                                                                 log.error("Failed to start app HTTP server on port {}",
-                                                                           config.port(),
-                                                                           future.cause());
-                                                                 promise.fail(Causes.fromThrowable(future.cause()));
-                                                             }
-                                                         });
-                               });
+                var pipeline = ch.pipeline();
+                sslContext.onPresent(ctx -> pipeline.addLast(ctx.newHandler(ch.alloc())));
+                pipeline.addLast(new HttpServerCodec());
+                pipeline.addLast(new HttpObjectAggregator(MAX_CONTENT_LENGTH));
+                pipeline.addLast(new AppHttpRequestHandler(routeRegistry, sliceInvoker));
+            }
+        };
+    }
+
+    private void handleBindResult(io.netty.util.concurrent.Future< ?> future, Promise<Unit> promise) {
+        if (future.isSuccess()) {
+            var channel = ((io.netty.channel.ChannelFuture) future).channel();
+            serverChannel.set(channel);
+            var addr = (java.net.InetSocketAddress) channel.localAddress();
+            boundPortRef.set(addr.getPort());
+            var protocol = sslContext.isPresent()
+                           ? "HTTPS"
+                           : "HTTP";
+            log.info("{} app server started on port {}", protocol, addr.getPort());
+            promise.succeed(unit());
+        } else {
+            log.error("Failed to start app HTTP server on port {}", config.port(), future.cause());
+            promise.fail(Causes.fromThrowable(future.cause()));
+        }
     }
 
     @Override

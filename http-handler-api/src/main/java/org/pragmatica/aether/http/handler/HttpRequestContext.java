@@ -2,12 +2,15 @@ package org.pragmatica.aether.http.handler;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Raw HTTP request data passed through SliceInvoker.
  * <p>
  * Contains all information needed to reconstruct HTTP request at destination node
  * where parameter extraction occurs.
+ * <p>
+ * Note: The body byte array is defensively copied to ensure immutability.
  *
  * @param path        request path (e.g., "/users/123")
  * @param method      HTTP method (e.g., "GET", "POST")
@@ -22,6 +25,32 @@ public record HttpRequestContext(String path,
                                  Map<String, List<String>> headers,
                                  byte[] body,
                                  String requestId) {
+    private static final byte[] EMPTY_BODY = new byte[0];
+
+    /**
+     * Canonical constructor with defensive copy of body.
+     */
+    public HttpRequestContext {
+        Objects.requireNonNull(path, "path");
+        Objects.requireNonNull(method, "method");
+        Objects.requireNonNull(queryParams, "queryParams");
+        Objects.requireNonNull(headers, "headers");
+        Objects.requireNonNull(requestId, "requestId");
+        body = (body == null || body.length == 0)
+               ? EMPTY_BODY
+               : body.clone();
+    }
+
+    /**
+     * Defensive copy on access.
+     */
+    @Override
+    public byte[] body() {
+        return body.length == 0
+               ? EMPTY_BODY
+               : body.clone();
+    }
+
     /**
      * Create context with empty body.
      */
@@ -30,7 +59,7 @@ public record HttpRequestContext(String path,
                                                         Map<String, List<String>> queryParams,
                                                         Map<String, List<String>> headers,
                                                         String requestId) {
-        return new HttpRequestContext(path, method, queryParams, headers, new byte[0], requestId);
+        return new HttpRequestContext(path, method, queryParams, headers, EMPTY_BODY, requestId);
     }
 
     /**

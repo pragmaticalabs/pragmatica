@@ -151,12 +151,12 @@ public interface HttpClientSlice extends Slice {
 
     @Override
     default Promise<Unit> start() {
-        return Promise.success(Unit.unit());
+        return Promise.unitPromise();
     }
 
     @Override
     default Promise<Unit> stop() {
-        return Promise.success(Unit.unit());
+        return Promise.unitPromise();
     }
 
     @Override

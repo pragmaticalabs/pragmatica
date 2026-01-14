@@ -1,4 +1,7 @@
 package org.pragmatica.aether.http.handler;
+
+import java.util.Objects;
+
 /**
  * Route metadata for KV-Store registration.
  * <p>
@@ -15,7 +18,17 @@ public record HttpRouteDefinition(String httpMethod,
                                   String artifactCoord,
                                   String sliceMethod) {
     /**
-     * Create route definition.
+     * Canonical constructor with validation.
+     */
+    public HttpRouteDefinition {
+        Objects.requireNonNull(httpMethod, "httpMethod");
+        Objects.requireNonNull(pathPrefix, "pathPrefix");
+        Objects.requireNonNull(artifactCoord, "artifactCoord");
+        Objects.requireNonNull(sliceMethod, "sliceMethod");
+    }
+
+    /**
+     * Create route definition with path normalization.
      */
     public static HttpRouteDefinition httpRouteDefinition(String httpMethod,
                                                           String pathPrefix,
@@ -25,10 +38,10 @@ public record HttpRouteDefinition(String httpMethod,
     }
 
     private static String normalizePrefix(String path) {
-        if (path == null || path.isBlank()) {
-            return "/";
-        }
-        var normalized = path.strip();
+        Objects.requireNonNull(path, "path");
+        var normalized = path.isBlank()
+                         ? "/"
+                         : path.strip();
         if (!normalized.startsWith("/")) {
             normalized = "/" + normalized;
         }
