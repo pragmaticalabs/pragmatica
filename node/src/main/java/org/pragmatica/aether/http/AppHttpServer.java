@@ -3,6 +3,8 @@ package org.pragmatica.aether.http;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
+import org.pragmatica.aether.invoke.SliceInvoker;
+import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.ProblemDetail;
 import org.pragmatica.lang.Option;
@@ -12,12 +14,12 @@ import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.net.tcp.TlsConfig;
 import org.pragmatica.net.tcp.TlsContextFactory;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -65,20 +67,29 @@ public interface AppHttpServer {
 
     static AppHttpServer appHttpServer(AppHttpConfig config,
                                        HttpRouteRegistry routeRegistry,
+                                       Option<SliceInvoker> sliceInvoker,
                                        Option<TlsConfig> tls) {
-        return new AppHttpServerImpl(config, routeRegistry, tls);
+        return new AppHttpServerImpl(config, routeRegistry, sliceInvoker, tls);
+    }
+
+    /**
+     * @deprecated Use {@link #appHttpServer(AppHttpConfig, HttpRouteRegistry, Option, Option)} with SliceInvoker.
+     */
+    @Deprecated
+    static AppHttpServer appHttpServer(AppHttpConfig config,
+                                       HttpRouteRegistry routeRegistry,
+                                       Option<TlsConfig> tls) {
+        return new AppHttpServerImpl(config, routeRegistry, Option.none(), tls);
     }
 }
 
 class AppHttpServerImpl implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
     private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
-    private static final String CONTENT_TYPE_JSON = "application/json";
-    private static final String CONTENT_TYPE_PROBLEM = "application/problem+json";
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final AppHttpConfig config;
     private final HttpRouteRegistry routeRegistry;
+    private final Option<SliceInvoker> sliceInvoker;
     private final MultiThreadIoEventLoopGroup bossGroup;
     private final MultiThreadIoEventLoopGroup workerGroup;
     private final Option<SslContext> sslContext;
@@ -87,9 +98,11 @@ class AppHttpServerImpl implements AppHttpServer {
 
     AppHttpServerImpl(AppHttpConfig config,
                       HttpRouteRegistry routeRegistry,
+                      Option<SliceInvoker> sliceInvoker,
                       Option<TlsConfig> tls) {
         this.config = config;
         this.routeRegistry = routeRegistry;
+        this.sliceInvoker = sliceInvoker;
         this.bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
         this.workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
         this.sslContext = tls.map(TlsContextFactory::create)
@@ -112,7 +125,8 @@ class AppHttpServerImpl implements AppHttpServer {
                                                                                           sslContext.onPresent(ctx -> p.addLast(ctx.newHandler(ch.alloc())));
                                                                                           p.addLast(new HttpServerCodec());
                                                                                           p.addLast(new HttpObjectAggregator(MAX_CONTENT_LENGTH));
-                                                                                          p.addLast(new AppHttpRequestHandler(routeRegistry));
+                                                                                          p.addLast(new AppHttpRequestHandler(routeRegistry,
+                                                                                                                              sliceInvoker));
                                                                                       }
         });
                                    bootstrap.bind(config.port())
@@ -174,9 +188,13 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private final HttpRouteRegistry routeRegistry;
+    private final Option<SliceInvoker> sliceInvoker;
+    private final ConcurrentHashMap<String, MethodHandle<HttpRequestContext, HttpResponseData>> methodHandleCache;
 
-    AppHttpRequestHandler(HttpRouteRegistry routeRegistry) {
+    AppHttpRequestHandler(HttpRouteRegistry routeRegistry, Option<SliceInvoker> sliceInvoker) {
         this.routeRegistry = routeRegistry;
+        this.sliceInvoker = sliceInvoker;
+        this.methodHandleCache = new ConcurrentHashMap<>();
     }
 
     @Override
@@ -212,6 +230,17 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                                   String path,
                                   Map<String, List<String>> queryParams,
                                   String requestId) {
+        // Check if SliceInvoker is available
+        if (sliceInvoker.isEmpty()) {
+            log.debug("Route found but SliceInvoker not available: {} {} -> {}:{} [{}]",
+                      route.httpMethod(),
+                      route.pathPrefix(),
+                      route.artifact(),
+                      route.sliceMethod(),
+                      requestId);
+            sendProblem(ctx, HttpStatus.SERVICE_UNAVAILABLE, "Slice invoker not initialized", path, requestId);
+            return;
+        }
         // Build HttpRequestContext
         var headers = convertHeaders(request.headers());
         var body = new byte[request.content()
@@ -225,16 +254,51 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                                                         headers,
                                                         body,
                                                         requestId);
-        // For now, we just return 503 Service Unavailable
-        // SliceInvoker integration will be added in Phase 5
-        // This is a stub implementation to complete Phase 4
         log.debug("Route found: {} {} -> {}:{} [{}]",
                   route.httpMethod(),
                   route.pathPrefix(),
                   route.artifact(),
                   route.sliceMethod(),
                   requestId);
-        sendProblem(ctx, HttpStatus.SERVICE_UNAVAILABLE, "SliceInvoker integration pending (Phase 5)", path, requestId);
+        // Get or create MethodHandle for this route
+        var cacheKey = route.artifact() + ":" + route.sliceMethod();
+        var methodHandle = getOrCreateMethodHandle(cacheKey, route);
+        if (methodHandle.isEmpty()) {
+            sendProblem(ctx,
+                        HttpStatus.INTERNAL_SERVER_ERROR,
+                        "Failed to create method handle for route",
+                        path,
+                        requestId);
+            return;
+        }
+        // Invoke the slice method
+        methodHandle.unwrap()
+                    .invoke(httpRequestContext)
+                    .onSuccess(responseData -> sendResponse(ctx, responseData, requestId))
+                    .onFailure(cause -> {
+                                   log.error("Slice invocation failed [{}]: {}",
+                                             requestId,
+                                             cause.message());
+                                   sendProblem(ctx,
+                                               HttpStatus.BAD_GATEWAY,
+                                               "Slice invocation failed: " + cause.message(),
+                                               path,
+                                               requestId);
+                               });
+    }
+
+    private Option<MethodHandle<HttpRequestContext, HttpResponseData>> getOrCreateMethodHandle(String cacheKey,
+                                                                                               HttpRouteRegistry.RouteInfo route) {
+        var cached = methodHandleCache.get(cacheKey);
+        if (cached != null) {
+            return Option.some(cached);
+        }
+        return sliceInvoker.flatMap(invoker -> invoker.methodHandle(route.artifact(),
+                                                                    route.sliceMethod(),
+                                                                    HttpRequestContext.class,
+                                                                    HttpResponseData.class)
+                                                      .onSuccess(handle -> methodHandleCache.put(cacheKey, handle))
+                                                      .option());
     }
 
     private Map<String, List<String>> convertQueryParams(Map<String, List<String>> nettyParams) {
@@ -301,6 +365,7 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         response.headers()
                 .setInt(HttpHeaderNames.CONTENT_LENGTH,
                         buf.readableBytes());
+        log.debug("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());
         ctx.writeAndFlush(response)
            .addListener(ChannelFutureListener.CLOSE);
     }
