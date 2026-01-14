@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -74,7 +75,7 @@ public interface HttpRouteRegistry {
      * Create a new HTTP route registry.
      */
     static HttpRouteRegistry httpRouteRegistry() {
-        record httpRouteRegistry(Map<String, TreeMap<String, RouteInfo>> routesByMethod) implements HttpRouteRegistry {
+        record httpRouteRegistry(Map<String, AtomicReference<TreeMap<String, RouteInfo>>> routesByMethod) implements HttpRouteRegistry {
             private static final Logger log = LoggerFactory.getLogger(httpRouteRegistry.class);
 
             @Override
@@ -88,10 +89,13 @@ public interface HttpRouteRegistry {
                                                   httpRouteKey.pathPrefix(),
                                                   httpRouteValue.artifact(),
                                                   httpRouteValue.sliceMethod());
-                    routesByMethod.computeIfAbsent(httpRouteKey.httpMethod(),
-                                                   _ -> new TreeMap<>())
-                                  .put(httpRouteKey.pathPrefix(),
-                                       routeInfo);
+                    var ref = routesByMethod.computeIfAbsent(httpRouteKey.httpMethod(),
+                                                             _ -> new AtomicReference<>(new TreeMap<>()));
+                    // Copy-on-write: copy current map, add entry, swap
+                    var current = ref.get();
+                    var updated = new TreeMap<>(current);
+                    updated.put(httpRouteKey.pathPrefix(), routeInfo);
+                    ref.set(updated);
                     log.debug("Registered HTTP route: {} {} -> {}:{}",
                               httpRouteKey.httpMethod(),
                               httpRouteKey.pathPrefix(),
@@ -106,37 +110,44 @@ public interface HttpRouteRegistry {
                                      .key();
                 if (key instanceof HttpRouteKey httpRouteKey) {
                     Option.option(routesByMethod.get(httpRouteKey.httpMethod()))
-                          .flatMap(routes -> Option.option(routes.remove(httpRouteKey.pathPrefix())))
-                          .onPresent(removed -> log.debug("Unregistered HTTP route: {} {}",
-                                                          httpRouteKey.httpMethod(),
-                                                          httpRouteKey.pathPrefix()));
+                          .onPresent(ref -> {
+                                         // Copy-on-write: copy current map, remove entry, swap
+                    var current = ref.get();
+                                         if (current.containsKey(httpRouteKey.pathPrefix())) {
+                                             var updated = new TreeMap<>(current);
+                                             updated.remove(httpRouteKey.pathPrefix());
+                                             ref.set(updated);
+                                             log.debug("Unregistered HTTP route: {} {}",
+                                                       httpRouteKey.httpMethod(),
+                                                       httpRouteKey.pathPrefix());
+                                         }
+                                     });
                 }
             }
 
             @Override
             public Option<RouteInfo> findRoute(String httpMethod, String path) {
-                var routes = routesByMethod.get(httpMethod.toUpperCase());
-                if (routes == null || routes.isEmpty()) {
-                    return Option.none();
-                }
+                return Option.option(routesByMethod.get(httpMethod.toUpperCase()))
+                             .map(AtomicReference::get)
+                             .filter(routes -> !routes.isEmpty())
+                             .flatMap(routes -> findMatchingRoute(routes, path));
+            }
+
+            private Option<RouteInfo> findMatchingRoute(TreeMap<String, RouteInfo> routes, String path) {
                 // Normalize path for matching (ensure trailing slash)
                 var normalizedPath = normalizePath(path);
                 // Use floor-entry to find longest matching prefix
-                var entry = routes.floorEntry(normalizedPath);
-                if (entry == null) {
-                    return Option.none();
-                }
-                // Verify it's actually a prefix match
-                if (isSameOrStartOfPath(normalizedPath, entry.getKey())) {
-                    return Option.option(entry.getValue());
-                }
-                return Option.none();
+                return Option.option(routes.floorEntry(normalizedPath))
+                             .filter(entry -> isSameOrStartOfPath(normalizedPath,
+                                                                  entry.getKey()))
+                             .map(Map.Entry::getValue);
             }
 
             @Override
             public List<RouteInfo> allRoutes() {
                 return routesByMethod.values()
                                      .stream()
+                                     .map(AtomicReference::get)
                                      .flatMap(map -> map.values()
                                                         .stream())
                                      .toList();
