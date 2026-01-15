@@ -46,8 +46,7 @@ public class Imports {
         String collected = stream.collect(Collectors.joining());
         Instant now = Instant.now();
         Path path = Path.of(".");
-        return none()
-                   .toResult(cause);
+        return none().toResult(cause);
     }
 
     @SuppressWarnings("JBCT-ACR-01")

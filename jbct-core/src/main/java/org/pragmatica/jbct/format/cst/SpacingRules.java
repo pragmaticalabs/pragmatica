@@ -135,6 +135,18 @@ final class SpacingRules {
         if (firstChar == '>' && ctx.lastChar() == ']') {
             return true;
         }
+        // No space after < (inside generics: Route<?>)
+        if (ctx.lastChar() == '<') {
+            return true;
+        }
+        // No space before ? when preceded by < (wildcard: <?)
+        if (firstChar == '?' && ctx.lastChar() == '<') {
+            return true;
+        }
+        // No space before > when preceded by ? (wildcard closing: ?>)
+        if (firstChar == '>' && ctx.lastChar() == '?') {
+            return true;
+        }
         return false;
     }
 
