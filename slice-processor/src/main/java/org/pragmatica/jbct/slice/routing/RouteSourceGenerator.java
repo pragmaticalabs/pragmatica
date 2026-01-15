@@ -355,7 +355,7 @@ public class RouteSourceGenerator {
                                         String responseType,
                                         MethodModel method,
                                         String comma) {
-        out.println("            Route.<" + responseType + ", Void>" + httpMethod + "(\"" + path + "\")");
+        out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withoutParameters()");
         out.println("                 .toJson(() -> delegate." + method.name() + "(null))" + comma);
     }
@@ -371,7 +371,7 @@ public class RouteSourceGenerator {
         var parameterType = method.parameterType()
                                   .toString();
 
-        out.print("            Route.<" + responseType + ", " + parameterType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withPath(" + pathParamList(pathParams) + ")");
 
@@ -402,7 +402,7 @@ public class RouteSourceGenerator {
         var parameterType = method.parameterType()
                                   .toString();
 
-        out.print("            Route.<" + responseType + ", " + parameterType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
 
@@ -431,7 +431,7 @@ public class RouteSourceGenerator {
                                     String parameterType,
                                     MethodModel method,
                                     String comma) {
-        out.println("            Route.<" + responseType + ", " + parameterType + ">" + httpMethod + "(\"" + path + "\")");
+        out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
         out.println("                 .toJson(request -> delegate." + method.name() + "(request))" + comma);
     }
@@ -446,7 +446,7 @@ public class RouteSourceGenerator {
                                         String comma) {
         var pathParams = routeDsl.pathParams();
 
-        out.print("            Route.<" + responseType + ", " + parameterType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withPath(" + pathParamList(pathParams) + ")");
         out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
@@ -471,7 +471,7 @@ public class RouteSourceGenerator {
                                          String comma) {
         var queryParams = routeDsl.queryParams();
 
-        out.print("            Route.<" + responseType + ", " + parameterType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
         out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
@@ -498,7 +498,7 @@ public class RouteSourceGenerator {
         var parameterType = method.parameterType()
                                   .toString();
 
-        out.print("            Route.<" + responseType + ", " + parameterType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withPath(" + pathParamList(pathParams) + ")");
         out.println("                 .withQuery(" + queryParamList(queryParams) + ")");
@@ -530,7 +530,7 @@ public class RouteSourceGenerator {
         var pathParams = routeDsl.pathParams();
         var queryParams = routeDsl.queryParams();
 
-        out.print("            Route.<" + responseType + ", " + parameterType + ">" + httpMethod + "(\"" + path + "\")");
+        out.print("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println();
         out.println("                 .withPath(" + pathParamList(pathParams) + ")");
         out.println("                 .withQuery(" + queryParamList(queryParams) + ")");

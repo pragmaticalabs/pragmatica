@@ -249,15 +249,15 @@ public final class UserServiceRoutes implements RouteSource, SliceRouterFactory<
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(
-            Route.<User, GetUserRequest>get("/api/v1/users/{id}")
+            Route.<User>get("/api/v1/users/{id}")
                  .withPath(PathParameter.aLong())
                  .toJson(id -> delegate.getUser(new GetUserRequest(id))),
 
-            Route.<User, CreateUserRequest>post("/api/v1/users/")
+            Route.<User>post("/api/v1/users/")
                  .withBody(new TypeToken<CreateUserRequest>() {})
                  .toJson(request -> delegate.createUser(request)),
 
-            Route.<List<User>, SearchUsersRequest>get("/api/v1/users/")
+            Route.<List<User>>get("/api/v1/users/")
                  .withQuery(QueryParameter.aString("name"), QueryParameter.aInteger("limit"))
                  .to((name, limit) -> delegate.searchUsers(new SearchUsersRequest(name, limit)))
                  .asJson()
@@ -297,7 +297,7 @@ getUser = "GET /{id:Long}"
 ```
 
 ```java
-Route.<User, GetUserRequest>get("/api/v1/users/{id}")
+Route.<User>get("/api/v1/users/{id}")
      .withPath(PathParameter.aLong())
      .toJson(id -> delegate.getUser(new GetUserRequest(id)))
 ```
@@ -309,7 +309,7 @@ getOrderItem = "GET /{orderId:Long}/items/{itemId:Long}"
 ```
 
 ```java
-Route.<OrderItem, GetOrderItemRequest>get("/api/v1/orders/{orderId}/items/{itemId}")
+Route.<OrderItem>get("/api/v1/orders/{orderId}/items/{itemId}")
      .withPath(PathParameter.aLong(), PathParameter.aLong())
      .to((orderId, itemId) -> delegate.getOrderItem(
          new GetOrderItemRequest(orderId, itemId)))
@@ -323,7 +323,7 @@ searchUsers = "GET /?name&limit:Integer"
 ```
 
 ```java
-Route.<List<User>, SearchUsersRequest>get("/api/v1/users/")
+Route.<List<User>>get("/api/v1/users/")
      .withQuery(QueryParameter.aString("name"), QueryParameter.aInteger("limit"))
      .to((name, limit) -> delegate.searchUsers(new SearchUsersRequest(name, limit)))
      .asJson()
@@ -338,7 +338,7 @@ createUser = "POST /"
 ```
 
 ```java
-Route.<User, CreateUserRequest>post("/api/v1/users/")
+Route.<User>post("/api/v1/users/")
      .withBody(new TypeToken<CreateUserRequest>() {})
      .toJson(request -> delegate.createUser(request))
 ```
@@ -350,7 +350,7 @@ updateUser = "PUT /{id:Long}"
 ```
 
 ```java
-Route.<User, UpdateUserRequest>put("/api/v1/users/{id}")
+Route.<User>put("/api/v1/users/{id}")
      .withPath(PathParameter.aLong())
      .withBody(new TypeToken<UpdateUserRequest>() {})
      .toJson((id, body) -> delegate.updateUser(body))
@@ -363,7 +363,7 @@ getUserOrders = "GET /{userId:Long}/orders?status&limit:Integer"
 ```
 
 ```java
-Route.<List<Order>, GetUserOrdersRequest>get("/api/v1/users/{userId}/orders")
+Route.<List<Order>>get("/api/v1/users/{userId}/orders")
      .withPath(PathParameter.aLong())
      .withQuery(QueryParameter.aString("status"), QueryParameter.aInteger("limit"))
      .to((userId, status, limit) -> delegate.getUserOrders(
@@ -378,7 +378,7 @@ searchWithFilter = "POST /?includeDeleted:Boolean"
 ```
 
 ```java
-Route.<SearchResult, SearchRequest>post("/api/v1/search")
+Route.<SearchResult>post("/api/v1/search")
      .withQuery(QueryParameter.aBoolean("includeDeleted"))
      .withBody(new TypeToken<SearchRequest>() {})
      .toJson((includeDeleted, body) -> delegate.search(body))
@@ -391,7 +391,7 @@ updateOrderItem = "PUT /{orderId:Long}/items/{itemId:Long}?notify:Boolean"
 ```
 
 ```java
-Route.<OrderItem, UpdateItemRequest>put("/api/v1/orders/{orderId}/items/{itemId}")
+Route.<OrderItem>put("/api/v1/orders/{orderId}/items/{itemId}")
      .withPath(PathParameter.aLong(), PathParameter.aLong())
      .withQuery(QueryParameter.aBoolean("notify"))
      .withBody(new TypeToken<UpdateItemRequest>() {})
@@ -405,7 +405,7 @@ healthCheck = "GET /health"
 ```
 
 ```java
-Route.<HealthStatus, Void>get("/api/v1/health")
+Route.<HealthStatus>get("/api/v1/health")
      .withoutParameters()
      .toJson(() -> delegate.healthCheck(null))
 ```
