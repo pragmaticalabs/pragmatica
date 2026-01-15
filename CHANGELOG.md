@@ -7,7 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-01-15
+
 ### Added
+- **SliceRouterFactory Integration** - Local-first HTTP routing for generated slice code
+  - `SliceRouterFactory<T>` - ServiceLoader-discovered factory for creating SliceRouter instances
+  - `RouteMetadataExtractor` - Extracts route definitions from RouteSource for KV-Store publication
+  - Local-first routing: uses local SliceRouter when slice is on same node, falls back to remote SliceInvoker
+  - Bridge pattern supporting both HttpRequestHandlerFactory (legacy) and SliceRouterFactory (new) patterns
 - **MethodHandle API** - Performance optimization for repeated slice invocations
   - New `MethodHandle<R, T>` interface for pre-parsed artifact/method (response type first per convention)
   - `SliceInvokerFacade.methodHandle()` factory method
@@ -18,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Mandatory `requestId` extension for request tracing
   - `application/problem+json` content type for all error responses
   - Covers handler errors, HttpError failures, and 404 not found
+
+### Changed
+- **Route API migration** - Updated to single type parameter Route API (pragmatica-lite 0.9.11)
+  - All forge module routes updated from `Route.<R, T>method()` to `Route.<R>method()`
 
 ## [0.7.4] - 2026-01-13
 
