@@ -30,6 +30,12 @@
 - Slice packaging: Aether runtime libs (`slice-annotations`, `slice-api`, `infra-api`) excluded from bundling and dependency file
 - Formatter: wildcard spacing in generics (`Route< ?>` → `Route<?>`)
 - Formatter: single fluent call kept inline (`none().toResult(cause)` not broken across lines)
+- HTTP routing: handler existence validation with compile error on missing methods
+- HTTP routing: parameter count validation (max 5 parameters per route)
+- HTTP routing: nested type name collision using qualified names in error mapper
+- HTTP routing: consolidated pattern matching (removed duplicate regex-based matchesGlob)
+- HTTP routing: routes-base.toml merge support for shared config inheritance
+- HTTP routing: replaced null with Option in ErrorTypeMapping
 
 ## [0.4.8] - 2026-01-10
 
