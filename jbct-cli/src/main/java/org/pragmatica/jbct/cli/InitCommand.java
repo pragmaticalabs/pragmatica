@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.cli;
 
 import org.pragmatica.jbct.init.AiToolsInstaller;
+import org.pragmatica.jbct.init.GitHubVersionResolver;
 import org.pragmatica.jbct.init.ProjectInitializer;
 import org.pragmatica.jbct.init.SliceProjectInitializer;
 
@@ -56,6 +57,21 @@ public class InitCommand implements Callable<Integer> {
     names = {"--force", "-f"},
     description = "Overwrite existing files")
     boolean force;
+
+    @Option(
+    names = {"--pragmatica-version"},
+    description = "Override pragmatica-lite version")
+    String pragmaticaVersion;
+
+    @Option(
+    names = {"--aether-version"},
+    description = "Override aether version (slice projects only)")
+    String aetherVersion;
+
+    @Option(
+    names = {"--jbct-version"},
+    description = "Override jbct-maven-plugin version")
+    String jbctVersion;
 
     @Override
     public Integer call() {
@@ -140,7 +156,10 @@ public class InitCommand implements Callable<Integer> {
     }
 
     private boolean initRegularProject() {
-        var initializer = ProjectInitializer.projectInitializer(projectDir, groupId, artifactId);
+        var initializer = hasVersionOverrides()
+                          ? ProjectInitializer.projectInitializer(projectDir, groupId, artifactId,
+                                                                  effectiveJbctVersion(), effectivePragmaticaVersion())
+                          : ProjectInitializer.projectInitializer(projectDir, groupId, artifactId);
         return initializer.initialize()
                           .fold(cause -> {
                                     System.err.println("Error: " + cause.message());
@@ -155,6 +174,28 @@ public class InitCommand implements Callable<Integer> {
                                     }
                                     return true;
                                 });
+    }
+
+    private boolean hasVersionOverrides() {
+        return pragmaticaVersion != null || aetherVersion != null || jbctVersion != null;
+    }
+
+    private String effectivePragmaticaVersion() {
+        return pragmaticaVersion != null
+               ? pragmaticaVersion
+               : GitHubVersionResolver.defaultPragmaticaVersion();
+    }
+
+    private String effectiveAetherVersion() {
+        return aetherVersion != null
+               ? aetherVersion
+               : GitHubVersionResolver.defaultAetherVersion();
+    }
+
+    private String effectiveJbctVersion() {
+        return jbctVersion != null
+               ? jbctVersion
+               : GitHubVersionResolver.defaultJbctVersion();
     }
 
     private boolean initSliceProject() {

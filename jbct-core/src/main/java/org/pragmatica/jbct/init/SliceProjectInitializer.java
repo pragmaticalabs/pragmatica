@@ -18,9 +18,10 @@ import java.util.stream.Stream;
 public final class SliceProjectInitializer {
     private static final String TEMPLATES_PATH = "/templates/slice/";
 
-    // Default versions - updated on each release
-    private static final String DEFAULT_JBCT_VERSION = "0.4.8";
-    private static final String DEFAULT_PRAGMATICA_VERSION = "0.9.10";
+    // Default versions - used as fallback when offline
+    private static final String DEFAULT_JBCT_VERSION = GitHubVersionResolver.defaultJbctVersion();
+    private static final String DEFAULT_PRAGMATICA_VERSION = GitHubVersionResolver.defaultPragmaticaVersion();
+    private static final String DEFAULT_AETHER_VERSION = GitHubVersionResolver.defaultAetherVersion();
 
     private final Path projectDir;
     private final String groupId;
@@ -29,9 +30,10 @@ public final class SliceProjectInitializer {
     private final String sliceName;
     private final String jbctVersion;
     private final String pragmaticaVersion;
+    private final String aetherVersion;
 
     private SliceProjectInitializer(Path projectDir, String groupId, String artifactId, String basePackage,
-                                    String jbctVersion, String pragmaticaVersion) {
+                                    String jbctVersion, String pragmaticaVersion, String aetherVersion) {
         this.projectDir = projectDir;
         this.groupId = groupId;
         this.artifactId = artifactId;
@@ -39,14 +41,26 @@ public final class SliceProjectInitializer {
         this.sliceName = toCamelCase(artifactId);
         this.jbctVersion = jbctVersion;
         this.pragmaticaVersion = pragmaticaVersion;
+        this.aetherVersion = aetherVersion;
     }
 
     /**
-     * Create initializer with project parameters.
+     * Create initializer with project parameters, fetching latest versions from GitHub.
      */
     public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
                                                                           String groupId,
                                                                           String artifactId) {
+        var resolver = GitHubVersionResolver.gitHubVersionResolver();
+        return sliceProjectInitializer(projectDir, groupId, artifactId, resolver);
+    }
+
+    /**
+     * Create initializer with project parameters and version resolver.
+     */
+    public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
+                                                                          String groupId,
+                                                                          String artifactId,
+                                                                          GitHubVersionResolver resolver) {
         if (artifactId == null || artifactId.isBlank()) {
             return Causes.cause("artifactId must not be null or empty")
                          .result();
@@ -57,18 +71,20 @@ public final class SliceProjectInitializer {
         }
         var basePackage = groupId + "." + artifactId.replace("-", "");
         return Result.success(new SliceProjectInitializer(projectDir, groupId, artifactId, basePackage,
-                                                          DEFAULT_JBCT_VERSION, DEFAULT_PRAGMATICA_VERSION));
+                                                          resolver.jbctVersion(), resolver.pragmaticaLiteVersion(),
+                                                          resolver.aetherVersion()));
     }
 
     /**
-     * Create initializer with explicit base package.
+     * Create initializer with explicit base package (uses fallback versions).
      */
     public static SliceProjectInitializer sliceProjectInitializer(Path projectDir,
                                                                   String groupId,
                                                                   String artifactId,
                                                                   String basePackage) {
         return new SliceProjectInitializer(projectDir, groupId, artifactId, basePackage,
-                                           DEFAULT_JBCT_VERSION, DEFAULT_PRAGMATICA_VERSION);
+                                           DEFAULT_JBCT_VERSION, DEFAULT_PRAGMATICA_VERSION,
+                                           DEFAULT_AETHER_VERSION);
     }
 
     /**
@@ -251,7 +267,8 @@ public final class SliceProjectInitializer {
                       .replace("{{factoryMethodName}}",
                                Character.toLowerCase(sliceName.charAt(0)) + sliceName.substring(1))
                       .replace("{{jbctVersion}}", jbctVersion)
-                      .replace("{{pragmaticaVersion}}", pragmaticaVersion);
+                      .replace("{{pragmaticaVersion}}", pragmaticaVersion)
+                      .replace("{{aetherVersion}}", aetherVersion);
     }
 
     private static String toCamelCase(String s) {
@@ -297,6 +314,7 @@ public final class SliceProjectInitializer {
                 <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
                 <maven.compiler.release>21</maven.compiler.release>
                 <pragmatica-lite.version>{{pragmaticaVersion}}</pragmatica-lite.version>
+                <aether.version>{{aetherVersion}}</aether.version>
                 <jbct.version>{{jbctVersion}}</jbct.version>
             </properties>
 
@@ -308,6 +326,18 @@ public final class SliceProjectInitializer {
                     <version>${pragmatica-lite.version}</version>
                 </dependency>
 
+                <!-- Aether Slice API -->
+                <dependency>
+                    <groupId>org.pragmatica-lite.aether</groupId>
+                    <artifactId>slice-annotations</artifactId>
+                    <version>${aether.version}</version>
+                </dependency>
+                <dependency>
+                    <groupId>org.pragmatica-lite.aether</groupId>
+                    <artifactId>slice-api</artifactId>
+                    <version>${aether.version}</version>
+                </dependency>
+
                 <!-- Slice Annotation Processor -->
                 <dependency>
                     <groupId>org.pragmatica-lite</groupId>
@@ -316,7 +346,7 @@ public final class SliceProjectInitializer {
                     <scope>provided</scope>
                 </dependency>
 
-                <!-- Add slice API dependencies here with scope=provided -->
+                <!-- Add other slice API dependencies here -->
 
                 <!-- Testing -->
                 <dependency>

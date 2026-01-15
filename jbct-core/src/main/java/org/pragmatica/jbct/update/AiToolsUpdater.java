@@ -15,28 +15,26 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Stream;
 
 /**
  * Updates AI tools from the coding-technology GitHub repository.
+ * Uses GitHub Tree API to dynamically discover files under ai-tools/.
  */
 public final class AiToolsUpdater {
-    private static final String GITHUB_API_URL = "https://api.github.com/repos/siy/coding-technology/commits/main";
+    private static final String GITHUB_API_BASE = "https://api.github.com/repos/siy/coding-technology";
+    private static final String GITHUB_TREE_URL = GITHUB_API_BASE + "/git/trees/main?recursive=1";
+    private static final String GITHUB_COMMITS_URL = GITHUB_API_BASE + "/commits/main";
     private static final String RAW_CONTENT_BASE = "https://raw.githubusercontent.com/siy/coding-technology/main/";
+
     private static final Pattern SHA_PATTERN = Pattern.compile("\"sha\"\\s*:\\s*\"([^\"]+)\"");
+    private static final Pattern TREE_ENTRY_PATTERN = Pattern.compile(
+        "\\{[^}]*\"path\"\\s*:\\s*\"(ai-tools/[^\"]+)\"[^}]*\"type\"\\s*:\\s*\"blob\"[^}]*\\}");
 
     private static final String VERSION_FILE = ".ai-tools-version";
-
-    // Files to download - skills/jbct/
-    private static final String[] JBCT_SKILL_FILES = {"skills/jbct/SKILL.md", "skills/jbct/README.md", "skills/jbct/fundamentals/four-return-kinds.md", "skills/jbct/fundamentals/parse-dont-validate.md", "skills/jbct/fundamentals/no-business-exceptions.md", "skills/jbct/patterns/leaf.md", "skills/jbct/patterns/sequencer.md", "skills/jbct/patterns/fork-join.md", "skills/jbct/patterns/condition.md", "skills/jbct/patterns/iteration.md", "skills/jbct/patterns/aspects.md", "skills/jbct/patterns/fold-alternatives.md", "skills/jbct/project-structure/organization.md", "skills/jbct/testing/patterns.md", "skills/jbct/use-cases/structure.md", "skills/jbct/use-cases/complete-example.md"};
-
-    // Files to download - skills/jbct-review/
-    private static final String[] JBCT_REVIEW_SKILL_FILES = {"skills/jbct-review/SKILL.md"};
-
-    private static final String[] AGENT_FILES = {"jbct-coder.md", "jbct-reviewer.md"};
+    private static final String AI_TOOLS_PREFIX = "ai-tools/";
 
     private final HttpOperations http;
     private final Path claudeDir;
@@ -99,7 +97,7 @@ public final class AiToolsUpdater {
 
     private Result<String> getLatestCommitSha() {
         var request = HttpRequest.newBuilder()
-                                 .uri(URI.create(GITHUB_API_URL))
+                                 .uri(URI.create(GITHUB_COMMITS_URL))
                                  .header("Accept", "application/vnd.github.v3+json")
                                  .header("User-Agent", "jbct-cli")
                                  .timeout(Duration.ofSeconds(30))
@@ -118,60 +116,42 @@ public final class AiToolsUpdater {
                             });
     }
 
+    private Result<List<String>> discoverFiles() {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(GITHUB_TREE_URL))
+                                 .header("Accept", "application/vnd.github.v3+json")
+                                 .header("User-Agent", "jbct-cli")
+                                 .timeout(Duration.ofSeconds(30))
+                                 .GET()
+                                 .build();
+        return http.sendString(request)
+                   .await()
+                   .flatMap(HttpResult::toResult)
+                   .map(body -> {
+                            var files = new ArrayList<String>();
+                            var matcher = TREE_ENTRY_PATTERN.matcher(body);
+                            while (matcher.find()) {
+                                files.add(matcher.group(1));
+                            }
+                            return files;
+                        });
+    }
+
     private Result<List<Path>> downloadFiles(String commitSha) {
-        return createDirectories()
-                                .flatMap(_ -> downloadAllFiles())
-                                .flatMap(files -> saveCurrentVersion(commitSha)
-                                                                    .map(_ -> files));
+        return discoverFiles()
+                            .flatMap(this::downloadAllFiles)
+                            .flatMap(files -> saveCurrentVersion(commitSha)
+                                                                .map(_ -> files));
     }
 
-    private Result<Unit> createDirectories() {
-        try{
-            Files.createDirectories(claudeDir.resolve("skills/jbct"));
-            Files.createDirectories(claudeDir.resolve("skills/jbct-review"));
-            Files.createDirectories(claudeDir.resolve("agents"));
-            return Result.success(Unit.unit());
-        } catch (Exception e) {
-            return Causes.cause("Failed to create directories: " + e.getMessage())
-                         .result();
-        }
-    }
-
-    private Result<List<Path>> downloadAllFiles() {
-        var agentsDir = claudeDir.resolve("agents");
-        // Fork-Join: Download skill files and agent files in parallel
-        return Result.allOf(downloadSkillFiles(),
-                            downloadAgentFiles(agentsDir))
-                     .map(lists -> lists.stream()
-                                        .flatMap(List::stream)
-                                        .toList());
-    }
-
-    private Result<List<Path>> downloadSkillFiles() {
-        // Combine all skill file arrays
-        var allSkillFiles = Stream.concat(Arrays.stream(JBCT_SKILL_FILES), Arrays.stream(JBCT_REVIEW_SKILL_FILES))
-                                  .toList();
-        var results = allSkillFiles.stream()
-                                   .map(file -> downloadFile(file, claudeDir.resolve(file)))
-                                   .toList();
-        // Collect successful downloads
+    private Result<List<Path>> downloadAllFiles(List<String> remotePaths) {
         var files = new ArrayList<Path>();
-        for (var result : results) {
-            if (result.isSuccess()) {
-                files.add(result.unwrap());
-            }
-        }
-        return Result.success(files);
-    }
-
-    private Result<List<Path>> downloadAgentFiles(Path agentsDir) {
-        var results = Stream.of(AGENT_FILES)
-                            .map(file -> downloadFile(file,
-                                                      agentsDir.resolve(file)))
-                            .toList();
-        // Collect successful downloads
-        var files = new ArrayList<Path>();
-        for (var result : results) {
+        for (var remotePath : remotePaths) {
+            // Convert ai-tools/agents/file.md -> agents/file.md
+            // Convert ai-tools/skills/jbct/SKILL.md -> skills/jbct/SKILL.md
+            var relativePath = remotePath.substring(AI_TOOLS_PREFIX.length());
+            var targetPath = claudeDir.resolve(relativePath);
+            var result = downloadFile(remotePath, targetPath);
             if (result.isSuccess()) {
                 files.add(result.unwrap());
             }

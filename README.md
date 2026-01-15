@@ -46,7 +46,7 @@ Add to your `pom.xml`:
         <plugin>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>jbct-maven-plugin</artifactId>
-            <version>0.4.7</version>
+            <version>0.4.9</version>
         </plugin>
     </plugins>
 </build>
@@ -243,7 +243,7 @@ Add executions to run automatically:
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.4.7</version>
+    <version>0.4.9</version>
     <executions>
         <execution>
             <id>check</id>
@@ -264,7 +264,7 @@ All formatting and linting settings are shared between CLI and Maven plugin.
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.4.7</version>
+    <version>0.4.9</version>
     <configuration>
         <!-- Skip JBCT processing -->
         <skip>false</skip>

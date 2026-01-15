@@ -69,7 +69,7 @@ mvn verify
 
 - Java 21+
 - Maven 3.8+
-- JBCT CLI 0.4.8+
+- JBCT CLI 0.4.9+
 
 ## Project Structure
 

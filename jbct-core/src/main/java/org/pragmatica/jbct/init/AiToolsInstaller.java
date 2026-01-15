@@ -1,30 +1,27 @@
 package org.pragmatica.jbct.init;
 
+import org.pragmatica.jbct.update.AiToolsUpdater;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
-import java.io.InputStream;
-import java.net.URISyntaxException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.jar.JarFile;
-import java.util.zip.ZipEntry;
 
 /**
  * Installs AI tools (Claude Code skills and agents) to project's .claude/ directory.
+ * Uses offline cache at ~/.jbct/cache/ai-tools/ for faster installs.
  */
 public final class AiToolsInstaller {
-    private static final String AI_TOOLS_PATH = "/ai-tools/";
-    private static final String SKILLS_SUBPATH = "skills/";
-    private static final String AGENTS_SUBPATH = "agents/";
+    private static final Path CACHE_DIR = Path.of(System.getProperty("user.home"), ".jbct", "cache", "ai-tools");
+    private static final String VERSION_FILE = ".sha";
 
     private final Path claudeDir;
 
@@ -41,121 +38,93 @@ public final class AiToolsInstaller {
     }
 
     /**
-     * Install AI tools from bundled resources.
+     * Install AI tools from cache or fetch from GitHub.
      *
      * @return List of installed files
      */
     public Result<List<Path>> install() {
-        return createDirectories()
-                                .flatMap(_ -> installAllResources());
+        return ensureCachePopulated()
+                                   .flatMap(_ -> copyFromCache());
     }
 
-    private Result<Unit> createDirectories() {
-        try{
-            var skillsDir = claudeDir.resolve("skills");
-            var agentsDir = claudeDir.resolve("agents");
-            Files.createDirectories(skillsDir);
-            Files.createDirectories(agentsDir);
+    private Result<Unit> ensureCachePopulated() {
+        if (isCacheValid()) {
             return Result.success(Unit.unit());
-        } catch (Exception e) {
-            return Causes.cause("Failed to create directories: " + e.getMessage())
+        }
+        return populateCache();
+    }
+
+    private boolean isCacheValid() {
+        var versionFile = CACHE_DIR.resolve(VERSION_FILE);
+        if (!Files.exists(versionFile)) {
+            return false;
+        }
+        // Check if at least one skill and one agent exists
+        var skillsDir = CACHE_DIR.resolve("skills");
+        var agentsDir = CACHE_DIR.resolve("agents");
+        return Files.exists(skillsDir) && Files.exists(agentsDir);
+    }
+
+    private Result<Unit> populateCache() {
+        // Use AiToolsUpdater to fetch files directly to cache
+        var updater = AiToolsUpdater.aiToolsUpdater(CACHE_DIR.getParent());
+        // The updater writes to CACHE_DIR.getParent()/.claude/ which is CACHE_DIR/../.claude/
+        // We need to adjust - create an updater that writes directly to CACHE_DIR
+        return fetchToCache();
+    }
+
+    private Result<Unit> fetchToCache() {
+        // Create a temporary updater that targets cache directory
+        var cacheUpdater = new CacheUpdater();
+        return cacheUpdater.update()
+                           .map(_ -> Unit.unit());
+    }
+
+    private Result<List<Path>> copyFromCache() {
+        if (!Files.exists(CACHE_DIR)) {
+            return Causes.cause("AI tools cache not found. Run 'jbct update' with network access first.")
                          .result();
         }
-    }
-
-    private Result<List<Path>> installAllResources() {
-        var skillsDir = claudeDir.resolve("skills");
-        var agentsDir = claudeDir.resolve("agents");
-        // Fork-Join: Install skills and agents in parallel
-        return Result.allOf(installFromResources(AI_TOOLS_PATH + SKILLS_SUBPATH, skillsDir),
-                            installFromResources(AI_TOOLS_PATH + AGENTS_SUBPATH, agentsDir))
-                     .map(lists -> lists.stream()
-                                        .flatMap(List::stream)
-                                        .toList());
-    }
-
-    private Result<List<Path>> installFromResources(String resourcePath, Path targetDir) {
         var installedFiles = new ArrayList<Path>();
         try{
-            var resource = getClass()
-                                   .getResource(resourcePath);
-            if (resource == null) {
-                return Result.success(installedFiles);
+            Files.createDirectories(claudeDir);
+            // Copy skills
+            var sourceSkills = CACHE_DIR.resolve("skills");
+            var targetSkills = claudeDir.resolve("skills");
+            if (Files.exists(sourceSkills)) {
+                copyDirectory(sourceSkills, targetSkills, installedFiles);
             }
-            if ("jar".equals(resource.getProtocol())) {
-                // Running from JAR - extract files
-                return installFromJar(resourcePath, targetDir);
-            } else {
-                // Running from filesystem (development)
-                return installFromFilesystem(Path.of(resource.toURI()),
-                                             targetDir);
-            }
-        } catch (Exception e) {
-            return Causes.cause("Failed to install from " + resourcePath + ": " + e.getMessage())
-                         .result();
-        }
-    }
-
-    private Result<List<Path>> installFromJar(String resourcePath, Path targetDir) {
-        var installedFiles = new ArrayList<Path>();
-        try{
-            var jarPath = getClass()
-                                  .getProtectionDomain()
-                                  .getCodeSource()
-                                  .getLocation()
-                                  .toURI();
-            try (var jar = new JarFile(Path.of(jarPath)
-                                           .toFile())) {
-                var entries = jar.entries();
-                var basePath = resourcePath.startsWith("/")
-                               ? resourcePath.substring(1)
-                               : resourcePath;
-                while (entries.hasMoreElements()) {
-                    var entry = entries.nextElement();
-                    var name = entry.getName();
-                    if (name.startsWith(basePath) && !entry.isDirectory()) {
-                        var relativePath = name.substring(basePath.length());
-                        var targetFile = targetDir.resolve(relativePath);
-                        // Create parent directories
-                        Files.createDirectories(targetFile.getParent());
-                        // Copy file
-                        try (var in = jar.getInputStream(entry)) {
-                            Files.copy(in, targetFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                            installedFiles.add(targetFile);
-                        }
-                    }
-                }
+            // Copy agents
+            var sourceAgents = CACHE_DIR.resolve("agents");
+            var targetAgents = claudeDir.resolve("agents");
+            if (Files.exists(sourceAgents)) {
+                copyDirectory(sourceAgents, targetAgents, installedFiles);
             }
             return Result.success(installedFiles);
         } catch (Exception e) {
-            return Causes.cause("Failed to extract from JAR: " + e.getMessage())
+            return Causes.cause("Failed to copy from cache: " + e.getMessage())
                          .result();
         }
     }
 
-    private Result<List<Path>> installFromFilesystem(Path sourcePath, Path targetDir) {
-        var installedFiles = new ArrayList<Path>();
-        try{
-            if (!Files.exists(sourcePath)) {
-                return Result.success(installedFiles);
-            }
-            Files.walkFileTree(sourcePath,
-                               new SimpleFileVisitor<>() {
-                @Override
-                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
-                                   var relativePath = sourcePath.relativize(file);
-                                   var targetFile = targetDir.resolve(relativePath);
-                                   Files.createDirectories(targetFile.getParent());
-                                   Files.copy(file, targetFile, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                                   installedFiles.add(targetFile);
-                                   return FileVisitResult.CONTINUE;
-                               }
-            });
-            return Result.success(installedFiles);
-        } catch (Exception e) {
-            return Causes.cause("Failed to copy files: " + e.getMessage())
-                         .result();
-        }
+    private void copyDirectory(Path source, Path target, List<Path> installedFiles) throws IOException {
+        Files.walkFileTree(source,
+                           new SimpleFileVisitor<>() {
+            @Override
+            public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) throws IOException {
+                               var targetDir = target.resolve(source.relativize(dir));
+                               Files.createDirectories(targetDir);
+                               return FileVisitResult.CONTINUE;
+                           }
+
+            @Override
+            public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) throws IOException {
+                               var targetFile = target.resolve(source.relativize(file));
+                               Files.copy(file, targetFile, StandardCopyOption.REPLACE_EXISTING);
+                               installedFiles.add(targetFile);
+                               return FileVisitResult.CONTINUE;
+                           }
+        });
     }
 
     /**
@@ -177,5 +146,133 @@ public final class AiToolsInstaller {
      */
     public Path agentsDir() {
         return claudeDir.resolve("agents");
+    }
+
+    /**
+     * Get the cache directory path.
+     */
+    public static Path cacheDir() {
+        return CACHE_DIR;
+    }
+
+    /**
+     * Inner class to handle cache population using the same logic as AiToolsUpdater
+     * but targeting the cache directory directly.
+     */
+    private static final class CacheUpdater {
+        private static final String GITHUB_API_BASE = "https://api.github.com/repos/siy/coding-technology";
+        private static final String GITHUB_TREE_URL = GITHUB_API_BASE + "/git/trees/main?recursive=1";
+        private static final String GITHUB_COMMITS_URL = GITHUB_API_BASE + "/commits/main";
+        private static final String RAW_CONTENT_BASE = "https://raw.githubusercontent.com/siy/coding-technology/main/";
+
+        private static final java.util.regex.Pattern SHA_PATTERN = java.util.regex.Pattern.compile("\"sha\"\\s*:\\s*\"([^\"]+)\"");
+        private static final java.util.regex.Pattern TREE_ENTRY_PATTERN = java.util.regex.Pattern.compile(
+            "\\{[^}]*\"path\"\\s*:\\s*\"(ai-tools/[^\"]+)\"[^}]*\"type\"\\s*:\\s*\"blob\"[^}]*\\}");
+
+        private static final String AI_TOOLS_PREFIX = "ai-tools/";
+
+        private final org.pragmatica.http.HttpOperations http;
+
+        CacheUpdater() {
+            this.http = org.pragmatica.jbct.shared.HttpClients.httpOperations();
+        }
+
+        Result<List<Path>> update() {
+            return getLatestCommitSha()
+                                     .flatMap(sha -> discoverFiles()
+                                                                   .flatMap(files -> downloadAllFiles(files)
+                                                                                                            .flatMap(paths -> saveVersion(sha)
+                                                                                                                                          .map(_ -> paths))));
+        }
+
+        private Result<String> getLatestCommitSha() {
+            var request = java.net.http.HttpRequest.newBuilder()
+                                                   .uri(java.net.URI.create(GITHUB_COMMITS_URL))
+                                                   .header("Accept", "application/vnd.github.v3+json")
+                                                   .header("User-Agent", "jbct-cli")
+                                                   .timeout(java.time.Duration.ofSeconds(30))
+                                                   .GET()
+                                                   .build();
+            return http.sendString(request)
+                       .await()
+                       .flatMap(org.pragmatica.http.HttpResult::toResult)
+                       .flatMap(body -> {
+                                    var matcher = SHA_PATTERN.matcher(body);
+                                    if (matcher.find()) {
+                                        return Result.success(matcher.group(1));
+                                    }
+                                    return Causes.cause("Could not parse commit SHA")
+                                                 .result();
+                                });
+        }
+
+        private Result<List<String>> discoverFiles() {
+            var request = java.net.http.HttpRequest.newBuilder()
+                                                   .uri(java.net.URI.create(GITHUB_TREE_URL))
+                                                   .header("Accept", "application/vnd.github.v3+json")
+                                                   .header("User-Agent", "jbct-cli")
+                                                   .timeout(java.time.Duration.ofSeconds(30))
+                                                   .GET()
+                                                   .build();
+            return http.sendString(request)
+                       .await()
+                       .flatMap(org.pragmatica.http.HttpResult::toResult)
+                       .map(body -> {
+                                var files = new ArrayList<String>();
+                                var matcher = TREE_ENTRY_PATTERN.matcher(body);
+                                while (matcher.find()) {
+                                    files.add(matcher.group(1));
+                                }
+                                return files;
+                            });
+        }
+
+        private Result<List<Path>> downloadAllFiles(List<String> remotePaths) {
+            var files = new ArrayList<Path>();
+            for (var remotePath : remotePaths) {
+                var relativePath = remotePath.substring(AI_TOOLS_PREFIX.length());
+                var targetPath = CACHE_DIR.resolve(relativePath);
+                var result = downloadFile(remotePath, targetPath);
+                if (result.isSuccess()) {
+                    files.add(result.unwrap());
+                }
+            }
+            return Result.success(files);
+        }
+
+        private Result<Path> downloadFile(String remotePath, Path targetPath) {
+            var url = RAW_CONTENT_BASE + remotePath;
+            var request = java.net.http.HttpRequest.newBuilder()
+                                                   .uri(java.net.URI.create(url))
+                                                   .header("User-Agent", "jbct-cli")
+                                                   .timeout(java.time.Duration.ofSeconds(30))
+                                                   .GET()
+                                                   .build();
+            return http.sendString(request)
+                       .await()
+                       .flatMap(org.pragmatica.http.HttpResult::toResult)
+                       .flatMap(content -> {
+                                    try{
+                                        Files.createDirectories(targetPath.getParent());
+                                        Files.writeString(targetPath, content);
+                                        return Result.success(targetPath);
+                                    } catch (IOException e) {
+                                        return Causes.cause("Failed to write " + targetPath + ": " + e.getMessage())
+                                                     .result();
+                                    }
+                                });
+        }
+
+        private Result<Path> saveVersion(String sha) {
+            try{
+                Files.createDirectories(CACHE_DIR);
+                var versionFile = CACHE_DIR.resolve(VERSION_FILE);
+                Files.writeString(versionFile, sha);
+                return Result.success(versionFile);
+            } catch (IOException e) {
+                return Causes.cause("Failed to save version: " + e.getMessage())
+                             .result();
+            }
+        }
     }
 }

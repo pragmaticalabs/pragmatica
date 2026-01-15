@@ -137,11 +137,13 @@ public class CstPrinter {
 
     private void printNode(CstNode node, TriviaMode mode) {
         // Handle leading trivia
-        // TypeArgs/TypeParams: skip leading whitespace to prevent errant space before '<'
+        // TypeArgs/TypeParams/TypeArg: skip leading whitespace to prevent errant space inside generics
         // OrdinaryUnit: skip leading whitespace since we control file layout
-        var isTypeArgsOrParams = node.rule() instanceof RuleId.TypeArgs || node.rule() instanceof RuleId.TypeParams;
+        var isTypeRelated = node.rule() instanceof RuleId.TypeArgs
+                            || node.rule() instanceof RuleId.TypeParams
+                            || node.rule() instanceof RuleId.TypeArg;
         var isOrdinaryUnit = node.rule() instanceof RuleId.OrdinaryUnit;
-        var effectiveMode = (isTypeArgsOrParams || isOrdinaryUnit)
+        var effectiveMode = (isTypeRelated || isOrdinaryUnit)
                             ? TriviaMode.SKIP_LEADING
                             : mode;
         switch (effectiveMode) {
@@ -156,8 +158,8 @@ public class CstPrinter {
             case CstNode.Error err -> print(err.skippedText());
         }
         // Handle trailing trivia
-        // TypeArgs/TypeParams: skip trailing whitespace to prevent blank line accumulation before return type
-        var trailingMode = isTypeArgsOrParams
+        // TypeArgs/TypeParams/TypeArg: skip trailing whitespace to prevent blank line accumulation
+        var trailingMode = isTypeRelated
                            ? TriviaMode.COMMENTS_ONLY
                            : mode;
         switch (trailingMode) {
@@ -662,37 +664,118 @@ public class CstPrinter {
                 postOps.add(child);
             }
         }
-        // Count method call PostOps (those with parentheses) using CST structure
-        // Avoids expensive text() extraction - check for opening paren terminal instead
-        var methodCallPostOps = postOps.stream()
-                                       .filter(this::isMethodCallPostOp)
-                                       .toList();
-        boolean shouldBreakChain = methodCallPostOps.size() >= 2;
+        // Count chain method calls:
+        // - PostOps with '.' and '(' are chain links (.method())
+        // - A bare '()' PostOp counts as a chain link if Primary contains '.' (receiver.method())
+        var dotPlusParenPostOps = postOps.stream()
+                                         .filter(this::isDotMethodPostOp)
+                                         .toList();
+        // Check if primary has a method access (contains '.')
+        boolean primaryHasMethodAccess = primary != null && hasMethodAccessInPrimary(primary);
+        // If primary has method access AND there's a bare () PostOp, that's the first chain link
+        boolean hasInvocationOfMethodInPrimary = primaryHasMethodAccess
+                                                 && postOps.stream()
+                                                           .anyMatch(this::isBareInvocationPostOp);
+        int chainLinkCount = dotPlusParenPostOps.size() + (hasInvocationOfMethodInPrimary
+                                                           ? 1
+                                                           : 0);
+        boolean shouldBreakChain = chainLinkCount >= 2;
         if (shouldBreakChain && !measuringMode) {
-            printMethodChainAligned(primary, postOps, methodCallPostOps);
+            // Pass whether primary already has a method invocation (receiver.method() pattern)
+            // so alignment knows to break before the first .method() PostOp
+            printMethodChainAligned(primary, postOps, dotPlusParenPostOps, hasInvocationOfMethodInPrimary);
         } else {
-            // No chain or measuring - print normally
+            // Check if chain fits on one line - if so, normalize to inline
+            boolean canInline = !measuringMode && fitsOnLine(postfix);
             if (primary != null) {
                 printNode(primary);
             }
             for (var postOp : postOps) {
-                printNode(postOp);
+                if (canInline) {
+                    // Fits on one line - skip trivia to normalize
+                    // This converts routes()\n.map() to routes().map()
+                    printNodeSkipTrivia(postOp);
+                } else {
+                    // Doesn't fit - preserve existing formatting
+                    printNode(postOp);
+                }
             }
         }
     }
 
     /**
-     * Check if a PostOp is a method call (contains opening paren).
+     * Check if a PostOp is a dot-method call (.method() style).
      * Uses CST structure check instead of text extraction for performance.
      */
-    private boolean isMethodCallPostOp(CstNode postOp) {
-        // PostOp method calls have '(' terminal as a child
+    private boolean isDotMethodPostOp(CstNode postOp) {
+        // Chain method calls have both '.' and '(' - e.g., .map()
+        boolean hasDot = false;
+        boolean hasParen = false;
         for (var child : children(postOp)) {
+            if (isTerminalWithText(child, ".")) {
+                hasDot = true;
+            }
             if (isTerminalWithText(child, "(")) {
-                return true;
+                hasParen = true;
             }
         }
-        return false;
+        return hasDot && hasParen;
+    }
+
+    /**
+     * Check if a PostOp is a bare invocation (just parentheses, no dot).
+     * Used to detect method invocations on Primary: receiver.method()
+     */
+    private boolean isBareInvocationPostOp(CstNode postOp) {
+        boolean hasParen = false;
+        boolean hasDot = false;
+        for (var child : children(postOp)) {
+            if (isTerminalWithText(child, ".")) {
+                hasDot = true;
+            }
+            if (isTerminalWithText(child, "(")) {
+                hasParen = true;
+            }
+        }
+        return hasParen && !hasDot;
+    }
+
+    /**
+     * Check if Primary contains a method access pattern (has '.' in QualifiedName).
+     * This indicates the Primary is something like receiver.method which, combined
+     * with a bare () PostOp, forms a method call chain link.
+     */
+    private boolean hasMethodAccessInPrimary(CstNode primary) {
+        // Look for '.' terminal in the Primary subtree
+        return containsDotInIdentifierChain(primary);
+    }
+
+    private boolean containsDotInIdentifierChain(CstNode node) {
+        return switch (node) {
+            case CstNode.Terminal t -> ".".equals(t.text());
+            case CstNode.Token _ -> false;
+            case CstNode.Error _ -> false;
+            case CstNode.NonTerminal nt -> {
+                // Only check QualifiedName and its children - not lambda bodies etc.
+                if (nt.rule() instanceof RuleId.QualifiedName) {
+                    for (var child : children(nt)) {
+                        if (containsDotInIdentifierChain(child)) {
+                            yield true;
+                        }
+                    }
+                } else if (nt.rule() instanceof RuleId.Identifier) {
+                    yield false;
+                } else {
+                    // For other rule types in Primary, check immediate children only
+                    for (var child : children(nt)) {
+                        if (child.rule() instanceof RuleId.QualifiedName && containsDotInIdentifierChain(child)) {
+                            yield true;
+                        }
+                    }
+                }
+                yield false;
+            }
+        };
     }
 
     /**
@@ -747,9 +830,13 @@ public class CstPrinter {
      *
      * @param primary the primary expression (receiver)
      * @param postOps all PostOp nodes in the chain
-     * @param methodCallPostOps pre-filtered list of PostOps that are method calls (have parens)
+     * @param methodCallPostOps pre-filtered list of PostOps that are .method() calls
+     * @param primaryHasInvocation true if Primary contains receiver.method pattern with () PostOp
      */
-    private void printMethodChainAligned(CstNode primary, List<CstNode> postOps, List<CstNode> methodCallPostOps) {
+    private void printMethodChainAligned(CstNode primary,
+                                         List<CstNode> postOps,
+                                         List<CstNode> methodCallPostOps,
+                                         boolean primaryHasInvocation) {
         int startColumn = currentColumn;
         int alignColumn = startColumn;
         // Use Set for O(1) lookup instead of repeated text() extraction
@@ -771,7 +858,9 @@ public class CstPrinter {
         }
         // Enter chain context for nested lambdas
         try (var ignored = alignment.enterChain(alignColumn)) {
-            boolean firstMethodCall = true;
+            // If primary already has an invocation (receiver.method()), then the first
+            // .method() PostOp is actually the second chain link and should break
+            boolean firstMethodCall = !primaryHasInvocation;
             for (var postOp : postOps) {
                 boolean isMethodCall = methodCallSet.contains(postOp);
                 if (isMethodCall && !firstMethodCall) {
@@ -1129,11 +1218,11 @@ public class CstPrinter {
                 // Print '<' directly - skip trivia AND bypass spacing rules
                 printCommentsOnly(child.leadingTrivia());
                 print("<");
-                printTrivia(child.trailingTrivia());
+                printCommentsOnly(child.trailingTrivia());
                 first = false;
             } else if (isTerminalWithText(child, ">")) {
                 // Print '>' with comments-only trailing trivia to prevent newline accumulation
-                printTrivia(child.leadingTrivia());
+                printCommentsOnly(child.leadingTrivia());
                 print(">");
                 printCommentsOnly(child.trailingTrivia());
             } else {
@@ -1153,11 +1242,11 @@ public class CstPrinter {
                 // Print '<' directly - skip trivia AND bypass spacing rules
                 printCommentsOnly(child.leadingTrivia());
                 print("<");
-                printTrivia(child.trailingTrivia());
+                printCommentsOnly(child.trailingTrivia());
                 first = false;
             } else if (isTerminalWithText(child, ">")) {
                 // Print '>' with comments-only trailing trivia to prevent newline accumulation
-                printTrivia(child.leadingTrivia());
+                printCommentsOnly(child.leadingTrivia());
                 print(">");
                 printCommentsOnly(child.trailingTrivia());
             } else {

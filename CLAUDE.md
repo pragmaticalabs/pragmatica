@@ -260,6 +260,13 @@ slice-processor/
 │   ├── FactoryClassGenerator.java    # Generates factory with proxy wiring
 │   ├── ManifestGenerator.java        # Generates META-INF/slice-api.properties
 │   └── DependencyVersionResolver.java # Resolves versions from slice-deps.properties
+├── routing/
+│   ├── RouteDsl.java             # DSL parser for route definitions
+│   ├── RouteConfig.java          # Loaded TOML config model
+│   ├── RouteConfigLoader.java    # TOML config loader with hierarchy
+│   ├── RouteSourceGenerator.java # Generates RouteSource + SliceRouterFactory
+│   ├── ErrorTypeDiscovery.java   # Package scanner for Cause types
+│   └── ErrorTypeMatcher.java     # Glob-like pattern matcher
 └── model/
     ├── SliceModel.java           # Slice metadata from @Slice interface
     ├── MethodModel.java          # Method info (name, returnType, parameterType)
@@ -319,3 +326,35 @@ From `@Slice` annotation processor:
 2. **Proxy Classes** (`api/*Proxy.java`) - Delegates to SliceInvokerFacade
 3. **Factory Class** (`MySliceFactory.java`) - Creates instance with proxied dependencies
 4. **Manifest** (`META-INF/slice-api.properties`) - Maps artifact to interface
+
+### HTTP Routing Generation
+
+When `routes.toml` exists in the slice package resources, generates HTTP route handling:
+
+**Config location:** `src/main/resources/{slicePackage}/routes.toml`
+
+```toml
+prefix = "/api/v1/users"
+
+[routes]
+getUser = "GET /{id:Long}"
+createUser = "POST /"
+searchUsers = "GET /?name&limit:Integer"
+
+[errors]
+HTTP_404 = ["*NotFound*", "*Missing*"]
+HTTP_400 = ["*Invalid*", "*Validation*"]
+```
+
+**Generated artifacts:**
+1. **Routes Class** (`MySliceRoutes.java`) - Implements `RouteSource` and `SliceRouterFactory<MySlice>`
+2. **Service File** (`META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory`)
+
+**Route DSL syntax:** `"METHOD /path/{param:Type}?query1&query2:Type"`
+- Path params: `{id:Long}`, `{name:String}` (String is default)
+- Query params: `name` or `name:Type` after `?`, separated by `&`
+- Supported types: `String`, `Integer`, `Long`, `Boolean`, `LocalDate`, `LocalDateTime`
+
+**Error mapping:** Pattern-based matching of `Cause` types to HTTP status codes
+- `*NotFound*` matches `UserNotFound`, `OrderNotFound`, etc.
+- Conflicts detected at compile time

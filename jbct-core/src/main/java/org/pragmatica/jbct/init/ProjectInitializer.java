@@ -17,9 +17,9 @@ import java.util.List;
 public final class ProjectInitializer {
     private static final String TEMPLATES_PATH = "/templates/";
 
-    // Default versions - updated on each release
-    private static final String DEFAULT_JBCT_VERSION = "0.4.8";
-    private static final String DEFAULT_PRAGMATICA_VERSION = "0.9.10";
+    // Default versions - used as fallback when offline
+    private static final String DEFAULT_JBCT_VERSION = GitHubVersionResolver.defaultJbctVersion();
+    private static final String DEFAULT_PRAGMATICA_VERSION = GitHubVersionResolver.defaultPragmaticaVersion();
 
     private final Path projectDir;
     private final String groupId;
@@ -39,9 +39,27 @@ public final class ProjectInitializer {
     }
 
     /**
-     * Create initializer with project parameters and default versions.
+     * Create initializer with project parameters, fetching latest versions from GitHub.
      */
     public static ProjectInitializer projectInitializer(Path projectDir, String groupId, String artifactId) {
+        var resolver = GitHubVersionResolver.gitHubVersionResolver();
+        return projectInitializer(projectDir, groupId, artifactId, resolver);
+    }
+
+    /**
+     * Create initializer with project parameters and version resolver.
+     */
+    public static ProjectInitializer projectInitializer(Path projectDir, String groupId, String artifactId,
+                                                        GitHubVersionResolver resolver) {
+        var basePackage = groupId + "." + artifactId.replace("-", "");
+        return new ProjectInitializer(projectDir, groupId, artifactId, basePackage,
+                                      resolver.jbctVersion(), resolver.pragmaticaLiteVersion());
+    }
+
+    /**
+     * Create initializer with project parameters and fallback versions (no network).
+     */
+    public static ProjectInitializer projectInitializerOffline(Path projectDir, String groupId, String artifactId) {
         var basePackage = groupId + "." + artifactId.replace("-", "");
         return new ProjectInitializer(projectDir, groupId, artifactId, basePackage,
                                       DEFAULT_JBCT_VERSION, DEFAULT_PRAGMATICA_VERSION);

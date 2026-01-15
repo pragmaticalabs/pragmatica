@@ -1,20 +1,41 @@
 # Changelog
 
-## [0.4.9] - Unreleased
+## [0.4.9] - 2026-01-15
 
 ### Added
+- HTTP routing: generate `RouteSource` and `SliceRouterFactory` from TOML config
+- HTTP routing: DSL parser for route definitions (`"GET /users/{id:Long}"`)
+- HTTP routing: compile-time error type discovery with pattern matching
+- HTTP routing: service loader file generation for factory discovery
+- HTTP routing: full parameter support (path, query, body in any combination up to 5 params)
 - Slice packaging: fat JAR creation with bundled external dependencies
 - Slice packaging: dependency file generation (`META-INF/dependencies/{FactoryClass}`)
 - Slice packaging: MANIFEST.MF entries (`Slice-Artifact`, `Slice-Class`)
 - Slice packaging: application shared code inclusion in impl JAR
 - Docs: Aether ClassLoader hierarchy and dependency model in runtime.md
+- Project init: dynamic version resolution from GitHub Releases (pragmatica-lite, aether, jbct)
+- Project init: version override CLI options (`--pragmatica-version`, `--aether-version`, `--jbct-version`)
+- AI tools: offline cache at `~/.jbct/cache/ai-tools/` for faster installs
 
 ### Changed
+- Slice init: pom template includes `slice-annotations` and `slice-api` dependencies with `${aether.version}` property
 - Slice packaging: API JAR now includes nested request/response types
 - Slice packaging: request/response classes handled as API types when nested
+- AI tools: fetch from coding-technology repo using GitHub Tree API (dynamic file discovery)
+- AI tools: removed bundled copies, now fetched from GitHub on demand
+- Build: added tinylog 2.7.0 as SLF4J provider (eliminates "No SLF4J providers" warnings)
 
 ### Fixed
 - SliceManifest: nested class path conversion (`Outer.Inner` → `Outer$Inner.class`)
+- Slice packaging: Aether runtime libs (`slice-annotations`, `slice-api`, `infra-api`) excluded from bundling and dependency file
+- Formatter: wildcard spacing in generics (`Route< ?>` → `Route<?>`)
+- Formatter: single fluent call kept inline (`none().toResult(cause)` not broken across lines)
+- HTTP routing: handler existence validation with compile error on missing methods
+- HTTP routing: parameter count validation (max 5 parameters per route)
+- HTTP routing: nested type name collision using qualified names in error mapper
+- HTTP routing: consolidated pattern matching (removed duplicate regex-based matchesGlob)
+- HTTP routing: routes-base.toml merge support for shared config inheritance
+- HTTP routing: replaced null with Option in ErrorTypeMapping
 
 ## [0.4.8] - 2026-01-10
 
