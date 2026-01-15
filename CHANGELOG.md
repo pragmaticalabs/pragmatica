@@ -28,6 +28,8 @@
 ### Fixed
 - SliceManifest: nested class path conversion (`Outer.Inner` → `Outer$Inner.class`)
 - Slice packaging: Aether runtime libs (`slice-annotations`, `slice-api`, `infra-api`) excluded from bundling and dependency file
+- Formatter: wildcard spacing in generics (`Route< ?>` → `Route<?>`)
+- Formatter: single fluent call kept inline (`none().toResult(cause)` not broken across lines)
 
 ## [0.4.8] - 2026-01-10
 
