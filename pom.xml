@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-parent</artifactId>
-    <version>0.4.9</version>
+    <version>0.5.0</version>
     <packaging>pom</packaging>
 
     <name>JBCT Tools Parent</name>
@@ -296,7 +296,7 @@
                     <plugin>
                         <groupId>org.pragmatica-lite</groupId>
                         <artifactId>jbct-maven-plugin</artifactId>
-                        <version>0.4.9</version>
+                        <version>0.5.0</version>
                         <executions>
                             <execution>
                                 <id>check</id>
