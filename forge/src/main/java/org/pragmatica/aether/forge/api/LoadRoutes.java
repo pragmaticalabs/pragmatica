@@ -55,49 +55,49 @@ public sealed interface LoadRoutes {
 
     // ========== Route Definitions ==========
     private static Route<LoadConfigResponse> getConfigRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadConfigResponse, Void> get("/config")
+        return Route.<LoadConfigResponse> get("/config")
                     .toJson(() -> getConfig(runner));
     }
 
     private static Route<LoadConfigUploadResponse> postConfigRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadConfigUploadResponse, String> post("/config")
+        return Route.<LoadConfigUploadResponse> post("/config")
                     .withBody(TypeToken.of(String.class))
                     .toJson(toml -> uploadConfig(runner, toml));
     }
 
     private static Route<LoadRunnerStatusResponse> getStatusRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadRunnerStatusResponse, Void> get("/status")
+        return Route.<LoadRunnerStatusResponse> get("/status")
                     .toJson(() -> getStatus(runner));
     }
 
     private static Route<LoadControlResponse> startRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse, Void> post("/start")
+        return Route.<LoadControlResponse> post("/start")
                     .toJson(_ -> start(runner));
     }
 
     private static Route<LoadControlResponse> stopRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse, Void> post("/stop")
+        return Route.<LoadControlResponse> post("/stop")
                     .toJson(_ -> stop(runner));
     }
 
     private static Route<LoadControlResponse> pauseRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse, Void> post("/pause")
+        return Route.<LoadControlResponse> post("/pause")
                     .toJson(_ -> pause(runner));
     }
 
     private static Route<LoadControlResponse> resumeRoute(ConfigurableLoadRunner runner) {
-        return Route.<LoadControlResponse, Void> post("/resume")
+        return Route.<LoadControlResponse> post("/resume")
                     .toJson(_ -> resume(runner));
     }
 
     private static Route<RampLoadResponse> rampRoute(LoadGenerator loadGenerator) {
-        return Route.<RampLoadResponse, RampRequest> post("/ramp")
+        return Route.<RampLoadResponse> post("/ramp")
                     .withBody(TypeToken.of(RampRequest.class))
                     .toJson(req -> ramp(loadGenerator, req));
     }
 
     private static Route<RateSetResponse> setRateRoute(LoadGenerator loadGenerator) {
-        return Route.<RateSetResponse, Integer> post("/set")
+        return Route.<RateSetResponse> post("/set")
                     .withPath(aInteger())
                     .to(rate -> setRate(loadGenerator, rate))
                     .asJson();

@@ -58,27 +58,27 @@ public final class ChaosRoutes {
 
     // ========== Route Definitions ==========
     private static Route<ChaosStatusResponse> statusRoute(ChaosController chaosController) {
-        return Route.<ChaosStatusResponse, Void> get("/status")
+        return Route.<ChaosStatusResponse> get("/status")
                     .toJson(() -> chaosStatus(chaosController));
     }
 
     private static Route<ChaosEnabledResponse> enableRoute(ChaosController chaosController,
                                                            Consumer<EventLogEntry> eventLogger) {
-        return Route.<ChaosEnabledResponse, EnableRequest> post("/enable")
+        return Route.<ChaosEnabledResponse> post("/enable")
                     .withBody(EnableRequest.class)
                     .toJson(req -> enableChaos(chaosController, eventLogger, req));
     }
 
     private static Route<ChaosInjectResponse> injectRoute(ChaosController chaosController,
                                                           Consumer<EventLogEntry> eventLogger) {
-        return Route.<ChaosInjectResponse, InjectRequest> post("/inject")
+        return Route.<ChaosInjectResponse> post("/inject")
                     .withBody(InjectRequest.class)
                     .toJson(req -> injectChaos(chaosController, eventLogger, req));
     }
 
     private static Route<ChaosStoppedResponse> stopRoute(ChaosController chaosController,
                                                          Consumer<EventLogEntry> eventLogger) {
-        return Route.<ChaosStoppedResponse, Void> post("/stop")
+        return Route.<ChaosStoppedResponse> post("/stop")
                     .withPath(aString())
                     .to(eventId -> stopChaos(chaosController, eventLogger, eventId))
                     .asJson();
@@ -86,19 +86,19 @@ public final class ChaosRoutes {
 
     private static Route<SuccessResponse> stopAllRoute(ChaosController chaosController,
                                                        Consumer<EventLogEntry> eventLogger) {
-        return Route.<SuccessResponse, Void> post("/stop-all")
+        return Route.<SuccessResponse> post("/stop-all")
                     .toJson(_ -> stopAllChaos(chaosController, eventLogger));
     }
 
     private static Route<NodeAddedResponse> addNodeRoute(ForgeCluster cluster,
                                                          Consumer<EventLogEntry> eventLogger) {
-        return Route.<NodeAddedResponse, Void> post("/add-node")
+        return Route.<NodeAddedResponse> post("/add-node")
                     .toJson(_ -> addNode(cluster, eventLogger));
     }
 
     private static Route<NodeActionResponse> killNodeRoute(ForgeCluster cluster,
                                                            Consumer<EventLogEntry> eventLogger) {
-        return Route.<NodeActionResponse, Void> post("/kill")
+        return Route.<NodeActionResponse> post("/kill")
                     .withPath(aString())
                     .to(nodeId -> killNode(cluster, eventLogger, nodeId))
                     .asJson();
@@ -106,7 +106,7 @@ public final class ChaosRoutes {
 
     private static Route<SuccessResponse> rollingRestartRoute(ForgeCluster cluster,
                                                               Consumer<EventLogEntry> eventLogger) {
-        return Route.<SuccessResponse, Void> post("/rolling-restart")
+        return Route.<SuccessResponse> post("/rolling-restart")
                     .toJson(_ -> rollingRestart(cluster, eventLogger));
     }
 

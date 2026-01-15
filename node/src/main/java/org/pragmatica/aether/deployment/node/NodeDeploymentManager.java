@@ -246,6 +246,7 @@ public interface NodeDeploymentManager {
                                                                                                                                                     .getClassLoader();
                                                                                                                                 publisher.publishRoutes(artifact,
                                                                                                                                                         classLoader,
+                                                                                                                                                        ls.slice(),
                                                                                                                                                         invoker)
                                                                                                                                          .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}",
                                                                                                                                                                       artifact,

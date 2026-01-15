@@ -1,6 +1,8 @@
 package org.pragmatica.aether.http;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
@@ -73,18 +75,30 @@ public interface AppHttpServer {
     static AppHttpServer appHttpServer(AppHttpConfig config,
                                        HttpRouteRegistry routeRegistry,
                                        Option<SliceInvoker> sliceInvoker,
+                                       Option<HttpRoutePublisher> httpRoutePublisher,
                                        Option<TlsConfig> tls) {
-        return new AppHttpServerImpl(config, routeRegistry, sliceInvoker, tls);
+        return new AppHttpServerImpl(config, routeRegistry, sliceInvoker, httpRoutePublisher, tls);
     }
 
     /**
-     * @deprecated Use {@link #appHttpServer(AppHttpConfig, HttpRouteRegistry, Option, Option)} with SliceInvoker.
+     * @deprecated Use {@link #appHttpServer(AppHttpConfig, HttpRouteRegistry, Option, Option, Option)} with SliceInvoker and HttpRoutePublisher.
+     */
+    @Deprecated
+    static AppHttpServer appHttpServer(AppHttpConfig config,
+                                       HttpRouteRegistry routeRegistry,
+                                       Option<SliceInvoker> sliceInvoker,
+                                       Option<TlsConfig> tls) {
+        return new AppHttpServerImpl(config, routeRegistry, sliceInvoker, Option.none(), tls);
+    }
+
+    /**
+     * @deprecated Use {@link #appHttpServer(AppHttpConfig, HttpRouteRegistry, Option, Option, Option)} with SliceInvoker and HttpRoutePublisher.
      */
     @Deprecated
     static AppHttpServer appHttpServer(AppHttpConfig config,
                                        HttpRouteRegistry routeRegistry,
                                        Option<TlsConfig> tls) {
-        return new AppHttpServerImpl(config, routeRegistry, Option.none(), tls);
+        return new AppHttpServerImpl(config, routeRegistry, Option.none(), Option.none(), tls);
     }
 }
 
@@ -95,6 +109,7 @@ class AppHttpServerImpl implements AppHttpServer {
     private final AppHttpConfig config;
     private final HttpRouteRegistry routeRegistry;
     private final Option<SliceInvoker> sliceInvoker;
+    private final Option<HttpRoutePublisher> httpRoutePublisher;
     private final SecurityValidator securityValidator;
     private final MultiThreadIoEventLoopGroup bossGroup;
     private final MultiThreadIoEventLoopGroup workerGroup;
@@ -105,10 +120,12 @@ class AppHttpServerImpl implements AppHttpServer {
     AppHttpServerImpl(AppHttpConfig config,
                       HttpRouteRegistry routeRegistry,
                       Option<SliceInvoker> sliceInvoker,
+                      Option<HttpRoutePublisher> httpRoutePublisher,
                       Option<TlsConfig> tls) {
         this.config = config;
         this.routeRegistry = routeRegistry;
         this.sliceInvoker = sliceInvoker;
+        this.httpRoutePublisher = httpRoutePublisher;
         this.securityValidator = config.securityEnabled()
                                  ? SecurityValidator.apiKeyValidator(config.apiKeys())
                                  : SecurityValidator.noOpValidator();
@@ -143,7 +160,10 @@ class AppHttpServerImpl implements AppHttpServer {
                 sslContext.onPresent(ctx -> pipeline.addLast(ctx.newHandler(ch.alloc())));
                 pipeline.addLast(new HttpServerCodec());
                 pipeline.addLast(new HttpObjectAggregator(MAX_CONTENT_LENGTH));
-                pipeline.addLast(new AppHttpRequestHandler(routeRegistry, sliceInvoker, securityValidator));
+                pipeline.addLast(new AppHttpRequestHandler(routeRegistry,
+                                                           sliceInvoker,
+                                                           httpRoutePublisher,
+                                                           securityValidator));
             }
         };
     }
@@ -201,14 +221,17 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
 
     private final HttpRouteRegistry routeRegistry;
     private final Option<SliceInvoker> sliceInvoker;
+    private final Option<HttpRoutePublisher> httpRoutePublisher;
     private final SecurityValidator securityValidator;
     private final ConcurrentHashMap<String, MethodHandle<HttpResponseData, HttpRequestContext>> methodHandleCache;
 
     AppHttpRequestHandler(HttpRouteRegistry routeRegistry,
                           Option<SliceInvoker> sliceInvoker,
+                          Option<HttpRoutePublisher> httpRoutePublisher,
                           SecurityValidator securityValidator) {
         this.routeRegistry = routeRegistry;
         this.sliceInvoker = sliceInvoker;
+        this.httpRoutePublisher = httpRoutePublisher;
         this.securityValidator = securityValidator;
         this.methodHandleCache = new ConcurrentHashMap<>();
     }
@@ -300,6 +323,22 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                   securedContext.security()
                                 .principal()
                                 .value());
+        // TRY LOCAL ROUTING FIRST via SliceRouter
+        var artifact = Artifact.artifact(route.artifact());
+        if (artifact.isSuccess() && httpRoutePublisher.isPresent()) {
+            var artObj = artifact.unwrap();
+            var localRouter = httpRoutePublisher.unwrap()
+                                                .getSliceRouter(artObj);
+            if (localRouter.isPresent()) {
+                log.debug("Using local SliceRouter for {} [{}]", artObj, requestId);
+                localRouter.unwrap()
+                           .handle(securedContext)
+                           .onSuccess(response -> sendResponse(ctx, response, requestId))
+                           .onFailure(cause -> handleInvocationError(ctx, cause, path, requestId));
+                return;
+            }
+        }
+        // FALL BACK to remote SliceInvoker path
         // Get or create MethodHandle for this route
         var cacheKey = route.artifact() + ":" + route.sliceMethod();
         var methodHandle = getOrCreateMethodHandle(cacheKey, route);

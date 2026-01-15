@@ -507,6 +507,7 @@ public interface AetherNode {
         var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
                                                         httpRouteRegistry,
                                                         Option.some(sliceInvoker),
+                                                        Option.some(httpRoutePublisher),
                                                         config.tls());
         // Collect all route entries from RabiaNode and AetherNode components
         var aetherEntries = collectRouteEntries(kvStore,
