@@ -311,6 +311,70 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// HTTP route key format:
+    /// ```
+    /// http-routes/{httpMethod}:{pathPrefix}
+    /// ```
+    /// Maps HTTP method + path prefix to artifact + slice method for cluster-wide HTTP routing.
+    record HttpRouteKey(String httpMethod, String pathPrefix) implements AetherKey {
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.HttpRoutePattern httpRoutePattern -> httpRoutePattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return "http-routes/" + httpMethod + ":" + pathPrefix;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static HttpRouteKey httpRouteKey(String httpMethod, String pathPrefix) {
+            return new HttpRouteKey(httpMethod.toUpperCase(), normalizePrefix(pathPrefix));
+        }
+
+        public static Result<HttpRouteKey> httpRouteKey(String key) {
+            if (!key.startsWith("http-routes/")) {
+                return HTTP_ROUTE_KEY_FORMAT_ERROR.apply(key)
+                                                  .result();
+            }
+            var content = key.substring(12);
+            // Remove "http-routes/"
+            var colonIndex = content.indexOf(':');
+            if (colonIndex == - 1) {
+                return HTTP_ROUTE_KEY_FORMAT_ERROR.apply(key)
+                                                  .result();
+            }
+            var httpMethod = content.substring(0, colonIndex);
+            var pathPrefix = content.substring(colonIndex + 1);
+            if (httpMethod.isEmpty() || pathPrefix.isEmpty()) {
+                return HTTP_ROUTE_KEY_FORMAT_ERROR.apply(key)
+                                                  .result();
+            }
+            return Result.success(new HttpRouteKey(httpMethod, pathPrefix));
+        }
+
+        private static String normalizePrefix(String path) {
+            if (path == null || path.isBlank()) {
+                return "/";
+            }
+            var normalized = path.strip();
+            if (!normalized.startsWith("/")) {
+                normalized = "/" + normalized;
+            }
+            if (!normalized.endsWith("/")) {
+                normalized = normalized + "/";
+            }
+            return normalized;
+        }
+    }
+
     /// Alert threshold key format:
     /// ```
     /// alert-threshold/{metricName}
@@ -357,6 +421,7 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> VERSION_ROUTING_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid version-routing key format: %s");
     Fn1<Cause, String> ROLLING_UPDATE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid rolling-update key format: %s");
     Fn1<Cause, String> PREVIOUS_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid previous-version key format: %s");
+    Fn1<Cause, String> HTTP_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid http-routes key format: %s");
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
 
     /// Aether KV-Store structured patterns for key matching
@@ -406,6 +471,13 @@ public sealed interface AetherKey extends StructuredKey {
         /// Pattern for previous-version keys: previous-version/*
         record PreviousVersionPattern() implements AetherKeyPattern {
             public boolean matches(PreviousVersionKey key) {
+                return true;
+            }
+        }
+
+        /// Pattern for http-routes keys: http-routes/*
+        record HttpRoutePattern() implements AetherKeyPattern {
+            public boolean matches(HttpRouteKey key) {
                 return true;
             }
         }

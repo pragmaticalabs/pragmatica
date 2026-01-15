@@ -45,22 +45,22 @@ public final class StatusRoutes {
                                                          LoadGenerator loadGenerator,
                                                          ForgeMetrics metrics,
                                                          long startTime) {
-        return Route.<FullStatusResponse, Object> get("/api/status")
+        return Route.<FullStatusResponse> get("/api/status")
                     .toJson(() -> buildFullStatus(cluster, loadGenerator, metrics, startTime));
     }
 
     private static Route<List<NodeMetricsResponse>> nodeMetricsRoute(ForgeCluster cluster) {
-        return Route.<List<NodeMetricsResponse>, Object> get("/api/node-metrics")
+        return Route.<List<NodeMetricsResponse>> get("/api/node-metrics")
                     .toJson(() -> buildNodeMetrics(cluster));
     }
 
     private static Route<List<ForgeEvent>> eventsRoute(Deque<ForgeEvent> events) {
-        return Route.<List<ForgeEvent>, Object> get("/api/events")
+        return Route.<List<ForgeEvent>> get("/api/events")
                     .toJson(() -> buildEventsList(events));
     }
 
     private static Route<HealthResponse> healthRoute() {
-        return Route.<HealthResponse, Object> get("/health")
+        return Route.<HealthResponse> get("/health")
                     .toJson(StatusRoutes::buildHealthResponse);
     }
 

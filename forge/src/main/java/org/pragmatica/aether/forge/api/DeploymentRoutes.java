@@ -93,7 +93,7 @@ public sealed interface DeploymentRoutes {
     private static Route<ProxyResponse> deployRoute(ForgeCluster cluster,
                                                     JdkHttpOperations http,
                                                     Consumer<EventLogEntry> eventLogger) {
-        return Route.<ProxyResponse, DeployRequest> post("/api/deploy")
+        return Route.<ProxyResponse> post("/api/deploy")
                     .withBody(DeployRequest.class)
                     .toJson(req -> proxyDeploy(cluster, http, eventLogger, req));
     }
@@ -101,7 +101,7 @@ public sealed interface DeploymentRoutes {
     private static Route<ProxyResponse> undeployRoute(ForgeCluster cluster,
                                                       JdkHttpOperations http,
                                                       Consumer<EventLogEntry> eventLogger) {
-        return Route.<ProxyResponse, UndeployRequest> post("/api/undeploy")
+        return Route.<ProxyResponse> post("/api/undeploy")
                     .withBody(UndeployRequest.class)
                     .toJson(req -> proxyUndeploy(cluster, http, eventLogger, req));
     }
@@ -109,28 +109,28 @@ public sealed interface DeploymentRoutes {
     private static Route<ProxyResponse> blueprintRoute(ForgeCluster cluster,
                                                        JdkHttpOperations http,
                                                        Consumer<EventLogEntry> eventLogger) {
-        return Route.<ProxyResponse, String> post("/api/blueprint")
+        return Route.<ProxyResponse> post("/api/blueprint")
                     .withBody(TypeToken.of(String.class))
                     .toJson(body -> proxyBlueprint(cluster, http, eventLogger, body));
     }
 
     private static Route<SlicesStatusResponse> slicesStatusRoute(ForgeCluster cluster,
                                                                  JdkHttpOperations http) {
-        return Route.<SlicesStatusResponse, Void> get("/api/slices/status")
+        return Route.<SlicesStatusResponse> get("/api/slices/status")
                     .to(_ -> proxySlicesStatus(cluster, http))
                     .asJson();
     }
 
     private static Route<ClusterMetricsResponse> clusterMetricsRoute(ForgeCluster cluster,
                                                                      JdkHttpOperations http) {
-        return Route.<ClusterMetricsResponse, Void> get("/api/cluster/metrics")
+        return Route.<ClusterMetricsResponse> get("/api/cluster/metrics")
                     .to(_ -> proxyClusterMetrics(cluster, http))
                     .asJson();
     }
 
     private static Route<RepositoryPutResponse> repositoryPutRoute(ForgeCluster cluster,
                                                                    Consumer<EventLogEntry> eventLogger) {
-        return Route.<RepositoryPutResponse, RepositoryPutRequest> put("/api/repository")
+        return Route.<RepositoryPutResponse> put("/api/repository")
                     .withBody(RepositoryPutRequest.class)
                     .toJson(req -> storeArtifact(cluster, eventLogger, req));
     }

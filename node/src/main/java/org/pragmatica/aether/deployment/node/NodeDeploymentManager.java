@@ -1,5 +1,6 @@
 package org.pragmatica.aether.deployment.node;
 
+import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
 import org.pragmatica.aether.slice.MethodName;
@@ -7,6 +8,7 @@ import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceBridgeImpl;
 import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
 import org.pragmatica.aether.slice.serialization.SerializerFactoryProvider;
+import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -68,7 +70,9 @@ public interface NodeDeploymentManager {
                                          KVStore<AetherKey, AetherValue> kvStore,
                                          InvocationHandler invocationHandler,
                                          MessageRouter router,
-                                         ConcurrentHashMap<SliceNodeKey, SliceDeployment> deployments) implements NodeDeploymentState {
+                                         ConcurrentHashMap<SliceNodeKey, SliceDeployment> deployments,
+                                         Option<HttpRoutePublisher> httpRoutePublisher,
+                                         Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(ActiveNodeDeploymentState.class);
 
             private static final Fn1<Cause, Class< ? >> UNEXPECTED_VALUE_TYPE = Causes.forOneValue("Unexpected value type for slice-node key: {}");
@@ -227,8 +231,27 @@ public interface NodeDeploymentManager {
                 registerSliceForInvocation(sliceKey);
                 // 2. Publish endpoints to KV-Store
                 publishEndpoints(sliceKey);
-                // 3. Emit deployment completed event for metrics via MessageRouter
+                // 3. Publish HTTP routes if available
+                publishHttpRoutes(sliceKey);
+                // 4. Emit deployment completed event for metrics via MessageRouter
                 router.route(new DeploymentCompleted(sliceKey.artifact(), self, System.currentTimeMillis()));
+            }
+
+            private void publishHttpRoutes(SliceNodeKey sliceKey) {
+                var artifact = sliceKey.artifact();
+                httpRoutePublisher.onPresent(publisher -> sliceInvokerFacade.onPresent(invoker -> findLoadedSlice(artifact)
+                                                                                                                 .onPresent(ls -> {
+                                                                                                                                var classLoader = ls.slice()
+                                                                                                                                                    .getClass()
+                                                                                                                                                    .getClassLoader();
+                                                                                                                                publisher.publishRoutes(artifact,
+                                                                                                                                                        classLoader,
+                                                                                                                                                        ls.slice(),
+                                                                                                                                                        invoker)
+                                                                                                                                         .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}",
+                                                                                                                                                                      artifact,
+                                                                                                                                                                      cause.message()));
+                                                                                                                            })));
             }
 
             private void registerSliceForInvocation(SliceNodeKey sliceKey) {
@@ -302,18 +325,25 @@ public interface NodeDeploymentManager {
 
             private void handleDeactivating(SliceNodeKey sliceKey) {
                 // Correct order for graceful shutdown:
-                // 1. Unpublish endpoints first (stops new traffic from being routed here)
-                // 2. Then unregister from invocation handler
-                // 3. Then deactivate the slice
-                unpublishEndpoints(sliceKey)
-                                  .onResultRun(() -> {
-                                                   unregisterSliceFromInvocation(sliceKey);
-                                                   executeWithStateTransition(sliceKey,
-                                                                              SliceState.DEACTIVATING,
-                                                                              sliceStore.deactivateSlice(sliceKey.artifact()),
-                                                                              SliceState.LOADED,
-                                                                              SliceState.FAILED);
-                                               });
+                // 1. Unpublish HTTP routes first
+                // 2. Unpublish endpoints (stops new traffic from being routed here)
+                // 3. Then unregister from invocation handler
+                // 4. Then deactivate the slice
+                unpublishHttpRoutes(sliceKey)
+                                   .onResultRun(() -> unpublishEndpoints(sliceKey)
+                                                                        .onResultRun(() -> {
+                                                                                         unregisterSliceFromInvocation(sliceKey);
+                                                                                         executeWithStateTransition(sliceKey,
+                                                                                                                    SliceState.DEACTIVATING,
+                                                                                                                    sliceStore.deactivateSlice(sliceKey.artifact()),
+                                                                                                                    SliceState.LOADED,
+                                                                                                                    SliceState.FAILED);
+                                                                                     }));
+            }
+
+            private Promise<Unit> unpublishHttpRoutes(SliceNodeKey sliceKey) {
+                return httpRoutePublisher.map(publisher -> publisher.unpublishRoutes(sliceKey.artifact()))
+                                         .or(Promise.success(Unit.unit()));
             }
 
             private Promise<Unit> unpublishEndpoints(SliceNodeKey sliceKey) {
@@ -453,7 +483,9 @@ public interface NodeDeploymentManager {
                                      cluster,
                                      kvStore,
                                      invocationHandler,
-                                     SliceActionConfig.defaultConfiguration());
+                                     SliceActionConfig.defaultConfiguration(),
+                                     Option.none(),
+                                     Option.none());
     }
 
     static NodeDeploymentManager nodeDeploymentManager(NodeId self,
@@ -463,6 +495,26 @@ public interface NodeDeploymentManager {
                                                        KVStore<AetherKey, AetherValue> kvStore,
                                                        InvocationHandler invocationHandler,
                                                        SliceActionConfig configuration) {
+        return nodeDeploymentManager(self,
+                                     router,
+                                     sliceStore,
+                                     cluster,
+                                     kvStore,
+                                     invocationHandler,
+                                     configuration,
+                                     Option.none(),
+                                     Option.none());
+    }
+
+    static NodeDeploymentManager nodeDeploymentManager(NodeId self,
+                                                       MessageRouter router,
+                                                       SliceStore sliceStore,
+                                                       ClusterNode<KVCommand<AetherKey>> cluster,
+                                                       KVStore<AetherKey, AetherValue> kvStore,
+                                                       InvocationHandler invocationHandler,
+                                                       SliceActionConfig configuration,
+                                                       Option<HttpRoutePublisher> httpRoutePublisher,
+                                                       Option<SliceInvokerFacade> sliceInvokerFacade) {
         record deploymentManager(NodeId self,
                                  SliceStore sliceStore,
                                  ClusterNode<KVCommand<AetherKey>> cluster,
@@ -470,7 +522,9 @@ public interface NodeDeploymentManager {
                                  InvocationHandler invocationHandler,
                                  SliceActionConfig configuration,
                                  MessageRouter router,
-                                 AtomicReference<NodeDeploymentState> state) implements NodeDeploymentManager {
+                                 AtomicReference<NodeDeploymentState> state,
+                                 Option<HttpRoutePublisher> httpRoutePublisher,
+                                 Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
 
             @Override
@@ -502,7 +556,9 @@ public interface NodeDeploymentManager {
                                                                                         kvStore(),
                                                                                         invocationHandler(),
                                                                                         router(),
-                                                                                        new ConcurrentHashMap<>()));
+                                                                                        new ConcurrentHashMap<>(),
+                                                                                        httpRoutePublisher(),
+                                                                                        sliceInvokerFacade()));
                             log.info("Node {} NodeDeploymentManager activated", self()
                                                                                     .id());
                         }
@@ -523,6 +579,8 @@ public interface NodeDeploymentManager {
                                      invocationHandler,
                                      configuration,
                                      router,
-                                     new AtomicReference<>(new NodeDeploymentState.DormantNodeDeploymentState()));
+                                     new AtomicReference<>(new NodeDeploymentState.DormantNodeDeploymentState()),
+                                     httpRoutePublisher,
+                                     sliceInvokerFacade);
     }
 }

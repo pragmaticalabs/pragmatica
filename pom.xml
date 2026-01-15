@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>aether</artifactId>
-    <version>0.7.4</version>
+    <version>0.7.5</version>
     <packaging>pom</packaging>
     <name>Pragmatica Aether Distributed Runtime</name>
     <description>AI-driven distributed runtime environment for Java applications</description>
@@ -53,7 +53,8 @@
         <module>infra-services</module>
         <module>e2e-tests</module>
         <module>aether-ttm</module>
-        <module>http-routing</module>
+        <module>http-handler-api</module>
+        <module>http-routing-adapter</module>
         <module>infra-slices</module>
     </modules>
 
@@ -66,7 +67,7 @@
         <junit.version>5.13.4</junit.version>
         <assertj-core.version>3.26.3</assertj-core.version>
         <mockito.version>5.14.2</mockito.version>
-        <pragmatica.version>0.9.10</pragmatica.version>
+        <pragmatica.version>0.9.11</pragmatica.version>
         <awaitility.version>4.2.1</awaitility.version>
         <tinylog.version>2.7.0</tinylog.version>
         <netty.version>4.2.9.Final</netty.version>
@@ -216,9 +217,9 @@
             </dependency>
 
             <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
+                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>http-routing</artifactId>
-                <version>${project.version}</version>
+                <version>${pragmatica.version}</version>
             </dependency>
 
             <!-- Logging -->

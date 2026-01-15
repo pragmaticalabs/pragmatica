@@ -6,6 +6,7 @@ import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.endpoint.EndpointRegistry.Endpoint;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
+import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
@@ -53,7 +54,10 @@ public interface SliceInvoker extends SliceInvokerFacade {
     /**
      * Implementation of SliceInvokerFacade for use by slices via SliceRuntime.
      * Parses string artifact/method and delegates to typed methods.
+     *
+     * @deprecated Use {@link #methodHandle(String, String, Class, Class)} for better performance.
      */
+    @Deprecated
     @Override
     default <R> Promise<R> invoke(String sliceArtifact,
                                   String methodName,
@@ -70,6 +74,59 @@ public interface SliceInvoker extends SliceInvokerFacade {
     }
 
     record ArtifactMethod(Artifact artifact, MethodName method) {}
+
+    /**
+     * Implementation of SliceInvokerFacade.methodHandle for creating reusable handles.
+     * Parses artifact and method once, returns a handle for repeated invocations.
+     */
+    @Override
+    default <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
+                                                           String methodName,
+                                                           Class<T> requestType,
+                                                           Class<R> responseType) {
+        return Artifact.artifact(sliceArtifact)
+                       .flatMap(artifact -> MethodName.methodName(methodName)
+                                                      .map(method -> createMethodHandle(artifact,
+                                                                                        method,
+                                                                                        requestType,
+                                                                                        responseType)));
+    }
+
+    /**
+     * Create a method handle with pre-parsed artifact and method.
+     * Subclasses may override to provide custom implementations.
+     */
+    default <R, T> MethodHandle<R, T> createMethodHandle(Artifact artifact,
+                                                         MethodName method,
+                                                         Class<T> requestType,
+                                                         Class<R> responseType) {
+        return new MethodHandleImpl<>(artifact, method, requestType, responseType, this);
+    }
+
+    /**
+     * Internal record implementing MethodHandle with pre-parsed artifact/method.
+     * Delegates to typed invoke methods, avoiding repeated parsing.
+     */
+    record MethodHandleImpl<R, T>(Artifact artifact,
+                                  MethodName methodName,
+                                  Class<T> requestType,
+                                  Class<R> responseType,
+                                  SliceInvoker invoker) implements MethodHandle<R, T> {
+        @Override
+        public Promise<R> invoke(T request) {
+            return invoker.invoke(artifact, methodName, request, responseType);
+        }
+
+        @Override
+        public Promise<Unit> fireAndForget(T request) {
+            return invoker.invoke(artifact, methodName, request);
+        }
+
+        @Override
+        public String artifactCoordinate() {
+            return artifact.asString();
+        }
+    }
 
     /**
      * Fire-and-forget invocation - sends request without waiting for response.
@@ -213,6 +270,31 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     deserializer,
                                     timeoutMs,
                                     rollingUpdateManager);
+    }
+
+    /**
+     * Error hierarchy for SliceInvoker failures.
+     */
+    sealed interface SliceInvokerError extends Cause {
+        /**
+         * Error indicating all instances of a slice have failed.
+         */
+        record AllInstancesFailedError(Artifact slice, java.util.List<NodeId> attemptedNodes) implements SliceInvokerError {
+            @Override
+            public String message() {
+                return "All instances failed for " + slice + " after trying " + attemptedNodes.size() + " nodes";
+            }
+        }
+
+        /**
+         * Error from remote invocation.
+         */
+        record InvocationError(String errorMessage) implements SliceInvokerError {
+            @Override
+            public String message() {
+                return errorMessage;
+            }
+        }
     }
 }
 
@@ -577,31 +659,6 @@ class SliceInvokerImpl implements SliceInvoker {
                                           log.error("Error notifying failure listener: {}", e.getMessage());
                                       }
                                   });
-    }
-
-    /**
-     * Error hierarchy for SliceInvoker failures.
-     */
-    sealed interface SliceInvokerError extends Cause {
-        /**
-         * Error indicating all instances of a slice have failed.
-         */
-        record AllInstancesFailedError(Artifact slice, java.util.List<NodeId> attemptedNodes) implements SliceInvokerError {
-            @Override
-            public String message() {
-                return "All instances failed for " + slice + " after trying " + attemptedNodes.size() + " nodes";
-            }
-        }
-
-        /**
-         * Error from remote invocation.
-         */
-        record InvocationError(String errorMessage) implements SliceInvokerError {
-            @Override
-            public String message() {
-                return errorMessage;
-            }
-        }
     }
 
     @Override

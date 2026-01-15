@@ -1,5 +1,6 @@
 package org.pragmatica.aether.node;
 
+import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TTMConfig;
@@ -33,6 +34,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  * @param tls             TLS configuration for secure connections (empty for plain TCP/HTTP)
  * @param ttm             TTM (Tiny Time Mixers) predictive scaling configuration
  * @param rollback        Automatic rollback configuration
+ * @param appHttp         Application HTTP server configuration for slice routes
  */
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
@@ -42,7 +44,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                DHTConfig artifactRepo,
                                Option<TlsConfig> tls,
                                TTMConfig ttm,
-                               RollbackConfig rollback) {
+                               RollbackConfig rollback,
+                               AppHttpConfig appHttp) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
 
@@ -107,7 +110,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     artifactRepoConfig,
                                     Option.empty(),
                                     TTMConfig.disabled(),
-                                    RollbackConfig.defaults());
+                                    RollbackConfig.defaults(),
+                                    AppHttpConfig.disabled());
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -123,7 +127,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     DHTConfig.FULL,
                                     Option.empty(),
                                     TTMConfig.disabled(),
-                                    RollbackConfig.defaults());
+                                    RollbackConfig.defaults(),
+                                    AppHttpConfig.disabled());
     }
 
     /**
@@ -146,7 +151,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     artifactRepo,
                                     tlsOption,
                                     ttm,
-                                    rollback);
+                                    rollback,
+                                    appHttp);
     }
 
     /**
@@ -161,7 +167,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     artifactRepo,
                                     tls,
                                     ttmConfig,
-                                    rollback);
+                                    rollback,
+                                    appHttp);
     }
 
     /**
@@ -176,7 +183,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     artifactRepo,
                                     tls,
                                     ttm,
-                                    rollbackConfig);
+                                    rollbackConfig,
+                                    appHttp);
     }
 
     /**
@@ -191,7 +199,24 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     artifactRepo,
                                     tls,
                                     ttm,
-                                    rollback);
+                                    rollback,
+                                    appHttp);
+    }
+
+    /**
+     * Create a new configuration with application HTTP server enabled.
+     */
+    public AetherNodeConfig withAppHttp(AppHttpConfig appHttpConfig) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttpConfig);
     }
 
     public NodeId self() {

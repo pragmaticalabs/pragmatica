@@ -7,6 +7,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.dht.DHTConfig;
 import org.pragmatica.lang.Option;
@@ -307,7 +308,8 @@ public final class ForgeCluster {
                                           DHTConfig.FULL,
                                           Option.empty(),
                                           org.pragmatica.aether.config.TTMConfig.disabled(),
-                                          RollbackConfig.defaults());
+                                          RollbackConfig.defaults(),
+                                          AppHttpConfig.disabled());
         return AetherNode.aetherNode(config)
                          .unwrap();
     }

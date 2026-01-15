@@ -1,10 +1,14 @@
 package org.pragmatica.aether.infra.server;
 
 import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.ContentCategory;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.routing.CommonContentTypes;
 import org.pragmatica.http.routing.HttpMethod;
 import org.pragmatica.http.routing.HttpStatus;
-import org.pragmatica.http.routing.JacksonJsonCodec;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.JsonCodec;
+import org.pragmatica.http.routing.ProblemDetail;
 import org.pragmatica.http.routing.RequestContextImpl;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
@@ -37,6 +41,8 @@ import org.slf4j.LoggerFactory;
  */
 final class DefaultHttpServerSlice implements HttpServerSlice {
     private static final Logger log = LoggerFactory.getLogger(DefaultHttpServerSlice.class);
+    private static final ContentType PROBLEM_JSON_CONTENT_TYPE = ContentType.contentType("application/problem+json; charset=UTF-8",
+                                                                                         ContentCategory.JSON);
 
     private final HttpServerSliceConfig config;
     private final RequestRouter router;
@@ -56,7 +62,7 @@ final class DefaultHttpServerSlice implements HttpServerSlice {
     }
 
     static DefaultHttpServerSlice defaultHttpServerSlice(HttpServerSliceConfig config, Stream<RouteSource> routes) {
-        return defaultHttpServerSlice(config, routes, JacksonJsonCodec.defaultCodec());
+        return defaultHttpServerSlice(config, routes, JsonCodecAdapter.defaultCodec());
     }
 
     static DefaultHttpServerSlice defaultHttpServerSlice(HttpServerSliceConfig config,
@@ -155,7 +161,10 @@ final class DefaultHttpServerSlice implements HttpServerSlice {
         route.handler()
              .handle(routingContext)
              .onSuccess(result -> writeSuccessResponse(result, route, writer))
-             .onFailure(cause -> writeErrorResponse(cause, writer));
+             .onFailure(cause -> writeErrorResponse(cause,
+                                                    request.path(),
+                                                    request.requestId(),
+                                                    writer));
     }
 
     private DefaultFullHttpRequest createNettyRequest(RequestContext request) {
@@ -256,20 +265,31 @@ final class DefaultHttpServerSlice implements HttpServerSlice {
         return serializeToBytes(result);
     }
 
-    private void writeErrorResponse(org.pragmatica.lang.Cause cause, ResponseWriter writer) {
-        // Check if cause wraps an HttpStatus
+    private void writeErrorResponse(org.pragmatica.lang.Cause cause,
+                                    String path,
+                                    String requestId,
+                                    ResponseWriter writer) {
+        var problemDetail = createProblemDetail(cause, path, requestId);
+        var status = toPragmaticaStatus(problemDetail.status());
+        var body = serializeToBytes(problemDetail);
+        writer.write(status, body, PROBLEM_JSON_CONTENT_TYPE);
+    }
+
+    private ProblemDetail createProblemDetail(org.pragmatica.lang.Cause cause, String path, String requestId) {
         if (cause instanceof org.pragmatica.http.routing.HttpError httpError) {
-            var status = toPragmaticaStatus(httpError.status()
-                                                     .code());
-            writer.error(status, cause.message());
-        } else {
-            writer.error(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR, cause.message());
+            return ProblemDetail.fromHttpError(httpError, path, requestId);
         }
+        return ProblemDetail.fromCause(cause, path, requestId);
     }
 
     private void handleNotFound(RequestContext request, ResponseWriter writer) {
         log.debug("No route found for {} {}", request.method(), request.path());
-        writer.notFound();
+        var problemDetail = ProblemDetail.problemDetail(HttpStatus.NOT_FOUND,
+                                                        "No route found for " + request.method() + " " + request.path(),
+                                                        request.path(),
+                                                        request.requestId());
+        var body = serializeToBytes(problemDetail);
+        writer.write(org.pragmatica.http.HttpStatus.NOT_FOUND, body, PROBLEM_JSON_CONTENT_TYPE);
     }
 
     private HttpMethod toRoutingMethod(org.pragmatica.http.HttpMethod method) {

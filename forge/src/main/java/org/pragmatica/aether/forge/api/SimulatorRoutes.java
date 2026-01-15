@@ -86,64 +86,64 @@ public sealed interface SimulatorRoutes {
 
     // ========== Route Definitions ==========
     private static Route<EntryPointsResponse> entryPointsRoute(LoadGenerator loadGenerator) {
-        return Route.<EntryPointsResponse, Void> get("/entry-points")
+        return Route.<EntryPointsResponse> get("/entry-points")
                     .toJson(() -> getEntryPoints(loadGenerator));
     }
 
     private static Route<SimulatorRateResponse> setRateRoute(LoadGenerator loadGenerator,
                                                              Consumer<EventLogEntry> eventLogger) {
-        return Route.<SimulatorRateResponse, Void> post("/rate")
+        return Route.<SimulatorRateResponse> post("/rate")
                     .withPath(aInteger())
                     .to(rate -> setRate(loadGenerator, eventLogger, rate))
                     .asJson();
     }
 
     private static Route<InventoryModeResponse> getInventoryModeRoute(InventoryState state) {
-        return Route.<InventoryModeResponse, Void> get("/inventory/mode")
+        return Route.<InventoryModeResponse> get("/inventory/mode")
                     .toJson(() -> getInventoryMode(state));
     }
 
     private static Route<InventoryModeSetResponse> setInventoryModeRoute(InventoryState state,
                                                                          Consumer<EventLogEntry> eventLogger) {
-        return Route.<InventoryModeSetResponse, Void> post("/inventory/mode")
+        return Route.<InventoryModeSetResponse> post("/inventory/mode")
                     .withPath(aString())
                     .to(mode -> setInventoryMode(state, eventLogger, mode))
                     .asJson();
     }
 
     private static Route<InventoryMetricsResponse> inventoryMetricsRoute(InventoryState state) {
-        return Route.<InventoryMetricsResponse, Void> get("/inventory/metrics")
+        return Route.<InventoryMetricsResponse> get("/inventory/metrics")
                     .toJson(() -> getInventoryMetrics(state));
     }
 
     private static Route<PlaceOrderResponse> placeOrderRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<PlaceOrderResponse, Void> post("/orders/place")
+        return Route.<PlaceOrderResponse> post("/orders/place")
                     .toJson(_ -> placeOrder(configSupplier));
     }
 
     private static Route<OrderStatusResponse> getOrderRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<OrderStatusResponse, Void> get("/orders")
+        return Route.<OrderStatusResponse> get("/orders")
                     .withPath(aString())
                     .to(orderId -> getOrderStatus(configSupplier, orderId))
                     .asJson();
     }
 
     private static Route<CancelOrderResponse> cancelOrderRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<CancelOrderResponse, Void> post("/orders/cancel")
+        return Route.<CancelOrderResponse> post("/orders/cancel")
                     .withPath(aString())
                     .to(orderId -> cancelOrder(configSupplier, orderId))
                     .asJson();
     }
 
     private static Route<CheckStockResponse> checkStockRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<CheckStockResponse, Void> get("/inventory")
+        return Route.<CheckStockResponse> get("/inventory")
                     .withPath(aString())
                     .to(productId -> checkStock(configSupplier, productId))
                     .asJson();
     }
 
     private static Route<GetPriceResponse> getPriceRoute(Supplier<SimulatorConfig> configSupplier) {
-        return Route.<GetPriceResponse, Void> get("/pricing")
+        return Route.<GetPriceResponse> get("/pricing")
                     .withPath(aString())
                     .to(productId -> getPrice(configSupplier, productId))
                     .asJson();

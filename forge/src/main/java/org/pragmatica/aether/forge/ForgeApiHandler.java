@@ -10,7 +10,7 @@ import org.pragmatica.aether.forge.simulator.ChaosEvent;
 import org.pragmatica.aether.forge.simulator.SimulatorConfig;
 import org.pragmatica.aether.forge.simulator.SimulatorMode;
 import org.pragmatica.http.routing.HttpMethod;
-import org.pragmatica.http.routing.JacksonJsonCodec;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.JsonCodec;
 import org.pragmatica.http.routing.RequestContextImpl;
 import org.pragmatica.http.routing.RequestRouter;
@@ -74,7 +74,7 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
         this.inventoryState = inventoryState;
         this.events = events;
         this.startTime = startTime;
-        this.jsonCodec = JacksonJsonCodec.defaultCodec();
+        this.jsonCodec = JsonCodecAdapter.defaultCodec();
         // Create router with all route sources
         this.router = ForgeRouter.forgeRouter(cluster,
                                               loadGenerator,

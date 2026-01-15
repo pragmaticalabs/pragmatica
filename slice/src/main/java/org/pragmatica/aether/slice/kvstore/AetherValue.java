@@ -111,6 +111,24 @@ public sealed interface AetherValue {
         }
     }
 
+    /// HTTP route mapping stored in consensus.
+    /// Maps HTTP method + path prefix to artifact + slice method for cluster-wide HTTP routing.
+    ///
+    /// @param artifact full artifact coordinate (e.g., "org.example:user-service:1.0.0")
+    /// @param sliceMethod slice method name to invoke
+    /// @param securityPolicy security policy for this route ("PUBLIC", "API_KEY", etc.)
+    record HttpRouteValue(String artifact, String sliceMethod, String securityPolicy) implements AetherValue {
+        /// Create HTTP route value with public security.
+        public static HttpRouteValue httpRouteValue(String artifact, String sliceMethod) {
+            return new HttpRouteValue(artifact, sliceMethod, "PUBLIC");
+        }
+
+        /// Create HTTP route value with security policy.
+        public static HttpRouteValue httpRouteValue(String artifact, String sliceMethod, String securityPolicy) {
+            return new HttpRouteValue(artifact, sliceMethod, securityPolicy);
+        }
+    }
+
     /// Alert threshold configuration stored in consensus.
     /// Allows thresholds to survive restarts and sync across cluster nodes.
     ///

@@ -12,6 +12,9 @@ import org.pragmatica.aether.deployment.cluster.BlueprintServiceImpl;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
+import org.pragmatica.aether.http.AppHttpServer;
+import org.pragmatica.aether.http.HttpRoutePublisher;
+import org.pragmatica.aether.http.HttpRouteRegistry;
 import org.pragmatica.aether.infra.InfraStore;
 import org.pragmatica.aether.infra.InfraStoreImpl;
 import org.pragmatica.aether.infra.artifact.ArtifactStore;
@@ -138,6 +141,16 @@ public interface AetherNode {
      * Get the alert manager for threshold management.
      */
     AlertManager alertManager();
+
+    /**
+     * Get the application HTTP server for slice routes.
+     */
+    AppHttpServer appHttpServer();
+
+    /**
+     * Get the HTTP route registry for route lookup.
+     */
+    HttpRouteRegistry httpRouteRegistry();
 
     /**
      * Get the TTM manager for predictive scaling.
@@ -278,6 +291,7 @@ public interface AetherNode {
                               NodeDeploymentManager nodeDeploymentManager,
                               ClusterDeploymentManager clusterDeploymentManager,
                               EndpointRegistry endpointRegistry,
+                              HttpRouteRegistry httpRouteRegistry,
                               MetricsCollector metricsCollector,
                               MetricsScheduler metricsScheduler,
                               DeploymentMetricsCollector deploymentMetricsCollector,
@@ -293,6 +307,7 @@ public interface AetherNode {
                               DecisionTreeController controller,
                               RollingUpdateManager rollingUpdateManager,
                               AlertManager alertManager,
+                              AppHttpServer appHttpServer,
                               TTMManager ttmManager,
                               RollbackManager rollbackManager,
                               ComprehensiveSnapshotCollector snapshotCollector,
@@ -316,6 +331,7 @@ public interface AetherNode {
                 InfraStore.setInstance(infraStore);
                 return managementServer.map(ManagementServer::start)
                                        .or(Promise.unitPromise())
+                                       .flatMap(_ -> appHttpServer.start())
                                        .flatMap(_ -> startClusterAsync())
                                        .onSuccess(_ -> log.info("Aether node {} started, cluster forming...",
                                                                 self()));
@@ -333,6 +349,7 @@ public interface AetherNode {
                 InfraStore.clear();
                 return managementServer.map(ManagementServer::stop)
                                        .or(Promise.unitPromise())
+                                       .flatMap(_ -> appHttpServer.stop())
                                        .flatMap(_ -> sliceInvoker.stop())
                                        .flatMap(_ -> clusterNode.stop())
                                        .onSuccess(_ -> log.info("Aether node {} stopped",
@@ -402,14 +419,6 @@ public interface AetherNode {
         var deploymentMetricsScheduler = DeploymentMetricsScheduler.deploymentMetricsScheduler(config.self(),
                                                                                                clusterNode.network(),
                                                                                                deploymentMetricsCollector);
-        // Create deployment managers
-        var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(config.self(),
-                                                                                delegateRouter,
-                                                                                sliceStore,
-                                                                                clusterNode,
-                                                                                kvStore,
-                                                                                invocationHandler,
-                                                                                config.sliceAction());
         // Extract initial topology from config (node IDs from core nodes)
         var initialTopology = config.topology()
                                     .coreNodes()
@@ -423,6 +432,10 @@ public interface AetherNode {
                                                                                          initialTopology);
         // Create endpoint registry
         var endpointRegistry = EndpointRegistry.endpointRegistry();
+        // Create HTTP route registry for application HTTP routing
+        var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
+        // Create HTTP route publisher for slice route publication
+        var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(clusterNode);
         // Create metrics components
         var metricsCollector = MetricsCollector.metricsCollector(config.self(), clusterNode.network());
         var metricsScheduler = MetricsScheduler.metricsScheduler(config.self(), clusterNode.network(), metricsCollector);
@@ -480,11 +493,28 @@ public interface AetherNode {
                                                      serializer,
                                                      deserializer,
                                                      rollingUpdateManager);
+        // Create node deployment manager (now created after sliceInvoker for HTTP route publishing)
+        var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(config.self(),
+                                                                                delegateRouter,
+                                                                                sliceStore,
+                                                                                clusterNode,
+                                                                                kvStore,
+                                                                                invocationHandler,
+                                                                                config.sliceAction(),
+                                                                                Option.some(httpRoutePublisher),
+                                                                                Option.some(sliceInvoker));
+        // Create application HTTP server for slice-provided routes
+        var appHttpServer = AppHttpServer.appHttpServer(config.appHttp(),
+                                                        httpRouteRegistry,
+                                                        Option.some(sliceInvoker),
+                                                        Option.some(httpRoutePublisher),
+                                                        config.tls());
         // Collect all route entries from RabiaNode and AetherNode components
         var aetherEntries = collectRouteEntries(kvStore,
                                                 nodeDeploymentManager,
                                                 clusterDeploymentManager,
                                                 endpointRegistry,
+                                                httpRouteRegistry,
                                                 metricsCollector,
                                                 metricsScheduler,
                                                 deploymentMetricsCollector,
@@ -511,6 +541,7 @@ public interface AetherNode {
                                       nodeDeploymentManager,
                                       clusterDeploymentManager,
                                       endpointRegistry,
+                                      httpRouteRegistry,
                                       metricsCollector,
                                       metricsScheduler,
                                       deploymentMetricsCollector,
@@ -526,6 +557,7 @@ public interface AetherNode {
                                       controller,
                                       rollingUpdateManager,
                                       alertManager,
+                                      appHttpServer,
                                       ttmManager,
                                       rollbackManager,
                                       snapshotCollector,
@@ -551,6 +583,7 @@ public interface AetherNode {
                                                                nodeDeploymentManager,
                                                                clusterDeploymentManager,
                                                                endpointRegistry,
+                                                               httpRouteRegistry,
                                                                metricsCollector,
                                                                metricsScheduler,
                                                                deploymentMetricsCollector,
@@ -566,6 +599,7 @@ public interface AetherNode {
                                                                controller,
                                                                rollingUpdateManager,
                                                                alertManager,
+                                                               appHttpServer,
                                                                ttmManager,
                                                                rollbackManager,
                                                                snapshotCollector,
@@ -582,6 +616,7 @@ public interface AetherNode {
                                                                      NodeDeploymentManager nodeDeploymentManager,
                                                                      ClusterDeploymentManager clusterDeploymentManager,
                                                                      EndpointRegistry endpointRegistry,
+                                                                     HttpRouteRegistry httpRouteRegistry,
                                                                      MetricsCollector metricsCollector,
                                                                      MetricsScheduler metricsScheduler,
                                                                      DeploymentMetricsCollector deploymentMetricsCollector,
@@ -605,6 +640,9 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
                                               clusterDeploymentManager::onValueRemove));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, endpointRegistry::onValueRemove));
+        // HTTP route registry for application HTTP routing
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, httpRouteRegistry::onValuePut));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, httpRouteRegistry::onValueRemove));
         // Artifact metrics tracking via KV-Store
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, artifactMetricsCollector::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,

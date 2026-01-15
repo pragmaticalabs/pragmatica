@@ -38,6 +38,7 @@ import static org.pragmatica.lang.Option.some;
  * @param kubernetes Kubernetes-specific settings
  * @param ttm        TTM (Tiny Time Mixers) predictive scaling configuration
  * @param slice      Slice loading and repository configuration
+ * @param appHttp    Application HTTP server configuration
  */
 public record AetherConfig(ClusterConfig cluster,
                            NodeConfig node,
@@ -45,7 +46,8 @@ public record AetherConfig(ClusterConfig cluster,
                            Option<DockerConfig> docker,
                            Option<KubernetesConfig> kubernetes,
                            TTMConfig ttm,
-                           SliceConfig slice) {
+                           SliceConfig slice,
+                           AppHttpConfig appHttp) {
     /**
      * Create configuration with defaults for specified environment.
      */
@@ -62,7 +64,8 @@ public record AetherConfig(ClusterConfig cluster,
                                 ? some(KubernetesConfig.defaults())
                                 : none(),
                                 TTMConfig.disabled(),
-                                SliceConfig.defaults());
+                                SliceConfig.defaults(),
+                                AppHttpConfig.defaults());
     }
 
     /**
@@ -105,6 +108,7 @@ public record AetherConfig(ClusterConfig cluster,
         private KubernetesConfig kubernetesConfig;
         private TTMConfig ttmConfig;
         private SliceConfig sliceConfig;
+        private AppHttpConfig appHttpConfig;
 
         public Builder environment(Environment environment) {
             this.environment = environment;
@@ -161,6 +165,11 @@ public record AetherConfig(ClusterConfig cluster,
             return this;
         }
 
+        public Builder appHttp(AppHttpConfig appHttpConfig) {
+            this.appHttpConfig = appHttpConfig;
+            return this;
+        }
+
         public AetherConfig build() {
             // Start with environment defaults
             var base = AetherConfig.forEnvironment(environment);
@@ -203,7 +212,17 @@ public record AetherConfig(ClusterConfig cluster,
             var finalSlice = sliceConfig != null
                              ? sliceConfig
                              : SliceConfig.defaults();
-            return new AetherConfig(clusterConfig, nodeConfig, finalTls, finalDocker, finalK8s, finalTtm, finalSlice);
+            var finalAppHttp = appHttpConfig != null
+                               ? appHttpConfig
+                               : AppHttpConfig.defaults();
+            return new AetherConfig(clusterConfig,
+                                    nodeConfig,
+                                    finalTls,
+                                    finalDocker,
+                                    finalK8s,
+                                    finalTtm,
+                                    finalSlice,
+                                    finalAppHttp);
         }
     }
 }
