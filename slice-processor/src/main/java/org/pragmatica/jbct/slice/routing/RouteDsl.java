@@ -148,4 +148,18 @@ public record RouteDsl(String method,
     public boolean hasParams() {
         return hasPathParams() || hasQueryParams();
     }
+
+    /**
+     * Returns the path template with type annotations stripped from path parameters.
+     * E.g., "/{id:Long}/items/{itemId:Integer}" becomes "/{id}/items/{itemId}".
+     */
+    public String cleanPath() {
+        return PATH_PARAM_PATTERN.matcher(pathTemplate)
+                                 .replaceAll(mr -> {
+                                     var content = mr.group(1);
+                                     var colonIndex = content.indexOf(':');
+                                     var name = colonIndex >= 0 ? content.substring(0, colonIndex) : content;
+                                     return "{" + name + "}";
+                                 });
+    }
 }

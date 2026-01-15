@@ -41,7 +41,7 @@ import java.util.Set;
  *
  *     @Override
  *     public SliceRouter create({SliceName} slice) {
- *         return create(slice, JsonMapper.builder().withPragmaticaTypes().build());
+ *         return create(slice, JsonMapper.defaultJsonMapper());
  *     }
  *
  *     @Override
@@ -233,7 +233,7 @@ public class RouteSourceGenerator {
         // SliceRouterFactory: create(slice)
         out.println("    @Override");
         out.println("    public SliceRouter create(" + sliceName + " slice) {");
-        out.println("        return create(slice, JsonMapper.builder().withPragmaticaTypes().build());");
+        out.println("        return create(slice, JsonMapper.defaultJsonMapper());");
         out.println("    }");
         out.println();
 
@@ -316,8 +316,8 @@ public class RouteSourceGenerator {
                                 MethodModel method,
                                 boolean hasMore) {
         var fullPath = prefix.isEmpty()
-                       ? routeDsl.pathTemplate()
-                       : prefix + routeDsl.pathTemplate();
+                       ? routeDsl.cleanPath()
+                       : prefix + routeDsl.cleanPath();
         var httpMethod = routeDsl.method()
                                  .toLowerCase();
         var responseType = method.responseType()
@@ -357,7 +357,8 @@ public class RouteSourceGenerator {
                                         String comma) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withoutParameters()");
-        out.println("                 .toJson(() -> delegate." + method.name() + "(null))" + comma);
+        out.println("                 .to(_ -> delegate." + method.name() + "(new " + method.parameterType() + "()))");
+        out.println("                 .asJson()" + comma);
     }
 
     private void generatePathRoute(PrintWriter out,
@@ -375,20 +376,16 @@ public class RouteSourceGenerator {
         out.println();
         out.println("                 .withPath(" + pathParamList(pathParams) + ")");
 
-        if (pathParams.size() == 1) {
-            var paramName = pathParams.getFirst()
-                                      .name();
-            out.println("                 .toJson(" + paramName + " -> delegate." + method.name() +
-                       "(new " + parameterType + "(" + paramName + ")))" + comma);
-        } else {
-            var paramNames = pathParams.stream()
-                                       .map(PathParam::name)
-                                       .toList();
-            var paramList = String.join(", ", paramNames);
-            out.println("                 .to((" + paramList + ") -> delegate." + method.name() +
-                       "(new " + parameterType + "(" + paramList + ")))");
-            out.println("                 .asJson()" + comma);
-        }
+        var paramNames = pathParams.stream()
+                                   .map(PathParam::name)
+                                   .toList();
+        var paramList = String.join(", ", paramNames);
+        var handler = pathParams.size() == 1
+                      ? paramList + " -> "
+                      : "(" + paramList + ") -> ";
+        out.println("                 .to(" + handler + "delegate." + method.name() +
+                   "(new " + parameterType + "(" + paramList + ")))");
+        out.println("                 .asJson()" + comma);
     }
 
     private void generateQueryRoute(PrintWriter out,

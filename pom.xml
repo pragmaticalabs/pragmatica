@@ -42,6 +42,7 @@
         <module>jbct-cli</module>
         <module>jbct-maven-plugin</module>
         <module>slice-processor</module>
+        <module>slice-processor-tests</module>
     </modules>
 
     <properties>
@@ -52,7 +53,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <!-- Dependencies -->
-        <pragmatica-lite.version>0.9.10</pragmatica-lite.version>
+        <pragmatica-lite.version>0.9.11</pragmatica-lite.version>
+        <aether.version>0.7.5</aether.version>
         <picocli.version>4.7.6</picocli.version>
         <maven-plugin-api.version>3.9.9</maven-plugin-api.version>
         <maven-plugin-annotations.version>3.15.1</maven-plugin-annotations.version>
@@ -96,6 +98,32 @@
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>toml</artifactId>
                 <version>${pragmatica-lite.version}</version>
+            </dependency>
+
+            <!-- Pragmatica Lite HTTP Routing -->
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>http-routing</artifactId>
+                <version>${pragmatica-lite.version}</version>
+            </dependency>
+
+            <!-- Aether Slice API -->
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>slice-annotations</artifactId>
+                <version>${aether.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>slice-api</artifactId>
+                <version>${aether.version}</version>
+            </dependency>
+
+            <!-- Aether HTTP Routing Adapter -->
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>http-routing-adapter</artifactId>
+                <version>${aether.version}</version>
             </dependency>
 
             <!-- Picocli -->
