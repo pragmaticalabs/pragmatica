@@ -1,6 +1,11 @@
 package org.pragmatica.jbct.slice.routing;
 
+import org.pragmatica.lang.Option;
+
 import javax.lang.model.element.TypeElement;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 /**
  * Maps an error type implementing Cause to an HTTP status code.
@@ -10,16 +15,16 @@ import javax.lang.model.element.TypeElement;
  *
  * @param errorType      the TypeElement representing the error type
  * @param httpStatus     the HTTP status code to return for this error
- * @param matchedPattern the glob pattern that matched this type (null if explicit mapping)
+ * @param matchedPattern the glob pattern that matched this type (empty if explicit mapping)
  */
 public record ErrorTypeMapping(TypeElement errorType,
                                int httpStatus,
-                               String matchedPattern) {
+                               Option<String> matchedPattern) {
     /**
      * Factory method for explicit mapping (no pattern).
      */
     public static ErrorTypeMapping explicit(TypeElement errorType, int httpStatus) {
-        return new ErrorTypeMapping(errorType, httpStatus, null);
+        return new ErrorTypeMapping(errorType, httpStatus, none());
     }
 
     /**
@@ -28,7 +33,7 @@ public record ErrorTypeMapping(TypeElement errorType,
     public static ErrorTypeMapping fromPattern(TypeElement errorType,
                                                int httpStatus,
                                                String matchedPattern) {
-        return new ErrorTypeMapping(errorType, httpStatus, matchedPattern);
+        return new ErrorTypeMapping(errorType, httpStatus, some(matchedPattern));
     }
 
     /**
@@ -51,6 +56,6 @@ public record ErrorTypeMapping(TypeElement errorType,
      * Check if this mapping was from an explicit configuration (not pattern-matched).
      */
     public boolean isExplicit() {
-        return matchedPattern == null;
+        return matchedPattern.isEmpty();
     }
 }

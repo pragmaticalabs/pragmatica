@@ -71,8 +71,7 @@ public record ErrorConflict(TypeElement errorType,
         var patterns = matchingPatterns.stream()
                                        .map(pm -> "  - " + pm)
                                        .collect(Collectors.joining("\n"));
-        return "Ambiguous error mapping for '" + simpleName() + "':\n"
-               + patterns + "\n"
+        return "Ambiguous error mapping for '" + simpleName() + "':\n" + patterns + "\n"
                + "Use explicit mapping to resolve conflict.";
     }
 }

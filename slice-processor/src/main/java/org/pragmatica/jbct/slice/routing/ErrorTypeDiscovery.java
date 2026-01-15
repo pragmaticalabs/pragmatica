@@ -73,9 +73,7 @@ public final class ErrorTypeDiscovery {
         var types = processingEnv.getTypeUtils();
         var result = new ArrayList<TypeElement>();
         for (var element : packageElement.getEnclosedElements()) {
-            if (element.getKind() == ElementKind.CLASS
-                || element.getKind() == ElementKind.ENUM
-                || element.getKind() == ElementKind.INTERFACE) {
+            if (element.getKind() == ElementKind.CLASS || element.getKind() == ElementKind.ENUM || element.getKind() == ElementKind.INTERFACE) {
                 var typeElement = (TypeElement) element;
                 if (implementsCause(typeElement, types)) {
                     result.add(typeElement);
@@ -90,9 +88,7 @@ public final class ErrorTypeDiscovery {
                                          javax.lang.model.util.Types types,
                                          List<TypeElement> result) {
         for (var enclosed : enclosing.getEnclosedElements()) {
-            if (enclosed.getKind() == ElementKind.CLASS
-                || enclosed.getKind() == ElementKind.ENUM
-                || enclosed.getKind() == ElementKind.INTERFACE) {
+            if (enclosed.getKind() == ElementKind.CLASS || enclosed.getKind() == ElementKind.ENUM || enclosed.getKind() == ElementKind.INTERFACE) {
                 var nested = (TypeElement) enclosed;
                 if (implementsCause(nested, types)) {
                     result.add(nested);
@@ -121,7 +117,7 @@ public final class ErrorTypeDiscovery {
                              }
                          });
         }
-        if (! conflicts.isEmpty()) {
+        if (!conflicts.isEmpty()) {
             return formatConflictError(conflicts).result();
         }
         return Result.success(List.copyOf(mappings));
@@ -137,15 +133,12 @@ public final class ErrorTypeDiscovery {
         }
         var matches = findMatchingPatterns(simpleName, config.statusPatterns());
         if (matches.isEmpty()) {
-            return Result.success(ErrorTypeMapping.fromPattern(errorType,
-                                                               config.defaultStatus(),
-                                                               null));
+            // No pattern matched - use default status with no pattern
+            return Result.success(ErrorTypeMapping.explicit(errorType, config.defaultStatus()));
         }
         if (matches.size() == 1) {
             var match = matches.getFirst();
-            return Result.success(ErrorTypeMapping.fromPattern(errorType,
-                                                               match.status(),
-                                                               match.pattern()));
+            return Result.success(ErrorTypeMapping.fromPattern(errorType, match.status(), match.pattern()));
         }
         var allSameStatus = matches.stream()
                                    .map(ErrorConflict.PatternMatch::status)
@@ -153,9 +146,7 @@ public final class ErrorTypeDiscovery {
                                    .count() == 1;
         if (allSameStatus) {
             var match = matches.getFirst();
-            return Result.success(ErrorTypeMapping.fromPattern(errorType,
-                                                               match.status(),
-                                                               match.pattern()));
+            return Result.success(ErrorTypeMapping.fromPattern(errorType, match.status(), match.pattern()));
         }
         return new ConflictCause(ErrorConflict.errorConflict(errorType, matches)).result();
     }
@@ -178,8 +169,7 @@ public final class ErrorTypeDiscovery {
         var messages = conflicts.stream()
                                 .map(ErrorConflict::errorMessage)
                                 .toList();
-        return Causes.cause("Error type mapping conflicts:\n\n"
-                            + String.join("\n\n", messages));
+        return Causes.cause("Error type mapping conflicts:\n\n" + String.join("\n\n", messages));
     }
 
     private record ConflictCause(ErrorConflict conflict) implements Cause {

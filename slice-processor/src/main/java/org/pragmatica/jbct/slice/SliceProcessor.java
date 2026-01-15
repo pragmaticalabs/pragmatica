@@ -57,7 +57,7 @@ public class SliceProcessor extends AbstractProcessor {
         this.factoryGenerator = new FactoryClassGenerator(filer, elements, types, versionResolver);
         this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
         this.errorDiscovery = new ErrorTypeDiscovery(processingEnv);
-        this.routeGenerator = new RouteSourceGenerator(filer);
+        this.routeGenerator = new RouteSourceGenerator(filer, processingEnv.getMessager());
     }
 
     @Override
@@ -133,7 +133,9 @@ public class SliceProcessor extends AbstractProcessor {
             var resource = processingEnv.getFiler()
                                         .getResource(StandardLocation.CLASS_OUTPUT, "", packagePath + "/" + RouteConfigLoader.CONFIG_FILE);
             var configPath = Path.of(resource.toUri());
-            return RouteConfigLoader.load(configPath)
+            var packageDir = configPath.getParent();
+            // Use loadMerged to support routes-base.toml inheritance
+            return RouteConfigLoader.loadMerged(packageDir)
                                     .map(Option::some);
         } catch (IOException | IllegalArgumentException | UnsupportedOperationException | FileSystemNotFoundException _) {
             // routes.toml not found or not accessible (e.g., in test environment) - routes are optional

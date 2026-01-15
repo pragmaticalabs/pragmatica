@@ -1,5 +1,4 @@
 package org.pragmatica.jbct.slice.routing;
-
 /**
  * Matches type names against glob-like patterns for error type discovery.
  * <p>
@@ -14,8 +13,7 @@ package org.pragmatica.jbct.slice.routing;
  * Pattern matching is case-sensitive.
  */
 public final class ErrorTypeMatcher {
-    private ErrorTypeMatcher() {
-    }
+    private ErrorTypeMatcher() {}
 
     /**
      * Check if a type name matches the given pattern.
@@ -33,7 +31,6 @@ public final class ErrorTypeMatcher {
         }
         var startsWithWildcard = pattern.startsWith("*");
         var endsWithWildcard = pattern.endsWith("*");
-
         if (startsWithWildcard && endsWithWildcard) {
             return matchContains(typeName, pattern);
         }
@@ -79,8 +76,12 @@ public final class ErrorTypeMatcher {
         if (pattern == null || pattern.isEmpty()) {
             return "";
         }
-        var start = pattern.startsWith("*") ? 1 : 0;
-        var end = pattern.endsWith("*") ? pattern.length() - 1 : pattern.length();
+        var start = pattern.startsWith("*")
+                    ? 1
+                    : 0;
+        var end = pattern.endsWith("*")
+                  ? pattern.length() - 1
+                  : pattern.length();
         return start < end
                ? pattern.substring(start, end)
                : "";

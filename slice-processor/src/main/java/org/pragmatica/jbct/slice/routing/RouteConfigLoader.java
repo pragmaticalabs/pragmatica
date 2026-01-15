@@ -38,14 +38,14 @@ import java.util.Map;
  * SomeAmbiguousType = 404
  * }</pre>
  */
-public sealed interface RouteConfigLoader permits RouteConfigLoader.unused {
-    record unused() implements RouteConfigLoader {}
+public final class RouteConfigLoader {
+    public static final String CONFIG_FILE = "routes.toml";
+    public static final String BASE_CONFIG_FILE = "routes-base.toml";
 
-    String CONFIG_FILE = "routes.toml";
-    String BASE_CONFIG_FILE = "routes-base.toml";
+    private static final Cause FILE_NOT_FOUND = Causes.cause("Route configuration file not found");
+    private static final Cause PARSE_ERROR = Causes.cause("Failed to parse route configuration");
 
-    Cause FILE_NOT_FOUND = Causes.cause("Route configuration file not found");
-    Cause PARSE_ERROR = Causes.cause("Failed to parse route configuration");
+    private RouteConfigLoader() {}
 
     /**
      * Load route configuration from a specific file.
@@ -53,7 +53,7 @@ public sealed interface RouteConfigLoader permits RouteConfigLoader.unused {
      * @param configPath path to the TOML configuration file
      * @return Result containing RouteConfig or error
      */
-    static Result<RouteConfig> load(Path configPath) {
+    public static Result<RouteConfig> load(Path configPath) {
         if (!Files.exists(configPath) || !Files.isRegularFile(configPath)) {
             return FILE_NOT_FOUND.result();
         }
@@ -83,15 +83,13 @@ public sealed interface RouteConfigLoader permits RouteConfigLoader.unused {
      * @param slicePackagePath path to the slice package directory
      * @return Result containing merged RouteConfig or error
      */
-    static Result<RouteConfig> loadMerged(Path slicePackagePath) {
+    public static Result<RouteConfig> loadMerged(Path slicePackagePath) {
         var basePath = slicePackagePath.resolve(BASE_CONFIG_FILE);
         var slicePath = slicePackagePath.resolve(CONFIG_FILE);
         var baseConfig = Files.exists(basePath)
-                         ? load(basePath)
-                               .or(RouteConfig.EMPTY)
+                         ? load(basePath).or(RouteConfig.EMPTY)
                          : RouteConfig.EMPTY;
-        return load(slicePath)
-                   .map(baseConfig::merge);
+        return load(slicePath).map(baseConfig::merge);
     }
 
     private static Result<Map<String, RouteDsl>> parseRoutes(Map<String, String> routesSection) {

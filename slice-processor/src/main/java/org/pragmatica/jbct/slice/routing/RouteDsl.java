@@ -52,8 +52,7 @@ public record RouteDsl(String method,
                             .toUpperCase();
         var pathPart = matcher.group(2);
         var queryPart = matcher.group(3);
-        return validateMethod(method)
-                             .flatMap(_ -> parsePathParams(pathPart))
+        return validateMethod(method).flatMap(_ -> parsePathParams(pathPart))
                              .map(pathParams -> new RouteDsl(method,
                                                              pathPart,
                                                              pathParams,
@@ -76,8 +75,7 @@ public record RouteDsl(String method,
         var results = new ArrayList<Result<PathParam>>();
         for (int i = 0; i < paramSpecs.size(); i++) {
             var position = i;
-            results.add(parseTypedParam(paramSpecs.get(i))
-                                       .map(nt -> PathParam.pathParam(nt[0], nt[1], position)));
+            results.add(parseTypedParam(paramSpecs.get(i)).map(nt -> PathParam.pathParam(nt[0], nt[1], position)));
         }
         return Result.allOf(results);
     }
@@ -156,10 +154,12 @@ public record RouteDsl(String method,
     public String cleanPath() {
         return PATH_PARAM_PATTERN.matcher(pathTemplate)
                                  .replaceAll(mr -> {
-                                     var content = mr.group(1);
-                                     var colonIndex = content.indexOf(':');
-                                     var name = colonIndex >= 0 ? content.substring(0, colonIndex) : content;
-                                     return "{" + name + "}";
-                                 });
+                                                 var content = mr.group(1);
+                                                 var colonIndex = content.indexOf(':');
+                                                 var name = colonIndex >= 0
+                                                            ? content.substring(0, colonIndex)
+                                                            : content;
+                                                 return "{" + name + "}";
+                                             });
     }
 }

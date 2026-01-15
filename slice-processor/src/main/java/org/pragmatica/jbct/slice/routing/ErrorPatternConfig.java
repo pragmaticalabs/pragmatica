@@ -106,16 +106,11 @@ public record ErrorPatternConfig(int defaultStatus,
         }
         for (var entry : statusPatterns.entrySet()) {
             for (var pattern : entry.getValue()) {
-                if (matchesGlob(typeName, pattern)) {
+                if (ErrorTypeMatcher.matches(typeName, pattern)) {
                     return entry.getKey();
                 }
             }
         }
         return defaultStatus;
-    }
-
-    private static boolean matchesGlob(String text, String pattern) {
-        var regex = pattern.replace("*", ".*");
-        return text.matches(regex);
     }
 }
