@@ -222,20 +222,12 @@ public class FactoryClassGenerator {
         var paramType = param.asType().toString();
         var paramName = param.getSimpleName().toString();
 
-        // Extract raw type for .class literal (List<User> -> List)
-        var rawResponseType = extractRawType(responseType);
-
         out.println();
         out.println("            @Override");
         out.println("            public " + returnType + " " + methodName + "(" + paramType + " " + paramName + ") {");
         out.println("                return invoker.invoke(ARTIFACT, \"" + methodName + "\", " +
-                   paramName + ", " + rawResponseType + ".class);");
+                   paramName + ", new TypeToken<" + responseType + ">() {});");
         out.println("            }");
-    }
-
-    private String extractRawType(String typeString) {
-        int genericStart = typeString.indexOf('<');
-        return genericStart > 0 ? typeString.substring(0, genericStart) : typeString;
     }
 
     private void generateCreateSliceMethod(PrintWriter out, SliceModel model) {

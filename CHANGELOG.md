@@ -6,6 +6,7 @@
 - Slice processor: method name validation per RFC-0001 (must match `^[a-z][a-zA-Z0-9]+$`)
 
 ### Changed
+- Slice processor: proxy generation uses `TypeToken<R>` instead of `Class<R>` per aether SliceInvokerFacade
 
 ### Fixed
 
