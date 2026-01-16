@@ -736,10 +736,13 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private byte[] serializeRequest(Object request) {
         var buf = Unpooled.buffer();
-        serializer.write(buf, request);
-        var bytes = new byte[buf.readableBytes()];
-        buf.readBytes(bytes);
-        buf.release();
-        return bytes;
+        try{
+            serializer.write(buf, request);
+            var bytes = new byte[buf.readableBytes()];
+            buf.readBytes(bytes);
+            return bytes;
+        } finally{
+            buf.release();
+        }
     }
 }

@@ -57,6 +57,10 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
         if (recentHistory.isEmpty()) {
             return new TTMForecast(timestamp, predictions, confidence, ScalingRecommendation.NoAction.INSUFFICIENT_DATA);
         }
+        // Check predictions array has required indices
+        if (predictions.length <= FeatureIndex.INVOCATIONS) {
+            return new TTMForecast(timestamp, predictions, confidence, ScalingRecommendation.NoAction.INSUFFICIENT_DATA);
+        }
         // Get current metrics (average of last 5 minutes or available)
         var current = averageRecent(recentHistory, 5);
         float predictedCpu = predictions[FeatureIndex.CPU_USAGE];

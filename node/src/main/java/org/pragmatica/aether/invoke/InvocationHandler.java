@@ -9,6 +9,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -16,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
  * Server-side component that handles incoming slice invocation requests.
@@ -59,10 +62,17 @@ public interface InvocationHandler {
     Option<InvocationMetricsCollector> metricsCollector();
 
     /**
+     * Default invocation timeout (5 minutes).
+     * Long timeout to allow operations that may trigger rebalance/node launch.
+     */
+    TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(5)
+                                                  .minutes();
+
+    /**
      * Create a new InvocationHandler without metrics.
      */
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {
-        return new InvocationHandlerImpl(self, network, Option.empty());
+        return new InvocationHandlerImpl(self, network, Option.empty(), DEFAULT_INVOCATION_TIMEOUT);
     }
 
     /**
@@ -73,7 +83,20 @@ public interface InvocationHandler {
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector) {
-        return new InvocationHandlerImpl(self, network, Option.option(metricsCollector));
+        return new InvocationHandlerImpl(self, network, Option.option(metricsCollector), DEFAULT_INVOCATION_TIMEOUT);
+    }
+
+    /**
+     * Create a new InvocationHandler with metrics collection and custom timeout.
+     *
+     * @param metricsCollector The metrics collector to use
+     * @param invocationTimeout Timeout for slice invocations
+     */
+    static InvocationHandler invocationHandler(NodeId self,
+                                               ClusterNetwork network,
+                                               InvocationMetricsCollector metricsCollector,
+                                               TimeSpan invocationTimeout) {
+        return new InvocationHandlerImpl(self, network, Option.option(metricsCollector), invocationTimeout);
     }
 }
 
@@ -83,14 +106,19 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final NodeId self;
     private final ClusterNetwork network;
     private final Option<InvocationMetricsCollector> metricsCollector;
+    private final TimeSpan invocationTimeout;
 
     // Local slice bridges available for invocation
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
 
-    InvocationHandlerImpl(NodeId self, ClusterNetwork network, Option<InvocationMetricsCollector> metricsCollector) {
+    InvocationHandlerImpl(NodeId self,
+                          ClusterNetwork network,
+                          Option<InvocationMetricsCollector> metricsCollector,
+                          TimeSpan invocationTimeout) {
         this.self = self;
         this.network = network;
         this.metricsCollector = metricsCollector;
+        this.invocationTimeout = invocationTimeout;
     }
 
     @Override
@@ -146,6 +174,7 @@ class InvocationHandlerImpl implements InvocationHandler {
         bridge.invoke(request.method()
                              .name(),
                       request.payload())
+              .timeout(invocationTimeout)
               .onSuccess(responseData -> {
                              var durationNs = System.nanoTime() - startTime;
                              var responseBytes = responseData.length;

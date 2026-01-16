@@ -18,6 +18,7 @@ import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
+import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
 import org.pragmatica.messaging.MessageReceiver;
@@ -89,7 +90,7 @@ public interface ClusterDeploymentManager {
                       MessageRouter router,
                       Map<Artifact, Blueprint> blueprints,
                       Map<SliceNodeKey, SliceState> sliceStates,
-                      List<NodeId> activeNodes) implements ClusterDeploymentState {
+                      AtomicReference<List<NodeId>> activeNodes) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
             /**
@@ -126,9 +127,10 @@ public interface ClusterDeploymentManager {
                                   .size());
                 for (var slice : expanded.loadOrder()) {
                     var artifact = slice.artifact();
-                    var instances = activeNodes.isEmpty()
+                    var nodes = activeNodes.get();
+                    var instances = nodes.isEmpty()
                                     ? Math.min(1, slice.instances())
-                                    : Math.min(slice.instances(), activeNodes.size());
+                                    : Math.min(slice.instances(), nodes.size());
                     blueprints.put(artifact, new Blueprint(artifact, instances));
                 }
             }
@@ -168,8 +170,23 @@ public interface ClusterDeploymentManager {
                                      .key();
                 switch (key) {
                     case BlueprintKey blueprintKey -> handleBlueprintRemoval(blueprintKey);
+                    case AppBlueprintKey appKey -> handleAppBlueprintRemoval(appKey);
                     case SliceNodeKey sliceNodeKey -> sliceStates.remove(sliceNodeKey);
                     default -> {}
+                }
+            }
+
+            private void handleAppBlueprintRemoval(AppBlueprintKey key) {
+                log.info("App blueprint '{}' removed",
+                         key.blueprintId()
+                            .name());
+                // Remove all blueprints that were part of this app
+                var artifactsToRemove = blueprints.keySet()
+                                                  .stream()
+                                                  .toList();
+                for (var artifact : artifactsToRemove) {
+                    blueprints.remove(artifact);
+                    deallocateAllInstances(artifact);
                 }
             }
 
@@ -185,13 +202,18 @@ public interface ClusterDeploymentManager {
                         handleNodeRemoval(removedNode);
                         reconcile();
                     }
+                    case NodeDown(NodeId downNode, List<NodeId> topology) -> {
+                        log.warn("Node {} is down, triggering immediate reconciliation", downNode);
+                        updateTopology(topology);
+                        handleNodeRemoval(downNode);
+                        reconcile();
+                    }
                     default -> {}
                 }
             }
 
             private void updateTopology(List<NodeId> topology) {
-                activeNodes.clear();
-                activeNodes.addAll(topology);
+                activeNodes.set(List.copyOf(topology));
             }
 
             private void handleBlueprintChange(BlueprintKey key, BlueprintValue value) {
@@ -204,16 +226,17 @@ public interface ClusterDeploymentManager {
 
             private void handleAppBlueprintChange(AppBlueprintKey key, AppBlueprintValue value) {
                 var expanded = value.blueprint();
+                var nodes = activeNodes.get();
                 log.info("App blueprint '{}' deployed with {} slices across {} nodes",
                          expanded.id()
                                  .name(),
                          expanded.loadOrder()
                                  .size(),
-                         activeNodes.size());
+                         nodes.size());
                 // Use instance count from blueprint, capped at available nodes
                 for (var slice : expanded.loadOrder()) {
                     var artifact = slice.artifact();
-                    var desiredInstances = Math.min(slice.instances(), activeNodes.size());
+                    var desiredInstances = Math.min(slice.instances(), nodes.size());
                     log.info("Scheduling {} with {} instances (requested: {})",
                              artifact,
                              desiredInstances,
@@ -249,7 +272,8 @@ public interface ClusterDeploymentManager {
              * Allocate instances across cluster nodes using round-robin strategy.
              */
             private void allocateInstances(Artifact artifact, int desiredInstances) {
-                if (activeNodes.isEmpty()) {
+                var nodes = activeNodes.get();
+                if (nodes.isEmpty()) {
                     log.warn("No active nodes available for allocation of {}", artifact);
                     return;
                 }
@@ -259,7 +283,7 @@ public interface ClusterDeploymentManager {
                           desiredInstances,
                           artifact,
                           currentCount,
-                          activeNodes.size());
+                          nodes.size());
                 // Scale up if needed
                 if (desiredInstances > currentCount) {
                     scaleUp(artifact, desiredInstances - currentCount, currentInstances);
@@ -279,7 +303,8 @@ public interface ClusterDeploymentManager {
             }
 
             private int allocateToEmptyNodes(Artifact artifact, int toAdd, java.util.Set<NodeId> nodesWithInstances) {
-                return (int) activeNodes.stream()
+                return (int) activeNodes.get()
+                                       .stream()
                                        .filter(node -> !nodesWithInstances.contains(node))
                                        .limit(toAdd)
                                        .filter(node -> tryAllocate(artifact, node))
@@ -296,8 +321,9 @@ public interface ClusterDeploymentManager {
             }
 
             private void allocateRoundRobin(Artifact artifact, int remaining) {
+                var nodes = activeNodes.get();
                 java.util.stream.IntStream.range(0, remaining)
-                    .mapToObj(i -> activeNodes.get(i % activeNodes.size()))
+                    .mapToObj(i -> nodes.get(i % nodes.size()))
                     .map(node -> new SliceNodeKey(artifact, node))
                     .forEach(this::issueLoadCommand);
             }
@@ -403,7 +429,7 @@ public interface ClusterDeploymentManager {
                              self,
                              topology.size());
                     // Create active state with current topology
-                    var activeNodes = new CopyOnWriteArrayList<>(topology);
+                    var activeNodes = new AtomicReference<List<NodeId>>(List.copyOf(topology));
                     var activeState = new ClusterDeploymentState.Active(self,
                                                                         cluster,
                                                                         kvStore,

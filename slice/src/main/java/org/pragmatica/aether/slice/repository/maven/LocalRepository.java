@@ -8,10 +8,12 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.aether.slice.repository.Location.location;
 
 /**
@@ -37,10 +39,14 @@ public interface LocalRepository extends Repository {
      */
     static LocalRepository localRepository(Path localRepo) {
         record repository(Path localRepo) implements LocalRepository {
+            private static final TimeSpan LOCATE_TIMEOUT = timeSpan(30)
+                                                                   .seconds();
+
             @Override
             public Promise<Location> locate(Artifact artifact) {
                 return resolveLocation(artifact)
-                                      .async();
+                                      .async()
+                                      .timeout(LOCATE_TIMEOUT);
             }
 
             private Result<Location> resolveLocation(Artifact artifact) {

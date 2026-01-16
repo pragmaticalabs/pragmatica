@@ -158,7 +158,7 @@ public final class LoadGenerator {
     }
 
     /**
-     * Stop generating load.
+     * Stop generating load and release resources.
      */
     public void stop() {
         log.info("Stopping load generator");
@@ -173,6 +173,12 @@ public final class LoadGenerator {
                                        .interrupt();
                              }
                          });
+        // Close HttpClient (Java 21+)
+        try{
+            httpClient.close();
+        } catch (Exception e) {
+            log.debug("Error closing HttpClient: {}", e.getMessage());
+        }
     }
 
     /**

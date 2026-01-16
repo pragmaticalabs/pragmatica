@@ -4,8 +4,9 @@ import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -69,6 +70,10 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
     private static final Logger log = LoggerFactory.getLogger(DecisionTreeControllerImpl.class);
 
     private volatile ControllerConfig config;
+
+    // Track previous call counts for rate calculation
+    private final Map<String, Double> previousCallCounts = new ConcurrentHashMap<>();
+    private volatile long lastEvaluationTime = System.currentTimeMillis();
 
     DecisionTreeControllerImpl(ControllerConfig config) {
         this.config = config;
@@ -144,12 +149,24 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
                                                                                    java.util.Map<org.pragmatica.consensus.NodeId, java.util.Map<String, Double>> metrics,
                                                                                    ControllerConfig currentConfig) {
         // Rule 3: High call rate → scale up
+        // Calculate actual rate using delta from previous evaluation
+        var currentTime = System.currentTimeMillis();
+        var elapsedSeconds = Math.max(1.0, (currentTime - lastEvaluationTime) / 1000.0);
+        lastEvaluationTime = currentTime;
         var hasHighCallRate = metrics.values()
                                      .stream()
                                      .flatMap(nodeMetrics -> nodeMetrics.entrySet()
                                                                         .stream())
                                      .filter(entry -> isCallMetric(entry.getKey()))
-                                     .anyMatch(entry -> entry.getValue() > currentConfig.callRateScaleUpThreshold());
+                                     .anyMatch(entry -> {
+                                                   var metricName = entry.getKey();
+                                                   var currentCount = entry.getValue();
+                                                   var previousCount = previousCallCounts.getOrDefault(metricName, 0.0);
+                                                   previousCallCounts.put(metricName, currentCount);
+                                                   var delta = currentCount - previousCount;
+                                                   var callsPerSecond = delta / elapsedSeconds;
+                                                   return callsPerSecond > currentConfig.callRateScaleUpThreshold();
+                                               });
         if (hasHighCallRate) {
             log.info("Rule triggered: High call rate, scaling up {}", artifact);
             return org.pragmatica.lang.Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
