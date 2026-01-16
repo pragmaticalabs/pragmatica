@@ -72,7 +72,7 @@ final class AdaptiveDecisionTreeImpl implements AdaptiveDecisionTree {
 
     @Override
     public ControllerConfig effectiveConfig() {
-        return baseController.getConfiguration();
+        return baseController.configuration();
     }
 
     @Override
@@ -102,7 +102,7 @@ final class AdaptiveDecisionTreeImpl implements AdaptiveDecisionTree {
     private void onForecast(TTMForecast forecast) {
         switch (forecast.recommendation()) {
             case ScalingRecommendation.AdjustThresholds adjust -> {
-                var current = baseController.getConfiguration();
+                var current = baseController.configuration();
                 var updated = current.withCpuScaleUpThreshold(adjust.newCpuScaleUpThreshold())
                                      .withCpuScaleDownThreshold(adjust.newCpuScaleDownThreshold());
                 log.info("TTM adjusting thresholds: scaleUp={} -> {}, scaleDown={} -> {}",

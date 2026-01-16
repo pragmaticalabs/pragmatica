@@ -1396,13 +1396,13 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
 
     private String buildControllerConfigResponse(AetherNode node) {
         return node.controller()
-                   .getConfiguration()
+                   .configuration()
                    .toJson();
     }
 
     private String buildControllerStatusResponse(AetherNode node) {
         var config = node.controller()
-                         .getConfiguration();
+                         .configuration();
         return "{\"enabled\":true," + "\"evaluationIntervalMs\":" + config.evaluationIntervalMs() + "," + "\"config\":" + config.toJson()
                + "}";
     }
@@ -1466,7 +1466,7 @@ class HttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
         var intervalMatch = Pattern.compile("\"evaluationIntervalMs\"\\s*:\\s*(\\d+)")
                                    .matcher(body);
         var currentConfig = node.controller()
-                                .getConfiguration();
+                                .configuration();
         org.pragmatica.aether.controller.ControllerConfig.controllerConfig(cpuUpMatch.find()
                                                                            ? Double.parseDouble(cpuUpMatch.group(1))
                                                                            : currentConfig.cpuScaleUpThreshold(),

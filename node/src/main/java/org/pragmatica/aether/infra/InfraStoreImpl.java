@@ -13,6 +13,10 @@ import org.slf4j.LoggerFactory;
  * <p>
  * Uses ConcurrentHashMap for atomic operations and version-based instance storage.
  * Each artifact key maps to a list of versioned instances.
+ * <p>
+ * Note: Internal implementation uses null for the double-checked locking pattern,
+ * which is appropriate for this performance-sensitive synchronization context.
+ * The public API never exposes null values.
  */
 public final class InfraStoreImpl implements InfraStore {
     private static final Logger log = LoggerFactory.getLogger(InfraStoreImpl.class);
@@ -45,15 +49,14 @@ public final class InfraStoreImpl implements InfraStore {
 
     @Override
     public <T> T getOrCreate(String artifactKey, String version, Class<T> type, Supplier<T> factory) {
-        // Fast path: check if exact version exists
+        // Fast path: check if exact version exists (null indicates absence)
         var existing = findExactVersion(artifactKey, version, type);
         if (existing != null) {
             log.debug("Returning existing instance for {}:{}", artifactKey, version);
             return existing;
         }
-        // Slow path: synchronized creation
+        // Slow path: synchronized creation with double-check
         synchronized (createLock) {
-            // Double-check after acquiring lock
             existing = findExactVersion(artifactKey, version, type);
             if (existing != null) {
                 log.debug("Returning existing instance for {}:{} (after lock)", artifactKey, version);
@@ -63,12 +66,12 @@ public final class InfraStoreImpl implements InfraStore {
             log.info("Creating new instance for {}:{}", artifactKey, version);
             var instance = factory.get();
             var versionedInstance = new VersionedInstance<>(version, instance);
-            // Add to store
+            // Add to store atomically
             store.compute(artifactKey,
-                          (_, existing_) -> {
-                              var list = existing_ == null
+                          (_, existingList) -> {
+                              var list = existingList == null
                                          ? new ArrayList<VersionedInstance< ?>>()
-                                         : new ArrayList<>(existing_);
+                                         : new ArrayList<>(existingList);
                               list.add(versionedInstance);
                               return list;
                           });
@@ -76,6 +79,12 @@ public final class InfraStoreImpl implements InfraStore {
         }
     }
 
+    /**
+     * Find an instance matching the exact version (ignoring qualifiers).
+     * <p>
+     * Returns null if not found. This internal method uses null for the
+     * double-checked locking pattern which requires separate check/extract phases.
+     */
     private <T> T findExactVersion(String artifactKey, String version, Class<T> type) {
         var instances = store.get(artifactKey);
         if (instances == null) {

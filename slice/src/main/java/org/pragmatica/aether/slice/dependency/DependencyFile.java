@@ -2,6 +2,7 @@ package org.pragmatica.aether.slice.dependency;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -153,31 +154,25 @@ public record DependencyFile(List<ArtifactDependency> api,
      * These are provided by the runtime and should never be in slice dependency files.
      */
     private Result<DependencyFile> validateNoFrameworkDependencies() {
-        var frameworkDep = findFrameworkDependency();
-        if (frameworkDep != null) {
-            return FRAMEWORK_DEPENDENCY_ERROR.apply(frameworkDep)
-                                             .result();
-        }
-        return Result.success(this);
+        return findFrameworkDependency()
+                                      .map(frameworkDep -> FRAMEWORK_DEPENDENCY_ERROR.apply(frameworkDep)
+                                                                                     .<DependencyFile> result())
+                                      .or(Result.success(this));
     }
 
-    private String findFrameworkDependency() {
-        for (var dep : api) {
-            if (isFrameworkArtifact(dep)) {
-                return "[api] " + dep.asString();
-            }
-        }
-        for (var dep : shared) {
-            if (isFrameworkArtifact(dep)) {
-                return "[shared] " + dep.asString();
-            }
-        }
-        for (var dep : infra) {
-            if (isFrameworkArtifact(dep)) {
-                return "[infra] " + dep.asString();
-            }
-        }
-        return null;
+    private Option<String> findFrameworkDependency() {
+        return findFrameworkArtifactIn(api, "[api]")
+                                      .orElse(() -> findFrameworkArtifactIn(shared, "[shared]"))
+                                      .orElse(() -> findFrameworkArtifactIn(infra, "[infra]"));
+    }
+
+    private Option<String> findFrameworkArtifactIn(List<ArtifactDependency> deps, String section) {
+        return deps.stream()
+                   .filter(DependencyFile::isFrameworkArtifact)
+                   .findFirst()
+                   .map(dep -> section + " " + dep.asString())
+                   .map(Option::some)
+                   .orElse(Option.empty());
     }
 
     private static boolean isFrameworkArtifact(ArtifactDependency dep) {

@@ -152,11 +152,9 @@ class InvocationHandlerImpl implements InvocationHandler {
                   request.method());
         // Set the request ID in context for chain propagation
         InvocationContext.setRequestId(request.requestId());
-        try{
-            Option.option(localSlices.get(request.targetSlice()))
-                  .onEmpty(() -> handleSliceNotFound(request))
-                  .onPresent(bridge -> invokeSliceMethod(request, bridge));
-        } finally{}
+        Option.option(localSlices.get(request.targetSlice()))
+              .onEmpty(() -> handleSliceNotFound(request))
+              .onPresent(bridge -> invokeSliceMethod(request, bridge));
     }
 
     private void handleSliceNotFound(InvokeRequest request) {
@@ -169,52 +167,53 @@ class InvocationHandlerImpl implements InvocationHandler {
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
-        var requestId = request.requestId();
         // SliceBridge uses byte[] directly - no ByteBuf conversion needed
         bridge.invoke(request.method()
                              .name(),
                       request.payload())
               .timeout(invocationTimeout)
-              .onSuccess(responseData -> {
-                             var durationNs = System.nanoTime() - startTime;
-                             var responseBytes = responseData.length;
-                             if (request.expectResponse()) {
-                                 sendSuccessResponse(request, responseData);
-                             }
-                             log.debug("[requestId={}] Invocation completed in {}ms: {}.{}",
-                                       requestId,
-                                       durationNs / 1_000_000,
-                                       request.targetSlice(),
-                                       request.method());
-                             // Record success metrics
+              .onSuccess(responseData -> handleInvocationSuccess(request, responseData, startTime, requestBytes))
+              .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
+    }
+
+    private void handleInvocationSuccess(InvokeRequest request, byte[] responseData, long startTime, int requestBytes) {
+        var durationNs = System.nanoTime() - startTime;
+        var responseBytes = responseData.length;
+        if (request.expectResponse()) {
+            sendSuccessResponse(request, responseData);
+        }
+        log.debug("[requestId={}] Invocation completed in {}ms: {}.{}",
+                  request.requestId(),
+                  durationNs / 1_000_000,
+                  request.targetSlice(),
+                  request.method());
         metricsCollector.onPresent(mc -> mc.recordSuccess(request.targetSlice(),
                                                           request.method(),
                                                           durationNs,
                                                           requestBytes,
                                                           responseBytes));
-                             // Clear context after async completion
         InvocationContext.clear();
-                         })
-              .onFailure(cause -> {
-                             var durationNs = System.nanoTime() - startTime;
-                             log.error("[requestId={}] Invocation failed [{}]: {}",
-                                       requestId,
-                                       request.correlationId(),
-                                       cause.message());
-                             if (request.expectResponse()) {
-                                 sendErrorResponse(request,
-                                                   cause.message());
-                             }
-                             // Record failure metrics
+    }
+
+    private void handleInvocationFailure(InvokeRequest request,
+                                         org.pragmatica.lang.Cause cause,
+                                         long startTime,
+                                         int requestBytes) {
+        var durationNs = System.nanoTime() - startTime;
+        log.error("[requestId={}] Invocation failed [{}]: {}",
+                  request.requestId(),
+                  request.correlationId(),
+                  cause.message());
+        if (request.expectResponse()) {
+            sendErrorResponse(request, cause.message());
+        }
         metricsCollector.onPresent(mc -> mc.recordFailure(request.targetSlice(),
                                                           request.method(),
                                                           durationNs,
                                                           requestBytes,
                                                           cause.getClass()
                                                                .getSimpleName()));
-                             // Clear context after async completion
         InvocationContext.clear();
-                         });
     }
 
     private void sendSuccessResponse(InvokeRequest request, byte[] payload) {

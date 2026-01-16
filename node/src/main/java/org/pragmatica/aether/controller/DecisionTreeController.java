@@ -58,7 +58,7 @@ public interface DecisionTreeController extends ClusterController {
     /**
      * Get current configuration.
      */
-    ControllerConfig getConfiguration();
+    ControllerConfig configuration();
 
     /**
      * Update configuration at runtime.
@@ -80,7 +80,7 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
     }
 
     @Override
-    public ControllerConfig getConfiguration() {
+    public ControllerConfig configuration() {
         return config;
     }
 
