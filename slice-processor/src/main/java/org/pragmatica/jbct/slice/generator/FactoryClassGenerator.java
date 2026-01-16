@@ -1,7 +1,6 @@
 package org.pragmatica.jbct.slice.generator;
 
 import org.pragmatica.jbct.slice.model.DependencyModel;
-import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -16,8 +15,8 @@ import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.tools.JavaFileObject;
-import java.io.IOException;
 import java.io.PrintWriter;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -113,6 +112,7 @@ public class FactoryClassGenerator {
                                   List<DependencyModel> externalDeps,
                                   List<DependencyModel> internalDeps) {
         out.println("import org.pragmatica.aether.slice.Aspect;");
+        out.println("import org.pragmatica.aether.slice.MethodHandle;");
         out.println("import org.pragmatica.aether.slice.MethodName;");
         out.println("import org.pragmatica.aether.slice.Slice;");
         out.println("import org.pragmatica.aether.slice.SliceInvokerFacade;");
@@ -179,25 +179,48 @@ public class FactoryClassGenerator {
     }
 
     private void generateLocalProxyRecord(PrintWriter out, DependencyModel dep) {
-        var recordName = dep.localRecordName();
+        var className = dep.localRecordName();
         var interfaceName = dep.interfaceSimpleName();
         var artifact = dep.fullArtifact().or(() -> "UNRESOLVED");
 
-        out.println("        record " + recordName + "(SliceInvokerFacade invoker) implements " + interfaceName + " {");
-        out.println("            private static final String ARTIFACT = \"" + artifact + "\";");
-
-        // Generate method implementations
+        // Collect methods for handle field generation
+        var methods = new ArrayList<ExecutableElement>();
         var interfaceElement = elements.getTypeElement(dep.interfaceQualifiedName());
         if (interfaceElement != null) {
             for (var enclosed : interfaceElement.getEnclosedElements()) {
                 if (enclosed.getKind() == ElementKind.METHOD) {
                     var method = (ExecutableElement) enclosed;
                     if (!method.getModifiers().contains(Modifier.STATIC) &&
-                        !method.getModifiers().contains(Modifier.DEFAULT)) {
-                        generateProxyMethod(out, method);
+                        !method.getModifiers().contains(Modifier.DEFAULT) &&
+                        method.getParameters().size() == 1 &&
+                        extractPromiseTypeArg(method.getReturnType()) != null) {
+                        methods.add(method);
                     }
                 }
             }
+        }
+
+        // Generate class (not record) to support lazy handle fields
+        out.println("        final class " + className + " implements " + interfaceName + " {");
+        out.println("            private static final String ARTIFACT = \"" + artifact + "\";");
+        out.println("            private final SliceInvokerFacade invoker;");
+
+        // Generate handle fields for each method
+        for (var method : methods) {
+            var methodName = method.getSimpleName().toString();
+            var responseType = extractPromiseTypeArg(method.getReturnType());
+            var paramType = method.getParameters().getFirst().asType().toString();
+            out.println("            private MethodHandle<" + responseType + ", " + paramType + "> " + methodName + "Handle;");
+        }
+
+        out.println();
+        out.println("            " + className + "(SliceInvokerFacade invoker) {");
+        out.println("                this.invoker = invoker;");
+        out.println("            }");
+
+        // Generate method implementations
+        for (var method : methods) {
+            generateProxyMethod(out, method);
         }
 
         out.println("        }");
@@ -206,28 +229,25 @@ public class FactoryClassGenerator {
     private void generateProxyMethod(PrintWriter out, ExecutableElement method) {
         var methodName = method.getSimpleName().toString();
         var returnType = method.getReturnType();
-        var params = method.getParameters();
-
-        // Extract response type from Promise<T>
         var responseType = extractPromiseTypeArg(returnType);
-        if (responseType == null) {
-            return;
-        }
-
-        // Slice methods always have exactly one parameter
-        if (params.size() != 1) {
-            return;
-        }
-
-        var param = params.getFirst();
+        var param = method.getParameters().getFirst();
         var paramType = param.asType().toString();
         var paramName = param.getSimpleName().toString();
+        var handleField = methodName + "Handle";
 
         out.println();
         out.println("            @Override");
         out.println("            public " + returnType + " " + methodName + "(" + paramType + " " + paramName + ") {");
-        out.println("                return invoker.invoke(ARTIFACT, \"" + methodName + "\", " +
-                   paramName + ", new TypeToken<" + responseType + ">() {});");
+        out.println("                if (" + handleField + " == null) {");
+        out.println("                    var result = invoker.methodHandle(ARTIFACT, \"" + methodName + "\",");
+        out.println("                                                      new TypeToken<" + paramType + ">() {},");
+        out.println("                                                      new TypeToken<" + responseType + ">() {});");
+        out.println("                    if (result.isFailure()) {");
+        out.println("                        return Promise.failure(result.cause());");
+        out.println("                    }");
+        out.println("                    " + handleField + " = result.value();");
+        out.println("                }");
+        out.println("                return " + handleField + ".invoke(" + paramName + ");");
         out.println("            }");
     }
 
