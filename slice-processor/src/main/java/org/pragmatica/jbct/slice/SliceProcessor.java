@@ -83,13 +83,14 @@ public class SliceProcessor extends AbstractProcessor {
     }
 
     private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
-        generateApiInterface(interfaceElement, sliceModel)
-                            .flatMap(_ -> generateFactory(interfaceElement, sliceModel))
-                            .flatMap(_ -> generateManifest(interfaceElement, sliceModel))
-                            .flatMap(_ -> generateSliceManifest(interfaceElement, sliceModel))
-                            .flatMap(_ -> generateRoutes(interfaceElement, sliceModel))
-                            .onFailure(cause -> error(interfaceElement,
-                                                      cause.message()));
+        Result.all(generateApiInterface(interfaceElement, sliceModel),
+                   generateFactory(interfaceElement, sliceModel),
+                   generateManifest(interfaceElement, sliceModel),
+                   generateSliceManifest(interfaceElement, sliceModel),
+                   generateRoutes(interfaceElement, sliceModel))
+              .map((_, _, _, _, _) -> Unit.unit())
+              .onFailure(cause -> error(interfaceElement,
+                                        cause.message()));
     }
 
     private Result<Unit> generateApiInterface(TypeElement interfaceElement, SliceModel sliceModel) {

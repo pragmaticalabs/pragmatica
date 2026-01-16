@@ -1,6 +1,9 @@
 package org.pragmatica.jbct.init;
 
-import org.pragmatica.jbct.update.AiToolsUpdater;
+import org.pragmatica.http.HttpOperations;
+import org.pragmatica.jbct.shared.GitHubContentFetcher;
+import org.pragmatica.jbct.shared.HttpClients;
+import org.pragmatica.jbct.shared.PathValidation;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -22,6 +25,9 @@ import java.util.List;
 public final class AiToolsInstaller {
     private static final Path CACHE_DIR = Path.of(System.getProperty("user.home"), ".jbct", "cache", "ai-tools");
     private static final String VERSION_FILE = ".sha";
+    private static final String REPO = "siy/coding-technology";
+    private static final String BRANCH = "main";
+    private static final String AI_TOOLS_PREFIX = "ai-tools/";
 
     private final Path claudeDir;
 
@@ -49,7 +55,7 @@ public final class AiToolsInstaller {
 
     private Result<Unit> ensureCachePopulated() {
         if (isCacheValid()) {
-            return Result.success(Unit.unit());
+            return Result.unitResult();
         }
         return populateCache();
     }
@@ -66,18 +72,43 @@ public final class AiToolsInstaller {
     }
 
     private Result<Unit> populateCache() {
-        // Use AiToolsUpdater to fetch files directly to cache
-        var updater = AiToolsUpdater.aiToolsUpdater(CACHE_DIR.getParent());
-        // The updater writes to CACHE_DIR.getParent()/.claude/ which is CACHE_DIR/../.claude/
-        // We need to adjust - create an updater that writes directly to CACHE_DIR
-        return fetchToCache();
+        var http = HttpClients.httpOperations();
+        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH)
+                                   .flatMap(sha -> downloadToCache(http, sha));
     }
 
-    private Result<Unit> fetchToCache() {
-        // Create a temporary updater that targets cache directory
-        var cacheUpdater = new CacheUpdater();
-        return cacheUpdater.update()
-                           .map(_ -> Unit.unit());
+    private Result<Unit> downloadToCache(HttpOperations http, String sha) {
+        return GitHubContentFetcher.discoverFiles(http, REPO, BRANCH, AI_TOOLS_PREFIX)
+                                   .flatMap(files -> downloadAllFiles(http, files))
+                                   .flatMap(_ -> saveVersion(sha));
+    }
+
+    private Result<List<Path>> downloadAllFiles(HttpOperations http, List<String> remotePaths) {
+        var downloads = remotePaths.stream()
+                                   .map(remotePath -> remotePath.substring(AI_TOOLS_PREFIX.length()))
+                                   .map(relativePath -> PathValidation.validateRelativePath(relativePath, CACHE_DIR)
+                                                                      .flatMap(targetPath -> downloadFile(http,
+                                                                                                          AI_TOOLS_PREFIX + relativePath,
+                                                                                                          targetPath)))
+                                   .toList();
+        return Result.allOf(downloads);
+    }
+
+    private Result<Path> downloadFile(HttpOperations http, String remotePath, Path targetPath) {
+        return GitHubContentFetcher.downloadFile(http, REPO, BRANCH, remotePath, targetPath)
+                                   .map(_ -> targetPath);
+    }
+
+    private Result<Unit> saveVersion(String sha) {
+        try{
+            Files.createDirectories(CACHE_DIR);
+            var versionFile = CACHE_DIR.resolve(VERSION_FILE);
+            Files.writeString(versionFile, sha);
+            return Result.unitResult();
+        } catch (IOException e) {
+            return Causes.cause("Failed to save version: " + e.getMessage())
+                         .result();
+        }
     }
 
     private Result<List<Path>> copyFromCache() {
@@ -153,126 +184,5 @@ public final class AiToolsInstaller {
      */
     public static Path cacheDir() {
         return CACHE_DIR;
-    }
-
-    /**
-     * Inner class to handle cache population using the same logic as AiToolsUpdater
-     * but targeting the cache directory directly.
-     */
-    private static final class CacheUpdater {
-        private static final String GITHUB_API_BASE = "https://api.github.com/repos/siy/coding-technology";
-        private static final String GITHUB_TREE_URL = GITHUB_API_BASE + "/git/trees/main?recursive=1";
-        private static final String GITHUB_COMMITS_URL = GITHUB_API_BASE + "/commits/main";
-        private static final String RAW_CONTENT_BASE = "https://raw.githubusercontent.com/siy/coding-technology/main/";
-
-        private static final java.util.regex.Pattern SHA_PATTERN = java.util.regex.Pattern.compile("\"sha\"\\s*:\\s*\"([^\"]+)\"");
-        private static final java.util.regex.Pattern TREE_ENTRY_PATTERN = java.util.regex.Pattern.compile(
-            "\\{[^}]*\"path\"\\s*:\\s*\"(ai-tools/[^\"]+)\"[^}]*\"type\"\\s*:\\s*\"blob\"[^}]*\\}");
-
-        private static final String AI_TOOLS_PREFIX = "ai-tools/";
-
-        private final org.pragmatica.http.HttpOperations http;
-
-        CacheUpdater() {
-            this.http = org.pragmatica.jbct.shared.HttpClients.httpOperations();
-        }
-
-        Result<List<Path>> update() {
-            return getLatestCommitSha()
-                                     .flatMap(sha -> discoverFiles()
-                                                                   .flatMap(files -> downloadAllFiles(files)
-                                                                                                            .flatMap(paths -> saveVersion(sha)
-                                                                                                                                          .map(_ -> paths))));
-        }
-
-        private Result<String> getLatestCommitSha() {
-            var request = java.net.http.HttpRequest.newBuilder()
-                                                   .uri(java.net.URI.create(GITHUB_COMMITS_URL))
-                                                   .header("Accept", "application/vnd.github.v3+json")
-                                                   .header("User-Agent", "jbct-cli")
-                                                   .timeout(java.time.Duration.ofSeconds(30))
-                                                   .GET()
-                                                   .build();
-            return http.sendString(request)
-                       .await()
-                       .flatMap(org.pragmatica.http.HttpResult::toResult)
-                       .flatMap(body -> {
-                                    var matcher = SHA_PATTERN.matcher(body);
-                                    if (matcher.find()) {
-                                        return Result.success(matcher.group(1));
-                                    }
-                                    return Causes.cause("Could not parse commit SHA")
-                                                 .result();
-                                });
-        }
-
-        private Result<List<String>> discoverFiles() {
-            var request = java.net.http.HttpRequest.newBuilder()
-                                                   .uri(java.net.URI.create(GITHUB_TREE_URL))
-                                                   .header("Accept", "application/vnd.github.v3+json")
-                                                   .header("User-Agent", "jbct-cli")
-                                                   .timeout(java.time.Duration.ofSeconds(30))
-                                                   .GET()
-                                                   .build();
-            return http.sendString(request)
-                       .await()
-                       .flatMap(org.pragmatica.http.HttpResult::toResult)
-                       .map(body -> {
-                                var files = new ArrayList<String>();
-                                var matcher = TREE_ENTRY_PATTERN.matcher(body);
-                                while (matcher.find()) {
-                                    files.add(matcher.group(1));
-                                }
-                                return files;
-                            });
-        }
-
-        private Result<List<Path>> downloadAllFiles(List<String> remotePaths) {
-            var files = new ArrayList<Path>();
-            for (var remotePath : remotePaths) {
-                var relativePath = remotePath.substring(AI_TOOLS_PREFIX.length());
-                var targetPath = CACHE_DIR.resolve(relativePath);
-                var result = downloadFile(remotePath, targetPath);
-                if (result.isSuccess()) {
-                    files.add(result.unwrap());
-                }
-            }
-            return Result.success(files);
-        }
-
-        private Result<Path> downloadFile(String remotePath, Path targetPath) {
-            var url = RAW_CONTENT_BASE + remotePath;
-            var request = java.net.http.HttpRequest.newBuilder()
-                                                   .uri(java.net.URI.create(url))
-                                                   .header("User-Agent", "jbct-cli")
-                                                   .timeout(java.time.Duration.ofSeconds(30))
-                                                   .GET()
-                                                   .build();
-            return http.sendString(request)
-                       .await()
-                       .flatMap(org.pragmatica.http.HttpResult::toResult)
-                       .flatMap(content -> {
-                                    try{
-                                        Files.createDirectories(targetPath.getParent());
-                                        Files.writeString(targetPath, content);
-                                        return Result.success(targetPath);
-                                    } catch (IOException e) {
-                                        return Causes.cause("Failed to write " + targetPath + ": " + e.getMessage())
-                                                     .result();
-                                    }
-                                });
-        }
-
-        private Result<Path> saveVersion(String sha) {
-            try{
-                Files.createDirectories(CACHE_DIR);
-                var versionFile = CACHE_DIR.resolve(VERSION_FILE);
-                Files.writeString(versionFile, sha);
-                return Result.success(versionFile);
-            } catch (IOException e) {
-                return Causes.cause("Failed to save version: " + e.getMessage())
-                             .result();
-            }
-        }
     }
 }

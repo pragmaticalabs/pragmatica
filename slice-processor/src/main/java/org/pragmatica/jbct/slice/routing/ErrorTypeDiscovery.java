@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.slice.routing;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -29,19 +30,17 @@ public final class ErrorTypeDiscovery {
     private static final String CAUSE_QUALIFIED_NAME = "org.pragmatica.lang.Cause";
 
     private final ProcessingEnvironment processingEnv;
-    private final TypeMirror causeType;
+    private final Option<TypeMirror> causeType;
 
     public ErrorTypeDiscovery(ProcessingEnvironment processingEnv) {
         this.processingEnv = processingEnv;
         this.causeType = resolveCauseType();
     }
 
-    private TypeMirror resolveCauseType() {
-        var causeElement = processingEnv.getElementUtils()
-                                        .getTypeElement(CAUSE_QUALIFIED_NAME);
-        return causeElement != null
-               ? causeElement.asType()
-               : null;
+    private Option<TypeMirror> resolveCauseType() {
+        return Option.option(processingEnv.getElementUtils()
+                                          .getTypeElement(CAUSE_QUALIFIED_NAME))
+                     .map(TypeElement::asType);
     }
 
     /**
@@ -53,7 +52,7 @@ public final class ErrorTypeDiscovery {
      */
     public Result<List<ErrorTypeMapping>> discover(String packageName,
                                                    ErrorPatternConfig config) {
-        if (causeType == null) {
+        if (causeType.isEmpty()) {
             return Causes.cause("Cannot resolve " + CAUSE_QUALIFIED_NAME + " - is pragmatica-lite on classpath?")
                          .result();
         }
@@ -99,7 +98,8 @@ public final class ErrorTypeDiscovery {
     }
 
     private boolean implementsCause(TypeElement element, javax.lang.model.util.Types types) {
-        return types.isAssignable(element.asType(), causeType);
+        return causeType.map(ct -> types.isAssignable(element.asType(), ct))
+                        .or(false);
     }
 
     private Result<List<ErrorTypeMapping>> mapErrorTypes(List<TypeElement> errorTypes,

@@ -1,40 +1,28 @@
 package org.pragmatica.jbct.update;
 
 import org.pragmatica.http.HttpOperations;
-import org.pragmatica.http.HttpResult;
+import org.pragmatica.jbct.shared.GitHubContentFetcher;
 import org.pragmatica.jbct.shared.HttpClients;
+import org.pragmatica.jbct.shared.PathValidation;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
-import java.net.URI;
-import java.net.http.HttpRequest;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
-import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Updates AI tools from the coding-technology GitHub repository.
  * Uses GitHub Tree API to dynamically discover files under ai-tools/.
  */
 public final class AiToolsUpdater {
-    private static final String GITHUB_API_BASE = "https://api.github.com/repos/siy/coding-technology";
-    private static final String GITHUB_TREE_URL = GITHUB_API_BASE + "/git/trees/main?recursive=1";
-    private static final String GITHUB_COMMITS_URL = GITHUB_API_BASE + "/commits/main";
-    private static final String RAW_CONTENT_BASE = "https://raw.githubusercontent.com/siy/coding-technology/main/";
-
-    private static final Pattern SHA_PATTERN = Pattern.compile("\"sha\"\\s*:\\s*\"([^\"]+)\"");
-    private static final Pattern TREE_ENTRY_PATTERN = Pattern.compile(
-        "\\{[^}]*\"path\"\\s*:\\s*\"(ai-tools/[^\"]+)\"[^}]*\"type\"\\s*:\\s*\"blob\"[^}]*\\}");
-
-    private static final String VERSION_FILE = ".ai-tools-version";
+    private static final String REPO = "siy/coding-technology";
+    private static final String BRANCH = "main";
     private static final String AI_TOOLS_PREFIX = "ai-tools/";
+    private static final String VERSION_FILE = ".ai-tools-version";
 
     private final HttpOperations http;
     private final Path claudeDir;
@@ -58,13 +46,15 @@ public final class AiToolsUpdater {
      * @return Latest commit SHA if update available
      */
     public Result<Option<String>> checkForUpdate() {
-        return getLatestCommitSha()
-                                 .map(latestSha -> {
-                                          var currentSha = getCurrentVersion();
-                                          return currentSha.filter(sha -> sha.equals(latestSha))
-                                                           .map(_ -> Option.<String>none())
-                                                           .or(() -> Option.option(latestSha));
-                                      });
+        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH)
+                                   .map(this::checkIfUpdateNeeded);
+    }
+
+    private Option<String> checkIfUpdateNeeded(String latestSha) {
+        var currentSha = getCurrentVersion();
+        return currentSha.filter(sha -> sha.equals(latestSha))
+                         .map(_ -> Option.<String>none())
+                         .or(() -> Option.option(latestSha));
     }
 
     /**
@@ -83,103 +73,38 @@ public final class AiToolsUpdater {
      * @return List of updated files
      */
     public Result<List<Path>> update(boolean force) {
-        return getLatestCommitSha()
-                                 .flatMap(latestSha -> {
-                                              var currentSha = getCurrentVersion();
-                                              var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha))
-                                                                                   .isPresent();
-                                              if (isUpToDate) {
-                                                  return Result.success(List.<Path>of());
-                                              }
-                                              return downloadFiles(latestSha);
-                                          });
-    }
-
-    private Result<String> getLatestCommitSha() {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create(GITHUB_COMMITS_URL))
-                                 .header("Accept", "application/vnd.github.v3+json")
-                                 .header("User-Agent", "jbct-cli")
-                                 .timeout(Duration.ofSeconds(30))
-                                 .GET()
-                                 .build();
-        return http.sendString(request)
-                   .await()
-                   .flatMap(HttpResult::toResult)
-                   .flatMap(body -> {
-                                var matcher = SHA_PATTERN.matcher(body);
-                                if (matcher.find()) {
-                                    return Result.success(matcher.group(1));
-                                }
-                                return new org.pragmatica.http.HttpError.InvalidResponse("Could not parse commit SHA from response",
-                                                                                         org.pragmatica.lang.Option.none()).result();
-                            });
-    }
-
-    private Result<List<String>> discoverFiles() {
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create(GITHUB_TREE_URL))
-                                 .header("Accept", "application/vnd.github.v3+json")
-                                 .header("User-Agent", "jbct-cli")
-                                 .timeout(Duration.ofSeconds(30))
-                                 .GET()
-                                 .build();
-        return http.sendString(request)
-                   .await()
-                   .flatMap(HttpResult::toResult)
-                   .map(body -> {
-                            var files = new ArrayList<String>();
-                            var matcher = TREE_ENTRY_PATTERN.matcher(body);
-                            while (matcher.find()) {
-                                files.add(matcher.group(1));
-                            }
-                            return files;
-                        });
+        return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH)
+                                   .flatMap(latestSha -> {
+                                                var currentSha = getCurrentVersion();
+                                                var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha))
+                                                                                     .isPresent();
+                                                if (isUpToDate) {
+                                                    return Result.success(List.<Path>of());
+                                                }
+                                                return downloadFiles(latestSha);
+                                            });
     }
 
     private Result<List<Path>> downloadFiles(String commitSha) {
-        return discoverFiles()
-                            .flatMap(this::downloadAllFiles)
-                            .flatMap(files -> saveCurrentVersion(commitSha)
-                                                                .map(_ -> files));
+        return GitHubContentFetcher.discoverFiles(http, REPO, BRANCH, AI_TOOLS_PREFIX)
+                                   .flatMap(this::downloadAllFiles)
+                                   .flatMap(files -> saveCurrentVersion(commitSha)
+                                                                       .map(_ -> files));
     }
 
     private Result<List<Path>> downloadAllFiles(List<String> remotePaths) {
-        var files = new ArrayList<Path>();
-        for (var remotePath : remotePaths) {
-            // Convert ai-tools/agents/file.md -> agents/file.md
-            // Convert ai-tools/skills/jbct/SKILL.md -> skills/jbct/SKILL.md
-            var relativePath = remotePath.substring(AI_TOOLS_PREFIX.length());
-            var targetPath = claudeDir.resolve(relativePath);
-            var result = downloadFile(remotePath, targetPath);
-            if (result.isSuccess()) {
-                files.add(result.unwrap());
-            }
-        }
-        return Result.success(files);
+        var downloads = remotePaths.stream()
+                                   .map(remotePath -> remotePath.substring(AI_TOOLS_PREFIX.length()))
+                                   .map(relativePath -> PathValidation.validateRelativePath(relativePath, claudeDir)
+                                                                      .flatMap(targetPath -> downloadFile(AI_TOOLS_PREFIX + relativePath,
+                                                                                                          targetPath)))
+                                   .toList();
+        return Result.allOf(downloads);
     }
 
     private Result<Path> downloadFile(String remotePath, Path targetPath) {
-        var url = RAW_CONTENT_BASE + remotePath;
-        var request = HttpRequest.newBuilder()
-                                 .uri(URI.create(url))
-                                 .header("User-Agent", "jbct-cli")
-                                 .timeout(Duration.ofSeconds(30))
-                                 .GET()
-                                 .build();
-        return http.sendString(request)
-                   .await()
-                   .flatMap(HttpResult::toResult)
-                   .flatMap(content -> {
-                                try{
-                                    Files.createDirectories(targetPath.getParent());
-                                    Files.writeString(targetPath, content);
-                                    return Result.success(targetPath);
-                                } catch (IOException e) {
-                                    return Causes.cause("Failed to write " + targetPath + ": " + e.getMessage())
-                                                 .result();
-                                }
-                            });
+        return GitHubContentFetcher.downloadFile(http, REPO, BRANCH, remotePath, targetPath)
+                                   .map(_ -> targetPath);
     }
 
     private Option<String> getCurrentVersion() {

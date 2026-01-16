@@ -1,5 +1,7 @@
 package org.pragmatica.jbct.slice.routing;
 
+import org.pragmatica.lang.Option;
+
 import java.util.HashMap;
 import java.util.Map;
 
@@ -54,16 +56,15 @@ public record RouteConfig(String prefix,
      * @param other the configuration to merge with (takes precedence)
      * @return merged configuration
      */
-    public RouteConfig merge(RouteConfig other) {
-        if (other == null) {
-            return this;
-        }
-        var mergedPrefix = other.prefix.isEmpty()
-                           ? this.prefix
-                           : other.prefix;
-        var mergedRoutes = mergeRoutes(this.routes, other.routes);
-        var mergedErrors = this.errors.merge(other.errors);
-        return routeConfig(mergedPrefix, mergedRoutes, mergedErrors);
+    public RouteConfig merge(Option<RouteConfig> other) {
+        return other.map(o -> {
+            var mergedPrefix = o.prefix.isEmpty()
+                               ? this.prefix
+                               : o.prefix;
+            var mergedRoutes = mergeRoutes(this.routes, o.routes);
+            var mergedErrors = this.errors.merge(Option.some(o.errors));
+            return routeConfig(mergedPrefix, mergedRoutes, mergedErrors);
+        }).or(this);
     }
 
     private static Map<String, RouteDsl> mergeRoutes(Map<String, RouteDsl> base,
@@ -91,15 +92,12 @@ public record RouteConfig(String prefix,
      * Get the full path for a route, including prefix.
      *
      * @param handlerName the handler method name
-     * @return full path or empty string if route not found
+     * @return full path if route found, empty Option otherwise
      */
-    public String fullPath(String handlerName) {
-        var route = routes.get(handlerName);
-        if (route == null) {
-            return "";
-        }
-        return prefix.isEmpty()
-               ? route.pathTemplate()
-               : prefix + route.pathTemplate();
+    public Option<String> fullPath(String handlerName) {
+        return Option.option(routes.get(handlerName))
+                     .map(route -> prefix.isEmpty()
+                                   ? route.pathTemplate()
+                                   : prefix + route.pathTemplate());
     }
 }

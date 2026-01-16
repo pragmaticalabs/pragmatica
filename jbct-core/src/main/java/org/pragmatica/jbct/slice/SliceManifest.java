@@ -34,7 +34,15 @@ public record SliceManifest(String sliceName,
     public record SliceDependency(String interfaceQualifiedName,
                                    String artifact,
                                    String version,
-                                   boolean external) {}
+                                   boolean external) {
+
+        public static SliceDependency sliceDependency(String interfaceQualifiedName,
+                                                       String artifact,
+                                                       String version,
+                                                       boolean external) {
+            return new SliceDependency(interfaceQualifiedName, artifact, version, external);
+        }
+    }
 
     /**
      * Load a slice manifest from a .manifest file.
@@ -112,7 +120,7 @@ public record SliceManifest(String sliceName,
             var external = Boolean.parseBoolean(props.getProperty(prefix + "external", "false"));
 
             if (!interfaceName.isEmpty()) {
-                dependencies.add(new SliceDependency(interfaceName, artifact, version, external));
+                dependencies.add(SliceDependency.sliceDependency(interfaceName, artifact, version, external));
             }
         }
 

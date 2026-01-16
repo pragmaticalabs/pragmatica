@@ -29,6 +29,12 @@ public record RouteDsl(String method,
                        String pathTemplate,
                        List<PathParam> pathParams,
                        List<QueryParam> queryParams) {
+
+    public RouteDsl {
+        pathParams = List.copyOf(pathParams);
+        queryParams = List.copyOf(queryParams);
+    }
+
     private static final Set<String> VALID_METHODS = Set.of("GET", "POST", "PUT", "DELETE", "PATCH");
     private static final Pattern DSL_PATTERN = Pattern.compile("^(\\w+)\\s+(/[^?]*)(?:\\?(.*))?$");
 

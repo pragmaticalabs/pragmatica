@@ -11,7 +11,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 import java.util.jar.Manifest;
-import java.util.stream.Stream;
 
 /**
  * Validates slice project configuration.
@@ -33,16 +32,18 @@ public final class SliceProjectValidator {
      * @return Validation result
      */
     public ValidationResult validate() {
-        var pomResult = checkPomFile();
-        var propsResult = checkSliceApiProperties();
-        var manifestResult = checkManifestEntries();
+        return combinePartialResults(checkPomFile(),
+                                     checkSliceApiProperties(),
+                                     checkManifestEntries());
+    }
+
+    private ValidationResult combinePartialResults(PartialResult... partials) {
         var errors = new ArrayList<String>();
         var warnings = new ArrayList<String>();
-        Stream.of(pomResult, propsResult, manifestResult)
-              .forEach(partial -> {
-                  errors.addAll(partial.errors());
-                  warnings.addAll(partial.warnings());
-              });
+        for (var partial : partials) {
+            errors.addAll(partial.errors());
+            warnings.addAll(partial.warnings());
+        }
         return ValidationResult.validationResult(errors, warnings);
     }
 

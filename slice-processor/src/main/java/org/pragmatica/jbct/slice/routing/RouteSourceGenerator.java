@@ -2,6 +2,7 @@ package org.pragmatica.jbct.slice.routing;
 
 import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
@@ -291,8 +292,8 @@ public class RouteSourceGenerator {
         for (var entry : routeEntries) {
             var handlerName = entry.getKey();
             var routeDsl = entry.getValue();
-            var method = methodMap.get(handlerName);
-            if (method == null) {
+            var methodOpt = Option.option(methodMap.get(handlerName));
+            if (methodOpt.isEmpty()) {
                 messager.printMessage(Diagnostic.Kind.ERROR,
                                       "Route handler '" + handlerName + "' not found in slice interface. "
                                       + "Available methods: " + methodMap.keySet());

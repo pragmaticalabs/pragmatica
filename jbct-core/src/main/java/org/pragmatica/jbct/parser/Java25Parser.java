@@ -10,9 +10,16 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Generated PEG parser with CST (Concrete Syntax Tree) output.
+ * Generated PEG parser for Java 25 syntax with CST (Concrete Syntax Tree) output.
  * This parser preserves all source information including trivia (whitespace/comments).
  * Depends only on pragmatica-lite:core for Result type.
+ *
+ * <p><b>Thread Safety:</b> This class is NOT thread-safe. Each thread must use
+ * its own instance. For concurrent parsing, use a ThreadLocal:
+ * <pre>{@code
+ * private static final ThreadLocal<Java25Parser> PARSER =
+ *     ThreadLocal.withInitial(Java25Parser::new);
+ * }</pre>
  */
 public final class Java25Parser {
     // === Rule ID Types ===
@@ -1524,8 +1531,14 @@ public final class Java25Parser {
     public record SourceLocation(int line, int column, int offset) {
         public static final SourceLocation START = new SourceLocation(1, 1, 0);
 
-        public static SourceLocation at(int line, int column, int offset) {
+        public static SourceLocation sourceLocation(int line, int column, int offset) {
             return new SourceLocation(line, column, offset);
+        }
+
+        /** @deprecated Use {@link #sourceLocation(int, int, int)} instead */
+        @Deprecated(forRemoval = true)
+        public static SourceLocation at(int line, int column, int offset) {
+            return sourceLocation(line, column, offset);
         }
 
         @Override public String toString() {
@@ -1534,8 +1547,15 @@ public final class Java25Parser {
     }
 
     public record SourceSpan(SourceLocation start, SourceLocation end) {
-        public static SourceSpan of(SourceLocation start, SourceLocation end) {
+
+        public static SourceSpan sourceSpan(SourceLocation start, SourceLocation end) {
             return new SourceSpan(start, end);
+        }
+
+        /** @deprecated Use {@link #sourceSpan(SourceLocation, SourceLocation)} instead */
+        @Deprecated(forRemoval = true)
+        public static SourceSpan of(SourceLocation start, SourceLocation end) {
+            return sourceSpan(start, end);
         }
 
         public int length() {

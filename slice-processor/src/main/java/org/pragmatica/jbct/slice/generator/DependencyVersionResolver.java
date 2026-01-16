@@ -22,16 +22,14 @@ import java.util.Properties;
  */
 public class DependencyVersionResolver {
     private final ProcessingEnvironment env;
-    private Properties sliceDeps;
-    private boolean loaded;
+    private final Properties sliceDeps;
 
     public DependencyVersionResolver(ProcessingEnvironment env) {
         this.env = env;
+        this.sliceDeps = loadSliceDeps();
     }
 
     public DependencyModel resolve(DependencyModel dependency) {
-        loadIfNeeded();
-
         var interfaceFqn = dependency.interfaceQualifiedName();
         if (interfaceFqn == null || interfaceFqn.isEmpty()) {
             return dependency.withResolved("unknown:unknown", "UNRESOLVED");
@@ -89,23 +87,19 @@ public class DependencyVersionResolver {
         return dependency.withResolved(groupId + ":" + artifactId, "UNRESOLVED");
     }
 
-    private void loadIfNeeded() {
-        if (loaded) {
-            return;
-        }
-        loaded = true;
-        sliceDeps = new Properties();
+    private Properties loadSliceDeps() {
+        var props = new Properties();
 
         try {
             FileObject resource = env.getFiler()
                                      .getResource(StandardLocation.CLASS_OUTPUT, "", "slice-deps.properties");
             try (var reader = resource.openReader(true)) {
-                sliceDeps.load(reader);
+                props.load(reader);
             }
-            if (!sliceDeps.isEmpty()) {
+            if (!props.isEmpty()) {
                 env.getMessager()
                    .printMessage(Diagnostic.Kind.NOTE,
-                                 "Loaded " + sliceDeps.size() + " slice dependencies from slice-deps.properties");
+                                 "Loaded " + props.size() + " slice dependencies from slice-deps.properties");
             }
         } catch (IOException e) {
             // File might not exist yet - dependencies will remain unresolved
@@ -113,5 +107,7 @@ public class DependencyVersionResolver {
                .printMessage(Diagnostic.Kind.NOTE,
                              "slice-deps.properties not found, dependency versions will be unresolved");
         }
+
+        return props;
     }
 }

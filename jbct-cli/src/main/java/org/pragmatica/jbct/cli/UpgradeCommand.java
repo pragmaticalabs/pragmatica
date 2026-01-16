@@ -62,14 +62,14 @@ public class UpgradeCommand implements Callable<Integer> {
                                     return 0;
                                 }
                                 // Check for download URL
-        if (!release.hasDownloadUrl()) {
-                                    System.err.println("Error: No downloadable JAR found in release.");
-                                    System.err.println("Please download manually from GitHub.");
-                                    return 1;
-                                }
-                                return performUpgrade(release.downloadUrl()
-                                                             .getOrThrow("Download URL expected"),
-                                                      release.version());
+                                return release.downloadUrl()
+                                              .toResult(Causes.cause("No downloadable JAR found in release"))
+                                              .fold(cause -> {
+                                                        System.err.println("Error: " + cause.message());
+                                                        System.err.println("Please download manually from GitHub.");
+                                                        return 1;
+                                                    },
+                                                    url -> performUpgrade(url, release.version()));
                             });
     }
 
@@ -102,17 +102,16 @@ public class UpgradeCommand implements Callable<Integer> {
                                         var checker = GitHubReleaseChecker.releaseChecker();
                                         return checker.checkLatestRelease()
                                                       .flatMap(release -> {
-                                                                   if (!release.hasDownloadUrl()) {
-                                                                       return Result.failure(Causes.cause("No downloadable JAR found in release"));
-                                                                   }
-                                                                   System.out.println("Downloading version " + release.version()
-                                                                                      + "...");
-                                                                   var installer = JarInstaller.jarInstaller();
-                                                                   var targetPath = JarInstaller.defaultInstallPath();
-                                                                   return installer.install(release.downloadUrl()
-                                                                                                   .getOrThrow("Download URL expected"),
-                                                                                            targetPath)
-                                                                                   .map(_ -> release.version());
+                                                                   return release.downloadUrl()
+                                                                                 .toResult(Causes.cause("No downloadable JAR found in release"))
+                                                                                 .flatMap(url -> {
+                                                                                              System.out.println("Downloading version " + release.version()
+                                                                                                                 + "...");
+                                                                                              var installer = JarInstaller.jarInstaller();
+                                                                                              var targetPath = JarInstaller.defaultInstallPath();
+                                                                                              return installer.install(url, targetPath)
+                                                                                                              .map(_ -> release.version());
+                                                                                          });
                                                                });
                                     })
                            .fold(cause -> {

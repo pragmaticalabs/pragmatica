@@ -2,6 +2,7 @@ package org.pragmatica.jbct.upgrade;
 
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.jbct.shared.HttpClients;
+import org.pragmatica.jbct.shared.UrlValidation;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
@@ -91,10 +92,15 @@ public final class JarInstaller {
      * Download JAR to a temporary file.
      */
     public Result<Path> download(String downloadUrl) {
-        try{
+        return UrlValidation.validateDownloadUrl(downloadUrl)
+                            .flatMap(this::downloadFromUri);
+    }
+
+    private Result<Path> downloadFromUri(URI uri) {
+        try {
             var tempFile = Files.createTempFile("jbct-download-", ".jar");
             var request = HttpRequest.newBuilder()
-                                     .uri(URI.create(downloadUrl))
+                                     .uri(uri)
                                      .header("User-Agent", "jbct-cli")
                                      .timeout(Duration.ofMinutes(5))
                                      .GET()
@@ -107,7 +113,7 @@ public final class JarInstaller {
                                         return Result.success(response.body());
                                     } else {
                                         // Best-effort cleanup of temp file on failure
-            try{
+                                        try {
                                             Files.deleteIfExists(tempFile);
                                         } catch (IOException cleanupError) {}
                                         return response.toResult();

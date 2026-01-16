@@ -1,5 +1,7 @@
 package org.pragmatica.jbct.slice.routing;
 
+import org.pragmatica.lang.Option;
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -54,16 +56,15 @@ public record ErrorPatternConfig(int defaultStatus,
      * @param other the configuration to merge with (takes precedence)
      * @return merged configuration
      */
-    public ErrorPatternConfig merge(ErrorPatternConfig other) {
-        if (other == null) {
-            return this;
-        }
-        var mergedDefault = other.defaultStatus != 500
-                            ? other.defaultStatus
-                            : this.defaultStatus;
-        var mergedPatterns = mergePatterns(this.statusPatterns, other.statusPatterns);
-        var mergedExplicit = mergeMappings(this.explicitMappings, other.explicitMappings);
-        return errorPatternConfig(mergedDefault, mergedPatterns, mergedExplicit);
+    public ErrorPatternConfig merge(Option<ErrorPatternConfig> other) {
+        return other.map(o -> {
+            var mergedDefault = o.defaultStatus != 500
+                                ? o.defaultStatus
+                                : this.defaultStatus;
+            var mergedPatterns = mergePatterns(this.statusPatterns, o.statusPatterns);
+            var mergedExplicit = mergeMappings(this.explicitMappings, o.explicitMappings);
+            return errorPatternConfig(mergedDefault, mergedPatterns, mergedExplicit);
+        }).or(this);
     }
 
     private static Map<Integer, List<String>> mergePatterns(Map<Integer, List<String>> base,

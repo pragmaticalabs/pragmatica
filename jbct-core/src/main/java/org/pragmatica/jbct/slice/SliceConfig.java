@@ -21,8 +21,16 @@ public record SliceConfig(BlueprintConfig blueprint) {
                                    Option<String> loadBalancing,
                                    Option<String> affinityKey) {
 
+        public static BlueprintConfig blueprintConfig(int instances,
+                                                       Option<Integer> timeoutMs,
+                                                       Option<Integer> memoryMb,
+                                                       Option<String> loadBalancing,
+                                                       Option<String> affinityKey) {
+            return new BlueprintConfig(instances, timeoutMs, memoryMb, loadBalancing, affinityKey);
+        }
+
         public static BlueprintConfig defaults() {
-            return new BlueprintConfig(1, Option.empty(), Option.empty(), Option.empty(), Option.empty());
+            return blueprintConfig(1, Option.empty(), Option.empty(), Option.empty(), Option.empty());
         }
     }
 
@@ -38,22 +46,23 @@ public record SliceConfig(BlueprintConfig blueprint) {
      */
     public static Result<SliceConfig> load(Path configPath) {
         return TomlParser.parseFile(configPath)
-                         .map(toml -> {
-                             var instances = toml.getInt("blueprint", "instances").or(() -> 1);
-                             var timeoutMs = toml.getInt("blueprint", "timeout_ms");
-                             var memoryMb = toml.getInt("blueprint", "memory_mb");
-                             var loadBalancing = toml.getString("blueprint", "load_balancing");
-                             var affinityKey = toml.getString("blueprint", "affinity_key");
+                         .map(SliceConfig::fromTomlDocument);
+    }
 
-                             var blueprint = new BlueprintConfig(
-                                     instances,
-                                     timeoutMs,
-                                     memoryMb,
-                                     loadBalancing,
-                                     affinityKey
-                             );
+    private static SliceConfig fromTomlDocument(org.pragmatica.config.toml.TomlDocument toml) {
+        var instances = toml.getInt("blueprint", "instances")
+                            .or(() -> 1);
+        var timeoutMs = toml.getInt("blueprint", "timeout_ms");
+        var memoryMb = toml.getInt("blueprint", "memory_mb");
+        var loadBalancing = toml.getString("blueprint", "load_balancing");
+        var affinityKey = toml.getString("blueprint", "affinity_key");
 
-                             return new SliceConfig(blueprint);
-                         });
+        var blueprint = BlueprintConfig.blueprintConfig(instances,
+                                                        timeoutMs,
+                                                        memoryMb,
+                                                        loadBalancing,
+                                                        affinityKey);
+
+        return new SliceConfig(blueprint);
     }
 }

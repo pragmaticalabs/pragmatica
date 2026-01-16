@@ -95,7 +95,7 @@ public final class GitHubReleaseChecker {
         var downloadUrl = assetMatcher.find()
                           ? Option.some(assetMatcher.group(1))
                           : Option.<String>none();
-        return Result.success(new ReleaseInfo(version, downloadUrl));
+        return Result.success(ReleaseInfo.releaseInfo(version, downloadUrl));
     }
 
     /**
@@ -152,6 +152,11 @@ public final class GitHubReleaseChecker {
      */
     public record ReleaseInfo(String version,
                               Option<String> downloadUrl) {
+
+        public static ReleaseInfo releaseInfo(String version, Option<String> downloadUrl) {
+            return new ReleaseInfo(version, downloadUrl);
+        }
+
         /**
          * Check if this release has a downloadable JAR.
          */

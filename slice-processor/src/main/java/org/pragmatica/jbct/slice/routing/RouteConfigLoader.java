@@ -2,6 +2,7 @@ package org.pragmatica.jbct.slice.routing;
 
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -60,15 +61,15 @@ public final class RouteConfigLoader {
         return TomlParser.parseFile(configPath)
                          .fold(_ -> PARSE_ERROR.<org.pragmatica.config.toml.TomlDocument>result(),
                                Result::success)
-                         .flatMap(toml -> {
-                                      var prefix = toml.getString("", "prefix")
-                                                       .or("");
-                                      var routesResult = parseRoutes(toml.getSection("routes"));
-                                      var errorsConfig = parseErrors(toml);
-                                      return routesResult.map(routes -> RouteConfig.routeConfig(prefix,
-                                                                                                routes,
-                                                                                                errorsConfig));
-                                  });
+                         .flatMap(RouteConfigLoader::buildRouteConfig);
+    }
+
+    private static Result<RouteConfig> buildRouteConfig(org.pragmatica.config.toml.TomlDocument toml) {
+        var prefix = toml.getString("", "prefix")
+                         .or("");
+        var routesResult = parseRoutes(toml.getSection("routes"));
+        var errorsConfig = parseErrors(toml);
+        return routesResult.map(routes -> RouteConfig.routeConfig(prefix, routes, errorsConfig));
     }
 
     /**
@@ -92,8 +93,8 @@ public final class RouteConfigLoader {
                          ? load(basePath).or(RouteConfig.EMPTY)
                          : RouteConfig.EMPTY;
         var sliceConfig = Files.exists(slicePath)
-                          ? load(slicePath).or(RouteConfig.EMPTY)
-                          : RouteConfig.EMPTY;
+                          ? load(slicePath).option()
+                          : Option.<RouteConfig>none();
         return Result.success(baseConfig.merge(sliceConfig));
     }
 

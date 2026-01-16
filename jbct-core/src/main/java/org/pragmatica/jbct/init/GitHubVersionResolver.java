@@ -5,6 +5,7 @@ import org.pragmatica.http.HttpResult;
 import org.pragmatica.jbct.shared.HttpClients;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.io.IOException;
@@ -87,13 +88,14 @@ public final class GitHubVersionResolver {
         }
         // Fetch from GitHub
         return fetchLatestVersion(owner, repo)
-                                             .fold(_ -> defaultVersion,
-                                                   version -> {
-                                                       cache.setProperty(cacheKey, version);
-                                                       cache.setProperty(timestampKey, String.valueOf(System.currentTimeMillis()));
-                                                       saveCache();
-                                                       return version;
-                                                   });
+                                             .onSuccess(version -> updateCache(cacheKey, timestampKey, version))
+                                             .fold(_ -> defaultVersion, version -> version);
+    }
+
+    private void updateCache(String cacheKey, String timestampKey, String version) {
+        cache.setProperty(cacheKey, version);
+        cache.setProperty(timestampKey, String.valueOf(System.currentTimeMillis()));
+        saveCache();
     }
 
     private Result<String> fetchLatestVersion(String owner, String repo) {
@@ -130,27 +132,23 @@ public final class GitHubVersionResolver {
         return props;
     }
 
-    private void saveCache() {
-        try{
-            Files.createDirectories(CACHE_FILE.getParent());
-            try (var writer = Files.newBufferedWriter(CACHE_FILE)) {
-                cache.store(writer, "JBCT version cache");
-            }
-        } catch (IOException e) {
-            // Ignore, cache will be regenerated next time
-        }
+    private Result<Unit> saveCache() {
+        return Result.lift(Causes::fromThrowable,
+                           () -> {
+                               Files.createDirectories(CACHE_FILE.getParent());
+                               try (var writer = Files.newBufferedWriter(CACHE_FILE)) {
+                                   cache.store(writer, "JBCT version cache");
+                               }
+                           });
     }
 
     /**
      * Clear the version cache.
      */
-    public void clearCache() {
+    public Result<Unit> clearCache() {
         cache.clear();
-        try{
-            Files.deleteIfExists(CACHE_FILE);
-        } catch (IOException e) {
-            // Ignore
-        }
+        return Result.lift(Causes::fromThrowable,
+                           () -> { Files.deleteIfExists(CACHE_FILE); });
     }
 
     /**

@@ -30,19 +30,12 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
         // Start with defaults
         var config = JbctConfig.DEFAULT;
         // Layer 1: User config (~/.jbct/config.toml)
-        config = loadUserConfig()
-                               .map(config::merge)
-                               .or(config);
+        config = config.merge(loadUserConfig());
         // Layer 2: Project config (./jbct.toml)
         var projectDir = workingDirectory.or(() -> Path.of(System.getProperty("user.dir")));
-        config = loadProjectConfig(projectDir)
-                                  .map(config::merge)
-                                  .or(config);
+        config = config.merge(loadProjectConfig(projectDir));
         // Layer 3: Explicit config file (highest priority)
-        var finalConfig = config;
-        return explicitConfigPath.flatMap(ConfigLoader::loadFromFile)
-                                 .map(finalConfig::merge)
-                                 .or(finalConfig);
+        return config.merge(explicitConfigPath.flatMap(ConfigLoader::loadFromFile));
     }
 
     /**

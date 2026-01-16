@@ -1,15 +1,35 @@
 # Changelog
 
-## [0.5.0] - 2026-01-15
+## [0.5.0] - 2026-01-16
 
 ### Added
+- Security: `SecurityError` sealed interface with `PathTraversal`, `InvalidUrl`, `UntrustedDomain` error types
+- Security: `PathValidation` utility rejects path traversal attempts (`..`, absolute paths, escaping base)
+- Security: `UrlValidation` utility enforces HTTPS and GitHub domain whitelist
+- Shared: `GitHubContentFetcher` extracts common GitHub API patterns (commit SHA, file discovery, downloads)
 - Slice processor: method name validation per RFC-0001 (must match `^[a-z][a-zA-Z0-9]+$`)
 
 ### Changed
 - Slice processor: proxy generation uses `TypeToken<R>` instead of `Class<R>` per aether SliceInvokerFacade
+- Null policy: replaced nullable params with `Option<T>` in merge methods (`JbctConfig`, `RouteConfig`, `ErrorPatternConfig`)
+- Null policy: `fullPath()`, `findMatchingPattern()`, `extractPromiseTypeArg()` now return `Option<T>`
+- Composition: extracted complex lambdas to named methods across codebase
+- Fork-Join: `SliceProcessor.generateArtifacts()` uses `Result.all()` for parallel generation
+- Fork-Join: `ProjectInitializer` uses `Result.all()` for combining file lists
+- Thread safety: `DependencyVersionResolver` uses eager initialization
+- Return types: `GitHubVersionResolver.saveCache()/clearCache()` return `Result<Unit>`
+- Refactor: `AiToolsUpdater` and `AiToolsInstaller` delegate to `GitHubContentFetcher`
 
 ### Fixed
 - Slice processor: factory method name follows RFC-0001 (`{sliceName}` not `create`)
+- Security: URL validation in `JarInstaller` before downloading
+- Security: path validation in `AiToolsUpdater` and `AiToolsInstaller` before file operations
+- Null policy: `ErrorTypeDiscovery.causeType` field uses `Option<TypeMirror>`
+- Null policy: `RouteSourceGenerator` uses `Option.option()` for safe Map lookups
+- Factory methods: added `sliceDependency()`, `suppression()`, `releaseInfo()`, `blueprintConfig()`, `sourceLocation()`, `sourceSpan()`
+- Immutability: `RouteDsl` and `Suppression` records use defensive copies (`List.copyOf()`, `Set.copyOf()`)
+- Composition: `UpgradeCommand` uses `flatMap()` instead of `getOrThrow()`
+- Thread safety: `Java25Parser` documented as non-thread-safe with ThreadLocal recommendation
 
 ## [0.4.9] - 2026-01-15
 

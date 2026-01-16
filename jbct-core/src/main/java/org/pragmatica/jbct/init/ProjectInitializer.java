@@ -93,14 +93,16 @@ public final class ProjectInitializer {
      */
     public Result<List<Path>> initialize() {
         return createDirectories()
-                                .flatMap(_ -> createTemplateFiles())
-                                .flatMap(templateFiles -> createGitkeepFiles()
-                                                                            .map(gitkeepFiles -> {
-                                                                                     var allFiles = new ArrayList<Path>();
-                                                                                     allFiles.addAll(templateFiles);
-                                                                                     allFiles.addAll(gitkeepFiles);
-                                                                                     return allFiles;
-                                                                                 }));
+                                .flatMap(_ -> Result.all(createTemplateFiles(),
+                                                         createGitkeepFiles())
+                                                    .map(this::combineFileLists));
+    }
+
+    private List<Path> combineFileLists(List<Path> templateFiles, List<Path> gitkeepFiles) {
+        var allFiles = new ArrayList<Path>();
+        allFiles.addAll(templateFiles);
+        allFiles.addAll(gitkeepFiles);
+        return allFiles;
     }
 
     private Result<Path> createDirectories() {

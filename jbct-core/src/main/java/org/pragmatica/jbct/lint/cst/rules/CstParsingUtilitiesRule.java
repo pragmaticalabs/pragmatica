@@ -6,6 +6,8 @@ import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
+import org.pragmatica.lang.Option;
+
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -109,16 +111,17 @@ public class CstParsingUtilitiesRule implements CstLintRule {
                               found -> found,
                               found -> matcher.find())
                      .map(_ -> matcher.group())
-                     .map(match -> findMatchingPattern(match))
-                     .filter(p -> p != null)
+                     .map(this::findMatchingPattern)
+                     .filter(Option::isPresent)
+                     .map(Option::unwrap)
                      .map(pattern -> createDiagnostic(method, pattern, ctx))
                      .limit(3);
     }
 
-    private ParsingPattern findMatchingPattern(String match) {
+    private Option<ParsingPattern> findMatchingPattern(String match) {
         for (var entry : PATTERN_MAP.entrySet()) {
             if (Pattern.matches(entry.getKey(), match)) {
-                return entry.getValue();
+                return Option.some(entry.getValue());
             }
         }
         // Direct lookup for exact matches
@@ -127,13 +130,14 @@ public class CstParsingUtilitiesRule implements CstLintRule {
                                       .replace("\\s*", "")
                                       .replace("\\(",
                                                "("))) {
-                return pattern;
+                return Option.some(pattern);
             }
         }
         return PATTERNS.stream()
                        .filter(p -> match.matches(".*" + p.jdkPattern() + ".*"))
                        .findFirst()
-                       .orElse(null);
+                       .map(Option::some)
+                       .orElse(Option.none());
     }
 
     private Diagnostic createDiagnostic(CstNode node, ParsingPattern pattern, LintContext ctx) {

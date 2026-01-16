@@ -15,6 +15,9 @@ import javax.lang.model.type.TypeMirror;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.tools.JavaFileObject;
+
+import org.pragmatica.lang.Option;
+
 import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.List;
@@ -260,11 +263,11 @@ public class FactoryClassGenerator {
                     if (!method.getModifiers().contains(Modifier.STATIC) &&
                         !method.getModifiers().contains(Modifier.DEFAULT) &&
                         method.getParameters().size() == 1) {
-                        var responseType = extractPromiseTypeArg(method.getReturnType());
-                        if (responseType != null) {
-                            var paramType = method.getParameters().getFirst().asType().toString();
-                            methods.add(new ProxyMethodInfo(method.getSimpleName().toString(), responseType, paramType));
-                        }
+                        extractPromiseTypeArg(method.getReturnType())
+                            .onPresent(responseType -> {
+                                var paramType = method.getParameters().getFirst().asType().toString();
+                                methods.add(new ProxyMethodInfo(method.getSimpleName().toString(), responseType, paramType));
+                            });
                     }
                 }
             }
@@ -335,14 +338,14 @@ public class FactoryClassGenerator {
         out.println("    }");
     }
 
-    private String extractPromiseTypeArg(TypeMirror type) {
+    private Option<String> extractPromiseTypeArg(TypeMirror type) {
         if (type instanceof DeclaredType dt) {
             var typeArgs = dt.getTypeArguments();
             if (!typeArgs.isEmpty()) {
-                return typeArgs.getFirst().toString();
+                return Option.some(typeArgs.getFirst().toString());
             }
         }
-        return null;
+        return Option.none();
     }
 
     private String lowercaseFirst(String name) {

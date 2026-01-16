@@ -26,6 +26,11 @@ public final class SuppressionExtractor {
      * A suppression scope with the suppressed rules and line range.
      */
     public record Suppression(Set<String> ruleIds, int startLine, int endLine) {
+
+        public static Suppression suppression(Set<String> ruleIds, int startLine, int endLine) {
+            return new Suppression(Set.copyOf(ruleIds), startLine, endLine);
+        }
+
         public boolean suppressesAll() {
             return ruleIds.contains("all");
         }
@@ -72,7 +77,7 @@ public final class SuppressionExtractor {
             var scopeNode = scopeOpt.unwrap();
             var startLine = startLine(scopeNode);
             var endLine = endLine(scopeNode);
-            suppressions.add(new Suppression(ruleIds, startLine, endLine));
+            suppressions.add(Suppression.suppression(ruleIds, startLine, endLine));
         }
         return suppressions;
     }

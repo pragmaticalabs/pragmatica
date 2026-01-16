@@ -4,6 +4,7 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.jbct.format.FormatterConfig;
 import org.pragmatica.jbct.lint.DiagnosticSeverity;
 import org.pragmatica.jbct.lint.LintConfig;
+import org.pragmatica.lang.Option;
 
 import java.util.HashMap;
 import java.util.HashSet;
@@ -103,36 +104,35 @@ public record JbctConfig(FormatterConfig formatter,
     /**
      * Merge this config with another, with other taking precedence.
      */
-    public JbctConfig merge(JbctConfig other) {
-        if (other == null) {
-            return this;
-        }
-        // Merge formatter config (use other if different from default)
-        var mergedFormatter = this.formatter;
-        if (!other.formatter.equals(FormatterConfig.DEFAULT)) {
-            mergedFormatter = other.formatter;
-        }
-        // Merge lint config (use other if different from default)
-        var mergedLint = this.lint;
-        if (!other.lint.equals(LintConfig.DEFAULT)) {
-            mergedLint = other.lint;
-        }
-        // Merge source directories (use other if not default)
-        var mergedSourceDirs = this.sourceDirectories;
-        if (!other.sourceDirectories.equals(List.of("src/main/java"))) {
-            mergedSourceDirs = other.sourceDirectories;
-        }
-        // Merge business packages (use other if not default)
-        var mergedBusinessPackages = this.businessPackages;
-        if (!other.businessPackages.equals(List.of("**.usecase.**", "**.domain.**"))) {
-            mergedBusinessPackages = other.businessPackages;
-        }
-        // Merge slice packages (use other if not empty)
-        var mergedSlicePackages = this.slicePackages;
-        if (!other.slicePackages.isEmpty()) {
-            mergedSlicePackages = other.slicePackages;
-        }
-        return jbctConfig(mergedFormatter, mergedLint, mergedSourceDirs, mergedBusinessPackages, mergedSlicePackages);
+    public JbctConfig merge(Option<JbctConfig> other) {
+        return other.map(o -> {
+            // Merge formatter config (use other if different from default)
+            var mergedFormatter = this.formatter;
+            if (!o.formatter.equals(FormatterConfig.DEFAULT)) {
+                mergedFormatter = o.formatter;
+            }
+            // Merge lint config (use other if different from default)
+            var mergedLint = this.lint;
+            if (!o.lint.equals(LintConfig.DEFAULT)) {
+                mergedLint = o.lint;
+            }
+            // Merge source directories (use other if not default)
+            var mergedSourceDirs = this.sourceDirectories;
+            if (!o.sourceDirectories.equals(List.of("src/main/java"))) {
+                mergedSourceDirs = o.sourceDirectories;
+            }
+            // Merge business packages (use other if not default)
+            var mergedBusinessPackages = this.businessPackages;
+            if (!o.businessPackages.equals(List.of("**.usecase.**", "**.domain.**"))) {
+                mergedBusinessPackages = o.businessPackages;
+            }
+            // Merge slice packages (use other if not empty)
+            var mergedSlicePackages = this.slicePackages;
+            if (!o.slicePackages.isEmpty()) {
+                mergedSlicePackages = o.slicePackages;
+            }
+            return jbctConfig(mergedFormatter, mergedLint, mergedSourceDirs, mergedBusinessPackages, mergedSlicePackages);
+        }).or(this);
     }
 
     /**
