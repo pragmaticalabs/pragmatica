@@ -142,8 +142,9 @@ public class FactoryClassGenerator {
                                        List<DependencyModel> externalDeps,
                                        List<DependencyModel> internalDeps) {
         var sliceName = model.simpleName();
+        var methodName = lowercaseFirst(sliceName);
 
-        out.println("    public static Promise<" + sliceName + "> create(Aspect<" + sliceName + "> aspect,");
+        out.println("    public static Promise<" + sliceName + "> " + methodName + "(Aspect<" + sliceName + "> aspect,");
         out.println("                                              SliceInvokerFacade invoker) {");
 
         // Generate local proxy records for external dependencies
@@ -232,9 +233,10 @@ public class FactoryClassGenerator {
 
     private void generateCreateSliceMethod(PrintWriter out, SliceModel model) {
         var sliceName = model.simpleName();
-        var sliceRecordName = Character.toLowerCase(sliceName.charAt(0)) + sliceName.substring(1) + "Slice";
+        var methodName = lowercaseFirst(sliceName);
+        var sliceRecordName = methodName + "Slice";
 
-        out.println("    public static Promise<Slice> createSlice(Aspect<" + sliceName + "> aspect,");
+        out.println("    public static Promise<Slice> " + methodName + "Slice(Aspect<" + sliceName + "> aspect,");
         out.println("                                              SliceInvokerFacade invoker) {");
 
         // Generate local adapter record
@@ -260,7 +262,7 @@ public class FactoryClassGenerator {
         out.println("            }");
         out.println("        }");
         out.println();
-        out.println("        return create(aspect, invoker)");
+        out.println("        return " + methodName + "(aspect, invoker)");
         out.println("                   .map(" + sliceRecordName + "::new);");
         out.println("    }");
     }
@@ -273,5 +275,12 @@ public class FactoryClassGenerator {
             }
         }
         return null;
+    }
+
+    private String lowercaseFirst(String name) {
+        if (name == null || name.isEmpty()) {
+            return name;
+        }
+        return Character.toLowerCase(name.charAt(0)) + name.substring(1);
     }
 }

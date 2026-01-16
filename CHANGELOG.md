@@ -9,6 +9,7 @@
 - Slice processor: proxy generation uses `TypeToken<R>` instead of `Class<R>` per aether SliceInvokerFacade
 
 ### Fixed
+- Slice processor: factory method name follows RFC-0001 (`{sliceName}` not `create`)
 
 ## [0.4.9] - 2026-01-15
 
