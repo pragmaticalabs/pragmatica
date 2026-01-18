@@ -7,6 +7,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
@@ -23,6 +25,7 @@ import java.util.regex.Pattern;
  * Caches results for 24 hours to avoid excessive API calls.
  */
 public final class GitHubVersionResolver {
+    private static final Logger LOG = LoggerFactory.getLogger(GitHubVersionResolver.class);
     private static final Path CACHE_FILE = Path.of(System.getProperty("user.home"), ".jbct", "cache", "versions.properties");
     private static final long CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
@@ -77,13 +80,13 @@ public final class GitHubVersionResolver {
         var cachedVersion = cache.getProperty(cacheKey);
         var timestampStr = cache.getProperty(timestampKey);
         if (cachedVersion != null && timestampStr != null) {
-            try{
+            try {
                 var timestamp = Long.parseLong(timestampStr);
                 if (System.currentTimeMillis() - timestamp < CACHE_TTL_MS) {
                     return cachedVersion;
                 }
             } catch (NumberFormatException e) {
-                // Ignore invalid timestamp
+                LOG.debug("Invalid timestamp in version cache for {}: {}", cacheKey, timestampStr);
             }
         }
         // Fetch from GitHub
@@ -126,7 +129,7 @@ public final class GitHubVersionResolver {
             try (var reader = Files.newBufferedReader(CACHE_FILE)) {
                 props.load(reader);
             } catch (IOException e) {
-                // Ignore, start with empty cache
+                LOG.debug("Failed to load version cache from {}: {}", CACHE_FILE, e.getMessage());
             }
         }
         return props;

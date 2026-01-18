@@ -153,6 +153,11 @@ public final class SliceProjectValidator {
     }
 
     private record PartialResult(List<String> errors, List<String> warnings) {
+        PartialResult {
+            errors = List.copyOf(errors);
+            warnings = List.copyOf(warnings);
+        }
+
         static PartialResult empty() {
             return new PartialResult(List.of(), List.of());
         }
@@ -174,8 +179,13 @@ public final class SliceProjectValidator {
      * Validation result containing errors and warnings.
      */
     public record ValidationResult(List<String> errors, List<String> warnings) {
+        public ValidationResult {
+            errors = List.copyOf(errors);
+            warnings = List.copyOf(warnings);
+        }
+
         public static ValidationResult validationResult(List<String> errors, List<String> warnings) {
-            return new ValidationResult(List.copyOf(errors), List.copyOf(warnings));
+            return new ValidationResult(errors, warnings);
         }
 
         public boolean hasErrors() {

@@ -19,6 +19,10 @@ import java.util.stream.Collectors;
  */
 public record ErrorConflict(TypeElement errorType,
                             List<PatternMatch> matchingPatterns) {
+    public ErrorConflict {
+        matchingPatterns = List.copyOf(matchingPatterns);
+    }
+
     /**
      * A single pattern match with its associated HTTP status.
      *

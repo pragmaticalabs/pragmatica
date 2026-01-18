@@ -95,11 +95,13 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
 
     private boolean isLeafFunction(CstNode method, CstNode root, String source) {
         // Find the class member containing this method
-        var classMember = findAncestor(root, method, RuleId.ClassMember.class);
-        if (classMember.isEmpty()) {
-            return false;
-        }
-        var memberText = text(classMember.getOrThrow("ClassMember expected"), source);
+        return findAncestor(root, method, RuleId.ClassMember.class)
+                       .filter(classMember -> isPrivateLeafMethod(classMember, method, source))
+                       .isPresent();
+    }
+
+    private boolean isPrivateLeafMethod(CstNode classMember, CstNode method, String source) {
+        var memberText = text(classMember, source);
         // Check if private
         if (!memberText.contains("private ")) {
             return false;
@@ -107,10 +109,10 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
         // Check if it's a simple method (no monadic chains = leaf)
         var methodText = text(method, source);
         var hasMonadicChain = methodText.contains(".map(") ||
-        methodText.contains(".flatMap(") ||
-        methodText.contains(".fold(");
+                              methodText.contains(".flatMap(") ||
+                              methodText.contains(".fold(");
         // Leaf functions typically don't have monadic chains (they're at the bottom)
-        return ! hasMonadicChain;
+        return !hasMonadicChain;
     }
 
     private Stream<Diagnostic> checkMethodName(CstNode method, String source, LintContext ctx) {

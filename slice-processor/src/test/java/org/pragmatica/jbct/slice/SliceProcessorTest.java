@@ -1149,4 +1149,195 @@ class SliceProcessorTest {
         // updateUser is direct method reference (no caching)
         assertThat(factoryContent).contains("updateUserWrapped = impl::updateUser");
     }
+
+    // ========== Additional Negative Test Cases ==========
+
+    @Test
+    void should_fail_on_invalid_method_name_starting_with_uppercase() {
+        var source = JavaFileObjects.forSourceString("test.TestService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface TestService {
+                Promise<String> GetUser(String request);
+
+                static TestService testService() {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("Invalid slice method name");
+    }
+
+    @Test
+    void should_fail_on_method_returning_non_promise_type() {
+        var source = JavaFileObjects.forSourceString("test.TestService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface TestService {
+                String getUser(String request);
+
+                static TestService testService() {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("must return Promise<T>");
+    }
+
+    @Test
+    void should_fail_on_method_with_no_parameters() {
+        var source = JavaFileObjects.forSourceString("test.TestService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface TestService {
+                Promise<String> getUser();
+
+                static TestService testService() {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("must have exactly one parameter");
+    }
+
+    @Test
+    void should_fail_on_method_with_multiple_parameters() {
+        var source = JavaFileObjects.forSourceString("test.TestService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface TestService {
+                Promise<String> getUser(String userId, String tenantId);
+
+                static TestService testService() {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("must have exactly one parameter");
+    }
+
+    @Test
+    void should_fail_on_dependency_not_an_interface() {
+        var dependency = JavaFileObjects.forSourceString("test.NotAnInterface",
+                                                         """
+            package test;
+
+            public class NotAnInterface {}
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.TestService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface TestService {
+                Promise<String> doWork(String request);
+
+                static TestService testService(NotAnInterface dep) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(dependency);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("must be an interface");
+    }
+
+    @Test
+    void should_fail_on_raw_promise_return_type() {
+        var source = JavaFileObjects.forSourceString("test.TestService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            @SuppressWarnings("rawtypes")
+            public interface TestService {
+                Promise getUser(String request);
+
+                static TestService testService() {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).failed();
+        assertCompilation(compilation).hadErrorContaining("with type argument");
+    }
 }

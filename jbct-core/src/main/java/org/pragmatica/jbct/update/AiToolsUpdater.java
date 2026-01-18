@@ -8,6 +8,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -19,6 +21,7 @@ import java.util.List;
  * Uses GitHub Tree API to dynamically discover files under ai-tools/.
  */
 public final class AiToolsUpdater {
+    private static final Logger LOG = LoggerFactory.getLogger(AiToolsUpdater.class);
     private static final String REPO = "siy/coding-technology";
     private static final String BRANCH = "main";
     private static final String AI_TOOLS_PREFIX = "ai-tools/";
@@ -112,11 +115,12 @@ public final class AiToolsUpdater {
         if (!Files.exists(versionFile)) {
             return Option.none();
         }
-        try{
+        try {
             var content = Files.readString(versionFile)
                                .trim();
             return Option.option(content);
         } catch (IOException e) {
+            LOG.debug("Failed to read version file {}: {}", versionFile, e.getMessage());
             return Option.none();
         }
     }

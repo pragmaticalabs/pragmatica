@@ -101,8 +101,9 @@ public class DependencyVersionResolver {
                    .printMessage(Diagnostic.Kind.NOTE,
                                  "Loaded " + props.size() + " slice dependencies from slice-deps.properties");
             }
-        } catch (IOException e) {
-            // File might not exist yet - dependencies will remain unresolved
+        } catch (IOException | IllegalArgumentException _) {
+            // File might not exist yet (IOException) or filer doesn't support resource lookup
+            // (IllegalArgumentException) - dependencies will remain unresolved
             env.getMessager()
                .printMessage(Diagnostic.Kind.NOTE,
                              "slice-deps.properties not found, dependency versions will be unresolved");

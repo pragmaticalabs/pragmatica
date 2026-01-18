@@ -10,6 +10,11 @@ public record LintContext(List<Pattern> businessPackagePatterns,
                           List<Pattern> slicePackagePatterns,
                           LintConfig config,
                           String fileName) {
+    public LintContext {
+        businessPackagePatterns = List.copyOf(businessPackagePatterns);
+        slicePackagePatterns = List.copyOf(slicePackagePatterns);
+    }
+
     /**
      * Check if a package name matches any business package pattern.
      */

@@ -10,6 +10,7 @@ import org.apache.maven.project.MavenProject;
 import org.pragmatica.jbct.slice.SliceConfig;
 import org.pragmatica.jbct.slice.SliceManifest;
 import org.pragmatica.jbct.slice.SliceManifest.SliceDependency;
+import org.pragmatica.lang.Option;
 
 import java.io.File;
 import java.io.IOException;
@@ -146,16 +147,21 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                 continue;
             }
 
-            var depManifest = loadManifestFromDependency(dep.artifact(), dep.version());
-            if (depManifest != null) {
-                // External dependencies use default config
-                var entry = new SliceEntry(depArtifact, depManifest, SliceConfig.defaults(), true);
-                graph.put(depArtifact, entry);
-                resolveExternalDependencies(depManifest, graph);
-            } else {
-                graph.put(depArtifact, new SliceEntry(depArtifact, null, SliceConfig.defaults(), true));
-                getLog().debug("No manifest found for dependency: " + depArtifact);
-            }
+            loadManifestFromDependency(dep.artifact(), dep.version())
+                    .onPresent(depManifest -> {
+                        // External dependencies use default config
+                        var entry = new SliceEntry(depArtifact, depManifest, SliceConfig.defaults(), true);
+                        graph.put(depArtifact, entry);
+                        try {
+                            resolveExternalDependencies(depManifest, graph);
+                        } catch (MojoExecutionException e) {
+                            throw new RuntimeException(e);
+                        }
+                    })
+                    .onEmpty(() -> {
+                        graph.put(depArtifact, new SliceEntry(depArtifact, null, SliceConfig.defaults(), true));
+                        getLog().debug("No manifest found for dependency: " + depArtifact);
+                    });
         }
     }
 
@@ -174,21 +180,16 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         }
 
         return SliceConfig.load(configPath)
-                          .fold(cause -> {
-                                    getLog().warn("Failed to load config for slice " + manifest.sliceName()
-                                                  + ": " + cause.message() + " - using defaults");
-                                    return SliceConfig.defaults();
-                                },
-                                config -> {
-                                    getLog().debug("Loaded config for slice: " + manifest.sliceName());
-                                    return config;
-                                });
+                          .onFailure(cause -> getLog().warn("Failed to load config for slice " + manifest.sliceName()
+                                                            + ": " + cause.message() + " - using defaults"))
+                          .onSuccess(_ -> getLog().debug("Loaded config for slice: " + manifest.sliceName()))
+                          .or(SliceConfig.defaults());
     }
 
-    private SliceManifest loadManifestFromDependency(String groupArtifact, String version) {
+    private Option<SliceManifest> loadManifestFromDependency(String groupArtifact, String version) {
         var parts = groupArtifact.split(":");
         if (parts.length != 2) {
-            return null;
+            return Option.none();
         }
 
         var groupId = parts[0];
@@ -202,12 +203,12 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                 return loadManifestFromJar(artifact.getFile());
             }
         }
-        return null;
+        return Option.none();
     }
 
-    private SliceManifest loadManifestFromJar(File jarFile) {
+    private Option<SliceManifest> loadManifestFromJar(File jarFile) {
         if (jarFile == null || !jarFile.exists()) {
-            return null;
+            return Option.none();
         }
 
         try (var jar = new JarFile(jarFile)) {
@@ -219,7 +220,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                     try (var input = jar.getInputStream(entry)) {
                         var result = SliceManifest.load(input);
                         if (result.isSuccess()) {
-                            return result.unwrap();
+                            return Option.some(result.unwrap());
                         }
                     }
                 }
@@ -227,7 +228,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         } catch (IOException e) {
             getLog().debug("Failed to read JAR: " + jarFile);
         }
-        return null;
+        return Option.none();
     }
 
     private void topologicalSort(Map<String, SliceEntry> graph) throws MojoExecutionException {

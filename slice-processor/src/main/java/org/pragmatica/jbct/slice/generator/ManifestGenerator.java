@@ -54,7 +54,7 @@ public class ManifestGenerator {
             }
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to generate manifest: " + e.getMessage())
+            return Causes.cause("Failed to generate manifest: " + e.getClass().getSimpleName() + ": " + e.getMessage())
                          .result();
         }
     }
@@ -145,7 +145,7 @@ public class ManifestGenerator {
 
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to generate slice manifest: " + e.getMessage())
+            return Causes.cause("Failed to generate slice manifest: " + e.getClass().getSimpleName() + ": " + e.getMessage())
                          .result();
         }
     }

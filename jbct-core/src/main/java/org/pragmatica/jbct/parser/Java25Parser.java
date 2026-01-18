@@ -1621,12 +1621,28 @@ public final class Java25Parser {
         SourceSpan span();
         String rule();
 
-        record Terminal(SourceSpan span, String rule, String text) implements AstNode {}
+        record Terminal(SourceSpan span, String rule, String text) implements AstNode {
+            public static Terminal terminal(SourceSpan span, String rule, String text) {
+                return new Terminal(span, rule, text);
+            }
+        }
 
-        record NonTerminal(SourceSpan span, String rule, List<AstNode> children) implements AstNode {}
+        record NonTerminal(SourceSpan span, String rule, List<AstNode> children) implements AstNode {
+            public NonTerminal {
+                children = List.copyOf(children);
+            }
+
+            public static NonTerminal nonTerminal(SourceSpan span, String rule, List<AstNode> children) {
+                return new NonTerminal(span, rule, children);
+            }
+        }
     }
 
     public record ParseError(SourceLocation location, String reason) implements Cause {
+        public static ParseError parseError(SourceLocation location, String reason) {
+            return new ParseError(location, reason);
+        }
+
         @Override
         public String message() {
             return reason + " at " + location;
@@ -1664,6 +1680,11 @@ public final class Java25Parser {
                              SourceSpan span,
                              List<DiagnosticLabel> labels,
                              List<String> notes) {
+        public Diagnostic {
+            labels = List.copyOf(labels);
+            notes = List.copyOf(notes);
+        }
+
         public static Diagnostic error(String message, SourceSpan span) {
             return new Diagnostic(Severity.ERROR, null, message, span, List.of(), List.of());
         }

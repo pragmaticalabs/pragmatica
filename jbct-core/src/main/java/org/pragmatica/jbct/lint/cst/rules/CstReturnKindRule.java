@@ -55,13 +55,13 @@ public class CstReturnKindRule implements CstLintRule {
 
     private Stream<Diagnostic> checkMethod(CstNode method, String source, LintContext ctx) {
         // Get return type - first Type child of MethodDecl
-        var returnType = childByRule(method, RuleId.Type.class);
-        if (returnType.isEmpty()) {
-            return Stream.empty();
-        }
-        var typeText = text(returnType.getOrThrow("Return type expected"),
-                            source)
-                           .trim();
+        return childByRule(method, RuleId.Type.class)
+                       .map(type -> checkReturnType(method, type, source, ctx))
+                       .or(Stream.empty());
+    }
+
+    private Stream<Diagnostic> checkReturnType(CstNode method, CstNode type, String source, LintContext ctx) {
+        var typeText = text(type, source).trim();
         var methodName = childByRule(method, RuleId.Identifier.class)
                                     .map(id -> text(id, source))
                                     .or("(unknown)");

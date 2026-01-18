@@ -6,6 +6,11 @@ import java.util.Deque;
 /**
  * Manages alignment state for the CST printer.
  * Tracks chain alignment and lambda body alignment columns.
+ *
+ * <p><b>Thread Safety:</b> Not thread-safe. This class is designed to be used
+ * by a single {@link CstPrinter} instance during a formatting operation.
+ * All mutable state (chain column, lambda alignment stack) is modified during
+ * traversal. Create a new instance per formatting operation.
  */
 final class AlignmentContext {
     private final Deque<Integer> lambdaAlignStack = new ArrayDeque<>();

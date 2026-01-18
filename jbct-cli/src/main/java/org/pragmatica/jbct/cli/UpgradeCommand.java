@@ -40,37 +40,33 @@ public class UpgradeCommand implements Callable<Integer> {
         System.out.println("Current version: " + currentVersion);
         System.out.println("Checking for updates...");
         return checker.checkLatestRelease()
-                      .fold(cause -> {
-                                System.err.println("Error: " + cause.message());
-                                return 1;
-                            },
-                            release -> {
-                                System.out.println("Latest version: " + release.version());
-                                if (checkOnly) {
-                                    if (GitHubReleaseChecker.isNewerVersion(currentVersion,
-                                                                            release.version())) {
-                                        System.out.println("Update available: " + release.version());
-                                    } else {
-                                        System.out.println("Already at latest version.");
-                                    }
-                                    return 0;
-                                }
-                                // Check if upgrade is needed
-        if (!force && !GitHubReleaseChecker.isNewerVersion(currentVersion,
-                                                           release.version())) {
-                                    System.out.println("Already at latest version. Use --force to reinstall.");
-                                    return 0;
-                                }
-                                // Check for download URL
-                                return release.downloadUrl()
-                                              .toResult(Causes.cause("No downloadable JAR found in release"))
-                                              .fold(cause -> {
-                                                        System.err.println("Error: " + cause.message());
-                                                        System.err.println("Please download manually from GitHub.");
-                                                        return 1;
-                                                    },
-                                                    url -> performUpgrade(url, release.version()));
-                            });
+                      .onFailure(cause -> System.err.println("Error: " + cause.message()))
+                      .fold(_ -> 1, release -> handleRelease(release, currentVersion));
+    }
+
+    private int handleRelease(GitHubReleaseChecker.ReleaseInfo release, String currentVersion) {
+        System.out.println("Latest version: " + release.version());
+        if (checkOnly) {
+            if (GitHubReleaseChecker.isNewerVersion(currentVersion, release.version())) {
+                System.out.println("Update available: " + release.version());
+            } else {
+                System.out.println("Already at latest version.");
+            }
+            return 0;
+        }
+        // Check if upgrade is needed
+        if (!force && !GitHubReleaseChecker.isNewerVersion(currentVersion, release.version())) {
+            System.out.println("Already at latest version. Use --force to reinstall.");
+            return 0;
+        }
+        // Check for download URL
+        return release.downloadUrl()
+                      .toResult(Causes.cause("No downloadable JAR found in release"))
+                      .onFailure(cause -> {
+                          System.err.println("Error: " + cause.message());
+                          System.err.println("Please download manually from GitHub.");
+                      })
+                      .fold(_ -> 1, url -> performUpgrade(url, release.version()));
     }
 
     private int performUpgrade(String downloadUrl, String version) {
@@ -79,55 +75,53 @@ public class UpgradeCommand implements Callable<Integer> {
         var targetPath = JarInstaller.detectCurrentJar();
         System.out.println("Installing to: " + targetPath);
         return installer.install(downloadUrl, targetPath)
-                        .fold(cause -> {
-                                  System.err.println("Error: " + cause.message());
-                                  return 1;
-                              },
-                              path -> {
-                                  System.out.println("Successfully upgraded to version " + version);
-                                  return 0;
-                              });
+                        .onFailure(cause -> System.err.println("Error: " + cause.message()))
+                        .onSuccess(_ -> System.out.println("Successfully upgraded to version " + version))
+                        .fold(_ -> 1, _ -> 0);
     }
 
     private int performFirstInstall() {
         System.out.println("Performing first-time installation...");
         return JarInstaller.createInstallDir()
-                           .flatMap(installDir -> {
-                                        System.out.println("Created installation directory: " + installDir);
-                                        return JarInstaller.installWrapperScripts(installDir)
-                                                           .map(_ -> installDir);
-                                    })
-                           .flatMap(installDir -> {
-                                        System.out.println("Installed wrapper scripts.");
-                                        var checker = GitHubReleaseChecker.releaseChecker();
-                                        return checker.checkLatestRelease()
-                                                      .flatMap(release -> {
-                                                                   return release.downloadUrl()
-                                                                                 .toResult(Causes.cause("No downloadable JAR found in release"))
-                                                                                 .flatMap(url -> {
-                                                                                              System.out.println("Downloading version " + release.version()
-                                                                                                                 + "...");
-                                                                                              var installer = JarInstaller.jarInstaller();
-                                                                                              var targetPath = JarInstaller.defaultInstallPath();
-                                                                                              return installer.install(url, targetPath)
-                                                                                                              .map(_ -> release.version());
-                                                                                          });
-                                                               });
-                                    })
-                           .fold(cause -> {
-                                     System.err.println("Error: " + cause.message());
-                                     return 1;
-                                 },
-                                 version -> {
-                                     System.out.println();
-                                     System.out.println("Successfully installed JBCT " + version);
-                                     System.out.println();
-                                     System.out.println("Add ~/.jbct/bin to your PATH:");
-                                     System.out.println("  export PATH=\"$HOME/.jbct/bin:$PATH\"");
-                                     System.out.println();
-                                     System.out.println("Then run: jbct --help");
-                                     return 0;
-                                 });
+                           .flatMap(this::installScriptsAndDownload)
+                           .onFailure(cause -> System.err.println("Error: " + cause.message()))
+                           .onSuccess(this::printInstallSuccess)
+                           .fold(_ -> 1, _ -> 0);
+    }
+
+    private Result<String> installScriptsAndDownload(java.nio.file.Path installDir) {
+        System.out.println("Created installation directory: " + installDir);
+        return JarInstaller.installWrapperScripts(installDir)
+                           .flatMap(_ -> downloadLatestRelease());
+    }
+
+    private Result<String> downloadLatestRelease() {
+        System.out.println("Installed wrapper scripts.");
+        var checker = GitHubReleaseChecker.releaseChecker();
+        return checker.checkLatestRelease()
+                      .flatMap(this::downloadRelease);
+    }
+
+    private Result<String> downloadRelease(GitHubReleaseChecker.ReleaseInfo release) {
+        return release.downloadUrl()
+                      .toResult(Causes.cause("No downloadable JAR found in release"))
+                      .flatMap(url -> {
+                          System.out.println("Downloading version " + release.version() + "...");
+                          var installer = JarInstaller.jarInstaller();
+                          var targetPath = JarInstaller.defaultInstallPath();
+                          return installer.install(url, targetPath)
+                                          .map(_ -> release.version());
+                      });
+    }
+
+    private void printInstallSuccess(String version) {
+        System.out.println();
+        System.out.println("Successfully installed JBCT " + version);
+        System.out.println();
+        System.out.println("Add ~/.jbct/bin to your PATH:");
+        System.out.println("  export PATH=\"$HOME/.jbct/bin:$PATH\"");
+        System.out.println();
+        System.out.println("Then run: jbct --help");
     }
 
     private String getCurrentVersion() {

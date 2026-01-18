@@ -6,6 +6,8 @@ import org.pragmatica.jbct.shared.UrlValidation;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
@@ -20,6 +22,7 @@ import java.time.Duration;
  * Downloads and installs JBCT JAR files.
  */
 public final class JarInstaller {
+    private static final Logger LOG = LoggerFactory.getLogger(JarInstaller.class);
     private static final String DEFAULT_INSTALL_DIR = ".jbct";
     private static final String LIB_DIR = "lib";
     private static final String JAR_NAME = "jbct.jar";
@@ -72,7 +75,9 @@ public final class JarInstaller {
                     return jarPath;
                 }
             }
-        } catch (Exception e) {}
+        } catch (Exception e) {
+            LOG.debug("Could not detect current JAR location: {}", e.getMessage());
+        }
         return defaultInstallPath();
     }
 
@@ -115,7 +120,9 @@ public final class JarInstaller {
                                         // Best-effort cleanup of temp file on failure
                                         try {
                                             Files.deleteIfExists(tempFile);
-                                        } catch (IOException cleanupError) {}
+                                        } catch (IOException cleanupError) {
+                                            LOG.debug("Failed to cleanup temp file {}: {}", tempFile, cleanupError.getMessage());
+                                        }
                                         return response.toResult();
                                     }
                                 });
@@ -149,9 +156,11 @@ public final class JarInstaller {
             }
             // Remove backup on success - best effort cleanup
             backup.onPresent(backupPath -> {
-                try{
+                try {
                     Files.deleteIfExists(backupPath);
-                } catch (IOException cleanupError) {}
+                } catch (IOException cleanupError) {
+                    LOG.debug("Failed to cleanup backup file {}: {}", backupPath, cleanupError.getMessage());
+                }
             });
             return Result.success(targetPath);
         } catch (Exception e) {

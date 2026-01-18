@@ -23,16 +23,16 @@ public record ErrorTypeMapping(TypeElement errorType,
     /**
      * Factory method for explicit mapping (no pattern).
      */
-    public static ErrorTypeMapping explicit(TypeElement errorType, int httpStatus) {
+    public static ErrorTypeMapping errorTypeMapping(TypeElement errorType, int httpStatus) {
         return new ErrorTypeMapping(errorType, httpStatus, none());
     }
 
     /**
      * Factory method for pattern-matched mapping.
      */
-    public static ErrorTypeMapping fromPattern(TypeElement errorType,
-                                               int httpStatus,
-                                               String matchedPattern) {
+    public static ErrorTypeMapping errorTypeMapping(TypeElement errorType,
+                                                    int httpStatus,
+                                                    String matchedPattern) {
         return new ErrorTypeMapping(errorType, httpStatus, some(matchedPattern));
     }
 

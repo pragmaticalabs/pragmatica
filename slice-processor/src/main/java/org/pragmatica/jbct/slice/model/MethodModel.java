@@ -2,6 +2,7 @@ package org.pragmatica.jbct.slice.model;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.ProcessingEnvironment;
@@ -15,7 +16,6 @@ import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.TypeMirror;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -26,9 +26,10 @@ public record MethodModel(String name,
                           String parameterName,
                           boolean deprecated,
                           AspectModel aspects) {
-    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("^[a-z][a-zA-Z0-9]+$");
+    private static final Pattern METHOD_NAME_PATTERN = Pattern.compile("^[a-z][a-zA-Z0-9]*$");
     private static final String ASPECT_ANNOTATION = "org.pragmatica.aether.infra.aspect.Aspect";
     private static final String KEY_ANNOTATION = "org.pragmatica.aether.infra.aspect.Key";
+    private static final String PROMISE_TYPE = "org.pragmatica.lang.Promise";
 
     public static Result<MethodModel> methodModel(ExecutableElement method, ProcessingEnvironment env) {
         var name = method.getSimpleName()
@@ -41,12 +42,23 @@ public record MethodModel(String name,
         }
 
         var returnType = method.getReturnType();
+
+        return validatePromiseReturnType(returnType, name)
+                   .flatMap(_ -> validateAndBuildModel(method, env, name, returnType));
+    }
+
+    private static Result<MethodModel> validateAndBuildModel(ExecutableElement method,
+                                                              ProcessingEnvironment env,
+                                                              String name,
+                                                              TypeMirror returnType) {
         var responseType = extractPromiseTypeArg(returnType);
         var params = method.getParameters();
+
         if (params.size() != 1) {
             return Causes.cause("Slice methods must have exactly one parameter: " + name)
                          .result();
         }
+
         var param = params.getFirst();
         var deprecated = method.getAnnotation(Deprecated.class) != null;
 
@@ -61,90 +73,125 @@ public record MethodModel(String name,
                                                    aspects));
     }
 
+    private static Result<Unit> validatePromiseReturnType(TypeMirror returnType, String methodName) {
+        if (!(returnType instanceof DeclaredType dt)) {
+            return Causes.cause("Slice method '" + methodName +
+                               "' must return Promise<T>, found: " + returnType)
+                         .result();
+        }
+
+        var typeElement = dt.asElement();
+        if (!(typeElement instanceof TypeElement te)) {
+            return Causes.cause("Slice method '" + methodName +
+                               "' must return Promise<T>, found: " + returnType)
+                         .result();
+        }
+
+        var qualifiedName = te.getQualifiedName()
+                              .toString();
+        if (!qualifiedName.equals(PROMISE_TYPE)) {
+            return Causes.cause("Slice method '" + methodName +
+                               "' must return Promise<T>, found: " + qualifiedName)
+                         .result();
+        }
+
+        if (dt.getTypeArguments()
+              .isEmpty()) {
+            return Causes.cause("Slice method '" + methodName +
+                               "' must return Promise<T> with type argument, found raw Promise")
+                         .result();
+        }
+
+        return Result.success(Unit.unit());
+    }
+
     private static Result<AspectModel> extractAspects(ExecutableElement method,
                                                        VariableElement param,
                                                        ProcessingEnvironment env) {
         return findAnnotationMirror(method, ASPECT_ANNOTATION)
                    .fold(() -> Result.success(AspectModel.none()),
-                         mirror -> {
-                             var kinds = extractAspectKinds(mirror);
-                             var hasCache = kinds.contains("CACHE");
+                         mirror -> buildAspectModel(mirror, param, env));
+    }
 
-                             if (!hasCache) {
-                                 return Result.success(new AspectModel(kinds, Option.none()));
-                             }
+    private static Result<AspectModel> buildAspectModel(AnnotationMirror mirror,
+                                                         VariableElement param,
+                                                         ProcessingEnvironment env) {
+        var kinds = extractAspectKinds(mirror);
+        var hasCache = kinds.contains("CACHE");
 
-                             return extractKeyInfo(param.asType(), env)
-                                        .map(keyInfo -> new AspectModel(kinds, keyInfo));
-                         });
+        if (!hasCache) {
+            return Result.success(new AspectModel(kinds, Option.none()));
+        }
+
+        return extractKeyInfo(param.asType(), env)
+                   .map(keyInfo -> new AspectModel(kinds, keyInfo));
     }
 
     private static Option<AnnotationMirror> findAnnotationMirror(Element element, String annotationName) {
-        for (var mirror : element.getAnnotationMirrors()) {
-            var annotationType = mirror.getAnnotationType()
-                                       .asElement();
-            if (annotationType instanceof TypeElement te) {
-                if (te.getQualifiedName()
-                      .toString()
-                      .equals(annotationName)) {
-                    return Option.some(mirror);
-                }
-            }
-        }
-        return Option.none();
+        return element.getAnnotationMirrors()
+                      .stream()
+                      .filter(mirror -> isAnnotationType(mirror, annotationName))
+                      .findFirst()
+                      .map(Option::some)
+                      .orElse(Option.none());
+    }
+
+    private static boolean isAnnotationType(AnnotationMirror mirror, String annotationName) {
+        var annotationType = mirror.getAnnotationType()
+                                   .asElement();
+        return annotationType instanceof TypeElement te &&
+               te.getQualifiedName()
+                 .toString()
+                 .equals(annotationName);
+    }
+
+    private static List<String> extractAspectKinds(AnnotationMirror aspectMirror) {
+        return aspectMirror.getElementValues()
+                           .entrySet()
+                           .stream()
+                           .filter(entry -> entry.getKey()
+                                                 .getSimpleName()
+                                                 .toString()
+                                                 .equals("value"))
+                           .flatMap(entry -> extractKindsFromValue(entry.getValue()).stream())
+                           .toList();
     }
 
     @SuppressWarnings("unchecked")
-    private static List<String> extractAspectKinds(AnnotationMirror aspectMirror) {
-        var kinds = new ArrayList<String>();
-        for (var entry : aspectMirror.getElementValues()
-                                     .entrySet()) {
-            if (entry.getKey()
-                     .getSimpleName()
-                     .toString()
-                     .equals("value")) {
-                var value = entry.getValue()
-                                 .getValue();
-                if (value instanceof List<?> list) {
-                    for (var item : list) {
-                        if (item instanceof AnnotationValue av) {
-                            var enumValue = av.getValue();
-                            if (enumValue instanceof VariableElement ve) {
-                                kinds.add(ve.getSimpleName()
-                                            .toString());
-                            }
-                        }
-                    }
-                }
-            }
+    private static List<String> extractKindsFromValue(AnnotationValue annotationValue) {
+        var value = annotationValue.getValue();
+        if (!(value instanceof List<?> list)) {
+            return List.of();
         }
-        return kinds;
+        return list.stream()
+                   .filter(AnnotationValue.class::isInstance)
+                   .map(AnnotationValue.class::cast)
+                   .map(AnnotationValue::getValue)
+                   .filter(VariableElement.class::isInstance)
+                   .map(VariableElement.class::cast)
+                   .map(ve -> ve.getSimpleName().toString())
+                   .toList();
     }
 
     private static Result<Option<KeyExtractorInfo>> extractKeyInfo(TypeMirror paramType,
                                                                     ProcessingEnvironment env) {
         if (!(paramType instanceof DeclaredType dt)) {
-            return Result.success(Option.some(KeyExtractorInfo.identity(paramType.toString())));
+            return KeyExtractorInfo.identity(paramType.toString())
+                                   .map(Option::some);
         }
 
         var element = dt.asElement();
         if (element.getKind() != ElementKind.RECORD) {
-            return Result.success(Option.some(KeyExtractorInfo.identity(paramType.toString())));
+            return KeyExtractorInfo.identity(paramType.toString())
+                                   .map(Option::some);
         }
 
         var typeElement = (TypeElement) element;
-        var keyFields = new ArrayList<RecordComponentElement>();
-
-        for (var enclosed : typeElement.getEnclosedElements()) {
-            if (enclosed instanceof RecordComponentElement rce) {
-                if (hasKeyAnnotation(rce)) {
-                    keyFields.add(rce);
-                }
-            }
-        }
+        var keyFields = findKeyAnnotatedFields(typeElement);
 
         if (keyFields.isEmpty()) {
-            return Result.success(Option.some(KeyExtractorInfo.identity(paramType.toString())));
+            return KeyExtractorInfo.identity(paramType.toString())
+                                   .map(Option::some);
         }
 
         if (keyFields.size() > 1) {
@@ -153,7 +200,20 @@ public record MethodModel(String name,
                          .result();
         }
 
-        var keyField = keyFields.getFirst();
+        return buildKeyExtractorFromField(keyFields.getFirst(), typeElement);
+    }
+
+    private static List<RecordComponentElement> findKeyAnnotatedFields(TypeElement typeElement) {
+        return typeElement.getEnclosedElements()
+                          .stream()
+                          .filter(RecordComponentElement.class::isInstance)
+                          .map(RecordComponentElement.class::cast)
+                          .filter(MethodModel::hasKeyAnnotation)
+                          .toList();
+    }
+
+    private static Result<Option<KeyExtractorInfo>> buildKeyExtractorFromField(RecordComponentElement keyField,
+                                                                                TypeElement typeElement) {
         var keyType = keyField.asType()
                               .toString();
         var fieldName = keyField.getSimpleName()
@@ -161,7 +221,8 @@ public record MethodModel(String name,
         var paramTypeName = typeElement.getQualifiedName()
                                        .toString();
 
-        return Result.success(Option.some(KeyExtractorInfo.single(keyType, fieldName, paramTypeName)));
+        return KeyExtractorInfo.single(keyType, fieldName, paramTypeName)
+                               .map(Option::some);
     }
 
     private static boolean hasKeyAnnotation(RecordComponentElement element) {

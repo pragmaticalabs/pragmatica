@@ -5,6 +5,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.ProcessingEnvironment;
+import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.DeclaredType;
@@ -21,11 +22,16 @@ public record DependencyModel(String parameterName,
         var paramName = param.getSimpleName()
                              .toString();
         var type = param.asType();
-        if (! (type instanceof DeclaredType dt)) {
+        if (!(type instanceof DeclaredType dt)) {
             return Causes.cause("Dependency parameter must be an interface: " + paramName)
                          .result();
         }
-        var typeElement = (TypeElement) dt.asElement();
+        var element = dt.asElement();
+        if (element.getKind() != ElementKind.INTERFACE) {
+            return Causes.cause("Dependency parameter '" + paramName + "' must be an interface, found: " + element.getKind())
+                         .result();
+        }
+        var typeElement = (TypeElement) element;
         var qualifiedName = typeElement.getQualifiedName()
                                        .toString();
         var simpleName = typeElement.getSimpleName()
@@ -68,9 +74,28 @@ public record DependencyModel(String parameterName,
 
     /**
      * Get lowercase name for local proxy record (JBCT naming convention).
+     * Handles acronyms properly: "HTTPService" -> "httpService"
      */
     public String localRecordName() {
-        return Character.toLowerCase(interfaceSimpleName.charAt(0)) + interfaceSimpleName.substring(1);
+        if (interfaceSimpleName.isEmpty()) {
+            return "";
+        }
+        // Find the end of leading uppercase sequence
+        int i = 0;
+        while (i < interfaceSimpleName.length() && Character.isUpperCase(interfaceSimpleName.charAt(i))) {
+            i++;
+        }
+        if (i == 0) {
+            return interfaceSimpleName;
+        }
+        if (i == 1) {
+            return Character.toLowerCase(interfaceSimpleName.charAt(0)) + interfaceSimpleName.substring(1);
+        }
+        // Acronym handling: "HTTPService" -> "httpService"
+        if (i < interfaceSimpleName.length()) {
+            return interfaceSimpleName.substring(0, i - 1).toLowerCase() + interfaceSimpleName.substring(i - 1);
+        }
+        return interfaceSimpleName.toLowerCase();
     }
 
     /**

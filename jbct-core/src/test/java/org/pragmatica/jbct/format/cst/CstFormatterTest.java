@@ -9,6 +9,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -70,11 +71,18 @@ class CstFormatterTest {
         formatter.format(source)
                  .onFailure(cause -> fail("Format failed: " + cause.message()))
                  .onSuccess(formatted -> {
-                                System.out.println("=== Chain output ===");
-                                System.out.println(formatted.content());
+                                // Verify chain calls are preserved
+                                assertThat(formatted.content())
+                                          .contains(".map(String::trim)");
+                                assertThat(formatted.content())
+                                          .contains(".map(String::toUpperCase)");
+                                // Verify chain structure is maintained
+                                assertThat(formatted.content())
+                                          .contains("return input");
                             });
     }
 
+    @Disabled("Debug utility for visual inspection - covered by cstFormatter_isIdempotent_onGoldenExamples")
     @Test
     void format_goldenExample_chainAlignment() throws IOException {
         var path = EXAMPLES_DIR.resolve("ChainAlignment.java");
@@ -82,12 +90,9 @@ class CstFormatterTest {
         var source = new SourceFile(path, content);
         formatter.format(source)
                  .onFailure(cause -> fail("Format failed: " + cause.message()))
-                 .onSuccess(formatted -> {
-                                System.out.println("=== ChainAlignment.java output ===");
-                                System.out.println(formatted.content());
-                                System.out.println("=== Expected ===");
-                                System.out.println(content);
-                            });
+                 .onSuccess(formatted -> assertEquals(content,
+                                                      formatted.content(),
+                                                      "Golden example should be idempotent"));
     }
 
     @Test
@@ -95,25 +100,27 @@ class CstFormatterTest {
         // Test member spacing: fields should NOT have blank lines between them,
         // but there should be blank line between fields and methods
         var code = "package test;\nimport org.pragmatica.lang.Result;\nclass Chain {\n    private String name;\n    private int age;\n    public String getName() { return name; }\n    public int getAge() { return age; }\n}\n";
-        System.out.println("=== Input code ===");
-        System.out.println(code);
         // Test parsing first
         var parser = new Java25Parser();
         var parseResult = parser.parse(code);
-        System.out.println("Parse result: " + (parseResult.isSuccess()
-                                               ? "success"
-                                               : "failure"));
         if (parseResult.isFailure()) {
-            parseResult.onFailure(cause -> System.out.println("Parse error: " + cause.message()));
-            fail("Parse failed");
+            parseResult.onFailure(cause -> fail("Parse error: " + cause.message()));
             return;
         }
         var source = new SourceFile(Path.of("Test.java"), code);
         formatter.format(source)
                  .onFailure(cause -> fail("Format failed: " + cause.message()))
                  .onSuccess(formatted -> {
-                                System.out.println("=== Member spacing output ===");
-                                System.out.println(formatted.content());
+                                // Verify fields are preserved
+                                assertThat(formatted.content())
+                                          .contains("private String name;");
+                                assertThat(formatted.content())
+                                          .contains("private int age;");
+                                // Verify methods are preserved
+                                assertThat(formatted.content())
+                                          .contains("public String getName()");
+                                assertThat(formatted.content())
+                                          .contains("public int getAge()");
                             });
     }
 
@@ -134,138 +141,148 @@ class CstFormatterTest {
         formatter.format(source)
                  .onFailure(cause -> fail("Format failed: " + cause.message()))
                  .onSuccess(formatted -> {
-                                System.out.println("=== Import grouping output ===");
-                                System.out.println(formatted.content());
+                                // Verify all imports are preserved
+                                assertThat(formatted.content())
+                                          .contains("import java.util.List;");
+                                assertThat(formatted.content())
+                                          .contains("import java.util.Map;");
+                                assertThat(formatted.content())
+                                          .contains("import org.pragmatica.lang.Result;");
+                                assertThat(formatted.content())
+                                          .contains("import org.pragmatica.lang.Option;");
+                                assertThat(formatted.content())
+                                          .contains("import static java.util.Collections.emptyList;");
                             });
     }
 
+    @Disabled("Debug utility for CST inspection - not a behavioral test")
     @Test
     void debug_cstTrivia() {
         var parser = new Java25Parser();
         // Test with comment
         var code = "class Foo { // comment\n  void bar() { } }";
         var result = parser.parse(code);
-        System.out.println("Parse result: " + result);
         assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
-        result.onSuccess(cst -> {
-            dumpCst(cst, 0, code);
-        });
+        result.onSuccess(cst -> dumpCst(cst, 0, code));
     }
 
+    @Disabled("Debug utility for CST trivia inspection - not a behavioral test")
     @Test
     void debug_cstTriviaAssignment() {
         var parser = new Java25Parser();
         var code = "class Test { void foo() { int x = 1; } }";
         var result = parser.parse(code);
-        System.out.println("Parse code: " + code);
-        System.out.println("Parse result: " + (result.isSuccess()
-                                               ? "success"
-                                               : "failure"));
         assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
         result.onSuccess(cst -> dumpCstWithTrivia(cst, 0));
     }
 
+    @Disabled("Debug utility for lambda CST inspection - not a behavioral test")
     @Test
     void debug_lambdaParsing() {
         var parser = new Java25Parser();
         var code = "class Test { void foo() { list.filter(s -> !s.isEmpty()); } }";
         var result = parser.parse(code);
-        System.out.println("Parse code: " + code);
-        System.out.println("Parse result: " + (result.isSuccess()
-                                               ? "success"
-                                               : "failure"));
         assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
         result.onSuccess(cst -> dumpCstLambda(cst, 0));
     }
 
     @Test
-    void debug_formatLambda() {
+    void format_preservesLambdaSpacing() {
         var code = "class Test { void foo() { list.filter(s -> !s.isEmpty()); } }";
         var source = new SourceFile(Path.of("Test.java"), code);
         formatter.format(source)
                  .onFailure(cause -> fail("Format failed: " + cause.message()))
                  .onSuccess(formatted -> {
-                                System.out.println("=== Input ===");
-                                System.out.println(code);
-                                System.out.println("=== Output ===");
-                                System.out.println(formatted.content());
                                 // Check for space around ->
-        assertThat(formatted.content())
-                  .contains("s -> !");
+                                assertThat(formatted.content())
+                                          .contains("s -> !");
                             });
     }
 
     @Test
-    void debug_formatMethodRef() {
+    void format_preservesMethodReference() {
         var code = "class Test { void foo() { list.map(String::trim).map(String::toUpperCase); } }";
         var source = new SourceFile(Path.of("Test.java"), code);
         formatter.format(source)
                  .onFailure(cause -> fail("Format failed: " + cause.message()))
                  .onSuccess(formatted -> {
-                                System.out.println("=== Input ===");
-                                System.out.println(code);
-                                System.out.println("=== Output ===");
-                                System.out.println(formatted.content());
                                 // Should NOT have space after (
-        assertThat(formatted.content())
-                  .contains("map(String::trim)");
+                                assertThat(formatted.content())
+                                          .contains("map(String::trim)");
                             });
     }
 
     @Test
-    void debug_formatTernary() {
+    void format_preservesTernary() {
         var code = "class Test { String foo(boolean condition) { return condition ? \"yes\" : \"no\"; } }";
         var source = new SourceFile(Path.of("Test.java"), code);
         formatter.format(source)
                  .onFailure(cause -> fail("Format failed: " + cause.message()))
                  .onSuccess(formatted -> {
-                                System.out.println("=== Input ===");
-                                System.out.println(code);
-                                System.out.println("=== Output ===");
-                                System.out.println(formatted.content());
+                                // Verify ternary operator components are preserved
+                                // Formatter may wrap long ternaries across multiple lines
+                                assertThat(formatted.content())
+                                          .contains("condition");
+                                assertThat(formatted.content())
+                                          .contains("?");
+                                assertThat(formatted.content())
+                                          .contains("\"yes\"");
+                                assertThat(formatted.content())
+                                          .contains(":");
+                                assertThat(formatted.content())
+                                          .contains("\"no\"");
                             });
     }
 
+    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
     @Test
     void debug_formatBlankLines() throws IOException {
         compareGoldenFile("BlankLines.java");
     }
 
+    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
     @Test
     void debug_formatChainAlignment() throws IOException {
         compareGoldenFile("ChainAlignment.java");
     }
 
+    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
     @Test
     void debug_formatAnnotations() throws IOException {
         compareGoldenFile("Annotations.java");
     }
 
+    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
     @Test
     void debug_formatMultilineArguments() throws IOException {
         compareGoldenFile("MultilineArguments.java");
     }
 
+    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
     @Test
     void debug_formatLambdas() throws IOException {
         compareGoldenFile("Lambdas.java");
     }
 
+    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
     @Test
     void debug_formatSwitchExpressions() throws IOException {
         compareGoldenFile("SwitchExpressions.java");
     }
 
+    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
     @Test
     void debug_formatLineWrapping() throws IOException {
         compareGoldenFile("LineWrapping.java");
     }
 
+    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
     @Test
     void debug_formatMultilineParameters() throws IOException {
         compareGoldenFile("MultilineParameters.java");
     }
 
+    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
     @Test
     void debug_formatTernaryOperators() throws IOException {
         compareGoldenFile("TernaryOperators.java");
@@ -301,31 +318,27 @@ class CstFormatterTest {
                             });
     }
 
+    @Disabled("Debug utility for blank lines trivia inspection - not a behavioral test")
     @Test
     void debug_blankLinesTrivia() {
         var parser = new Java25Parser();
         var code = "class Test {\n    int a;\n\n    // Comment\n    int b;\n}";
-        System.out.println("=== Input code ===");
-        System.out.println(code);
         var result = parser.parse(code);
-        result.onSuccess(cst -> {
-                             System.out.println("=== CST with trivia (ClassMember nodes only) ===");
-                             dumpClassMembers(cst, 0);
-                         });
+        assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
+        result.onSuccess(cst -> dumpClassMembers(cst, 0));
     }
 
     @Test
-    void debug_emptyRecordBody() {
+    void format_preservesEmptyRecordBody() {
         var code = "class Outer { record Test(String value) {} }";
-        System.out.println("=== Input code ===");
-        System.out.println(code);
         var source = new SourceFile(Path.of("Test.java"), code);
         formatter.format(source)
                  .onFailure(cause -> fail("Format failed: " + cause.message()))
                  .onSuccess(formatted -> {
-                     System.out.println("=== Output ===");
-                     System.out.println(formatted.content());
-                 });
+                                // Verify empty record body is preserved
+                                assertThat(formatted.content())
+                                          .contains("record Test(String value)");
+                            });
     }
 
     private void dumpClassMembers(CstNode node, int depth) {

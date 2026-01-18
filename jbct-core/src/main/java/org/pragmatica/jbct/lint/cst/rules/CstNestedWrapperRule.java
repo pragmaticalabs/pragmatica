@@ -47,21 +47,20 @@ public class CstNestedWrapperRule implements CstLintRule {
     }
 
     private Stream<Diagnostic> checkMethod(CstNode method, String source, LintContext ctx) {
-        var returnType = childByRule(method, RuleId.Type.class);
-        if (returnType.isEmpty()) {
-            return Stream.empty();
-        }
-        var typeText = text(returnType.getOrThrow("Return type expected"),
-                            source)
-                           .trim();
+        return childByRule(method, RuleId.Type.class)
+                       .flatMap(type -> checkTypeForNesting(method, type, source, ctx))
+                       .stream();
+    }
+
+    private Option<Diagnostic> checkTypeForNesting(CstNode method, CstNode type, String source, LintContext ctx) {
+        var typeText = text(type, source).trim();
         return detectNestedWrapper(typeText)
-                                  .map(nestedPattern -> {
-                                           var methodName = childByRule(method, RuleId.Identifier.class)
-                                                                       .map(id -> text(id, source))
-                                                                       .or("(unknown)");
-                                           return createDiagnostic(method, methodName, nestedPattern, ctx);
-                                       })
-                                  .stream();
+                       .map(nestedPattern -> {
+                           var methodName = childByRule(method, RuleId.Identifier.class)
+                                                       .map(id -> text(id, source))
+                                                       .or("(unknown)");
+                           return createDiagnostic(method, methodName, nestedPattern, ctx);
+                       });
     }
 
     private Option<String> detectNestedWrapper(String typeText) {

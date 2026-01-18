@@ -2,6 +2,8 @@ package org.pragmatica.jbct.slice;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -27,6 +29,13 @@ public record SliceManifest(String sliceName,
                             String implArtifactId,
                             List<SliceDependency> dependencies,
                             String configFile) {
+    public SliceManifest {
+        apiClasses = List.copyOf(apiClasses);
+        implClasses = List.copyOf(implClasses);
+        requestClasses = List.copyOf(requestClasses);
+        responseClasses = List.copyOf(responseClasses);
+        dependencies = List.copyOf(dependencies);
+    }
 
     /**
      * Dependency information for blueprint generation.
@@ -102,12 +111,15 @@ public record SliceManifest(String sliceName,
         ));
     }
 
+    private static final Logger LOG = LoggerFactory.getLogger(SliceManifest.class);
+
     private static List<SliceDependency> parseDependencies(Properties props) {
         var countStr = props.getProperty("dependencies.count", "0");
         int count;
         try {
             count = Integer.parseInt(countStr);
         } catch (NumberFormatException e) {
+            LOG.warn("Invalid dependencies.count value '{}' in manifest, using 0", countStr);
             return List.of();
         }
         var dependencies = new java.util.ArrayList<SliceDependency>();
@@ -220,7 +232,7 @@ public record SliceManifest(String sliceName,
                       });
             }
         } catch (IOException e) {
-            // Ignore - just return base class
+            LOG.debug("Failed to list inner classes for {}: {}", className, e.getMessage());
         }
 
         return result;

@@ -41,8 +41,11 @@ class SliceProjectInitializerTest {
     @Test
     void should_generate_valid_pom_xml() throws Exception {
         var projectDir = tempDir.resolve("test-slice");
-        SliceProjectInitializer.sliceProjectInitializer(projectDir, "com.test", "test-slice")
-                               .flatMap(SliceProjectInitializer::initialize);
+        var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "com.test", "test-slice")
+                                            .flatMap(SliceProjectInitializer::initialize);
+        assertThat(result.isSuccess())
+                  .as("Project initialization should succeed")
+                  .isTrue();
         var pomContent = Files.readString(projectDir.resolve("pom.xml"));
         assertThat(pomContent)
                   .contains("<groupId>com.test</groupId>");
@@ -61,8 +64,11 @@ class SliceProjectInitializerTest {
     @Test
     void should_generate_valid_slice_interface() throws Exception {
         var projectDir = tempDir.resolve("inventory-service");
-        SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "inventory-service")
-                               .flatMap(SliceProjectInitializer::initialize);
+        var result = SliceProjectInitializer.sliceProjectInitializer(projectDir, "org.example", "inventory-service")
+                                            .flatMap(SliceProjectInitializer::initialize);
+        assertThat(result.isSuccess())
+                  .as("Project initialization should succeed")
+                  .isTrue();
         var sliceFile = projectDir.resolve("src/main/java/org/example/inventoryservice/InventoryService.java");
         var content = Files.readString(sliceFile);
         assertThat(content)

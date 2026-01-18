@@ -38,12 +38,10 @@ public class CstVoidTypeRule implements CstLintRule {
     }
 
     private boolean returnsBoxedVoid(CstNode method, String source) {
-        var returnType = childByRule(method, RuleId.Type.class);
-        if (returnType.isEmpty()) return false;
-        var typeText = text(returnType.getOrThrow("Return type expected"),
-                            source)
-                           .trim();
-        return typeText.equals("Void") || typeText.contains("<Void>");
+        return childByRule(method, RuleId.Type.class)
+                       .map(type -> text(type, source).trim())
+                       .filter(typeText -> typeText.equals("Void") || typeText.contains("<Void>"))
+                       .isPresent();
     }
 
     private Diagnostic createDiagnostic(CstNode method, String source, LintContext ctx) {

@@ -22,6 +22,11 @@ import java.util.Map;
 public record ErrorPatternConfig(int defaultStatus,
                                  Map<Integer, List<String>> statusPatterns,
                                  Map<String, Integer> explicitMappings) {
+    public ErrorPatternConfig {
+        statusPatterns = Map.copyOf(statusPatterns);
+        explicitMappings = Map.copyOf(explicitMappings);
+    }
+
     /**
      * Empty configuration with 500 as default status.
      */
@@ -101,10 +106,11 @@ public record ErrorPatternConfig(int defaultStatus,
      * @return resolved HTTP status code
      */
     public int resolveStatus(String typeName) {
-        var explicit = explicitMappings.get(typeName);
-        if (explicit != null) {
-            return explicit;
-        }
+        return Option.option(explicitMappings.get(typeName))
+                     .or(() -> resolveFromPatterns(typeName));
+    }
+
+    private int resolveFromPatterns(String typeName) {
         for (var entry : statusPatterns.entrySet()) {
             for (var pattern : entry.getValue()) {
                 if (ErrorTypeMatcher.matches(typeName, pattern)) {

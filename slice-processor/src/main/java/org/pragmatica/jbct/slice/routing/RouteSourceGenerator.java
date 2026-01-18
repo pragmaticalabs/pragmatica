@@ -165,7 +165,7 @@ public class RouteSourceGenerator {
             generateServiceFile(qualifiedName);
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to generate routes class: " + e.getMessage())
+            return Causes.cause("Failed to generate routes class: " + e.getClass().getSimpleName() + ": " + e.getMessage())
                          .result();
         }
     }
@@ -173,7 +173,7 @@ public class RouteSourceGenerator {
     private void generateServiceFile(String qualifiedName) throws IOException {
         // Read existing entries if file exists
         Set<String> entries = new LinkedHashSet<>();
-        try{
+        try {
             FileObject existing = filer.getResource(StandardLocation.CLASS_OUTPUT, "", SERVICE_FILE);
             try (var reader = new BufferedReader(existing.openReader(true))) {
                 String line;
@@ -184,7 +184,11 @@ public class RouteSourceGenerator {
                     }
                 }
             }
-        } catch (IOException _) {}
+        } catch (IOException _) {
+            // File doesn't exist yet - expected on first compilation
+        } catch (IllegalArgumentException _) {
+            // Filer.getResource throws IAE for non-existent resources in some implementations
+        }
         // Add the new entry
         entries.add(qualifiedName);
         // Write all entries
@@ -333,9 +337,10 @@ public class RouteSourceGenerator {
                                RouteDsl routeDsl,
                                MethodModel method,
                                boolean hasMore) {
-        var fullPath = prefix.isEmpty()
-                       ? routeDsl.cleanPath()
-                       : prefix + routeDsl.cleanPath();
+        var rawPath = prefix.isEmpty()
+                      ? routeDsl.cleanPath()
+                      : prefix + routeDsl.cleanPath();
+        var fullPath = escapeJavaString(rawPath);
         var httpMethod = routeDsl.method()
                                  .toLowerCase();
         var responseType = method.responseType()
@@ -556,7 +561,7 @@ public class RouteSourceGenerator {
 
     private String queryParamList(List<QueryParam> queryParams) {
         return queryParams.stream()
-                          .map(q -> "QueryParameter." + typeToQueryParameter(q.type()) + "(\"" + q.name() + "\")")
+                          .map(q -> "QueryParameter." + typeToQueryParameter(q.type()) + "(\"" + escapeJavaString(q.name()) + "\")")
                           .collect(Collectors.joining(", "));
     }
 
@@ -599,5 +604,28 @@ public class RouteSourceGenerator {
     private String typeToQueryParameter(String type) {
         // Query parameters use same factory method names as path parameters
         return TYPE_TO_PATH_PARAMETER.getOrDefault(type, "aString");
+    }
+
+    /**
+     * Escapes a string for safe embedding in Java string literals.
+     * Handles quotes, backslashes, and common control characters.
+     */
+    private String escapeJavaString(String input) {
+        if (input == null) {
+            return "";
+        }
+        var sb = new StringBuilder(input.length());
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> sb.append(c);
+            }
+        }
+        return sb.toString();
     }
 }

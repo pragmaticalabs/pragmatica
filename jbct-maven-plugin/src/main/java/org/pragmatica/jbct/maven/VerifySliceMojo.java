@@ -130,6 +130,11 @@ public class VerifySliceMojo extends AbstractMojo {
     }
 
     private record PartialResult(List<String> errors, List<String> warnings) {
+        PartialResult {
+            errors = List.copyOf(errors);
+            warnings = List.copyOf(warnings);
+        }
+
         static PartialResult error(String error) {
             return new PartialResult(List.of(error), List.of());
         }
@@ -143,5 +148,10 @@ public class VerifySliceMojo extends AbstractMojo {
         }
     }
 
-    private record ValidationResult(List<String> errors, List<String> warnings) {}
+    private record ValidationResult(List<String> errors, List<String> warnings) {
+        ValidationResult {
+            errors = List.copyOf(errors);
+            warnings = List.copyOf(warnings);
+        }
+    }
 }

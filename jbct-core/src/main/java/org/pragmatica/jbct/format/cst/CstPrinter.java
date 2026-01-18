@@ -15,11 +15,17 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 /**
  * CST printer for JBCT formatting.
  *
- * Key formatting rules:
- * - Chain alignment: `.` aligns to end of first method call
- * - Arguments: align to opening `(`
- * - Imports: grouped (pragmatica, java/javax, static)
- * - 120 char max line length, 4 space indent
+ * <p>Key formatting rules:
+ * <ul>
+ *   <li>Chain alignment: {@code .} aligns to end of first method call</li>
+ *   <li>Arguments: align to opening {@code (}</li>
+ *   <li>Imports: grouped (pragmatica, java/javax, static)</li>
+ *   <li>120 char max line length, 4 space indent</li>
+ * </ul>
+ *
+ * <p><b>Thread Safety:</b> Not thread-safe. Each instance maintains mutable state
+ * (output buffer, column tracking, alignment context) during printing. Create a new
+ * instance per formatting operation or synchronize externally.
  */
 public class CstPrinter {
     private final FormatterConfig config;

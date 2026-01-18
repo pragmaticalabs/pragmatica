@@ -22,6 +22,10 @@ import java.util.Map;
 public record RouteConfig(String prefix,
                           Map<String, RouteDsl> routes,
                           ErrorPatternConfig errors) {
+    public RouteConfig {
+        routes = Map.copyOf(routes);
+    }
+
     /**
      * Empty configuration.
      */

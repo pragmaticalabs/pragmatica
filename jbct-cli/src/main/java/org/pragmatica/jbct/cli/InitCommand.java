@@ -121,18 +121,9 @@ public class InitCommand implements Callable<Integer> {
                 System.out.println();
                 System.out.println("Installing AI tools...");
                 aiToolsInstalled = installer.install()
-                                            .fold(cause -> {
-                                                      System.err.println("Warning: Failed to install AI tools: " + cause.message());
-                                                      return false;
-                                                  },
-                                                  installedFiles -> {
-                                                      if (!installedFiles.isEmpty()) {
-                                                          System.out.println("Installed AI tools to: .claude/");
-                                                          return true;
-                                                      }
-                                                      System.out.println("No AI tools files to install.");
-                                                      return false;
-                                                  });
+                                            .onFailure(cause -> System.err.println("Warning: Failed to install AI tools: " + cause.message()))
+                                            .onSuccess(this::printAiToolsResult)
+                                            .fold(_ -> false, files -> !files.isEmpty());
             }
         }
         // Print summary
@@ -161,19 +152,18 @@ public class InitCommand implements Callable<Integer> {
                                                                   effectiveJbctVersion(), effectivePragmaticaVersion())
                           : ProjectInitializer.projectInitializer(projectDir, groupId, artifactId);
         return initializer.initialize()
-                          .fold(cause -> {
-                                    System.err.println("Error: " + cause.message());
-                                    return false;
-                                },
-                                createdFiles -> {
-                                    System.out.println();
-                                    System.out.println("Created project files:");
-                                    for (var file : createdFiles) {
-                                        var relativePath = projectDir.relativize(file);
-                                        System.out.println("  " + relativePath);
-                                    }
-                                    return true;
-                                });
+                          .onFailure(cause -> System.err.println("Error: " + cause.message()))
+                          .onSuccess(this::printCreatedFiles)
+                          .fold(_ -> false, _ -> true);
+    }
+
+    private void printCreatedFiles(java.util.List<Path> createdFiles) {
+        System.out.println();
+        System.out.println("Created project files:");
+        for (var file : createdFiles) {
+            var relativePath = projectDir.relativize(file);
+            System.out.println("  " + relativePath);
+        }
     }
 
     private boolean hasVersionOverrides() {
@@ -201,21 +191,27 @@ public class InitCommand implements Callable<Integer> {
     private boolean initSliceProject() {
         return SliceProjectInitializer.sliceProjectInitializer(projectDir, groupId, artifactId)
                                       .flatMap(initializer -> initializer.initialize()
-                                                                         .map(createdFiles -> {
-                                                                                  System.out.println();
-                                                                                  System.out.println("Created slice project files:");
-                                                                                  for (var file : createdFiles) {
-                                                                                      var relativePath = projectDir.relativize(file);
-                                                                                      System.out.println("  " + relativePath);
-                                                                                  }
-                                                                                  System.out.println();
-                                                                                  System.out.println("Slice: " + initializer.sliceName());
-                                                                                  return true;
-                                                                              }))
-                                      .fold(cause -> {
-                                                System.err.println("Error: " + cause.message());
-                                                return false;
-                                            },
-                                            success -> success);
+                                                                         .onSuccess(createdFiles -> printSliceCreatedFiles(createdFiles, initializer.sliceName())))
+                                      .onFailure(cause -> System.err.println("Error: " + cause.message()))
+                                      .fold(_ -> false, _ -> true);
+    }
+
+    private void printSliceCreatedFiles(java.util.List<Path> createdFiles, String sliceName) {
+        System.out.println();
+        System.out.println("Created slice project files:");
+        for (var file : createdFiles) {
+            var relativePath = projectDir.relativize(file);
+            System.out.println("  " + relativePath);
+        }
+        System.out.println();
+        System.out.println("Slice: " + sliceName);
+    }
+
+    private void printAiToolsResult(java.util.List<Path> installedFiles) {
+        if (!installedFiles.isEmpty()) {
+            System.out.println("Installed AI tools to: .claude/");
+        } else {
+            System.out.println("No AI tools files to install.");
+        }
     }
 }

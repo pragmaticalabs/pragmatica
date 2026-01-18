@@ -480,5 +480,13 @@ public class PackageSlicesMojo extends AbstractMojo {
                                             List<ArtifactInfo> sharedDeps,
                                             List<ArtifactInfo> infraDeps,
                                             List<ArtifactInfo> sliceDeps,
-                                            List<Artifact> externalDeps) {}
+                                            List<Artifact> externalDeps) {
+        DependencyClassification {
+            apiDeps = List.copyOf(apiDeps);
+            sharedDeps = List.copyOf(sharedDeps);
+            infraDeps = List.copyOf(infraDeps);
+            sliceDeps = List.copyOf(sliceDeps);
+            externalDeps = List.copyOf(externalDeps);
+        }
+    }
 }

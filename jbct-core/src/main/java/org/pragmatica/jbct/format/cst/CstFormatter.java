@@ -12,7 +12,12 @@ import java.util.List;
 /**
  * CST-based JBCT code formatter.
  *
- * Uses the generated Java25Parser for parsing and preserves trivia (whitespace/comments).
+ * <p>Uses the generated Java25Parser for parsing and preserves trivia (whitespace/comments).
+ *
+ * <p><b>Thread Safety:</b> Thread-safe for concurrent use. While the underlying parser
+ * and printer create per-operation state, instances of this class can be safely shared
+ * across threads. Each {@link #format(SourceFile)} call creates its own parser and
+ * printer instances internally.
  */
 public class CstFormatter {
     private final FormatterConfig config;

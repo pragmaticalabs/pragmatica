@@ -22,6 +22,12 @@ public record JbctConfig(FormatterConfig formatter,
                          List<String> sourceDirectories,
                          List<String> businessPackages,
                          List<String> slicePackages) {
+    public JbctConfig {
+        sourceDirectories = List.copyOf(sourceDirectories);
+        businessPackages = List.copyOf(businessPackages);
+        slicePackages = List.copyOf(slicePackages);
+    }
+
     /**
      * Default configuration.
      * Note: slicePackages is empty by default - must be configured for JBCT-SLICE-01 rule.

@@ -129,16 +129,16 @@ public final class ErrorTypeDiscovery {
         var explicit = config.explicitMappings()
                              .get(simpleName);
         if (explicit != null) {
-            return Result.success(ErrorTypeMapping.explicit(errorType, explicit));
+            return Result.success(ErrorTypeMapping.errorTypeMapping(errorType, explicit));
         }
         var matches = findMatchingPatterns(simpleName, config.statusPatterns());
         if (matches.isEmpty()) {
             // No pattern matched - use default status with no pattern
-            return Result.success(ErrorTypeMapping.explicit(errorType, config.defaultStatus()));
+            return Result.success(ErrorTypeMapping.errorTypeMapping(errorType, config.defaultStatus()));
         }
         if (matches.size() == 1) {
             var match = matches.getFirst();
-            return Result.success(ErrorTypeMapping.fromPattern(errorType, match.status(), match.pattern()));
+            return Result.success(ErrorTypeMapping.errorTypeMapping(errorType, match.status(), match.pattern()));
         }
         var allSameStatus = matches.stream()
                                    .map(ErrorConflict.PatternMatch::status)
@@ -146,7 +146,7 @@ public final class ErrorTypeDiscovery {
                                    .count() == 1;
         if (allSameStatus) {
             var match = matches.getFirst();
-            return Result.success(ErrorTypeMapping.fromPattern(errorType, match.status(), match.pattern()));
+            return Result.success(ErrorTypeMapping.errorTypeMapping(errorType, match.status(), match.pattern()));
         }
         return new ConflictCause(ErrorConflict.errorConflict(errorType, matches)).result();
     }

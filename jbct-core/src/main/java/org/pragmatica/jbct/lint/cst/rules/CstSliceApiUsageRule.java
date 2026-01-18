@@ -173,35 +173,40 @@ public class CstSliceApiUsageRule implements CstLintRule {
             return Stream.empty();
         }
         // Look up the full qualified name from imports
-        var qualifiedName = imports.get(simpleTypeName);
-        if (qualifiedName == null) {
-            // Type might be in same package or not imported (fully qualified in code)
-            return Stream.empty();
-        }
+        return Option.option(imports.get(simpleTypeName))
+                     .flatMap(qualifiedName -> checkQualifiedTypeViolation(qualifiedName, simpleTypeName, param, currentPackage, ctx))
+                     .stream();
+    }
+
+    private Option<Diagnostic> checkQualifiedTypeViolation(String qualifiedName,
+                                                           String simpleTypeName,
+                                                           CstNode param,
+                                                           String currentPackage,
+                                                           LintContext ctx) {
         // Check if this looks like a slice interface from external package
         var typePackage = extractPackage(qualifiedName);
         // Skip if same slice (internal usage is OK)
         if (isSameSlice(currentPackage, typePackage, ctx)) {
-            return Stream.empty();
+            return Option.none();
         }
         // Check if importing from .api package
         if (typePackage.endsWith(".api")) {
-            return Stream.empty();
+            return Option.none();
         }
         // Check if this is a slice package (based on configured patterns)
         if (!ctx.isSlicePackage(typePackage)) {
-            return Stream.empty();
+            return Option.none();
         }
         // Violation: external slice dependency not using .api package
         var suggestedImport = typePackage + ".api." + simpleTypeName;
-        return Stream.of(Diagnostic.diagnostic(RULE_ID,
-                                               ctx.severityFor(RULE_ID),
-                                               ctx.fileName(),
-                                               startLine(param),
-                                               startColumn(param),
-                                               "External slice dependency '" + simpleTypeName
-                                               + "' should use API interface",
-                                               "Import from .api package: " + suggestedImport));
+        return Option.some(Diagnostic.diagnostic(RULE_ID,
+                                                 ctx.severityFor(RULE_ID),
+                                                 ctx.fileName(),
+                                                 startLine(param),
+                                                 startColumn(param),
+                                                 "External slice dependency '" + simpleTypeName
+                                                 + "' should use API interface",
+                                                 "Import from .api package: " + suggestedImport));
     }
 
     private String extractSimpleName(String qualifiedName) {

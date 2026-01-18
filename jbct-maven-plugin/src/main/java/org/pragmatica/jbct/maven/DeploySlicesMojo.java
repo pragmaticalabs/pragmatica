@@ -15,6 +15,7 @@ import org.eclipse.aether.deployment.DeploymentException;
 import org.eclipse.aether.repository.RemoteRepository;
 import org.eclipse.aether.util.artifact.SubArtifact;
 import org.pragmatica.jbct.slice.SliceManifest;
+import org.pragmatica.lang.Option;
 
 import java.io.File;
 import java.nio.file.Path;
@@ -63,28 +64,21 @@ public class DeploySlicesMojo extends AbstractMojo {
             return;
         }
 
-        var deployRepo = getDeploymentRepository();
-        if (deployRepo == null) {
+        var deployRepoOpt = getDeploymentRepository();
+        if (deployRepoOpt.isEmpty()) {
             throw new MojoExecutionException("No deployment repository configured");
         }
 
+        var deployRepo = deployRepoOpt.unwrap();
         for (var manifestFile : manifestFiles) {
             deploySliceArtifacts(manifestFile.toPath(), deployRepo);
         }
     }
 
-    private RemoteRepository getDeploymentRepository() {
-        var distMgmt = project.getDistributionManagement();
-        if (distMgmt == null) {
-            return null;
-        }
-
-        var repo = distMgmt.getRepository();
-        if (repo == null) {
-            return null;
-        }
-
-        return new RemoteRepository.Builder(repo.getId(), "default", repo.getUrl()).build();
+    private Option<RemoteRepository> getDeploymentRepository() {
+        return Option.option(project.getDistributionManagement())
+                     .flatMap(distMgmt -> Option.option(distMgmt.getRepository()))
+                     .map(repo -> new RemoteRepository.Builder(repo.getId(), "default", repo.getUrl()).build());
     }
 
     private void deploySliceArtifacts(Path manifestPath, RemoteRepository deployRepo) throws MojoExecutionException {

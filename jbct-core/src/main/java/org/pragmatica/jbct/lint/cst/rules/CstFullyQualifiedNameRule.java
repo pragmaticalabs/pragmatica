@@ -13,6 +13,8 @@ import static org.pragmatica.jbct.parser.CstNodes.*;
 
 /**
  * JBCT-STY-03: No fully qualified class names in code.
+ * <p>
+ * Use {@code @SuppressWarnings("JBCT-STY-03")} for unavoidable cases.
  */
 public class CstFullyQualifiedNameRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-03";
@@ -47,15 +49,8 @@ public class CstFullyQualifiedNameRule implements CstLintRule {
                               found -> found,
                               found -> matcher.find())
                      .map(_ -> matcher.group())
-                     .filter(this::isNotAnnotation)
                      .map(fqcn -> createDiagnostic(method, fqcn, source, ctx))
                      .limit(1);
-    }
-
-    private boolean isNotAnnotation(String fqcn) {
-        // Skip common annotation packages
-        return ! fqcn.startsWith("java.lang.") &&
-        !fqcn.startsWith("javax.annotation.");
     }
 
     private Diagnostic createDiagnostic(CstNode method, String fqcn, String source, LintContext ctx) {

@@ -1,8 +1,11 @@
 package org.pragmatica.jbct.init;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -16,6 +19,7 @@ import java.util.stream.Stream;
  * Initializes a new Aether slice project structure.
  */
 public final class SliceProjectInitializer {
+    private static final Logger LOG = LoggerFactory.getLogger(SliceProjectInitializer.class);
     private static final String TEMPLATES_PATH = "/templates/slice/";
 
     // Default versions - used as fallback when offline
@@ -224,13 +228,14 @@ public final class SliceProjectInitializer {
     }
 
     private Result<Path> createFromInlineTemplate(String templateName, Path targetPath) {
-        try{
-            var content = getInlineTemplate(templateName);
-            if (content == null) {
-                return Causes.cause("Template not found: " + templateName)
-                             .result();
-            }
-            content = substituteVariables(content);
+        return getInlineTemplate(templateName)
+                       .toResult(Causes.cause("Template not found: " + templateName))
+                       .flatMap(template -> writeTemplate(template, targetPath));
+    }
+
+    private Result<Path> writeTemplate(String template, Path targetPath) {
+        try {
+            var content = substituteVariables(template);
             Files.writeString(targetPath, content);
             return Result.success(targetPath);
         } catch (IOException e) {
@@ -239,8 +244,8 @@ public final class SliceProjectInitializer {
         }
     }
 
-    private String getInlineTemplate(String templateName) {
-        return switch (templateName) {
+    private Option<String> getInlineTemplate(String templateName) {
+        return Option.option(switch (templateName) {
             case "pom.xml.template" -> SLICE_POM_TEMPLATE;
             case "jbct.toml.template" -> JBCT_TOML_TEMPLATE;
             case "gitignore.template" -> GITIGNORE_TEMPLATE;
@@ -256,7 +261,7 @@ public final class SliceProjectInitializer {
             case "generate-blueprint.sh.template" -> GENERATE_BLUEPRINT_TEMPLATE;
             case "slice.toml.template" -> SLICE_CONFIG_TEMPLATE;
             default -> null;
-        };
+        });
     }
 
     private String substituteVariables(String content) {
@@ -285,12 +290,16 @@ public final class SliceProjectInitializer {
 
     private static void makeExecutable(Path path) {
         // Best-effort to make file executable - may not be supported on all platforms
-        try{
+        try {
             var perms = Files.getPosixFilePermissions(path);
             perms.add(java.nio.file.attribute.PosixFilePermission.OWNER_EXECUTE);
             perms.add(java.nio.file.attribute.PosixFilePermission.GROUP_EXECUTE);
             Files.setPosixFilePermissions(path, perms);
-        } catch (UnsupportedOperationException e) {} catch (IOException e) {}
+        } catch (UnsupportedOperationException e) {
+            LOG.debug("POSIX permissions not supported on this platform for {}", path);
+        } catch (IOException e) {
+            LOG.debug("Failed to set executable permission on {}: {}", path, e.getMessage());
+        }
     }
 
     // Inline templates

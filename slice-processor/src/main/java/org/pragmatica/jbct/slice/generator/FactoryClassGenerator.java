@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.slice.generator;
 
 import org.pragmatica.jbct.slice.model.DependencyModel;
+import org.pragmatica.jbct.slice.model.KeyExtractorInfo;
 import org.pragmatica.jbct.slice.model.MethodModel;
 import org.pragmatica.jbct.slice.model.SliceModel;
 import org.pragmatica.lang.Option;
@@ -19,7 +20,10 @@ import javax.lang.model.util.Types;
 import javax.tools.JavaFileObject;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Generates factory class for slice instantiation.
@@ -35,6 +39,15 @@ import java.util.List;
  * <p>
  * When methods have @Aspect annotations, generates wrapper record with
  * aspect-wrapped method implementations.
+ * <p>
+ * Currently supported aspects:
+ * <ul>
+ *   <li>{@code CACHE} - Fully implemented with key extraction</li>
+ *   <li>{@code LOG} - Planned, not yet implemented</li>
+ *   <li>{@code METRICS} - Planned, not yet implemented</li>
+ *   <li>{@code RETRY} - Planned, not yet implemented</li>
+ *   <li>{@code TIMEOUT} - Planned, not yet implemented</li>
+ * </ul>
  */
 public class FactoryClassGenerator {
     private final Filer filer;
@@ -64,7 +77,7 @@ public class FactoryClassGenerator {
 
             return Result.success(Unit.unit());
         } catch (Exception e) {
-            return Causes.cause("Failed to generate factory class: " + e.getMessage())
+            return Causes.cause("Failed to generate factory class: " + e.getClass().getSimpleName() + ": " + e.getMessage())
                          .result();
         }
     }
@@ -73,17 +86,22 @@ public class FactoryClassGenerator {
         var sliceName = model.simpleName();
         var basePackage = model.packageName();
 
-        // Collect external dependencies
-        var externalDeps = model.dependencies()
-                                .stream()
-                                .filter(dep -> dep.isExternal(basePackage))
-                                .map(versionResolver::resolve)
-                                .toList();
+        // Partition dependencies in single pass
+        var partitioned = model.dependencies()
+                               .stream()
+                               .collect(Collectors.partitioningBy(dep -> dep.isExternal(basePackage)));
 
-        var internalDeps = model.dependencies()
-                                .stream()
-                                .filter(dep -> !dep.isExternal(basePackage))
-                                .toList();
+        var externalDeps = partitioned.get(true)
+                                      .stream()
+                                      .map(versionResolver::resolve)
+                                      .toList();
+        var internalDeps = partitioned.get(false);
+
+        // Cache proxy methods per dependency to avoid repeated lookups
+        var proxyMethodsCache = new HashMap<String, List<ProxyMethodInfo>>();
+        for (var dep : externalDeps) {
+            proxyMethodsCache.put(dep.interfaceQualifiedName(), collectProxyMethods(dep));
+        }
 
         // Package
         out.println("package " + basePackage + ";");
@@ -103,7 +121,7 @@ public class FactoryClassGenerator {
         out.println();
 
         // create() method
-        generateCreateMethod(out, model, externalDeps, internalDeps);
+        generateCreateMethod(out, model, externalDeps, internalDeps, proxyMethodsCache);
         out.println();
 
         // createSlice() method
@@ -157,7 +175,8 @@ public class FactoryClassGenerator {
     private void generateCreateMethod(PrintWriter out,
                                        SliceModel model,
                                        List<DependencyModel> externalDeps,
-                                       List<DependencyModel> internalDeps) {
+                                       List<DependencyModel> internalDeps,
+                                       Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
 
@@ -166,7 +185,7 @@ public class FactoryClassGenerator {
 
         // Generate local proxy records for external dependencies
         for (var dep : externalDeps) {
-            generateLocalProxyRecord(out, dep);
+            generateLocalProxyRecord(out, dep, proxyMethodsCache);
             out.println();
         }
 
@@ -184,7 +203,7 @@ public class FactoryClassGenerator {
 
         // Build the creation chain
         if (model.hasAspects()) {
-            generateAspectCreateChain(out, model, externalDeps, internalDeps);
+            generateAspectCreateChain(out, model, externalDeps, internalDeps, proxyMethodsCache);
         } else if (externalDeps.isEmpty()) {
             var factoryArgs = model.dependencies()
                                    .stream()
@@ -194,7 +213,7 @@ public class FactoryClassGenerator {
                        "(" + String.join(", ", factoryArgs) + ");");
             out.println("        return Promise.success(aspect.apply(instance));");
         } else {
-            generateFlatMapChain(out, model, externalDeps, internalDeps);
+            generateFlatMapChain(out, model, externalDeps, internalDeps, proxyMethodsCache);
         }
 
         out.println("    }");
@@ -236,7 +255,8 @@ public class FactoryClassGenerator {
     private void generateAspectCreateChain(PrintWriter out,
                                             SliceModel model,
                                             List<DependencyModel> externalDeps,
-                                            List<DependencyModel> internalDeps) {
+                                            List<DependencyModel> internalDeps,
+                                            Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var sliceName = model.simpleName();
         var wrapperName = sliceName + "Wrapper";
 
@@ -258,15 +278,11 @@ public class FactoryClassGenerator {
             var cacheVarName = method.name() + "Cache";
             cacheVarNames.add(cacheVarName);
 
-            var keyExtractor = method.aspects()
-                                     .keyExtractor()
-                                     .or(() -> {
-                                         throw new IllegalStateException("CACHE aspect requires key extractor");
-                                     });
+            var keyExtractor = getKeyExtractorOrThrow(method);
             var keyType = keyExtractor.keyType();
             var responseType = method.responseType()
                                      .toString();
-            var cacheName = lowercaseFirst(sliceName) + "." + method.name();
+            var cacheName = escapeJavaString(lowercaseFirst(sliceName) + "." + method.name());
 
             out.println("                           .flatMap(factory -> CacheConfig.cacheConfig(\"" + cacheName + "\",");
             out.println("                                                                       new TypeToken<" + keyType + ">() {},");
@@ -279,7 +295,7 @@ public class FactoryClassGenerator {
         if (!externalDeps.isEmpty()) {
             var allHandles = new ArrayList<HandleInfo>();
             for (var dep : externalDeps) {
-                var methods = collectProxyMethods(dep);
+                var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
                 for (var proxyMethod : methods) {
                     allHandles.add(new HandleInfo(dep, proxyMethod));
                 }
@@ -292,17 +308,13 @@ public class FactoryClassGenerator {
         }
 
         // Final map to create wrapper
-        var lastVar = !externalDeps.isEmpty()
-                      ? collectProxyMethods(externalDeps.getLast()).getLast().name + "Handle"
-                      : !cacheVarNames.isEmpty()
-                        ? cacheVarNames.getLast()
-                        : "factory";
+        var lastVar = determineLastVariableName(externalDeps, cacheVarNames, proxyMethodsCache);
 
         out.println("                           .map(" + lastVar + " -> {");
 
         // Instantiate external dependency proxies
         for (var dep : externalDeps) {
-            var methods = collectProxyMethods(dep);
+            var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
             var handleArgs = methods.stream()
                                     .map(m -> dep.parameterName() + "_" + m.name)
                                     .toList();
@@ -325,11 +337,7 @@ public class FactoryClassGenerator {
             var wrappedVar = method.name() + "Wrapped";
             if (method.aspects()
                       .hasCache()) {
-                var keyExtractor = method.aspects()
-                                         .keyExtractor()
-                                         .or(() -> {
-                                             throw new IllegalStateException("CACHE aspect requires key extractor");
-                                         });
+                var keyExtractor = getKeyExtractorOrThrow(method);
                 var cacheVar = cacheVarNames.get(cacheIdx++);
                 out.println("                               var " + wrappedVar + " = Aspects.withCaching(impl::" + method.name() +
                            ", " + keyExtractor.extractorExpression() + ", " + cacheVar + ");");
@@ -350,16 +358,31 @@ public class FactoryClassGenerator {
         out.println("                           });");
     }
 
+    /**
+     * Gets the key extractor from method aspects, throwing if missing.
+     * This should never happen if MethodModel.extractAspects() works correctly.
+     */
+    private KeyExtractorInfo getKeyExtractorOrThrow(MethodModel method) {
+        return method.aspects()
+                     .keyExtractor()
+                     .or(() -> {
+                         // This is a logic error - CACHE aspect should always have key extractor
+                         throw new IllegalStateException("CACHE aspect on method '" + method.name() +
+                                                        "' is missing key extractor. This indicates a bug in MethodModel.extractAspects().");
+                     });
+    }
+
     private void generateFlatMapChain(PrintWriter out,
                                        SliceModel model,
                                        List<DependencyModel> externalDeps,
-                                       List<DependencyModel> internalDeps) {
+                                       List<DependencyModel> internalDeps,
+                                       Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var sliceName = model.simpleName();
 
         // Collect all handles across all dependencies
         var allHandles = new ArrayList<HandleInfo>();
         for (var dep : externalDeps) {
-            var methods = collectProxyMethods(dep);
+            var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
             for (var method : methods) {
                 allHandles.add(new HandleInfo(dep, method));
             }
@@ -383,7 +406,7 @@ public class FactoryClassGenerator {
 
         // Instantiate proxies
         for (var dep : externalDeps) {
-            var methods = collectProxyMethods(dep);
+            var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
             var handleArgs = methods.stream()
                                     .map(m -> new HandleInfo(dep, m).varName())
                                     .toList();
@@ -424,8 +447,9 @@ public class FactoryClassGenerator {
     }
 
     private String generateMethodHandleCall(HandleInfo handle) {
-        var artifact = handle.dep.fullArtifact().or(() -> "UNRESOLVED");
-        return "invoker.methodHandle(\"" + artifact + "\", \"" + handle.method.name + "\",\n" +
+        var artifact = escapeJavaString(handle.dep.fullArtifact().or(() -> "UNRESOLVED"));
+        var methodName = escapeJavaString(handle.method.name);
+        return "invoker.methodHandle(\"" + artifact + "\", \"" + methodName + "\",\n" +
                "                                                     new TypeToken<" + handle.method.paramType + ">() {},\n" +
                "                                                     new TypeToken<" + handle.method.responseType + ">() {})";
     }
@@ -454,10 +478,12 @@ public class FactoryClassGenerator {
         return methods;
     }
 
-    private void generateLocalProxyRecord(PrintWriter out, DependencyModel dep) {
+    private void generateLocalProxyRecord(PrintWriter out,
+                                           DependencyModel dep,
+                                           Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var recordName = dep.localRecordName();
         var interfaceName = dep.interfaceSimpleName();
-        var methods = collectProxyMethods(dep);
+        var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
 
         // Generate record with MethodHandle components
         var components = methods.stream()
@@ -500,8 +526,9 @@ public class FactoryClassGenerator {
         for (int i = 0; i < methods.size(); i++) {
             var method = methods.get(i);
             var comma = (i < methods.size() - 1) ? "," : "";
+            var escapedMethodName = escapeJavaString(method.name());
             out.println("                    new SliceMethod<>(");
-            out.println("                        MethodName.methodName(\"" + method.name() + "\").unwrap(),");
+            out.println("                        MethodName.methodName(\"" + escapedMethodName + "\").unwrap(),");
             out.println("                        delegate::" + method.name() + ",");
             out.println("                        new TypeToken<" + method.responseType() + ">() {},");
             out.println("                        new TypeToken<" + method.parameterType() + ">() {}");
@@ -527,10 +554,80 @@ public class FactoryClassGenerator {
         return Option.none();
     }
 
+    /**
+     * Escapes a string for safe embedding in Java string literals.
+     * Handles quotes, backslashes, and common control characters.
+     */
+    private String escapeJavaString(String input) {
+        if (input == null) {
+            return "";
+        }
+        var sb = new StringBuilder(input.length());
+        for (int i = 0; i < input.length(); i++) {
+            char c = input.charAt(i);
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Converts first letter to lowercase following JBCT naming conventions.
+     * Handles acronyms properly: "HTTPService" -> "httpService", "IOReader" -> "ioReader"
+     */
     private String lowercaseFirst(String name) {
         if (name == null || name.isEmpty()) {
+            return "";
+        }
+        // Find the end of leading uppercase sequence
+        int i = 0;
+        while (i < name.length() && Character.isUpperCase(name.charAt(i))) {
+            i++;
+        }
+        if (i == 0) {
+            // Already lowercase
             return name;
         }
-        return Character.toLowerCase(name.charAt(0)) + name.substring(1);
+        if (i == 1) {
+            // Single uppercase letter: "Service" -> "service"
+            return Character.toLowerCase(name.charAt(0)) + name.substring(1);
+        }
+        // Acronym: "HTTPService" -> "httpService", "HTTP" -> "http"
+        // Lowercase all but last uppercase if followed by lowercase
+        if (i < name.length()) {
+            // There's more after the acronym, keep last uppercase
+            return name.substring(0, i - 1).toLowerCase() + name.substring(i - 1);
+        }
+        // Entire string is uppercase acronym: "HTTP" -> "http"
+        return name.toLowerCase();
+    }
+
+    /**
+     * Determines the variable name to use in the final .map() lambda.
+     * Handles empty collections safely to avoid NoSuchElementException.
+     */
+    private String determineLastVariableName(List<DependencyModel> externalDeps,
+                                              List<String> cacheVarNames,
+                                              Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
+        // Try external deps first
+        if (!externalDeps.isEmpty()) {
+            var lastDep = externalDeps.getLast();
+            var methods = proxyMethodsCache.get(lastDep.interfaceQualifiedName());
+            if (methods != null && !methods.isEmpty()) {
+                return methods.getLast().name + "Handle";
+            }
+        }
+        // Fall back to cache var names
+        if (!cacheVarNames.isEmpty()) {
+            return cacheVarNames.getLast();
+        }
+        // Default to factory
+        return "factory";
     }
 }

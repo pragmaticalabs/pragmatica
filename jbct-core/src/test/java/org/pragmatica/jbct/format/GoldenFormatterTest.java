@@ -124,10 +124,14 @@ class GoldenFormatterTest {
         formatter.format(source)
                  .onFailure(cause -> fail("Format failed: " + cause.message()))
                  .onSuccess(formatted -> {
-                                // After formatting, if chain is multi-line, `.` should align
-        // For single-line chains that fit, they stay on one line
-        assertThat(formatted.content())
-                  .contains("return input");
+                                // Verify chain structure is preserved
+                                assertThat(formatted.content())
+                                          .contains("return input");
+                                // Verify chained method calls are preserved
+                                assertThat(formatted.content())
+                                          .contains(".map(String::trim)");
+                                assertThat(formatted.content())
+                                          .contains(".map(String::toUpperCase)");
                             });
     }
 
@@ -151,9 +155,16 @@ class GoldenFormatterTest {
         formatter.format(source)
                  .onFailure(cause -> fail("Format failed: " + cause.message()))
                  .onSuccess(formatted -> {
-                                // Arguments should be aligned to opening paren
-        assertThat(formatted.content())
-                  .contains("Result.all");
+                                // Verify Result.all call is preserved
+                                assertThat(formatted.content())
+                                          .contains("Result.all(");
+                                // Verify all arguments are preserved
+                                assertThat(formatted.content())
+                                          .contains("first()");
+                                assertThat(formatted.content())
+                                          .contains("second()");
+                                assertThat(formatted.content())
+                                          .contains("third()");
                             });
     }
 }

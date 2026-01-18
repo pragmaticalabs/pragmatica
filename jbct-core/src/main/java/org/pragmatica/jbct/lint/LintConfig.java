@@ -11,6 +11,11 @@ import java.util.Set;
 public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
                          Set<String> disabledRules,
                          boolean failOnWarning) {
+    public LintConfig {
+        ruleSeverities = Map.copyOf(ruleSeverities);
+        disabledRules = Set.copyOf(disabledRules);
+    }
+
     /**
      * Factory method for creating LintConfig.
      */

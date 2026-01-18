@@ -16,7 +16,11 @@ import java.util.stream.Collectors;
 /**
  * CST-based JBCT linter.
  *
- * Uses the generated Java25Parser and CST lint rules.
+ * <p>Uses the generated Java25Parser and CST lint rules.
+ *
+ * <p><b>Thread Safety:</b> Thread-safe for concurrent use. Each {@link #lint(SourceFile)}
+ * call creates per-operation state for parsing. The lint rules are stateless and safe
+ * for concurrent access. Instances can be safely shared across threads.
  */
 public class CstLinter {
     private final LintContext context;

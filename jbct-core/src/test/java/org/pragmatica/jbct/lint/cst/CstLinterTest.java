@@ -337,15 +337,20 @@ class CstLinterTest {
     class ConstructorBypassTests {
         @Test
         void detectsDirectRecordConstruction() {
+            // JBCT-VO-02 only triggers for records that have a Result<RecordName> factory
             var diagnostics = lint("""
                 package com.example.usecase.test;
+                import org.pragmatica.lang.Result;
                 public class Test {
                     public void process() {
                         var email = new Email("test@example.com");
                     }
                 }
-                record Email(String value) {}
+                record Email(String value) {
+                    public static Result<Email> email(String v) { return Result.success(new Email(v)); }
+                }
                 """);
+            assertHasRule(diagnostics, "JBCT-VO-02");
         }
 
         @Test

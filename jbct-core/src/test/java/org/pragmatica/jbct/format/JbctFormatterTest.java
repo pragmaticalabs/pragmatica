@@ -57,10 +57,14 @@ class JbctFormatterTest {
                   .as("Format should succeed")
                   .isTrue();
         var formatted = result.unwrap();
+        // Verify chain structure is preserved
         assertThat(formatted.content())
-                  .contains("Result.success");
+                  .contains("Result.success(\"hello\")");
+        // Verify method chain operations are preserved
         assertThat(formatted.content())
-                  .isNotEmpty();
+                  .contains(".map(String::toUpperCase)");
+        assertThat(formatted.content())
+                  .contains(".flatMap(s -> Result.success(s + \"!\"))");
     }
 
     @Test
