@@ -123,6 +123,8 @@ public class CstLinter {
         // JBCT-RET-04
         new CstAlwaysSuccessResultRule(),
         // JBCT-RET-05
+        new CstNullableParameterRule(),
+        // JBCT-RET-06
         // Value objects (JBCT-VO-*)
         new CstValueObjectFactoryRule(),
         // JBCT-VO-01
