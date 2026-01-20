@@ -106,16 +106,9 @@ public class GenerateBlueprintMojo extends AbstractMojo {
             var config = loadSliceConfig(manifest);
             var entry = new SliceEntry(artifact, manifest, config, false);
             graph.put(artifact, entry);
-            // Map the slice interface to its artifact for internal dependency resolution
+            // Map the slice interface to its artifact for dependency resolution
             var sliceInterface = manifest.slicePackage() + "." + manifest.sliceName();
             interfaceToArtifact.put(sliceInterface, artifact);
-            // Also map the API interface
-            if (!manifest.apiClasses()
-                         .isEmpty()) {
-                interfaceToArtifact.put(manifest.apiClasses()
-                                                .getFirst(),
-                                        artifact);
-            }
         }
         // Second pass: resolve external dependencies from JAR files
         for (var manifest : localManifests) {
@@ -128,7 +121,9 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                                              Map<String, SliceEntry> graph)
     throws MojoExecutionException {
         for (var dep : manifest.dependencies()) {
-            if (!dep.external()) {
+            // Skip dependencies without artifact coordinates (local to this module)
+            if (dep.artifact() == null || dep.artifact()
+                                             .isEmpty()) {
                 continue;
             }
             var depArtifact = dep.artifact() + ":" + dep.version();
@@ -249,11 +244,12 @@ public class GenerateBlueprintMojo extends AbstractMojo {
             for (var dep : entry.manifest()
                                 .dependencies()) {
                 String depArtifact;
-                if (dep.external()) {
-                    // External dependency: use artifact coordinates from manifest
+                if (dep.artifact() != null && !dep.artifact()
+                                                  .isEmpty()) {
+                    // Dependency with artifact coordinates
                     depArtifact = dep.artifact() + ":" + dep.version();
                 } else {
-                    // Internal dependency: look up in interfaceToArtifact map
+                    // Local dependency: look up in interfaceToArtifact map
                     depArtifact = interfaceToArtifact.get(dep.interfaceQualifiedName());
                     if (depArtifact == null) {
                         // Not a slice, skip (e.g., utility class)
