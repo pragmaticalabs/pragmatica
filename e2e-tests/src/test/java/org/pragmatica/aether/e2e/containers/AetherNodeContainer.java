@@ -81,7 +81,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                  .withEnv("CLUSTER_PORT", String.valueOf(CLUSTER_PORT))
                  .withEnv("MANAGEMENT_PORT", String.valueOf(MANAGEMENT_PORT))
                  .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC")
-                 .waitingFor(Wait.forHttp("/health")
+                 .waitingFor(Wait.forHttp("/api/health")
                                  .forPort(MANAGEMENT_PORT)
                                  .forStatusCode(200)
                                  .withStartupTimeout(STARTUP_TIMEOUT))
@@ -192,7 +192,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return health response JSON
      */
     public String getHealth() {
-        return get("/health");
+        return get("/api/health");
     }
 
     /**
@@ -201,7 +201,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return status response JSON
      */
     public String getStatus() {
-        return get("/status");
+        return get("/api/status");
     }
 
     /**
@@ -210,7 +210,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return nodes response JSON
      */
     public String getNodes() {
-        return get("/nodes");
+        return get("/api/nodes");
     }
 
     /**
@@ -219,7 +219,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return slices response JSON
      */
     public String getSlices() {
-        return get("/slices");
+        return get("/api/slices");
     }
 
     /**
@@ -228,7 +228,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return metrics response JSON
      */
     public String getMetrics() {
-        return get("/metrics");
+        return get("/api/metrics");
     }
 
     /**
@@ -240,7 +240,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      */
     public String deploy(String artifact, int instances) {
         var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
-        return post("/deploy", body);
+        return post("/api/deploy", body);
     }
 
     /**
@@ -252,7 +252,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      */
     public String scale(String artifact, int instances) {
         var body = "{\"artifact\":\"" + artifact + "\",\"instances\":" + instances + "}";
-        return post("/scale", body);
+        return post("/api/scale", body);
     }
 
     /**
@@ -263,7 +263,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      */
     public String undeploy(String artifact) {
         var body = "{\"artifact\":\"" + artifact + "\"}";
-        return post("/undeploy", body);
+        return post("/api/undeploy", body);
     }
 
     /**
@@ -273,7 +273,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return apply response JSON
      */
     public String applyBlueprint(String blueprint) {
-        return post("/blueprint", blueprint);
+        return post("/api/blueprint", blueprint);
     }
 
     // ===== HTTP Helpers =====
@@ -348,7 +348,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return metrics in Prometheus text format
      */
     public String getPrometheusMetrics() {
-        return get("/metrics/prometheus");
+        return get("/api/metrics/prometheus");
     }
 
     /**
@@ -357,7 +357,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return invocation metrics JSON
      */
     public String getInvocationMetrics() {
-        return get("/invocation-metrics");
+        return get("/api/invocation-metrics");
     }
 
     /**
@@ -376,7 +376,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
             if (!params.isEmpty()) params.append("&");
             params.append("method=").append(method);
         }
-        var path = params.isEmpty() ? "/invocation-metrics" : "/invocation-metrics?" + params;
+        var path = params.isEmpty() ? "/api/invocation-metrics" : "/api/invocation-metrics?" + params;
         return get(path);
     }
 
@@ -386,7 +386,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return slow invocations JSON
      */
     public String getSlowInvocations() {
-        return get("/invocation-metrics/slow");
+        return get("/api/invocation-metrics/slow");
     }
 
     /**
@@ -395,7 +395,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return strategy configuration JSON
      */
     public String getInvocationStrategy() {
-        return get("/invocation-metrics/strategy");
+        return get("/api/invocation-metrics/strategy");
     }
 
     // ===== Threshold & Alert API =====
@@ -406,7 +406,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return thresholds JSON
      */
     public String getThresholds() {
-        return get("/thresholds");
+        return get("/api/thresholds");
     }
 
     /**
@@ -419,7 +419,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      */
     public String setThreshold(String metric, double warning, double critical) {
         var body = "{\"metric\":\"" + metric + "\",\"warning\":" + warning + ",\"critical\":" + critical + "}";
-        return post("/thresholds", body);
+        return post("/api/thresholds", body);
     }
 
     /**
@@ -429,7 +429,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return response JSON
      */
     public String deleteThreshold(String metric) {
-        return delete("/thresholds/" + metric);
+        return delete("/api/thresholds/" + metric);
     }
 
     /**
@@ -438,7 +438,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return alerts JSON
      */
     public String getAlerts() {
-        return get("/alerts");
+        return get("/api/alerts");
     }
 
     /**
@@ -447,7 +447,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return active alerts JSON
      */
     public String getActiveAlerts() {
-        return get("/alerts/active");
+        return get("/api/alerts/active");
     }
 
     /**
@@ -456,7 +456,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return alert history JSON
      */
     public String getAlertHistory() {
-        return get("/alerts/history");
+        return get("/api/alerts/history");
     }
 
     /**
@@ -465,7 +465,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return response JSON
      */
     public String clearAlerts() {
-        return post("/alerts/clear", "{}");
+        return post("/api/alerts/clear", "{}");
     }
 
     // ===== TTM API =====
@@ -476,7 +476,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return TTM status JSON
      */
     public String getTtmStatus() {
-        return get("/ttm/status");
+        return get("/api/ttm/status");
     }
 
     // ===== Controller API =====
@@ -487,7 +487,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return controller config JSON
      */
     public String getControllerConfig() {
-        return get("/controller/config");
+        return get("/api/controller/config");
     }
 
     /**
@@ -496,7 +496,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return controller status JSON
      */
     public String getControllerStatus() {
-        return get("/controller/status");
+        return get("/api/controller/status");
     }
 
     /**
@@ -506,7 +506,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return response JSON
      */
     public String setControllerConfig(String config) {
-        return post("/controller/config", config);
+        return post("/api/controller/config", config);
     }
 
     /**
@@ -515,7 +515,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return evaluation result JSON
      */
     public String triggerControllerEvaluation() {
-        return post("/controller/evaluate", "{}");
+        return post("/api/controller/evaluate", "{}");
     }
 
     // ===== Rolling Update API =====
@@ -529,7 +529,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      */
     public String startRollingUpdate(String oldVersion, String newVersion) {
         var body = "{\"oldVersion\":\"" + oldVersion + "\",\"newVersion\":\"" + newVersion + "\"}";
-        return post("/rolling-update/start", body);
+        return post("/api/rolling-update/start", body);
     }
 
     /**
@@ -538,7 +538,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return active updates JSON
      */
     public String getRollingUpdates() {
-        return get("/rolling-updates");
+        return get("/api/rolling-updates");
     }
 
     /**
@@ -548,7 +548,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return update status JSON
      */
     public String getRollingUpdateStatus(String updateId) {
-        return get("/rolling-update/" + updateId);
+        return get("/api/rolling-update/" + updateId);
     }
 
     /**
@@ -561,7 +561,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      */
     public String setRollingUpdateRouting(String updateId, int oldWeight, int newWeight) {
         var body = "{\"oldWeight\":" + oldWeight + ",\"newWeight\":" + newWeight + "}";
-        return post("/rolling-update/" + updateId + "/routing", body);
+        return post("/api/rolling-update/" + updateId + "/routing", body);
     }
 
     /**
@@ -571,7 +571,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return response JSON
      */
     public String completeRollingUpdate(String updateId) {
-        return post("/rolling-update/" + updateId + "/complete", "{}");
+        return post("/api/rolling-update/" + updateId + "/complete", "{}");
     }
 
     /**
@@ -581,7 +581,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return response JSON
      */
     public String rollbackRollingUpdate(String updateId) {
-        return post("/rolling-update/" + updateId + "/rollback", "{}");
+        return post("/api/rolling-update/" + updateId + "/rollback", "{}");
     }
 
     // ===== Slice Status API =====
@@ -592,7 +592,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return slice status JSON
      */
     public String getSlicesStatus() {
-        return get("/slices/status");
+        return get("/api/slices/status");
     }
 
     // ===== Slice Invocation API =====
@@ -643,6 +643,6 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return routes JSON
      */
     public String getRoutes() {
-        return get("/routes");
+        return get("/api/routes");
     }
 }
