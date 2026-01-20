@@ -33,12 +33,7 @@ public record SliceModel(String packageName,
         return extractMethods(element, env)
         .flatMap(methods -> findFactoryMethod(element, simpleName)
         .flatMap(factoryMethod -> extractDependencies(factoryMethod, env)
-        .map(dependencies -> new SliceModel(packageName,
-                                            simpleName,
-                                            qualifiedName,
-                                            methods,
-                                            dependencies,
-                                            factoryMethod))));
+        .map(dependencies -> new SliceModel(packageName, simpleName, qualifiedName, methods, dependencies, factoryMethod))));
     }
 
     private static Result<List<MethodModel>> extractMethods(TypeElement element, ProcessingEnvironment env) {
