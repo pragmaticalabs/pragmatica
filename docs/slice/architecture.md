@@ -32,7 +32,7 @@ flowchart LR
     C --> E["Compile"]
     D --> E
     E --> F["Package"]
-    F --> G["Slice JARs"]
+    F --> G["Slice JAR"]
     G --> H["Blueprint Generation"]
     H --> I["blueprint.toml"]
 ```
@@ -43,10 +43,9 @@ When `javac` compiles a class annotated with `@Slice`, the `SliceProcessor` inte
 
 | Generated Artifact | Location | Purpose |
 |-------------------|----------|---------|
-| API Interface | `{package}.api.{SliceName}` | Public contract for consumers |
 | Factory Class | `{package}.{SliceName}Factory` | Creates slice instances with wiring |
 | Slice Manifest | `META-INF/slice/{SliceName}.manifest` | Metadata for packaging/deployment |
-| API Manifest | `META-INF/slice-api.properties` | Maps artifact to API interface |
+| Slice API Manifest | `META-INF/slice-api.properties` | Maps artifact to slice interface |
 
 ### Processing Flow
 
@@ -61,10 +60,9 @@ sequenceDiagram
     P->>M: sliceModel(interface, env)
     M->>M: Extract methods
     M->>M: Extract factory method
-    M->>M: Classify dependencies
+    M->>M: Collect dependencies
     M-->>P: SliceModel
     P->>G: generate(model)
-    G->>G: ApiInterfaceGenerator
     G->>G: FactoryClassGenerator
     G->>G: ManifestGenerator
     G-->>J: Generated sources + resources
@@ -79,7 +77,6 @@ public record SliceModel(
     String packageName,        // e.g., "org.example.order"
     String simpleName,         // e.g., "OrderService"
     String qualifiedName,      // e.g., "org.example.order.OrderService"
-    String apiPackage,         // e.g., "org.example.order.api"
     String factoryMethodName,  // e.g., "orderService"
     List<MethodModel> methods,
     List<DependencyModel> dependencies
@@ -96,56 +93,22 @@ public record SliceModel(
 - Parameters become dependencies
 - Name becomes `factoryMethodName`
 
-## Dependency Classification
+## Dependency Handling
 
-Dependencies are classified as **internal** or **external** based on package:
+All dependencies declared in the factory method generate proxy records that delegate to `SliceInvokerFacade`. There is no distinction between "internal" and "external" dependencies - all slice dependencies are resolved at runtime through the invoker.
 
 ```mermaid
 flowchart TD
-    D["Dependency Interface"] --> C{"Same base package?"}
-    C -->|Yes| I["Internal"]
-    C -->|No| E["External"]
-    I --> IF["Call factory directly"]
-    E --> EP["Create proxy record"]
+    D["Dependency Interface"] --> P["Generate Proxy Record"]
+    P --> I["Delegate to SliceInvokerFacade"]
 ```
 
-**Internal dependency** (same module):
-- Package starts with slice's base package
-- Factory calls the dependency's factory method directly
-- Example: `org.example.order.validation.Validator` is internal to `org.example.order.OrderService`
-
-**External dependency** (different module):
-- Package doesn't match slice's base package
-- Generates a local proxy record that delegates to `SliceInvokerFacade`
-- Example: `org.example.inventory.InventoryService` is external to `org.example.order.OrderService`
+**Key points:**
+- All factory method parameters generate proxies
+- Proxies delegate to `SliceInvokerFacade` for remote calls
+- Dependencies must use `provided` scope in pom.xml
 
 ## Generated Code Deep Dive
-
-### API Interface Generation
-
-The API interface is a copy of the `@Slice` interface in the `.api` subpackage, minus the factory method:
-
-**Input:**
-```java
-package org.example.order;
-
-@Slice
-public interface OrderService {
-    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
-    static OrderService orderService(InventoryService inv) { ... }
-}
-```
-
-**Output:**
-```java
-package org.example.order.api;
-
-public interface OrderService {
-    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
-}
-```
-
-**Design decision:** The API interface exists so consumers can depend only on the contract, not the implementation module.
 
 ### Factory Class Generation
 
@@ -159,10 +122,7 @@ public final class OrderServiceFactory {
     public static Promise<OrderService> create(
             Aspect<OrderService> aspect,
             SliceInvokerFacade invoker) {
-        // Internal deps: call factory directly
-        var validator = OrderValidator.orderValidator();
-
-        // External deps: create proxy record
+        // Create proxy records for dependencies
         record inventoryService(SliceInvokerFacade invoker)
                 implements InventoryService {
             private static final String ARTIFACT = "org.example:inventory:1.0.0";
@@ -175,8 +135,20 @@ public final class OrderServiceFactory {
         }
         var inventory = new inventoryService(invoker);
 
+        record pricingEngine(SliceInvokerFacade invoker)
+                implements PricingEngine {
+            private static final String ARTIFACT = "org.example:pricing:1.0.0";
+
+            @Override
+            public Promise<Price> calculate(PriceRequest request) {
+                return invoker.invoke(ARTIFACT, "calculate",
+                                      request, Price.class);
+            }
+        }
+        var pricing = new pricingEngine(invoker);
+
         // Call developer's factory
-        var instance = OrderService.orderService(validator, inventory);
+        var instance = OrderService.orderService(inventory, pricing);
         return Promise.successful(aspect.apply(instance));
     }
 
@@ -206,11 +178,11 @@ public final class OrderServiceFactory {
 
 **Key design decisions:**
 
-1. **Local proxy records**: External dependency proxies are generated as local records inside the `create()` method, not as separate classes. This keeps the implementation encapsulated.
+1. **Local proxy records**: Dependency proxies are generated as local records inside the `create()` method, not as separate classes. This keeps the implementation encapsulated.
 
 2. **Aspect support**: The `Aspect<T>` parameter allows runtime decoration (logging, metrics, etc.) without modifying slice code.
 
-3. **SliceInvokerFacade**: Proxies delegate to this interface, which the Aether runtime implements to route calls across the cluster.
+3. **SliceInvokerFacade**: All proxies delegate to this interface, which the Aether runtime implements to route calls across the cluster.
 
 4. **TypeToken usage**: Preserves generic type information for serialization/deserialization at runtime.
 
@@ -243,91 +215,78 @@ slice.name=OrderService
 slice.artifactSuffix=order-service
 slice.package=org.example.order
 
-# Classes for API JAR
-api.classes=org.example.order.api.OrderService
-
-# Classes for Impl JAR
+# Classes for Slice JAR
 impl.classes=org.example.order.OrderService,\
              org.example.order.OrderServiceFactory,\
              org.example.order.OrderServiceFactory$orderServiceSlice,\
-             org.example.order.OrderServiceFactory$inventoryService
+             org.example.order.OrderServiceFactory$inventoryService,\
+             org.example.order.OrderServiceFactory$pricingEngine
 
-# Request/Response types (included in API JAR for nested records)
+# Request/Response types (included in JAR)
 request.classes=org.example.order.PlaceOrderRequest
 response.classes=org.example.order.OrderResult
 
 # Artifact coordinates
 base.artifact=org.example:commerce
-api.artifactId=commerce-order-service-api
 impl.artifactId=commerce-order-service
 
 # Dependencies for blueprint generation
 dependencies.count=2
-dependency.0.interface=org.example.order.validation.OrderValidator
-dependency.0.external=false
-dependency.0.artifact=
-dependency.0.version=
-dependency.1.interface=org.example.inventory.InventoryService
-dependency.1.external=true
-dependency.1.artifact=org.example:inventory
-dependency.1.version=1.0.0
+dependency.0.interface=org.example.inventory.InventoryService
+dependency.0.artifact=org.example:inventory
+dependency.0.version=1.0.0
+dependency.1.interface=org.example.pricing.PricingEngine
+dependency.1.artifact=org.example:pricing
+dependency.1.version=2.1.0
 
 # Metadata
 generated.timestamp=2024-01-15T10:30:00Z
 processor.version=0.5.0
 ```
 
-### API Manifest (`META-INF/slice-api.properties`)
+### Slice API Manifest (`META-INF/slice-api.properties`)
 
-Maps artifact coordinates to the API interface:
+Maps artifact coordinates to the slice interface:
 
 ```properties
-api.artifact=org.example:commerce:api
-slice.artifact=org.example:commerce
-api.interface=org.example.order.api.OrderService
-impl.interface=org.example.order.OrderService
+slice.artifact=org.example:commerce-order-service
+slice.interface=org.example.order.OrderService
 ```
 
-## Multi-Artifact Packaging
+## Single-Artifact Packaging
 
-A single source module with multiple `@Slice` interfaces produces separate Maven artifacts:
+Each `@Slice` interface produces a single Maven artifact containing everything needed:
 
 ```mermaid
 flowchart TD
     M["commerce module"] --> A["OrderService"]
     M --> B["PaymentService"]
-    A --> A1["commerce-order-service-api.jar"]
-    A --> A2["commerce-order-service.jar"]
-    B --> B1["commerce-payment-service-api.jar"]
-    B --> B2["commerce-payment-service.jar"]
+    A --> A1["commerce-order-service.jar"]
+    B --> B1["commerce-payment-service.jar"]
 ```
 
 ### Maven Plugin Goals
 
 | Goal | Phase | Description |
 |------|-------|-------------|
-| `jbct:package-slices` | package | Creates separate JARs from manifests |
-| `jbct:install-slices` | install | Installs with distinct artifactIds |
+| `jbct:package-slices` | package | Creates slice JAR from manifest |
+| `jbct:install-slices` | install | Installs with distinct artifactId |
 | `jbct:deploy-slices` | deploy | Deploys to remote repository |
 
 ### JAR Contents
 
-**API JAR** (`commerce-order-service-api-1.0.0.jar`):
-```
-org/example/order/api/OrderService.class
-org/example/order/OrderService$PlaceOrderRequest.class   # Nested request type
-org/example/order/OrderService$OrderResult.class         # Nested response type
-META-INF/MANIFEST.MF
-```
-
-**Impl JAR** (`commerce-order-service-1.0.0.jar`) - Fat JAR:
+**Slice JAR** (`commerce-order-service-1.0.0.jar`) - Fat JAR:
 ```
 org/example/order/OrderService.class
 org/example/order/OrderServiceImpl.class
 org/example/order/OrderServiceFactory.class
 org/example/order/OrderServiceFactory$orderServiceSlice.class
 org/example/order/OrderServiceFactory$inventoryService.class
+org/example/order/OrderServiceFactory$pricingEngine.class
+org/example/order/PlaceOrderRequest.class
+org/example/order/OrderResult.class
 META-INF/slice/OrderService.manifest
+META-INF/slice-api.properties
 META-INF/dependencies/org.example.order.OrderServiceFactory  # Runtime deps
 META-INF/MANIFEST.MF
   Slice-Artifact: org.example:commerce-order-service:1.0.0
@@ -340,11 +299,6 @@ META-INF/MANIFEST.MF
 `META-INF/dependencies/{FactoryClass}` declares runtime dependencies:
 
 ```
-[api]
-# Slice API interfaces for generated proxies
-org.example:inventory-api:^1.0.0
-org.example:payment-api:^1.0.0
-
 [shared]
 # Libraries - JAR only, no instance sharing
 org.pragmatica-lite:core:^0.9.0
@@ -356,7 +310,7 @@ org.pragmatica-lite.aether:infra-cache:^0.7.0
 [slices]
 # Slice dependencies - resolved recursively
 org.example:inventory:^1.0.0
-org.example:payment:^1.0.0
+org.example:pricing:^2.1.0
 ```
 
 Version format uses semver ranges (e.g., `^1.0.0` = compatible with 1.x.x).
@@ -368,17 +322,16 @@ The `jbct:generate-blueprint` goal creates a deployment descriptor:
 ```mermaid
 flowchart LR
     A["Read manifests"] --> B["Build dependency graph"]
-    B --> C["Resolve external deps from JARs"]
-    C --> D["Match internal inter-slice deps"]
-    D --> E["Topological sort"]
-    E --> F["Generate blueprint.toml"]
+    B --> C["Resolve deps from JARs"]
+    C --> D["Topological sort"]
+    D --> E["Generate blueprint.toml"]
 ```
 
 ### Dependency Resolution
 
 1. **Local slices**: Read from `target/classes/META-INF/slice/*.manifest`
 2. **External dependencies**: Read from dependency JARs in Maven classpath
-3. **Internal inter-slice**: Match interface names to other local manifests
+3. **Inter-slice dependencies**: Match interface names to other manifests
 
 ### Topological Ordering
 
@@ -404,15 +357,15 @@ instances = 1
 
 ## Version Resolution
 
-External dependency versions are resolved from `slice-deps.properties`:
+Dependency versions are resolved from `slice-deps.properties`:
 
 ```properties
 # Generated by jbct:collect-slice-deps
-org.example\:inventory\:api=1.0.0
-org.example\:pricing\:api=2.1.0
+org.example\:inventory=1.0.0
+org.example\:pricing=2.1.0
 ```
 
-This file is created by the `jbct:collect-slice-deps` goal, which scans Maven dependencies with `scope=provided` and `classifier=api`.
+This file is created by the `jbct:collect-slice-deps` goal, which scans Maven dependencies with `scope=provided`.
 
 ## Extension Points
 
@@ -449,6 +402,7 @@ public interface SliceInvokerFacade {
 |----------|-----------|-----------|
 | Single-param methods | Less flexible API | Enables uniform request/response serialization |
 | Local proxy records | Larger generated code | Keeps proxies encapsulated, no class pollution |
-| Separate API/Impl JARs | More artifacts to manage | Clean dependency boundaries |
+| Single JAR per slice | Larger artifact | Simplifies deployment, no API/Impl split to manage |
 | Properties-based manifests | Less structured than JSON/YAML | Simple to parse, no dependencies |
 | Compile-time wiring | No runtime discovery | Fail-fast, explicit dependencies |
+| All deps via invoker | Extra indirection | Uniform handling, runtime flexibility |

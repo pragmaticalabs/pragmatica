@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
+import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 import java.util.stream.Stream;
 
@@ -67,9 +68,10 @@ public class VerifySliceMojo extends AbstractMojo {
         var manifestResult = checkManifestEntries();
         var propsResult = checkSliceApiProperties();
         var scopeResult = checkRuntimeDependencyScopes();
+        var sliceScopeResult = checkSliceDependencyScopes();
         var errors = new ArrayList<String>();
         var warnings = new ArrayList<String>();
-        Stream.of(manifestResult, propsResult, scopeResult)
+        Stream.of(manifestResult, propsResult, scopeResult, sliceScopeResult)
               .forEach(partial -> {
                   errors.addAll(partial.errors());
                   warnings.addAll(partial.warnings());
@@ -111,9 +113,7 @@ public class VerifySliceMojo extends AbstractMojo {
             var props = new Properties();
             props.load(input);
             var errors = new ArrayList<String>();
-            checkRequired(props, "api.artifact", errors);
             checkRequired(props, "slice.artifact", errors);
-            checkRequired(props, "api.interface", errors);
             checkRequired(props, "impl.interface", errors);
             return PartialResult.partialResult(errors, List.of());
         } catch (IOException e) {
@@ -145,6 +145,44 @@ public class VerifySliceMojo extends AbstractMojo {
             }
         }
         return PartialResult.partialResult(errors, List.of());
+    }
+
+    /**
+     * Validates that slice dependencies use 'provided' scope.
+     * Slice dependencies should not be bundled - the Aether runtime loads them at deployment.
+     */
+    private PartialResult checkSliceDependencyScopes() {
+        var errors = new ArrayList<String>();
+        for (var artifact : project.getDependencyArtifacts()) {
+            var file = artifact.getFile();
+            if (file == null || !file.exists() || !file.getName()
+                                                       .endsWith(".jar")) {
+                continue;
+            }
+            // Check if this is a slice dependency (has slice-api.properties)
+            if (!isSliceArtifact(file)) {
+                continue;
+            }
+            var scope = artifact.getScope();
+            if (!Artifact.SCOPE_PROVIDED.equals(scope) && !Artifact.SCOPE_TEST.equals(scope)) {
+                errors.add("Slice dependency " + artifact.getGroupId() + ":" + artifact.getArtifactId()
+                           + " must have 'provided' scope. "
+                           + "Slice dependencies are loaded by Aether runtime and should not be bundled. "
+                           + "Current scope: " + (scope == null
+                                                  ? "compile"
+                                                  : scope));
+            }
+        }
+        return PartialResult.partialResult(errors, List.of());
+    }
+
+    private boolean isSliceArtifact(File jarFile) {
+        try (var jar = new JarFile(jarFile)) {
+            return jar.getEntry("META-INF/slice-api.properties") != null;
+        } catch (IOException e) {
+            getLog().debug("Could not read JAR: " + jarFile + " - " + e.getMessage());
+            return false;
+        }
     }
 
     private void checkRequired(Properties props, String key, List<String> errors) {

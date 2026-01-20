@@ -25,16 +25,16 @@ The annotated interface must:
 ```java
 @Slice
 public interface OrderService {
-    // API methods - will be included in generated API interface
+    // API methods
     Promise<OrderResult> placeOrder(PlaceOrderRequest request);
     Promise<OrderStatus> getStatus(StatusRequest request);
 
-    // Factory method - not included in API, used for wiring
+    // Factory method - used for wiring dependencies
     static OrderService orderService(InventoryService inventory) {
         return new OrderServiceImpl(inventory);
     }
 
-    // Default methods - not included in API
+    // Default methods - allowed but not part of slice contract
     default Promise<OrderResult> placeOrderWithDefaults(String customerId) {
         return placeOrder(new PlaceOrderRequest(customerId, List.of(), null));
     }
@@ -74,36 +74,6 @@ public interface BadService {
 
 ## Generated Artifacts
 
-### API Interface
-
-**Location:** `{package}.api.{SliceName}`
-
-The generated API interface contains:
-- All non-static, non-default methods from the `@Slice` interface
-- No factory method
-- No default methods
-
-**Input:**
-```java
-package org.example.order;
-
-@Slice
-public interface OrderService {
-    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
-    static OrderService orderService(Inventory inv) { ... }
-    default void helper() { ... }
-}
-```
-
-**Output:**
-```java
-package org.example.order.api;
-
-public interface OrderService {
-    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
-}
-```
-
 ### Factory Class
 
 **Location:** `{package}.{SliceName}Factory`
@@ -132,7 +102,7 @@ public final class OrderServiceFactory {
 
 **Parameters:**
 - `Aspect<T>`: Decorator for cross-cutting concerns (logging, metrics)
-- `SliceInvokerFacade`: Runtime-provided invoker for external dependencies
+- `SliceInvokerFacade`: Runtime-provided invoker for dependencies
 
 ### Slice Manifest
 
@@ -147,7 +117,6 @@ slice.artifactSuffix=order-service
 slice.package=org.example.order
 
 # Classes for packaging
-api.classes=org.example.order.api.OrderService
 impl.classes=org.example.order.OrderService,\
              org.example.order.OrderServiceFactory,\
              org.example.order.OrderServiceFactory$orderServiceSlice
@@ -157,19 +126,13 @@ response.classes=org.example.order.OrderResult
 
 # Artifact coordinates
 base.artifact=org.example:commerce
-api.artifactId=commerce-order-service-api
 impl.artifactId=commerce-order-service
 
 # Dependencies
-dependencies.count=2
+dependencies.count=1
 dependency.0.interface=org.example.inventory.InventoryService
 dependency.0.artifact=org.example:inventory-service
 dependency.0.version=1.0.0
-dependency.0.external=true
-dependency.1.interface=org.example.order.validation.Validator
-dependency.1.artifact=
-dependency.1.version=
-dependency.1.external=false
 
 # Slice configuration file path
 config.file=slices/OrderService.toml
@@ -179,17 +142,15 @@ generated.timestamp=2024-01-15T10:30:00Z
 processor.version=0.5.0
 ```
 
-### API Manifest
+### Slice API Manifest
 
 **Location:** `META-INF/slice-api.properties`
 
-Maps artifact to API interface:
+Maps artifact to the slice interface:
 
 ```properties
-api.artifact=org.example:commerce:api
-slice.artifact=org.example:commerce
-api.interface=org.example.order.api.OrderService
-impl.interface=org.example.order.OrderService
+slice.artifact=org.example:commerce-order-service
+slice.interface=org.example.order.OrderService
 ```
 
 ## Manifest Properties Reference
@@ -206,18 +167,16 @@ impl.interface=org.example.order.OrderService
 
 | Property | Description |
 |----------|-------------|
-| `api.classes` | Classes for API JAR (comma-separated) |
-| `impl.classes` | Classes for Impl JAR (comma-separated) |
-| `request.classes` | Request types (included in API JAR for nested records) |
-| `response.classes` | Response types (included in API JAR for nested records) |
+| `impl.classes` | Classes for Slice JAR (comma-separated) |
+| `request.classes` | Request types (included in JAR) |
+| `response.classes` | Response types (included in JAR) |
 
 ### Artifact Properties
 
 | Property | Description | Example |
 |----------|-------------|---------|
 | `base.artifact` | Base Maven coordinates | `org.example:commerce` |
-| `api.artifactId` | API artifact ID | `commerce-order-service-api` |
-| `impl.artifactId` | Implementation artifact ID | `commerce-order-service` |
+| `impl.artifactId` | Slice artifact ID | `commerce-order-service` |
 
 ### Dependency Properties
 
@@ -227,7 +186,6 @@ impl.interface=org.example.order.OrderService
 | `dependency.N.interface` | Fully qualified interface name |
 | `dependency.N.artifact` | Maven coordinates (groupId:artifactId) |
 | `dependency.N.version` | Version |
-| `dependency.N.external` | `true` if external dependency |
 
 ## Blueprint Format
 
@@ -335,29 +293,25 @@ mvn jbct:collect-slice-deps
 
 Creates `target/classes/slice-deps.properties`:
 ```properties
-org.example\:inventory-service\:api=1.0.0
-org.example\:pricing-engine\:api=2.1.0
+org.example\:inventory-service=1.0.0
+org.example\:pricing-engine=2.1.0
 ```
 
 ### jbct:package-slices
 
 **Phase:** `package`
 
-Creates separate JARs from manifests:
+Creates slice JAR from manifest:
 
 ```bash
 mvn jbct:package-slices
 ```
 
-For each manifest, creates:
-
-**API JAR** (`{artifactId}-api-{version}.jar`):
-- API interface
-- Nested request/response types
-
-**Impl JAR** (`{artifactId}-{version}.jar`):
+For each manifest, creates a single **Slice JAR** (`{artifactId}-{version}.jar`) containing:
+- Slice interface
 - Implementation classes
 - Factory class with proxy records
+- Request/response types
 - Bundled external dependencies (fat JAR)
 - `META-INF/dependencies/{FactoryClass}` - runtime dependency file
 - MANIFEST.MF entries: `Slice-Artifact`, `Slice-Class`
@@ -415,6 +369,7 @@ Checks:
 - Factory method returns interface type
 - All methods return `Promise<T>`
 - All methods have one parameter
+- Aether runtime dependencies use `provided` scope
 
 ## CLI Commands
 
@@ -622,15 +577,17 @@ Generated by `jbct init --slice` with all configuration inlined:
 </project>
 ```
 
-### Adding External Slice Dependency
+### Adding Slice Dependency
+
+All slice dependencies must use `provided` scope:
 
 ```xml
 <dependency>
     <groupId>org.example</groupId>
-    <artifactId>other-service-api</artifactId>
+    <artifactId>other-service</artifactId>
     <version>1.0.0</version>
     <scope>provided</scope>
 </dependency>
 ```
 
-**Note:** Use `provided` scope for slice API dependencies. They're resolved at runtime by Aether.
+**Note:** Use `provided` scope for all slice dependencies. They're resolved at runtime by Aether through `SliceInvokerFacade`.

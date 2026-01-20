@@ -86,14 +86,11 @@ public class DeploySlicesMojo extends AbstractMojo {
         }
         var manifest = result.unwrap();
         getLog().info("Deploying slice: " + manifest.sliceName());
-        // Deploy API artifact
-        deployArtifact(manifest.apiArtifactId(), manifest, true, deployRepo);
         // Deploy Impl artifact
-        deployArtifact(manifest.implArtifactId(), manifest, false, deployRepo);
+        deployArtifact(manifest.implArtifactId(), deployRepo);
     }
 
-    private void deployArtifact(String artifactId, SliceManifest manifest, boolean isApi, RemoteRepository deployRepo)
-    throws MojoExecutionException {
+    private void deployArtifact(String artifactId, RemoteRepository deployRepo) throws MojoExecutionException {
         var version = project.getVersion();
         var jarFile = new File(outputDirectory, artifactId + "-" + version + ".jar");
         var pomFile = new File(outputDirectory, artifactId + "-" + version + ".pom");

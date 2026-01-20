@@ -88,18 +88,13 @@ public class PackageSlicesMojo extends AbstractMojo {
         getLog().info("Processing slice: " + manifest.sliceName());
         // Classify dependencies
         var classification = classifyDependencies(manifest);
-        // Create API JAR
-        createApiJar(manifest);
         // Create Impl JAR (fat JAR with dependencies file and manifest entries)
         createImplJar(manifest, classification);
-        // Generate POMs
-        generatePom(manifest, true);
-        // API POM
-        generatePom(manifest, false);
+        // Generate POM for impl artifact
+        generatePom(manifest);
     }
 
     private DependencyClassification classifyDependencies(SliceManifest manifest) {
-        var apiDeps = new ArrayList<ArtifactInfo>();
         var sharedDeps = new ArrayList<ArtifactInfo>();
         var infraDeps = new ArrayList<ArtifactInfo>();
         var sliceDeps = new ArrayList<ArtifactInfo>();
@@ -120,9 +115,8 @@ public class PackageSlicesMojo extends AbstractMojo {
                 // Infrastructure dependencies (direct only)
                 infraDeps.add(toArtifactInfo(artifact));
             } else if (isSliceDependency(artifact) && isDirectDependency) {
-                // Slice dependencies - add both API and slice entry (direct only)
+                // Slice dependencies (direct only)
                 // Read actual artifact names from manifest (not Maven artifact ID)
-                apiDeps.add(toApiArtifactInfo(artifact));
                 sliceDeps.add(toSliceArtifactInfo(artifact));
             } else if ("provided".equals(scope) && isDirectDependency) {
                 // Shared dependencies (provided scope, non-infra, direct only)
@@ -132,7 +126,7 @@ public class PackageSlicesMojo extends AbstractMojo {
                 externalDeps.add(artifact);
             }
         }
-        return new DependencyClassification(apiDeps, sharedDeps, infraDeps, sliceDeps, externalDeps);
+        return new DependencyClassification(sharedDeps, infraDeps, sliceDeps, externalDeps);
     }
 
     private java.util.Set<String> collectDirectDependencyKeys() {
@@ -194,48 +188,12 @@ public class PackageSlicesMojo extends AbstractMojo {
         return toArtifactInfo(artifact);
     }
 
-    private ArtifactInfo toApiArtifactInfo(Artifact artifact) {
-        // Read API artifact from manifest (has correct naming: groupId:artifactId-sliceName-api)
-        var props = readSliceManifest(artifact);
-        if (props != null) {
-            var apiArtifact = props.getProperty("api.artifact");
-            if (apiArtifact != null && apiArtifact.contains(":")) {
-                var parts = apiArtifact.split(":");
-                return new ArtifactInfo(parts[0], parts[1], toSemverRange(artifact.getVersion()));
-            }
-        }
-        // Fallback: derive from Maven artifact (legacy)
-        var apiArtifactId = artifact.getArtifactId() + "-api";
-        return new ArtifactInfo(artifact.getGroupId(), apiArtifactId, toSemverRange(artifact.getVersion()));
-    }
-
     private String toSemverRange(String version) {
         // Convert exact version to semver range: 1.0.0 -> ^1.0.0
         if (version.startsWith("^") || version.startsWith("~")) {
             return version;
         }
         return "^" + version;
-    }
-
-    private void createApiJar(SliceManifest manifest) throws MojoExecutionException {
-        var jarName = manifest.apiArtifactId() + "-" + project.getVersion() + ".jar";
-        var jarFile = new File(outputDirectory, jarName);
-        try{
-            var archiver = new JarArchiver();
-            archiver.setDestFile(jarFile);
-            // Add API classes
-            for (var className : manifest.allApiClasses()) {
-                addClassFiles(archiver, className);
-            }
-            var mavenArchiver = new MavenArchiver();
-            mavenArchiver.setArchiver(archiver);
-            mavenArchiver.setOutputFile(jarFile);
-            var config = new MavenArchiveConfiguration();
-            mavenArchiver.createArchive(null, project, config);
-            getLog().info("Created API JAR: " + jarFile.getName());
-        } catch (Exception e) {
-            throw new MojoExecutionException("Failed to create API JAR", e);
-        }
     }
 
     private void createImplJar(SliceManifest manifest, DependencyClassification classification)
@@ -363,19 +321,6 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private String generateDependencyFile(SliceManifest manifest, DependencyClassification classification) {
         var sb = new StringBuilder();
-        if (!classification.apiDeps()
-                           .isEmpty()) {
-            sb.append("[api]\n");
-            for (var dep : classification.apiDeps()) {
-                sb.append(dep.groupId())
-                  .append(":")
-                  .append(dep.artifactId())
-                  .append(":")
-                  .append(dep.version())
-                  .append("\n");
-            }
-            sb.append("\n");
-        }
         if (!classification.sharedDeps()
                            .isEmpty()) {
             sb.append("[shared]\n");
@@ -437,23 +382,19 @@ public class PackageSlicesMojo extends AbstractMojo {
         }
     }
 
-    private void generatePom(SliceManifest manifest, boolean isApi) throws MojoExecutionException {
-        var artifactId = isApi
-                         ? manifest.apiArtifactId()
-                         : manifest.implArtifactId();
+    private void generatePom(SliceManifest manifest) throws MojoExecutionException {
+        var artifactId = manifest.implArtifactId();
         var pomFile = new File(outputDirectory, artifactId + "-" + project.getVersion() + ".pom");
         try (var writer = new FileWriter(pomFile)) {
-            writer.write(generatePomContent(manifest, isApi));
+            writer.write(generatePomContent(manifest));
             getLog().debug("Generated POM: " + pomFile.getName());
         } catch (IOException e) {
             throw new MojoExecutionException("Failed to generate POM", e);
         }
     }
 
-    private String generatePomContent(SliceManifest manifest, boolean isApi) {
-        var artifactId = isApi
-                         ? manifest.apiArtifactId()
-                         : manifest.implArtifactId();
+    private String generatePomContent(SliceManifest manifest) {
+        var artifactId = manifest.implArtifactId();
         var sb = new StringBuilder();
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         sb.append("<project xmlns=\"http://maven.apache.org/POM/4.0.0\"\n");
@@ -473,41 +414,23 @@ public class PackageSlicesMojo extends AbstractMojo {
         sb.append("    <packaging>jar</packaging>\n");
         sb.append("\n");
         sb.append("    <name>")
-          .append(manifest.sliceName());
-        sb.append(isApi
-                  ? " API"
-                  : "")
+          .append(manifest.sliceName())
           .append("</name>\n");
         sb.append("    <description>Generated slice artifact</description>\n");
         sb.append("\n");
         sb.append("    <dependencies>\n");
-        if (isApi) {
-            // API only depends on pragmatica-lite core
-            sb.append("        <dependency>\n");
-            sb.append("            <groupId>org.pragmatica-lite</groupId>\n");
-            sb.append("            <artifactId>core</artifactId>\n");
-            sb.append("            <version>0.9.10</version>\n");
-            sb.append("        </dependency>\n");
-        } else {
-            // Impl depends on its own API
-            sb.append("        <dependency>\n");
-            sb.append("            <groupId>")
-              .append(project.getGroupId())
-              .append("</groupId>\n");
-            sb.append("            <artifactId>")
-              .append(manifest.apiArtifactId())
-              .append("</artifactId>\n");
-            sb.append("            <version>")
-              .append(project.getVersion())
-              .append("</version>\n");
-            sb.append("        </dependency>\n");
-            // And slice-api for runtime
-            sb.append("        <dependency>\n");
-            sb.append("            <groupId>org.pragmatica.aether</groupId>\n");
-            sb.append("            <artifactId>slice-api</artifactId>\n");
-            sb.append("            <version>0.1.0</version>\n");
-            sb.append("        </dependency>\n");
-        }
+        // Slice depends on pragmatica-lite core
+        sb.append("        <dependency>\n");
+        sb.append("            <groupId>org.pragmatica-lite</groupId>\n");
+        sb.append("            <artifactId>core</artifactId>\n");
+        sb.append("            <version>0.9.10</version>\n");
+        sb.append("        </dependency>\n");
+        // And slice-api for runtime
+        sb.append("        <dependency>\n");
+        sb.append("            <groupId>org.pragmatica.aether</groupId>\n");
+        sb.append("            <artifactId>slice-api</artifactId>\n");
+        sb.append("            <version>0.1.0</version>\n");
+        sb.append("        </dependency>\n");
         sb.append("    </dependencies>\n");
         sb.append("</project>\n");
         return sb.toString();
@@ -515,13 +438,11 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private record ArtifactInfo(String groupId, String artifactId, String version) {}
 
-    private record DependencyClassification(List<ArtifactInfo> apiDeps,
-                                            List<ArtifactInfo> sharedDeps,
+    private record DependencyClassification(List<ArtifactInfo> sharedDeps,
                                             List<ArtifactInfo> infraDeps,
                                             List<ArtifactInfo> sliceDeps,
                                             List<Artifact> externalDeps) {
         DependencyClassification {
-            apiDeps = List.copyOf(apiDeps);
             sharedDeps = List.copyOf(sharedDeps);
             infraDeps = List.copyOf(infraDeps);
             sliceDeps = List.copyOf(sliceDeps);

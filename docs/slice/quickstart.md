@@ -66,17 +66,14 @@ mvn verify
 
 This:
 1. Compiles the source
-2. Runs annotation processing (generates API interface, factory, manifest)
+2. Runs annotation processing (generates factory, manifest)
 3. Runs tests
-4. Packages into API + Impl JARs
+4. Packages into slice JAR
 
 Check the generated files:
 ```bash
 ls target/classes/META-INF/slice/
 # GreetingService.manifest
-
-ls target/classes/org/example/greetingservice/api/
-# GreetingService.class (generated API interface)
 
 ls target/classes/org/example/greetingservice/
 # GreetingServiceFactory.class (generated)
@@ -111,17 +108,15 @@ Your slice is now running and accessible at `http://localhost:8080`.
 ## What Just Happened?
 
 1. **Annotation processor** read your `@Slice` interface and generated:
-   - `api/GreetingService.java` - clean interface for consumers
    - `GreetingServiceFactory.java` - factory that wires dependencies
    - `META-INF/slice/GreetingService.manifest` - metadata for packaging
 
-2. **Maven plugin** packaged two JARs:
-   - `greeting-service-api.jar` - just the API interface
-   - `greeting-service.jar` - implementation + factory + types
+2. **Maven plugin** packaged a single **slice JAR** containing:
+   - `greeting-service.jar` - interface + implementation + factory + types
 
 3. **Blueprint generator** created `blueprint.toml` with your slice listed (properties from `src/main/resources/slices/GreetingService.toml`)
 
-4. **Deploy script** ran `mvn install` to install JARs to your local Maven repository (`~/.m2/repository`)
+4. **Deploy script** ran `mvn install` to install JAR to your local Maven repository (`~/.m2/repository`)
 
 5. **Aether Forge** detected the new slice and loaded it automatically
 

@@ -21,17 +21,14 @@ import org.slf4j.LoggerFactory;
 public record SliceManifest(String sliceName,
                             String artifactSuffix,
                             String slicePackage,
-                            List<String> apiClasses,
                             List<String> implClasses,
                             List<String> requestClasses,
                             List<String> responseClasses,
                             String baseArtifact,
-                            String apiArtifactId,
                             String implArtifactId,
                             List<SliceDependency> dependencies,
                             String configFile) {
     public SliceManifest {
-        apiClasses = List.copyOf(apiClasses);
         implClasses = List.copyOf(implClasses);
         requestClasses = List.copyOf(requestClasses);
         responseClasses = List.copyOf(responseClasses);
@@ -87,24 +84,20 @@ public record SliceManifest(String sliceName,
         }
         var artifactSuffix = props.getProperty("slice.artifactSuffix", "");
         var slicePackage = props.getProperty("slice.package", "");
-        var apiClasses = parseList(props.getProperty("api.classes", ""));
         var implClasses = parseList(props.getProperty("impl.classes", ""));
         var requestClasses = parseList(props.getProperty("request.classes", ""));
         var responseClasses = parseList(props.getProperty("response.classes", ""));
         var baseArtifact = props.getProperty("base.artifact", "");
-        var apiArtifactId = props.getProperty("api.artifactId", "");
         var implArtifactId = props.getProperty("impl.artifactId", "");
         var dependencies = parseDependencies(props);
         var configFile = props.getProperty("config.file", "");
         return Result.success(new SliceManifest(sliceName,
                                                 artifactSuffix,
                                                 slicePackage,
-                                                apiClasses,
                                                 implClasses,
                                                 requestClasses,
                                                 responseClasses,
                                                 baseArtifact,
-                                                apiArtifactId,
                                                 implArtifactId,
                                                 dependencies,
                                                 configFile));
@@ -146,21 +139,14 @@ public record SliceManifest(String sliceName,
     }
 
     /**
-     * Get all classes that should go into the API artifact.
-     * Includes API interface, request types, and response types.
+     * Get all classes that should go into the impl artifact.
+     * Includes implementation classes, request types, and response types.
      */
-    public List<String> allApiClasses() {
-        var all = new java.util.ArrayList<>(apiClasses);
+    public List<String> allImplClasses() {
+        var all = new java.util.ArrayList<>(implClasses);
         all.addAll(requestClasses);
         all.addAll(responseClasses);
         return all;
-    }
-
-    /**
-     * Get all classes that should go into the impl artifact.
-     */
-    public List<String> allImplClasses() {
-        return implClasses;
     }
 
     /**

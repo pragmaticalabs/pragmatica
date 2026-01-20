@@ -1,6 +1,5 @@
 package org.pragmatica.jbct.slice;
 
-import org.pragmatica.jbct.slice.generator.ApiInterfaceGenerator;
 import org.pragmatica.jbct.slice.generator.DependencyVersionResolver;
 import org.pragmatica.jbct.slice.generator.FactoryClassGenerator;
 import org.pragmatica.jbct.slice.generator.ManifestGenerator;
@@ -40,7 +39,6 @@ import com.google.auto.service.AutoService;
 @SupportedOptions({"slice.groupId", "slice.artifactId"})
 @SupportedSourceVersion(SourceVersion.RELEASE_25)
 public class SliceProcessor extends AbstractProcessor {
-    private ApiInterfaceGenerator apiGenerator;
     private FactoryClassGenerator factoryGenerator;
     private ManifestGenerator manifestGenerator;
     private DependencyVersionResolver versionResolver;
@@ -55,7 +53,6 @@ public class SliceProcessor extends AbstractProcessor {
         var types = processingEnv.getTypeUtils();
         var options = processingEnv.getOptions();
         this.versionResolver = new DependencyVersionResolver(processingEnv);
-        this.apiGenerator = new ApiInterfaceGenerator(filer, elements, types);
         this.factoryGenerator = new FactoryClassGenerator(filer, elements, types, versionResolver);
         this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
         this.errorDiscovery = new ErrorTypeDiscovery(processingEnv);
@@ -91,23 +88,13 @@ public class SliceProcessor extends AbstractProcessor {
     }
 
     private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
-        Result.all(generateApiInterface(interfaceElement, sliceModel),
-                   generateFactory(interfaceElement, sliceModel),
+        Result.all(generateFactory(interfaceElement, sliceModel),
                    generateManifest(interfaceElement, sliceModel),
                    generateSliceManifest(interfaceElement, sliceModel),
                    generateRoutes(interfaceElement, sliceModel))
-              .map((_, _, _, _, _) -> Unit.unit())
+              .map((_, _, _, _) -> Unit.unit())
               .onFailure(cause -> error(interfaceElement,
                                         cause.message()));
-    }
-
-    private Result<Unit> generateApiInterface(TypeElement interfaceElement, SliceModel sliceModel) {
-        if (apiInterfaceExists(sliceModel)) {
-            return Result.success(Unit.unit());
-        }
-        return apiGenerator.generate(sliceModel)
-                           .onSuccess(_ -> note(interfaceElement,
-                                                "Generated API interface: " + sliceModel.apiPackage() + "." + sliceModel.simpleName()));
     }
 
     private Result<Unit> generateFactory(TypeElement interfaceElement, SliceModel sliceModel) {
@@ -165,12 +152,6 @@ public class SliceProcessor extends AbstractProcessor {
                              .flatMap(errorMappings -> routeGenerator.generate(sliceModel, config, errorMappings))
                              .onSuccess(_ -> note(interfaceElement,
                                                   "Generated routes: " + sliceModel.simpleName() + "Routes"));
-    }
-
-    private boolean apiInterfaceExists(SliceModel model) {
-        var apiClassName = model.apiPackage() + "." + model.simpleName();
-        return processingEnv.getElementUtils()
-                            .getTypeElement(apiClassName) != null;
     }
 
     private void error(Element element, String message) {

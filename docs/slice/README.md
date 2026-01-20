@@ -52,17 +52,17 @@ mvn verify
 
 1. **Single-param methods**: All slice API methods take exactly one request parameter and return `Promise<T>`
 2. **Factory method**: A static method that creates the slice instance with its dependencies
-3. **Internal vs External**: Dependencies in the same base package are internal; others are external
+3. **All deps via invoker**: All dependencies in the factory method generate proxies that delegate to `SliceInvokerFacade`
 4. **Blueprint**: TOML file listing slices in dependency order for deployment
 
 ### Build Pipeline
 
 ```
-@Slice interface → Annotation Processor → Generated code + manifests
-                                                ↓
-                              Maven Plugin → API JAR + Impl JAR
-                                                ↓
-                              Blueprint Generator → blueprint.toml
+@Slice interface -> Annotation Processor -> Generated code + manifests
+                                                |
+                              Maven Plugin -> Slice JAR
+                                                |
+                              Blueprint Generator -> blueprint.toml
 ```
 
 ## Requirements
@@ -99,7 +99,6 @@ From each `@Slice` interface:
 
 | Artifact | Package | Purpose |
 |----------|---------|---------|
-| API Interface | `{pkg}.api.{Name}` | Public contract for consumers |
 | Factory Class | `{pkg}.{Name}Factory` | Creates instance with dependency wiring |
 | Slice Manifest | `META-INF/slice/{Name}.manifest` | Metadata for packaging/deployment |
 
@@ -107,5 +106,4 @@ From Maven packaging:
 
 | JAR | Contents |
 |-----|----------|
-| `{name}-api.jar` | API interface + nested request/response types |
-| `{name}.jar` | Implementation, factory, bundled dependencies (fat JAR) |
+| `{name}.jar` | Interface, implementation, factory, request/response types, bundled dependencies (fat JAR) |

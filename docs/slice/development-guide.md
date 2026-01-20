@@ -98,15 +98,15 @@ Dependency org.pragmatica-lite:core must have 'provided' scope.
 Aether runtime libraries should not be bundled with slices.
 ```
 
-### External Dependencies (Other Slices)
+### Slice Dependencies
 
 To depend on another slice:
 
-1. Add the API JAR as a `provided` dependency:
+1. Add the slice as a `provided` dependency:
 ```xml
 <dependency>
     <groupId>org.example</groupId>
-    <artifactId>inventory-service-api</artifactId>
+    <artifactId>inventory-service</artifactId>
     <version>1.0.0</version>
     <scope>provided</scope>
 </dependency>
@@ -146,42 +146,11 @@ public class OrderServiceImpl implements OrderService {
 ```
 
 **What happens at build time:**
-- Annotation processor detects `InventoryService` and `PricingEngine` as external (different base package)
+- Annotation processor detects `InventoryService` and `PricingEngine` as dependencies
 - Generates proxy records inside `OrderServiceFactory`
 - Proxies delegate to `SliceInvokerFacade` for remote calls
 
-### Internal Dependencies (Same Module)
-
-Dependencies within your module's package hierarchy are "internal":
-
-```java
-// org.example.order.OrderService depends on
-// org.example.order.validation.OrderValidator
-
-@Slice
-public interface OrderService {
-    Promise<OrderResult> placeOrder(PlaceOrderRequest request);
-
-    static OrderService orderService(OrderValidator validator) {
-        return new OrderServiceImpl(validator);
-    }
-}
-```
-
-Internal dependencies:
-- Factory calls the dependency's factory method directly
-- No proxy generation
-- No network overhead
-
-### Dependency Classification
-
-The processor uses package names to classify:
-
-| Dependency Package | Slice Package | Classification |
-|-------------------|---------------|----------------|
-| `org.example.order.validation` | `org.example.order` | Internal (starts with slice's package) |
-| `org.example.inventory` | `org.example.order` | External (different base) |
-| `com.other.service` | `org.example.order` | External |
+**Important:** All slice dependencies must use `provided` scope. They're resolved at runtime by Aether through `SliceInvokerFacade`.
 
 ## Multiple Slices in One Module
 
@@ -202,16 +171,12 @@ commerce/
 ```
 
 Each `@Slice` interface generates:
-- Its own API interface in `.api` subpackage
 - Its own factory class
 - Its own manifest in `META-INF/slice/`
 
 The Maven plugin packages each as separate artifacts:
-- `commerce-order-service-api.jar`
 - `commerce-order-service.jar`
-- `commerce-payment-service-api.jar`
 - `commerce-payment-service.jar`
-- `commerce-shipping-service-api.jar`
 - `commerce-shipping-service.jar`
 
 ### Inter-Slice Dependencies
@@ -230,7 +195,7 @@ public interface OrderService {
 }
 ```
 
-These are classified as internal dependencies because they share the same base package structure. The blueprint generator handles topological ordering.
+All dependencies generate proxies that go through `SliceInvokerFacade`. The blueprint generator handles topological ordering.
 
 ## Request/Response Design
 
@@ -441,13 +406,14 @@ Checks:
 - Factory method returns the interface type
 - All methods return `Promise<T>`
 - All methods have exactly one parameter
+- Aether runtime dependencies use `provided` scope
 
 ## IDE Setup
 
 ### IntelliJ IDEA
 
 Enable annotation processing:
-1. Settings → Build, Execution, Deployment → Compiler → Annotation Processors
+1. Settings -> Build, Execution, Deployment -> Compiler -> Annotation Processors
 2. Check "Enable annotation processing"
 3. Set "Production sources directory" to `target/generated-sources/annotations`
 
@@ -496,4 +462,4 @@ Use semantic versioning for slice APIs:
 - **Minor**: New methods, backward-compatible changes
 - **Patch**: Bug fixes, internal changes
 
-External consumers depend on your API JAR. Breaking changes require major version bump.
+Consumers depend on your slice directly. Breaking changes require major version bump.

@@ -35,13 +35,8 @@ public class ManifestGenerator {
             var props = new Properties();
             // Slice artifact uses naming convention: {moduleArtifactId}-{sliceName}
             var sliceArtifact = getSliceArtifact(model.simpleName());
-            // API artifact (with -api suffix)
-            props.setProperty("api.artifact", sliceArtifact + "-api");
             // Slice artifact
             props.setProperty("slice.artifact", sliceArtifact);
-            // API interface fully qualified name
-            props.setProperty("api.interface",
-                              model.apiPackage() + "." + model.simpleName());
             // Implementation interface fully qualified name
             props.setProperty("impl.interface", model.qualifiedName());
             // Metadata
@@ -94,9 +89,6 @@ public class ManifestGenerator {
             props.setProperty("slice.name", sliceName);
             props.setProperty("slice.artifactSuffix", toKebabCase(sliceName));
             props.setProperty("slice.package", model.packageName());
-            // API classes (just the generated API interface)
-            var apiClass = model.apiPackage() + "." + sliceName;
-            props.setProperty("api.classes", apiClass);
             // Implementation classes
             var implClasses = collectImplClasses(model);
             props.setProperty("impl.classes", String.join(",", implClasses));
@@ -107,7 +99,6 @@ public class ManifestGenerator {
             props.setProperty("response.classes", String.join(",", responseTypes));
             // Artifact coordinates
             props.setProperty("base.artifact", getArtifactFromEnv());
-            props.setProperty("api.artifactId", getArtifactIdFromEnv() + "-" + toKebabCase(sliceName) + "-api");
             props.setProperty("impl.artifactId", getArtifactIdFromEnv() + "-" + toKebabCase(sliceName));
             // Dependencies for blueprint generation
             var dependencies = model.dependencies();
@@ -116,21 +107,14 @@ public class ManifestGenerator {
             int index = 0;
             for (var dep : dependencies) {
                 var prefix = "dependency." + index + ".";
-                var isExternal = dep.isExternal(model.packageName());
                 props.setProperty(prefix + "interface", dep.interfaceQualifiedName());
-                props.setProperty(prefix + "external", String.valueOf(isExternal));
-                if (isExternal) {
-                    var resolved = versionResolver.resolve(dep);
-                    props.setProperty(prefix + "artifact",
-                                      resolved.sliceArtifact()
-                                              .or(() -> ""));
-                    props.setProperty(prefix + "version",
-                                      resolved.version()
-                                              .or(() -> "UNRESOLVED"));
-                } else {
-                    props.setProperty(prefix + "artifact", "");
-                    props.setProperty(prefix + "version", "");
-                }
+                var resolved = versionResolver.resolve(dep);
+                props.setProperty(prefix + "artifact",
+                                  resolved.sliceArtifact()
+                                          .or(() -> ""));
+                props.setProperty(prefix + "version",
+                                  resolved.version()
+                                          .or(() -> "UNRESOLVED"));
                 index++;
             }
             // Slice config file path (for blueprint generator to read)
@@ -165,11 +149,9 @@ public class ManifestGenerator {
                                                      .charAt(0)) + model.simpleName()
                                                                         .substring(1) + "Slice";
         classes.add(model.packageName() + "." + model.simpleName() + "Factory$" + adapterName);
-        // Proxy records for external dependencies
+        // Proxy records for all dependencies
         for (var dep : model.dependencies()) {
-            if (dep.isExternal(model.packageName())) {
-                classes.add(model.packageName() + "." + model.simpleName() + "Factory$" + dep.localRecordName());
-            }
+            classes.add(model.packageName() + "." + model.simpleName() + "Factory$" + dep.localRecordName());
         }
         return classes;
     }

@@ -13,7 +13,6 @@ import java.util.List;
 public record SliceModel(String packageName,
                          String simpleName,
                          String qualifiedName,
-                         String apiPackage,
                          List<MethodModel> methods,
                          List<DependencyModel> dependencies,
                          ExecutableElement factoryMethod) {
@@ -31,14 +30,12 @@ public record SliceModel(String packageName,
                                 .toString();
         var qualifiedName = element.getQualifiedName()
                                    .toString();
-        var apiPackage = packageName + ".api";
         return extractMethods(element, env)
         .flatMap(methods -> findFactoryMethod(element, simpleName)
         .flatMap(factoryMethod -> extractDependencies(factoryMethod, env)
         .map(dependencies -> new SliceModel(packageName,
                                             simpleName,
                                             qualifiedName,
-                                            apiPackage,
                                             methods,
                                             dependencies,
                                             factoryMethod))));

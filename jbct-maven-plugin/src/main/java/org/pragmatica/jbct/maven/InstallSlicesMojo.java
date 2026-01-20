@@ -71,14 +71,11 @@ public class InstallSlicesMojo extends AbstractMojo {
         }
         var manifest = result.unwrap();
         getLog().info("Installing slice: " + manifest.sliceName());
-        // Install API artifact
-        installArtifact(manifest.apiArtifactId(), manifest, true);
         // Install Impl artifact
-        installArtifact(manifest.implArtifactId(), manifest, false);
+        installArtifact(manifest.implArtifactId());
     }
 
-    private void installArtifact(String artifactId, SliceManifest manifest, boolean isApi)
-    throws MojoExecutionException {
+    private void installArtifact(String artifactId) throws MojoExecutionException {
         var version = project.getVersion();
         var jarFile = new File(outputDirectory, artifactId + "-" + version + ".jar");
         var pomFile = new File(outputDirectory, artifactId + "-" + version + ".pom");

@@ -266,10 +266,9 @@ The `slice-processor` module provides annotation processing for Aether slice dev
 slice-processor/
 ├── SliceProcessor.java           # Main annotation processor (@Slice)
 ├── generator/
-│   ├── ApiInterfaceGenerator.java    # Generates API interface in .api package
 │   ├── ProxyClassGenerator.java      # Generates proxy for dependencies
 │   ├── FactoryClassGenerator.java    # Generates factory with proxy wiring
-│   ├── ManifestGenerator.java        # Generates META-INF/slice-api.properties
+│   ├── ManifestGenerator.java        # Generates META-INF/slice manifests
 │   └── DependencyVersionResolver.java # Resolves versions from slice-deps.properties
 ├── routing/
 │   ├── RouteDsl.java             # DSL parser for route definitions
@@ -333,10 +332,11 @@ Configure URLs in `pom.xml` properties:
 
 From `@Slice` annotation processor:
 
-1. **API Interface** (`api/MySlice.java`) - Public interface for consumers
-2. **Proxy Classes** (`api/*Proxy.java`) - Delegates to SliceInvokerFacade
-3. **Factory Class** (`MySliceFactory.java`) - Creates instance with proxied dependencies
-4. **Manifest** (`META-INF/slice-api.properties`) - Maps artifact to interface
+1. **Factory Class** (`MySliceFactory.java`) - Creates instance with proxied dependencies
+2. **Slice Manifest** (`META-INF/slice/MySlice.manifest`) - Metadata for packaging/deployment
+3. **Slice API Manifest** (`META-INF/slice-api.properties`) - Maps artifact to slice interface
+
+Note: Proxy records for dependencies are generated as local records inside the factory's `create()` method. All dependencies go through `SliceInvokerFacade` proxy - there is no internal/external distinction.
 
 ### HTTP Routing Generation
 

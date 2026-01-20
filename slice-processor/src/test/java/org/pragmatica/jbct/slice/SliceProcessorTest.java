@@ -364,7 +364,6 @@ class SliceProcessorTest {
                                        .compile(sources);
 
         assertCompilation(compilation).succeeded();
-        assertCompilation(compilation).generatedSourceFile("test.api.TestService");
         assertCompilation(compilation).generatedSourceFile("test.TestServiceFactory");
     }
 
@@ -409,7 +408,6 @@ class SliceProcessorTest {
                                        .compile(sources);
 
         assertCompilation(compilation).succeeded();
-        assertCompilation(compilation).generatedSourceFile("test.api.OrderService");
         assertCompilation(compilation).generatedSourceFile("test.OrderServiceFactory");
 
         // Verify proxy record is generated inside factory with MethodHandle
@@ -420,14 +418,16 @@ class SliceProcessorTest {
     }
 
     @Test
-    void should_call_internal_dependency_factory_directly() {
-        // Internal dependency in same base package
+    void should_generate_proxy_for_internal_dependency() {
+        // Internal dependency in same base package - now also gets proxy
         var validator = JavaFileObjects.forSourceString("test.validation.OrderValidator",
                                                         """
             package test.validation;
 
+            import org.pragmatica.lang.Promise;
+
             public interface OrderValidator {
-                boolean validate(String orderId);
+                Promise<Boolean> validate(String orderId);
 
                 static OrderValidator orderValidator() {
                     return null;
@@ -463,15 +463,15 @@ class SliceProcessorTest {
 
         assertCompilation(compilation).succeeded();
 
-        // Internal deps should call factory directly, not create proxy
+        // All deps now create proxies through invoker
         assertCompilation(compilation)
                   .generatedSourceFile("test.OrderServiceFactory")
                   .contentsAsUtf8String()
-                  .contains("OrderValidator.orderValidator()");
+                  .contains("record orderValidator(MethodHandle<");
     }
 
     @Test
-    void should_handle_mixed_internal_and_external_dependencies() throws Exception {
+    void should_handle_multiple_dependencies() throws Exception {
         // External dependency (slice methods have exactly one parameter)
         var paymentService = JavaFileObjects.forSourceString("payments.PaymentService",
                                                              """
@@ -484,13 +484,15 @@ class SliceProcessorTest {
             }
             """);
 
-        // Internal dependency
+        // Internal dependency - now also uses Promise return type for proxy
         var validator = JavaFileObjects.forSourceString("test.validation.OrderValidator",
                                                         """
             package test.validation;
 
+            import org.pragmatica.lang.Promise;
+
             public interface OrderValidator {
-                boolean validate(String orderId);
+                Promise<Boolean> validate(String orderId);
 
                 static OrderValidator orderValidator() {
                     return null;
@@ -533,16 +535,14 @@ class SliceProcessorTest {
                                         .getCharContent(false)
                                         .toString();
 
-        // Internal dependency calls factory
-        assertThat(factoryContent).contains("OrderValidator.orderValidator()");
-
-        // External dependency gets proxy record with MethodHandle
+        // Both dependencies get proxy records with MethodHandle
+        assertThat(factoryContent).contains("record orderValidator(MethodHandle<");
         assertThat(factoryContent).contains("record paymentService(MethodHandle<");
     }
 
     @Test
-    void should_handle_deeply_nested_slice_dependencies() throws Exception {
-        // Level 3: External inventory service
+    void should_handle_multiple_dependencies_from_different_packages() throws Exception {
+        // External inventory service
         var inventoryService = JavaFileObjects.forSourceString("inventory.InventoryService",
                                                                """
             package inventory;
@@ -554,21 +554,23 @@ class SliceProcessorTest {
             }
             """);
 
-        // Level 2: Internal validation (depends on nothing)
+        // Internal validation - must use Promise for proxy generation
         var validator = JavaFileObjects.forSourceString("test.core.OrderValidator",
                                                         """
             package test.core;
 
+            import org.pragmatica.lang.Promise;
+
             public interface OrderValidator {
-                boolean isValid(String orderId);
+                Promise<Boolean> isValid(String orderId);
 
                 static OrderValidator orderValidator() {
-                    return orderId -> true;
+                    return null;
                 }
             }
             """);
 
-        // Level 2: Internal pricing (depends on nothing)
+        // Internal pricing
         var pricingEngine = JavaFileObjects.forSourceString("test.core.PricingEngine",
                                                             """
             package test.core;
@@ -576,7 +578,7 @@ class SliceProcessorTest {
             import org.pragmatica.lang.Promise;
 
             public interface PricingEngine {
-                Promise<Integer> calculatePrice(String productId, int quantity);
+                Promise<Integer> calculatePrice(String productId);
 
                 static PricingEngine pricingEngine() {
                     return null;
@@ -584,7 +586,7 @@ class SliceProcessorTest {
             }
             """);
 
-        // Level 1: Order processing slice (depends on validator, pricing, inventory)
+        // Order processing slice (depends on validator, pricing, inventory)
         var orderProcessor = JavaFileObjects.forSourceString("test.OrderProcessor",
                                                              """
             package test;
@@ -624,11 +626,9 @@ class SliceProcessorTest {
                                         .getCharContent(false)
                                         .toString();
 
-        // Internal dependencies call their factories
-        assertThat(factoryContent).contains("OrderValidator.orderValidator()");
-        assertThat(factoryContent).contains("PricingEngine.pricingEngine()");
-
-        // External dependency gets proxy with MethodHandle
+        // All dependencies get proxies with MethodHandle
+        assertThat(factoryContent).contains("record orderValidator(MethodHandle<");
+        assertThat(factoryContent).contains("record pricingEngine(MethodHandle<");
         assertThat(factoryContent).contains("record inventoryService(MethodHandle<");
 
         // Factory instantiates slice with all dependencies
@@ -799,7 +799,6 @@ class SliceProcessorTest {
         // Verify manifest contains required properties
         assertThat(manifestContent).contains("slice.name=OrderService");
         assertThat(manifestContent).contains("slice.artifactSuffix=order-service");
-        assertThat(manifestContent).contains("api.classes=test.api.OrderService");
         assertThat(manifestContent).contains("test.OrderService");
         assertThat(manifestContent).contains("test.OrderServiceFactory");
         // Verify dependencies count (no dependencies in this test)
@@ -862,7 +861,6 @@ class SliceProcessorTest {
         // Verify dependency properties for blueprint generation
         assertThat(manifestContent).contains("dependencies.count=1");
         assertThat(manifestContent).contains("dependency.0.interface=inventory.InventoryService");
-        assertThat(manifestContent).contains("dependency.0.external=true");
     }
 
     // ========== Aspect Tests ==========
@@ -1387,6 +1385,5 @@ class SliceProcessorTest {
         // Slice artifact should use naming convention: {moduleArtifactId}-{sliceName}
         // e.g., orders-order-service (not just "orders")
         assertThat(propsContent).contains("slice.artifact=org.example\\:orders-order-service");
-        assertThat(propsContent).contains("api.artifact=org.example\\:orders-order-service-api");
     }
 }

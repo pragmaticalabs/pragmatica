@@ -65,14 +65,6 @@ public record DependencyModel(String parameterName,
     }
 
     /**
-     * Check if this dependency is external (different base package).
-     * External dependencies need proxies; internal ones are called directly.
-     */
-    public boolean isExternal(String basePackage) {
-        return ! interfacePackage.startsWith(basePackage);
-    }
-
-    /**
      * Get lowercase name for local proxy record (JBCT naming convention).
      * Handles acronyms properly: "HTTPService" -> "httpService"
      */
@@ -97,12 +89,5 @@ public record DependencyModel(String parameterName,
                                       .toLowerCase() + interfaceSimpleName.substring(i - 1);
         }
         return interfaceSimpleName.toLowerCase();
-    }
-
-    /**
-     * Get factory method name for internal dependency (JBCT naming convention).
-     */
-    public String factoryMethodName() {
-        return localRecordName();
     }
 }

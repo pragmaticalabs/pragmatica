@@ -23,7 +23,6 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 /**
  * Generates factory class for slice instantiation.
@@ -34,8 +33,7 @@ import java.util.stream.Collectors;
  *   <li>{@code createSlice(Aspect, SliceInvokerFacade)} - returns Slice for Aether runtime</li>
  * </ul>
  * <p>
- * External dependencies get local proxy records inside create() method.
- * Internal dependencies are instantiated via their factory methods.
+ * All dependencies get local proxy records that delegate to SliceInvokerFacade.
  * <p>
  * When methods have @Aspect annotations, generates wrapper record with
  * aspect-wrapped method implementations.
@@ -84,25 +82,21 @@ public class FactoryClassGenerator {
     private void generateFactoryClass(PrintWriter out, SliceModel model, String factoryName) {
         var sliceName = model.simpleName();
         var basePackage = model.packageName();
-        // Partition dependencies in single pass
-        var partitioned = model.dependencies()
-                               .stream()
-                               .collect(Collectors.partitioningBy(dep -> dep.isExternal(basePackage)));
-        var externalDeps = partitioned.get(true)
-                                      .stream()
-                                      .map(versionResolver::resolve)
-                                      .toList();
-        var internalDeps = partitioned.get(false);
+        // Resolve all dependencies - all go through invoker
+        var allDeps = model.dependencies()
+                           .stream()
+                           .map(versionResolver::resolve)
+                           .toList();
         // Cache proxy methods per dependency to avoid repeated lookups
         var proxyMethodsCache = new HashMap<String, List<ProxyMethodInfo>>();
-        for (var dep : externalDeps) {
+        for (var dep : allDeps) {
             proxyMethodsCache.put(dep.interfaceQualifiedName(), collectProxyMethods(dep));
         }
         // Package
         out.println("package " + basePackage + ";");
         out.println();
         // Imports
-        generateImports(out, model, externalDeps, internalDeps);
+        generateImports(out, model, allDeps);
         out.println();
         // Class
         out.println("/**");
@@ -113,7 +107,7 @@ public class FactoryClassGenerator {
         out.println("    private " + factoryName + "() {}");
         out.println();
         // create() method
-        generateCreateMethod(out, model, externalDeps, internalDeps, proxyMethodsCache);
+        generateCreateMethod(out, model, allDeps, proxyMethodsCache);
         out.println();
         // createSlice() method
         generateCreateSliceMethod(out, model);
@@ -122,8 +116,7 @@ public class FactoryClassGenerator {
 
     private void generateImports(PrintWriter out,
                                  SliceModel model,
-                                 List<DependencyModel> externalDeps,
-                                 List<DependencyModel> internalDeps) {
+                                 List<DependencyModel> allDeps) {
         out.println("import org.pragmatica.aether.slice.Aspect;");
         out.println("import org.pragmatica.aether.slice.MethodHandle;");
         out.println("import org.pragmatica.aether.slice.MethodName;");
@@ -145,13 +138,9 @@ public class FactoryClassGenerator {
         }
         out.println();
         out.println("import java.util.List;");
-        // Import external dependency interfaces
-        for (var dep : externalDeps) {
-            out.println("import " + dep.interfaceQualifiedName() + ";");
-        }
-        // Import internal dependency interfaces (those in subpackages)
+        // Import all dependency interfaces
         var basePackage = model.packageName();
-        for (var dep : internalDeps) {
+        for (var dep : allDeps) {
             if (!dep.interfacePackage()
                     .equals(basePackage)) {
                 out.println("import " + dep.interfaceQualifiedName() + ";");
@@ -161,15 +150,14 @@ public class FactoryClassGenerator {
 
     private void generateCreateMethod(PrintWriter out,
                                       SliceModel model,
-                                      List<DependencyModel> externalDeps,
-                                      List<DependencyModel> internalDeps,
+                                      List<DependencyModel> allDeps,
                                       Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
         out.println("    public static Promise<" + sliceName + "> " + methodName + "(Aspect<" + sliceName + "> aspect,");
         out.println("                                              SliceInvokerFacade invoker) {");
-        // Generate local proxy records for external dependencies
-        for (var dep : externalDeps) {
+        // Generate local proxy records for all dependencies
+        for (var dep : allDeps) {
             generateLocalProxyRecord(out, dep, proxyMethodsCache);
             out.println();
         }
@@ -178,15 +166,10 @@ public class FactoryClassGenerator {
             generateWrapperRecord(out, model);
             out.println();
         }
-        // Instantiate internal dependencies
-        for (var dep : internalDeps) {
-            out.println("        var " + dep.parameterName() + " = " + dep.interfaceSimpleName() + "." + dep.factoryMethodName()
-                        + "();");
-        }
         // Build the creation chain
         if (model.hasAspects()) {
-            generateAspectCreateChain(out, model, externalDeps, internalDeps, proxyMethodsCache);
-        } else if (externalDeps.isEmpty()) {
+            generateAspectCreateChain(out, model, allDeps, proxyMethodsCache);
+        } else if (allDeps.isEmpty()) {
             var factoryArgs = model.dependencies()
                                    .stream()
                                    .map(DependencyModel::parameterName)
@@ -196,7 +179,7 @@ public class FactoryClassGenerator {
                         + ");");
             out.println("        return Promise.success(aspect.apply(instance));");
         } else {
-            generateFlatMapChain(out, model, externalDeps, internalDeps, proxyMethodsCache);
+            generateFlatMapChain(out, model, allDeps, proxyMethodsCache);
         }
         out.println("    }");
     }
@@ -234,8 +217,7 @@ public class FactoryClassGenerator {
 
     private void generateAspectCreateChain(PrintWriter out,
                                            SliceModel model,
-                                           List<DependencyModel> externalDeps,
-                                           List<DependencyModel> internalDeps,
+                                           List<DependencyModel> allDeps,
                                            Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var sliceName = model.simpleName();
         var wrapperName = sliceName + "Wrapper";
@@ -267,10 +249,10 @@ public class FactoryClassGenerator {
             out.println("                                                          .async()");
             out.println("                                                          .flatMap(cfg -> factory.create(Cache.class, cfg).async()))");
         }
-        // Handle external dependencies
-        if (!externalDeps.isEmpty()) {
+        // Handle all dependencies
+        if (!allDeps.isEmpty()) {
             var allHandles = new ArrayList<HandleInfo>();
-            for (var dep : externalDeps) {
+            for (var dep : allDeps) {
                 var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
                 for (var proxyMethod : methods) {
                     allHandles.add(new HandleInfo(dep, proxyMethod));
@@ -284,10 +266,10 @@ public class FactoryClassGenerator {
             }
         }
         // Final map to create wrapper
-        var lastVar = determineLastVariableName(externalDeps, cacheVarNames, proxyMethodsCache);
+        var lastVar = determineLastVariableName(allDeps, cacheVarNames, proxyMethodsCache);
         out.println("                           .map(" + lastVar + " -> {");
-        // Instantiate external dependency proxies
-        for (var dep : externalDeps) {
+        // Instantiate dependency proxies
+        for (var dep : allDeps) {
             var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
             var handleArgs = methods.stream()
                                     .map(m -> dep.parameterName() + "_" + m.name)
@@ -347,13 +329,12 @@ public class FactoryClassGenerator {
 
     private void generateFlatMapChain(PrintWriter out,
                                       SliceModel model,
-                                      List<DependencyModel> externalDeps,
-                                      List<DependencyModel> internalDeps,
+                                      List<DependencyModel> allDeps,
                                       Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var sliceName = model.simpleName();
         // Collect all handles across all dependencies
         var allHandles = new ArrayList<HandleInfo>();
-        for (var dep : externalDeps) {
+        for (var dep : allDeps) {
             var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
             for (var method : methods) {
                 allHandles.add(new HandleInfo(dep, method));
@@ -373,7 +354,7 @@ public class FactoryClassGenerator {
         var lastHandle = allHandles.getLast();
         out.println(indent + ".map(" + lastHandle.varName() + " -> {");
         // Instantiate proxies
-        for (var dep : externalDeps) {
+        for (var dep : allDeps) {
             var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
             var handleArgs = methods.stream()
                                     .map(m -> new HandleInfo(dep, m).varName())
@@ -591,12 +572,12 @@ public class FactoryClassGenerator {
      * Determines the variable name to use in the final .map() lambda.
      * Handles empty collections safely to avoid NoSuchElementException.
      */
-    private String determineLastVariableName(List<DependencyModel> externalDeps,
+    private String determineLastVariableName(List<DependencyModel> allDeps,
                                              List<String> cacheVarNames,
                                              Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
-        // Try external deps first
-        if (!externalDeps.isEmpty()) {
-            var lastDep = externalDeps.getLast();
+        // Try deps first
+        if (!allDeps.isEmpty()) {
+            var lastDep = allDeps.getLast();
             var methods = proxyMethodsCache.get(lastDep.interfaceQualifiedName());
             if (methods != null && !methods.isEmpty()) {
                 return methods.getLast().name + "Handle";

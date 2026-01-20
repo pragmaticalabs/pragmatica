@@ -32,7 +32,7 @@ Aether uses a hierarchical ClassLoader model for slice isolation:
 ```
 System/Bootstrap → Node/Application → SharedLibraryClassLoader → SliceClassLoader
                                               ↑                        ↑
-                                    [api] + [shared] + [infra]    [slice JAR + conflicts]
+                                      [shared] + [infra]         [slice JAR + conflicts]
 ```
 
 ### Dependency Categories
@@ -41,7 +41,6 @@ Declared in `META-INF/dependencies/{FactoryClass}`:
 
 | Section | ClassLoader | Instance Sharing | Use For |
 |---------|-------------|------------------|---------|
-| `[api]` | Shared | N/A (interfaces) | Slice API interfaces for proxies |
 | `[shared]` | Shared | JAR only | Third-party libraries |
 | `[infra]` | Shared | JAR + instances | Infrastructure (cache, database) |
 | `[slices]` | Per-slice | Full slice | Other slice dependencies |
@@ -49,10 +48,6 @@ Declared in `META-INF/dependencies/{FactoryClass}`:
 ### Dependency File Example
 
 ```
-[api]
-org.example:inventory-api:^1.0.0
-org.example:payment-api:^1.0.0
-
 [shared]
 org.pragmatica-lite:core:^0.9.0
 
