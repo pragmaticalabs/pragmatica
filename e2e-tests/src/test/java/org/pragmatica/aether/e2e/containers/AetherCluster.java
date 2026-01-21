@@ -47,18 +47,27 @@ public class AetherCluster implements AutoCloseable {
 
     // Use predictable IPs for container-to-container communication
     // Podman's DNS doesn't reliably resolve network aliases, so we use explicit IPs
-    private static final String SUBNET_PREFIX = "10.99.0";
+    // Use random second octet (100-254) to avoid subnet conflicts between test runs
+    private static final java.util.Random RANDOM = new java.util.Random();
     private static final int IP_START = 2; // Gateway is .1, containers start at .2
+
+    private final String subnetPrefix;
 
     private AetherCluster(int size, Path projectRoot) {
         this.projectRoot = projectRoot;
-        // Create network with fixed subnet for predictable IPs
+        // Generate unique subnet per cluster instance to avoid conflicts
+        int secondOctet = 100 + RANDOM.nextInt(155); // 100-254
+        int thirdOctet = RANDOM.nextInt(256); // 0-255
+        this.subnetPrefix = "10." + secondOctet + "." + thirdOctet;
+        System.out.println("[DEBUG] Using subnet: " + subnetPrefix + ".0/24");
+
+        // Create network with unique subnet for predictable IPs
         this.network = Network.builder()
                               .createNetworkCmdModifier(cmd -> {
                                   cmd.withIpam(new com.github.dockerjava.api.model.Network.Ipam()
                                       .withConfig(new com.github.dockerjava.api.model.Network.Ipam.Config()
-                                          .withSubnet(SUBNET_PREFIX + ".0/24")
-                                          .withGateway(SUBNET_PREFIX + ".1")));
+                                          .withSubnet(subnetPrefix + ".0/24")
+                                          .withGateway(subnetPrefix + ".1")));
                               })
                               .build();
         this.nodes = new ArrayList<>(size);
@@ -71,7 +80,7 @@ public class AetherCluster implements AutoCloseable {
         // Create nodes with predictable IPs and extra host entries
         for (int i = 1; i <= size; i++) {
             var nodeId = "node-" + i;
-            var nodeIp = SUBNET_PREFIX + "." + (IP_START + i - 1);
+            var nodeIp = subnetPrefix + "." + (IP_START + i - 1);
             var node = AetherNodeContainer.aetherNode(nodeId, projectRoot, peerList)
                                           .withClusterNetwork(network);
 
@@ -79,7 +88,7 @@ public class AetherCluster implements AutoCloseable {
             for (int j = 1; j <= size; j++) {
                 if (j != i) {
                     var otherNodeId = "node-" + j;
-                    var otherIp = SUBNET_PREFIX + "." + (IP_START + j - 1);
+                    var otherIp = subnetPrefix + "." + (IP_START + j - 1);
                     node.withExtraHost(otherNodeId, otherIp);
                 }
             }
@@ -91,7 +100,7 @@ public class AetherCluster implements AutoCloseable {
 
     private String buildIpPeerList(int size) {
         return IntStream.rangeClosed(1, size)
-                        .mapToObj(i -> "node-" + i + ":" + SUBNET_PREFIX + "." + (IP_START + i - 1) + ":8090")
+                        .mapToObj(i -> "node-" + i + ":" + subnetPrefix + "." + (IP_START + i - 1) + ":8090")
                         .collect(Collectors.joining(","));
     }
 
@@ -168,6 +177,79 @@ public class AetherCluster implements AutoCloseable {
         await().atMost(QUORUM_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
+    }
+
+    /**
+     * Waits for a slice to become ACTIVE, failing fast if it reaches FAILED state.
+     *
+     * @param artifact artifact to wait for (can be partial match)
+     * @param timeout  maximum time to wait
+     * @throws SliceDeploymentException if slice transitions to FAILED state
+     * @throws org.awaitility.core.ConditionTimeoutException if timeout reached
+     */
+    public void awaitSliceActive(String artifact, Duration timeout) {
+        await().atMost(timeout)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> checkSliceState(artifact));
+    }
+
+    /**
+     * Checks slice state, throwing exception on FAILED, returning true on ACTIVE.
+     */
+    private boolean checkSliceState(String artifact) {
+        try {
+            var node = anyNode();
+            var state = node.getSliceState(artifact);
+            System.out.println("[DEBUG] Slice " + artifact + " state: " + state);
+
+            if ("FAILED".equals(state)) {
+                // Get more details about the failure
+                var status = node.getSlicesStatus();
+                // Get container logs for debugging
+                var logs = getContainerLogs(node);
+                throw new SliceDeploymentException(
+                    "Slice " + artifact + " reached FAILED state.\nStatus: " + status +
+                    "\n\n=== Container Logs ===\n" + logs);
+            }
+            return "ACTIVE".equals(state);
+        } catch (SliceDeploymentException e) {
+            throw e;
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Error checking slice state: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Gets the container logs, filtering for ERROR, WARN, and slice-related entries.
+     */
+    private String getContainerLogs(AetherNodeContainer node) {
+        try {
+            var allLogs = node.getLogs();
+            // Filter to show ERROR, WARN, and slice loading related lines
+            return allLogs.lines()
+                       .filter(line -> line.contains("ERROR") ||
+                                      line.contains("WARN") ||
+                                      line.contains("slice") ||
+                                      line.contains("Slice") ||
+                                      line.contains("FAILED") ||
+                                      line.contains("Loading") ||
+                                      line.contains("Artifact") ||
+                                      line.contains("ClassLoader") ||
+                                      line.contains("Exception"))
+                       .collect(java.util.stream.Collectors.joining("\n"));
+        } catch (Exception e) {
+            return "Failed to get logs: " + e.getMessage();
+        }
+    }
+
+    /**
+     * Exception thrown when slice deployment fails.
+     */
+    public static class SliceDeploymentException extends RuntimeException {
+        public SliceDeploymentException(String message) {
+            super(message);
+        }
     }
 
     /**

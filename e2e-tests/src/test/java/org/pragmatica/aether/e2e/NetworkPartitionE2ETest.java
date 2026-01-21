@@ -121,7 +121,7 @@ class NetworkPartitionE2ETest {
         cluster.awaitLeader();
 
         // Deploy a slice while cluster is healthy
-        cluster.anyNode().deploy("org.pragmatica-lite.aether.example:place-order:0.8.0", 1);
+        cluster.anyNode().deploy("org.pragmatica-lite.aether.example:place-order-place-order:0.8.0", 1);
         await().atMost(WAIT_TIMEOUT).until(() -> {
             var slices = cluster.anyNode().getSlices();
             return slices.contains("place-order");

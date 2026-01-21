@@ -61,6 +61,10 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                                     .build();
     }
 
+    // Local Maven repository path - mounted into containers for artifact resolution
+    private static final String M2_REPO_PATH = System.getProperty("user.home") + "/.m2/repository";
+    private static final String CONTAINER_M2_PATH = "/home/aether/.m2/repository";
+
     /**
      * Creates a new Aether node container with the specified node ID.
      *
@@ -81,6 +85,9 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                  .withEnv("CLUSTER_PORT", String.valueOf(CLUSTER_PORT))
                  .withEnv("MANAGEMENT_PORT", String.valueOf(MANAGEMENT_PORT))
                  .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC")
+                 // Mount local Maven repository for artifact resolution
+                 .withFileSystemBind(M2_REPO_PATH, CONTAINER_M2_PATH,
+                     org.testcontainers.containers.BindMode.READ_ONLY)
                  .waitingFor(Wait.forHttp("/api/health")
                                  .forPort(MANAGEMENT_PORT)
                                  .forStatusCode(200)
@@ -311,7 +318,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                                      .uri(URI.create(managementUrl() + path))
                                      .header("Content-Type", "application/json")
                                      .POST(HttpRequest.BodyPublishers.ofString(body))
-                                     .timeout(Duration.ofSeconds(10))
+                                     .timeout(Duration.ofSeconds(30))
                                      .build();
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             return response.body();
@@ -593,6 +600,53 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      */
     public String getSlicesStatus() {
         return get("/api/slices/status");
+    }
+
+    /**
+     * Checks if a slice is in FAILED state.
+     *
+     * @param artifact artifact to check (partial match on name)
+     * @return true if the slice is in FAILED state
+     */
+    public boolean isSliceFailed(String artifact) {
+        var status = getSlicesStatus();
+        // Check for FAILED state in slice status
+        // Format: {"slices":[{"artifact":"...","state":"FAILED",...}]}
+        return status.contains("\"state\":\"FAILED\"") && status.contains(artifact);
+    }
+
+    /**
+     * Checks if a slice is in ACTIVE state.
+     *
+     * @param artifact artifact to check (partial match on name)
+     * @return true if the slice is in ACTIVE state
+     */
+    public boolean isSliceActive(String artifact) {
+        var status = getSlicesStatus();
+        // Check for ACTIVE state in slice status
+        return status.contains("\"state\":\"ACTIVE\"") && status.contains(artifact);
+    }
+
+    /**
+     * Gets the current state of a slice.
+     *
+     * @param artifact artifact to check (partial match on name)
+     * @return state string or "UNKNOWN" if not found
+     */
+    public String getSliceState(String artifact) {
+        var status = getSlicesStatus();
+        if (!status.contains(artifact)) {
+            return "NOT_FOUND";
+        }
+        // Extract state for the artifact
+        // Simple parsing - look for pattern after the artifact
+        var statePattern = java.util.regex.Pattern.compile(
+            "\"artifact\":\"[^\"]*" + java.util.regex.Pattern.quote(artifact) + "[^\"]*\",\"state\":\"([A-Z_]+)\"");
+        var matcher = statePattern.matcher(status);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return "UNKNOWN";
     }
 
     // ===== Slice Invocation API =====

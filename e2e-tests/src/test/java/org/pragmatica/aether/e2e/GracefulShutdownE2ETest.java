@@ -25,7 +25,7 @@ import static org.awaitility.Awaitility.await;
 class GracefulShutdownE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:place-order:0.8.0";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:place-order-place-order:0.8.0";
     private AetherCluster cluster;
 
     @BeforeEach
