@@ -167,7 +167,7 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
         sendHtml(ctx, html);
     }
 
-    private void handleRoute(ChannelHandlerContext ctx, FullHttpRequest request, Route< ?> route, String path) {
+    private void handleRoute(ChannelHandlerContext ctx, FullHttpRequest request, Route<?> route, String path) {
         var requestId = "forge-" + requestCounter.incrementAndGet();
         var context = RequestContextImpl.requestContext(request, route, jsonCodec, requestId);
         route.handler()
@@ -179,7 +179,7 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
     }
 
     @SuppressWarnings("unchecked")
-    private void sendSuccessResponse(ChannelHandlerContext ctx, Route< ?> route, Object result) {
+    private void sendSuccessResponse(ChannelHandlerContext ctx, Route<?> route, Object result) {
         jsonCodec.serialize(result)
                  .onSuccess(byteBuf -> {
                                 var response = new DefaultFullHttpResponse(HTTP_1_1, OK, byteBuf);

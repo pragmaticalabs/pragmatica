@@ -138,8 +138,7 @@ public final class ConfigurableLoadRunner {
         var runnerResults = currentConfig.get()
                                          .targets()
                                          .stream()
-                                         .map(target -> createRunner(target)
-                                                                    .map(runner -> Map.entry(target, runner)))
+                                         .map(target -> createRunner(target).map(runner -> Map.entry(target, runner)))
                                          .toList();
         return Result.allOf(runnerResults)
                      .onFailure(cause -> {
@@ -258,15 +257,15 @@ public final class ConfigurableLoadRunner {
 
     private Result<TargetRunner> createRunner(LoadTarget target) {
         return compilePathProcessors(target.pathVars())
-                                    .flatMap(pathProcessors -> compileBodyProcessor(target.body())
-                                                                                   .map(bodyProcessor -> new TargetRunner(target,
-                                                                                                                          pathProcessors,
-                                                                                                                          bodyProcessor,
-                                                                                                                          port,
-                                                                                                                          httpClient,
-                                                                                                                          metrics,
-                                                                                                                          entryPointMetrics,
-                                                                                                                          () -> state.get())));
+        .flatMap(pathProcessors -> compileBodyProcessor(target.body())
+        .map(bodyProcessor -> new TargetRunner(target,
+                                               pathProcessors,
+                                               bodyProcessor,
+                                               port,
+                                               httpClient,
+                                               metrics,
+                                               entryPointMetrics,
+                                               () -> state.get())));
     }
 
     private Result<Map<String, TemplateProcessor>> compilePathProcessors(Map<String, String> pathVars) {

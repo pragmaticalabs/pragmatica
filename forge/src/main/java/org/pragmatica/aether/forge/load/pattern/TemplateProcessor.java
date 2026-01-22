@@ -56,8 +56,7 @@ public final class TemplateProcessor {
     public static Result<TemplateProcessor> compile(String template) {
         return Option.option(template)
                      .filter(s -> !s.isEmpty())
-                     .map(t -> buildSegments(t)
-                                            .map(segments -> new TemplateProcessor(t, segments)))
+                     .map(t -> buildSegments(t).map(segments -> new TemplateProcessor(t, segments)))
                      .or(Result.success(new TemplateProcessor("",
                                                               List.of())));
     }

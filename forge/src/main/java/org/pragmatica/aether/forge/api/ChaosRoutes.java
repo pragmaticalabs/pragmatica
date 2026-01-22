@@ -46,14 +46,14 @@ public final class ChaosRoutes {
                                           ChaosController chaosController,
                                           Consumer<EventLogEntry> eventLogger) {
         return in("/api/chaos")
-                 .serve(statusRoute(chaosController),
-                        enableRoute(chaosController, eventLogger),
-                        injectRoute(chaosController, eventLogger),
-                        stopRoute(chaosController, eventLogger),
-                        stopAllRoute(chaosController, eventLogger),
-                        addNodeRoute(cluster, eventLogger),
-                        killNodeRoute(cluster, eventLogger),
-                        rollingRestartRoute(cluster, eventLogger));
+        .serve(statusRoute(chaosController),
+               enableRoute(chaosController, eventLogger),
+               injectRoute(chaosController, eventLogger),
+               stopRoute(chaosController, eventLogger),
+               stopAllRoute(chaosController, eventLogger),
+               addNodeRoute(cluster, eventLogger),
+               killNodeRoute(cluster, eventLogger),
+               rollingRestartRoute(cluster, eventLogger));
     }
 
     // ========== Route Definitions ==========
@@ -176,8 +176,7 @@ public final class ChaosRoutes {
         Duration duration = Duration.ofSeconds(request.durationSeconds() != null
                                                ? request.durationSeconds()
                                                : 60);
-        return parseChaosEvent(request, duration)
-                              .async()
+        return parseChaosEvent(request, duration).async()
                               .flatMap(controller::injectChaos)
                               .map(eventId -> logAndBuildInjectResponse(eventLogger, request, eventId));
     }

@@ -66,7 +66,7 @@ public sealed interface LoadConfigLoader {
                                              tables.size())
                                       .mapToObj(i -> parseLoadTarget(tables.get(i),
                                                                      i)
-                                                                    .mapError(cause -> indexedError(i, cause)))
+        .mapError(cause -> indexedError(i, cause)))
                                       .toList();
         return Result.allOf(indexedResults)
                      .flatMap(LoadConfig::loadConfig);
@@ -176,7 +176,7 @@ public sealed interface LoadConfigLoader {
             sb.append(value);
         } else if (value instanceof Map) {
             sb.append(mapToJsonString((Map<String, Object>) value));
-        } else if (value instanceof List< ?> list) {
+        } else if (value instanceof List<?> list) {
             sb.append("[");
             var first = true;
             for (var item : list) {

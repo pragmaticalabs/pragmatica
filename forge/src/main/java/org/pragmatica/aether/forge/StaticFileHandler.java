@@ -74,11 +74,10 @@ public final class StaticFileHandler extends SimpleChannelInboundHandler<FullHtt
         var resourcePath = STATIC_PREFIX + (finalPath.startsWith("/")
                                             ? finalPath.substring(1)
                                             : finalPath);
-        loadResource(resourcePath)
-                    .onEmpty(() -> {
-                                 log.debug("Static file not found: {}", resourcePath);
-                                 sendError(ctx, NOT_FOUND, "File not found: " + finalPath);
-                             })
+        loadResource(resourcePath).onEmpty(() -> {
+                                               log.debug("Static file not found: {}", resourcePath);
+                                               sendError(ctx, NOT_FOUND, "File not found: " + finalPath);
+                                           })
                     .onPresent(content -> sendStaticContent(ctx, finalPath, content));
     }
 
@@ -98,8 +97,7 @@ public final class StaticFileHandler extends SimpleChannelInboundHandler<FullHtt
     }
 
     private Option<byte[]> loadResource(String path) {
-        try (InputStream is = getClass()
-                                      .getClassLoader()
+        try (InputStream is = getClass().getClassLoader()
                                       .getResourceAsStream(path)) {
             if (is == null) {
                 return Option.empty();

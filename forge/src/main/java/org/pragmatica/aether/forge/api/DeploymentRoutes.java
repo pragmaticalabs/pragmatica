@@ -61,9 +61,10 @@ public sealed interface DeploymentRoutes {
     record ProxyResponse(boolean success, String body) {}
 
     /**
-     * Slices status response from leader.
+     * Slices status response.
+     * Contains slice data directly from ForgeCluster's KV store query.
      */
-    record SlicesStatusResponse(String body) {}
+    record SlicesStatusResponse(java.util.List<ForgeCluster.SliceStatus> slices) {}
 
     /**
      * Cluster metrics response from leader.
@@ -117,8 +118,7 @@ public sealed interface DeploymentRoutes {
     private static Route<SlicesStatusResponse> slicesStatusRoute(ForgeCluster cluster,
                                                                  JdkHttpOperations http) {
         return Route.<SlicesStatusResponse> get("/api/slices/status")
-                    .to(_ -> proxySlicesStatus(cluster, http))
-                    .asJson();
+                    .toJson(() -> getSlicesStatus(cluster));
     }
 
     private static Route<ClusterMetricsResponse> clusterMetricsRoute(ForgeCluster cluster,
@@ -140,13 +140,11 @@ public sealed interface DeploymentRoutes {
                                                       JdkHttpOperations http,
                                                       Consumer<EventLogEntry> eventLogger,
                                                       DeployRequest request) {
-        return findLeaderPort(cluster)
-                             .async(LeaderNotAvailable.INSTANCE)
+        return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
                              .flatMap(port -> proxyPost(http,
                                                         port,
                                                         "/deploy",
-                                                        "{\"artifact\":\"" + request.artifact() + "\",\"instances\":" + request.instances()
-                                                        + "}"))
+                                                        buildDeployJson(request)))
                              .map(body -> {
                                       eventLogger.accept(new EventLogEntry("DEPLOY",
                                                                            "Deployed " + request.artifact() + " x" + request.instances()));
@@ -154,16 +152,19 @@ public sealed interface DeploymentRoutes {
                                   });
     }
 
+    private static String buildDeployJson(DeployRequest request) {
+        return "{\"artifact\":\"" + escapeJson(request.artifact()) + "\",\"instances\":" + request.instances() + "}";
+    }
+
     private static Promise<ProxyResponse> proxyUndeploy(ForgeCluster cluster,
                                                         JdkHttpOperations http,
                                                         Consumer<EventLogEntry> eventLogger,
                                                         UndeployRequest request) {
-        return findLeaderPort(cluster)
-                             .async(LeaderNotAvailable.INSTANCE)
+        return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
                              .flatMap(port -> proxyPost(http,
                                                         port,
                                                         "/undeploy",
-                                                        "{\"artifact\":\"" + request.artifact() + "\"}"))
+                                                        "{\"artifact\":\"" + escapeJson(request.artifact()) + "\"}"))
                              .map(body -> {
                                       eventLogger.accept(new EventLogEntry("UNDEPLOY",
                                                                            "Undeployed " + request.artifact()));
@@ -175,8 +176,7 @@ public sealed interface DeploymentRoutes {
                                                          JdkHttpOperations http,
                                                          Consumer<EventLogEntry> eventLogger,
                                                          String blueprintJson) {
-        return findLeaderPort(cluster)
-                             .async(LeaderNotAvailable.INSTANCE)
+        return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
                              .flatMap(port -> proxyPost(http, port, "/blueprint", blueprintJson))
                              .map(body -> {
                                       eventLogger.accept(new EventLogEntry("BLUEPRINT", "Applied blueprint"));
@@ -184,18 +184,13 @@ public sealed interface DeploymentRoutes {
                                   });
     }
 
-    private static Promise<SlicesStatusResponse> proxySlicesStatus(ForgeCluster cluster,
-                                                                   JdkHttpOperations http) {
-        return findLeaderPort(cluster)
-                             .async(LeaderNotAvailable.INSTANCE)
-                             .flatMap(port -> proxyGet(http, port, "/slices/status"))
-                             .map(SlicesStatusResponse::new);
+    private static SlicesStatusResponse getSlicesStatus(ForgeCluster cluster) {
+        return new SlicesStatusResponse(cluster.slicesStatus());
     }
 
     private static Promise<ClusterMetricsResponse> proxyClusterMetrics(ForgeCluster cluster,
                                                                        JdkHttpOperations http) {
-        return findLeaderPort(cluster)
-                             .async(LeaderNotAvailable.INSTANCE)
+        return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
                              .flatMap(port -> proxyGet(http, port, "/metrics"))
                              .map(ClusterMetricsResponse::new);
     }
@@ -203,8 +198,7 @@ public sealed interface DeploymentRoutes {
     private static Promise<RepositoryPutResponse> storeArtifact(ForgeCluster cluster,
                                                                 Consumer<EventLogEntry> eventLogger,
                                                                 RepositoryPutRequest request) {
-        return findAnyNode(cluster)
-                          .async(NoNodesAvailable.INSTANCE)
+        return findAnyNode(cluster).async(NoNodesAvailable.INSTANCE)
                           .flatMap(node -> storeArtifactOnNode(node, eventLogger, request));
     }
 
@@ -288,6 +282,15 @@ public sealed interface DeploymentRoutes {
         public String message() {
             return "No nodes available in cluster";
         }
+    }
+
+    private static String escapeJson(String s) {
+        if (s == null) return "";
+        return s.replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t");
     }
 
     record unused() implements DeploymentRoutes {}
