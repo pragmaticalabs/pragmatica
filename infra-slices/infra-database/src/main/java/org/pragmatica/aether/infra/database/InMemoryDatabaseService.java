@@ -53,15 +53,14 @@ final class InMemoryDatabaseService implements DatabaseService {
     public Promise<Unit> createTable(String tableName, List<String> columns) {
         var table = new Table(tableName, columns);
         return option(tables.putIfAbsent(tableName, table))
-                     .fold(() -> Promise.success(unit()),
-                           existing -> DatabaseError.duplicateKey("schema", tableName)
-                                                    .promise());
+        .fold(() -> Promise.success(unit()),
+              existing -> DatabaseError.duplicateKey("schema", tableName)
+                                       .promise());
     }
 
     @Override
     public Promise<Boolean> dropTable(String tableName) {
-        return Promise.success(option(tables.remove(tableName))
-                                     .isPresent());
+        return Promise.success(option(tables.remove(tableName)).isPresent());
     }
 
     @Override
@@ -77,8 +76,7 @@ final class InMemoryDatabaseService implements DatabaseService {
     // ========== Query Operations ==========
     @Override
     public <T> Promise<List<T>> query(String tableName, RowMapper<T> mapper) {
-        return getTableOrFail(tableName)
-                             .flatMap(table -> mapAllRows(table, mapper));
+        return getTableOrFail(tableName).flatMap(table -> mapAllRows(table, mapper));
     }
 
     private <T> Promise<List<T>> mapAllRows(Table table, RowMapper<T> mapper) {
@@ -87,8 +85,7 @@ final class InMemoryDatabaseService implements DatabaseService {
 
     @Override
     public <T> Promise<List<T>> queryWhere(String tableName, String column, Object value, RowMapper<T> mapper) {
-        return getTableOrFail(tableName)
-                             .flatMap(table -> mapFilteredRows(table, column, value, mapper));
+        return getTableOrFail(tableName).flatMap(table -> mapFilteredRows(table, column, value, mapper));
     }
 
     private <T> Promise<List<T>> mapFilteredRows(Table table, String column, Object value, RowMapper<T> mapper) {
@@ -101,8 +98,7 @@ final class InMemoryDatabaseService implements DatabaseService {
 
     @Override
     public <T> Promise<Option<T>> queryById(String tableName, Object id, RowMapper<T> mapper) {
-        return getTableOrFail(tableName)
-                             .flatMap(table -> mapRowById(table, id, mapper));
+        return getTableOrFail(tableName).flatMap(table -> mapRowById(table, id, mapper));
     }
 
     private <T> Promise<Option<T>> mapRowById(Table table, Object id, RowMapper<T> mapper) {
@@ -119,14 +115,12 @@ final class InMemoryDatabaseService implements DatabaseService {
 
     @Override
     public Promise<Long> count(String tableName) {
-        return getTableOrFail(tableName)
-                             .map(table -> (long) table.size());
+        return getTableOrFail(tableName).map(table -> (long) table.size());
     }
 
     @Override
     public Promise<Long> countWhere(String tableName, String column, Object value) {
-        return getTableOrFail(tableName)
-                             .map(table -> countMatching(table, column, value));
+        return getTableOrFail(tableName).map(table -> countMatching(table, column, value));
     }
 
     private long countMatching(Table table, String column, Object value) {
@@ -139,14 +133,12 @@ final class InMemoryDatabaseService implements DatabaseService {
     // ========== Insert Operations ==========
     @Override
     public Promise<Long> insert(String tableName, Map<String, Object> row) {
-        return getTableOrFail(tableName)
-                             .map(table -> table.insert(row));
+        return getTableOrFail(tableName).map(table -> table.insert(row));
     }
 
     @Override
     public Promise<Integer> insertBatch(String tableName, List<Map<String, Object>> rows) {
-        return getTableOrFail(tableName)
-                             .map(table -> insertAllRows(table, rows));
+        return getTableOrFail(tableName).map(table -> insertAllRows(table, rows));
     }
 
     private int insertAllRows(Table table, List<Map<String, Object>> rows) {
@@ -161,8 +153,7 @@ final class InMemoryDatabaseService implements DatabaseService {
     // ========== Update Operations ==========
     @Override
     public Promise<Integer> updateById(String tableName, Object id, Map<String, Object> updates) {
-        return getTableOrFail(tableName)
-                             .map(table -> updateRowById(table, id, updates));
+        return getTableOrFail(tableName).map(table -> updateRowById(table, id, updates));
     }
 
     private int updateRowById(Table table, Object id, Map<String, Object> updates) {
@@ -173,8 +164,7 @@ final class InMemoryDatabaseService implements DatabaseService {
 
     @Override
     public Promise<Integer> updateWhere(String tableName, String column, Object value, Map<String, Object> updates) {
-        return getTableOrFail(tableName)
-                             .map(table -> updateMatchingRows(table, column, value, updates));
+        return getTableOrFail(tableName).map(table -> updateMatchingRows(table, column, value, updates));
     }
 
     private int updateMatchingRows(Table table, String column, Object value, Map<String, Object> updates) {
@@ -193,14 +183,12 @@ final class InMemoryDatabaseService implements DatabaseService {
     // ========== Delete Operations ==========
     @Override
     public Promise<Boolean> deleteById(String tableName, Object id) {
-        return getTableOrFail(tableName)
-                             .map(table -> table.delete(toLong(id)));
+        return getTableOrFail(tableName).map(table -> table.delete(toLong(id)));
     }
 
     @Override
     public Promise<Integer> deleteWhere(String tableName, String column, Object value) {
-        return getTableOrFail(tableName)
-                             .map(table -> deleteMatchingRows(table, column, value));
+        return getTableOrFail(tableName).map(table -> deleteMatchingRows(table, column, value));
     }
 
     private int deleteMatchingRows(Table table, String column, Object value) {
@@ -220,8 +208,7 @@ final class InMemoryDatabaseService implements DatabaseService {
 
     @Override
     public Promise<Integer> deleteAll(String tableName) {
-        return getTableOrFail(tableName)
-                             .map(table -> table.clear());
+        return getTableOrFail(tableName).map(table -> table.clear());
     }
 
     // ========== Lifecycle ==========
@@ -234,9 +221,8 @@ final class InMemoryDatabaseService implements DatabaseService {
     // ========== Internal Helpers ==========
     private Promise<Table> getTableOrFail(String tableName) {
         return option(tables.get(tableName))
-                     .fold(() -> DatabaseError.tableNotFound(tableName)
-                                              .<Table> promise(),
-                           Promise::success);
+        .fold(() -> DatabaseError.tableNotFound(tableName)
+                                 .<Table> promise(), Promise::success);
     }
 
     private <T> Promise<List<T>> mapRows(List<Map<String, Object>> rows, RowMapper<T> mapper) {
@@ -252,7 +238,7 @@ final class InMemoryDatabaseService implements DatabaseService {
         return Promise.success(results);
     }
 
-    private <T> Promise<List<T>> extractFailure(Result< ?> mapped) {
+    private <T> Promise<List<T>> extractFailure(Result<?> mapped) {
         return mapped.fold(cause -> cause.<List<T>>promise(),
                            value -> Promise.success(List.of()));
     }
@@ -288,8 +274,7 @@ final class InMemoryDatabaseService implements DatabaseService {
         }
 
         Option<Map<String, Object>> getRow(long id) {
-            return option(rows.get(id))
-                         .map(Map::copyOf);
+            return option(rows.get(id)).map(Map::copyOf);
         }
 
         List<Map<String, Object>> getAllRows() {
@@ -300,9 +285,7 @@ final class InMemoryDatabaseService implements DatabaseService {
         }
 
         boolean update(long id, Map<String, Object> updates) {
-            return option(rows.get(id))
-                         .fold(() -> false,
-                               existing -> applyUpdate(id, existing, updates));
+            return option(rows.get(id)).fold(() -> false, existing -> applyUpdate(id, existing, updates));
         }
 
         private boolean applyUpdate(long id, Map<String, Object> existing, Map<String, Object> updates) {
@@ -314,8 +297,7 @@ final class InMemoryDatabaseService implements DatabaseService {
         }
 
         boolean delete(long id) {
-            return option(rows.remove(id))
-                         .isPresent();
+            return option(rows.remove(id)).isPresent();
         }
 
         int clear() {

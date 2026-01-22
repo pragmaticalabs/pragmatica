@@ -19,8 +19,7 @@ public record RateLimitResult(boolean allowed, int remaining, TimeSpan retryAfte
      * @return Allowed result
      */
     public static RateLimitResult allowed(int remaining) {
-        return new RateLimitResult(true, remaining, timeSpan(0)
-                                                            .millis());
+        return new RateLimitResult(true, remaining, timeSpan(0).millis());
     }
 
     /**

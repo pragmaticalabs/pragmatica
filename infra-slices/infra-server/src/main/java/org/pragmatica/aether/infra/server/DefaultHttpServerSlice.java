@@ -155,7 +155,7 @@ final class DefaultHttpServerSlice implements HttpServerSlice {
               .onEmpty(() -> handleNotFound(request, writer));
     }
 
-    private void invokeRoute(Route< ?> route, RequestContext request, ResponseWriter writer) {
+    private void invokeRoute(Route<?> route, RequestContext request, ResponseWriter writer) {
         var nettyRequest = createNettyRequest(request);
         var routingContext = RequestContextImpl.requestContext(nettyRequest, route, jsonCodec, request.requestId());
         route.handler()
@@ -212,7 +212,7 @@ final class DefaultHttpServerSlice implements HttpServerSlice {
         return sb.toString();
     }
 
-    private void writeSuccessResponse(Object result, Route< ?> route, ResponseWriter writer) {
+    private void writeSuccessResponse(Object result, Route<?> route, ResponseWriter writer) {
         var contentType = route.contentType();
         var pragmaticaContentType = toPragmaticaContentType(contentType);
         Option.option(result)

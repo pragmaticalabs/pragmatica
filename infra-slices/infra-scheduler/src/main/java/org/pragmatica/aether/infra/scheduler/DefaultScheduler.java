@@ -169,8 +169,8 @@ final class DefaultScheduler implements Scheduler {
         }
     }
 
-    private record TaskEntry(String name, ScheduledFuture< ?> future, AtomicBoolean cancelled) implements ScheduledTaskHandle {
-        TaskEntry(String name, ScheduledFuture< ?> future) {
+    private record TaskEntry(String name, ScheduledFuture<?> future, AtomicBoolean cancelled) implements ScheduledTaskHandle {
+        TaskEntry(String name, ScheduledFuture<?> future) {
             this(name, future, new AtomicBoolean(false));
         }
 

@@ -34,10 +34,7 @@ public record SecretsConfig(String name,
      */
     public static Result<SecretsConfig> secretsConfig(String name) {
         return validateName(name)
-                           .map(n -> new SecretsConfig(n,
-                                                       DEFAULT_ENCRYPTION_ENABLED,
-                                                       Option.none(),
-                                                       DEFAULT_MAX_VERSIONS));
+        .map(n -> new SecretsConfig(n, DEFAULT_ENCRYPTION_ENABLED, Option.none(), DEFAULT_MAX_VERSIONS));
     }
 
     /**
@@ -45,10 +42,7 @@ public record SecretsConfig(String name,
      */
     public static Result<SecretsConfig> secretsConfig(String name, boolean encryptionEnabled) {
         return validateName(name)
-                           .map(n -> new SecretsConfig(n,
-                                                       encryptionEnabled,
-                                                       Option.none(),
-                                                       DEFAULT_MAX_VERSIONS));
+        .map(n -> new SecretsConfig(n, encryptionEnabled, Option.none(), DEFAULT_MAX_VERSIONS));
     }
 
     private static Result<String> validateName(String name) {

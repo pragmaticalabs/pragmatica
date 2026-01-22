@@ -82,9 +82,9 @@ final class DefaultCircuitBreakerFactory implements CircuitBreakerFactory {
         }
 
         @SuppressWarnings("unchecked")
-        private Promise< ?> safeInvoke(Method method, Object[] args) {
+        private Promise<?> safeInvoke(Method method, Object[] args) {
             try{
-                return (Promise< ? >) method.invoke(delegate, args);
+                return (Promise<?>) method.invoke(delegate, args);
             } catch (Exception e) {
                 return Promise.failure(InfraSliceError.CircuitBreakerError.circuitBreakerError("Failed to invoke method: " + method.getName(),
                                                                                                e));

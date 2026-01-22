@@ -48,21 +48,19 @@ final class InMemoryBlobStorageService implements BlobStorageService {
     public Promise<Unit> createBucket(String bucketName) {
         var bucket = new Bucket(bucketName);
         return option(buckets.putIfAbsent(bucketName, bucket))
-                     .fold(() -> Promise.success(unit()),
-                           existing -> BlobStorageError.bucketAlreadyExists(bucketName)
-                                                       .promise());
+        .fold(() -> Promise.success(unit()),
+              existing -> BlobStorageError.bucketAlreadyExists(bucketName)
+                                          .promise());
     }
 
     @Override
     public Promise<Boolean> deleteBucket(String bucketName) {
-        return getBucketOrFail(bucketName)
-                              .flatMap(bucket -> deleteBucketIfEmpty(bucketName, bucket));
+        return getBucketOrFail(bucketName).flatMap(bucket -> deleteBucketIfEmpty(bucketName, bucket));
     }
 
     private Promise<Boolean> deleteBucketIfEmpty(String bucketName, Bucket bucket) {
         return bucket.isEmpty()
-               ? Promise.success(option(buckets.remove(bucketName))
-                                       .isPresent())
+               ? Promise.success(option(buckets.remove(bucketName)).isPresent())
                : BlobStorageError.storageFailed("Cannot delete non-empty bucket: " + bucketName)
                                  .promise();
     }
@@ -89,8 +87,7 @@ final class InMemoryBlobStorageService implements BlobStorageService {
                                      byte[] data,
                                      String contentType,
                                      Map<String, String> customMetadata) {
-        return validateBlobSize(key, data)
-                               .flatMap(unit -> getBucketOrFail(bucketName))
+        return validateBlobSize(key, data).flatMap(unit -> getBucketOrFail(bucketName))
                                .map(bucket -> bucket.put(key, data, contentType, customMetadata));
     }
 
@@ -105,38 +102,32 @@ final class InMemoryBlobStorageService implements BlobStorageService {
 
     @Override
     public Promise<Option<BlobContent>> get(String bucketName, String key) {
-        return getBucketOrFail(bucketName)
-                              .map(bucket -> bucket.get(key));
+        return getBucketOrFail(bucketName).map(bucket -> bucket.get(key));
     }
 
     @Override
     public Promise<Option<BlobMetadata>> getMetadata(String bucketName, String key) {
-        return getBucketOrFail(bucketName)
-                              .map(bucket -> bucket.getMetadata(key));
+        return getBucketOrFail(bucketName).map(bucket -> bucket.getMetadata(key));
     }
 
     @Override
     public Promise<Boolean> delete(String bucketName, String key) {
-        return getBucketOrFail(bucketName)
-                              .map(bucket -> bucket.delete(key));
+        return getBucketOrFail(bucketName).map(bucket -> bucket.delete(key));
     }
 
     @Override
     public Promise<Boolean> exists(String bucketName, String key) {
-        return getBucketOrFail(bucketName)
-                              .map(bucket -> bucket.exists(key));
+        return getBucketOrFail(bucketName).map(bucket -> bucket.exists(key));
     }
 
     @Override
     public Promise<List<BlobMetadata>> list(String bucketName) {
-        return getBucketOrFail(bucketName)
-                              .map(Bucket::list);
+        return getBucketOrFail(bucketName).map(Bucket::list);
     }
 
     @Override
     public Promise<List<BlobMetadata>> listWithPrefix(String bucketName, String prefix) {
-        return getBucketOrFail(bucketName)
-                              .map(bucket -> bucket.listWithPrefix(prefix));
+        return getBucketOrFail(bucketName).map(bucket -> bucket.listWithPrefix(prefix));
     }
 
     @Override
@@ -144,8 +135,7 @@ final class InMemoryBlobStorageService implements BlobStorageService {
                                       String sourceKey,
                                       String destBucket,
                                       String destKey) {
-        return get(sourceBucket, sourceKey)
-                  .flatMap(opt -> copyBlob(opt, destBucket, destKey));
+        return get(sourceBucket, sourceKey).flatMap(opt -> copyBlob(opt, destBucket, destKey));
     }
 
     private Promise<BlobMetadata> copyBlob(Option<BlobContent> sourceOpt,
@@ -172,9 +162,8 @@ final class InMemoryBlobStorageService implements BlobStorageService {
     // ========== Internal Helpers ==========
     private Promise<Bucket> getBucketOrFail(String bucketName) {
         return option(buckets.get(bucketName))
-                     .fold(() -> BlobStorageError.bucketNotFound(bucketName)
-                                                 .<Bucket> promise(),
-                           Promise::success);
+        .fold(() -> BlobStorageError.bucketNotFound(bucketName)
+                                    .<Bucket> promise(), Promise::success);
     }
 
     // ========== Internal Classes ==========
@@ -194,18 +183,15 @@ final class InMemoryBlobStorageService implements BlobStorageService {
         }
 
         Option<BlobContent> get(String key) {
-            return option(blobs.get(key))
-                         .map(blob -> BlobContent.blobContent(blob.metadata, blob.data));
+            return option(blobs.get(key)).map(blob -> BlobContent.blobContent(blob.metadata, blob.data));
         }
 
         Option<BlobMetadata> getMetadata(String key) {
-            return option(blobs.get(key))
-                         .map(blob -> blob.metadata);
+            return option(blobs.get(key)).map(blob -> blob.metadata);
         }
 
         boolean delete(String key) {
-            return option(blobs.remove(key))
-                         .isPresent();
+            return option(blobs.remove(key)).isPresent();
         }
 
         boolean exists(String key) {

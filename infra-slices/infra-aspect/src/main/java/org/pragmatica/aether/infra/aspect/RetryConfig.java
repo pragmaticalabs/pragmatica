@@ -23,14 +23,12 @@ public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
      */
     public static Result<RetryConfig> retryConfig(int maxAttempts) {
         return ensure(maxAttempts, Verify.Is::positive)
-                     .map(attempts -> new RetryConfig(attempts,
-                                                      BackoffStrategy.exponential()
-                                                                     .initialDelay(timeSpan(100)
-                                                                                           .millis())
-                                                                     .maxDelay(timeSpan(10)
-                                                                                       .seconds())
-                                                                     .factor(2.0)
-                                                                     .withoutJitter()));
+        .map(attempts -> new RetryConfig(attempts,
+                                         BackoffStrategy.exponential()
+                                                        .initialDelay(timeSpan(100).millis())
+                                                        .maxDelay(timeSpan(10).seconds())
+                                                        .factor(2.0)
+                                                        .withoutJitter()));
     }
 
     /**
@@ -42,9 +40,9 @@ public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
      */
     public static Result<RetryConfig> retryConfig(int maxAttempts, TimeSpan interval) {
         return ensure(maxAttempts, Verify.Is::positive)
-                     .map(attempts -> new RetryConfig(attempts,
-                                                      BackoffStrategy.fixed()
-                                                                     .interval(interval)));
+        .map(attempts -> new RetryConfig(attempts,
+                                         BackoffStrategy.fixed()
+                                                        .interval(interval)));
     }
 
     /**
@@ -56,7 +54,7 @@ public record RetryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
      */
     public static Result<RetryConfig> retryConfig(int maxAttempts, BackoffStrategy backoffStrategy) {
         return ensure(maxAttempts, Verify.Is::positive)
-                     .flatMap(attempts -> ensure(backoffStrategy, Verify.Is::notNull)
-                                                .map(strategy -> new RetryConfig(attempts, strategy)));
+        .flatMap(attempts -> ensure(backoffStrategy, Verify.Is::notNull)
+        .map(strategy -> new RetryConfig(attempts, strategy)));
     }
 }

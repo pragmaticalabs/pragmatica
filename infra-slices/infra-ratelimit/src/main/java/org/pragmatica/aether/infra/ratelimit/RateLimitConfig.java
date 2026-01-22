@@ -38,9 +38,8 @@ public record RateLimitConfig(int maxRequests, TimeSpan window, RateLimitStrateg
                                                           TimeSpan window,
                                                           RateLimitStrategy strategy) {
         return ensure(maxRequests, Verify.Is::positive)
-                     .flatMap(requests -> ensure(window, Verify.Is::notNull)
-                                                .flatMap(w -> ensure(strategy, Verify.Is::notNull)
-                                                                    .map(s -> new RateLimitConfig(requests, w, s))));
+        .flatMap(requests -> ensure(window, Verify.Is::notNull)
+        .flatMap(w -> ensure(strategy, Verify.Is::notNull).map(s -> new RateLimitConfig(requests, w, s))));
     }
 
     /**
@@ -49,7 +48,6 @@ public record RateLimitConfig(int maxRequests, TimeSpan window, RateLimitStrateg
      * @return Result containing default configuration
      */
     public static Result<RateLimitConfig> defaultConfig() {
-        return rateLimitConfig(100, timeSpan(1)
-                                            .minutes());
+        return rateLimitConfig(100, timeSpan(1).minutes());
     }
 }

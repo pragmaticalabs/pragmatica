@@ -14,13 +14,11 @@ public record LogConfig(String name,
                         boolean logResult,
                         boolean logDuration) {
     public static Result<LogConfig> logConfig(String name) {
-        return ensure(name, Verify.Is::notBlank)
-                     .map(n -> new LogConfig(n, LogLevel.INFO, true, true, true));
+        return ensure(name, Verify.Is::notBlank).map(n -> new LogConfig(n, LogLevel.INFO, true, true, true));
     }
 
     public static Result<LogConfig> logConfig(String name, LogLevel level) {
-        return ensure(name, Verify.Is::notBlank)
-                     .map(n -> new LogConfig(n, level, true, true, true));
+        return ensure(name, Verify.Is::notBlank).map(n -> new LogConfig(n, level, true, true, true));
     }
 
     public LogConfig withLevel(LogLevel level) {

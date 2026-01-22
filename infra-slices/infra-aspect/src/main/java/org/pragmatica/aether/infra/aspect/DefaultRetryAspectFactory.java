@@ -73,7 +73,7 @@ final class DefaultRetryAspectFactory implements RetryAspectFactory {
                              .strategy(config.backoffStrategy());
             return retry.execute(() -> {
                                      try{
-                                         return (Promise< ? >) method.invoke(delegate, args);
+                                         return (Promise<?>) method.invoke(delegate, args);
                                      } catch (Exception e) {
                                          return Promise.failure(InfraSliceError.RetryError.retryError("Failed to invoke method: " + method.getName(),
                                                                                                       e));

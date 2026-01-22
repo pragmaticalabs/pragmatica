@@ -81,7 +81,7 @@ final class DefaultMetricsAspectFactory implements MetricsAspectFactory {
 
         @SuppressWarnings("unchecked")
         private Object invokeWithPromiseMetrics(Method method, Object[] args, String metricName) throws Throwable {
-            var result = (Promise< ? >) method.invoke(delegate, args);
+            var result = (Promise<?>) method.invoke(delegate, args);
             return wrapPromise(result, metricName);
         }
 

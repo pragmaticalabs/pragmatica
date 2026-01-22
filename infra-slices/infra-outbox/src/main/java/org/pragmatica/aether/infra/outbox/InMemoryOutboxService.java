@@ -29,11 +29,10 @@ final class InMemoryOutboxService implements OutboxService {
 
     @Override
     public Promise<OutboxMessage> add(OutboxMessage message) {
-        return option(messages.putIfAbsent(message.id(),
-                                           message))
-                     .fold(() -> Promise.success(message),
-                           existing -> OutboxError.messageAlreadyExists(message.id())
-                                                  .promise());
+        return option(messages.putIfAbsent(message.id(), message))
+        .fold(() -> Promise.success(message),
+              existing -> OutboxError.messageAlreadyExists(message.id())
+                                     .promise());
     }
 
     @Override
@@ -87,8 +86,7 @@ final class InMemoryOutboxService implements OutboxService {
 
     @Override
     public Promise<OutboxMessage> reschedule(String messageId, Instant nextAttempt) {
-        return getMessageOrFail(messageId)
-                               .flatMap(message -> validateReschedule(message, nextAttempt));
+        return getMessageOrFail(messageId).flatMap(message -> validateReschedule(message, nextAttempt));
     }
 
     private Promise<OutboxMessage> validateReschedule(OutboxMessage message, Instant nextAttempt) {
@@ -108,8 +106,7 @@ final class InMemoryOutboxService implements OutboxService {
 
     @Override
     public Promise<OutboxMessage> cancel(String messageId) {
-        return getMessageOrFail(messageId)
-                               .flatMap(this::validateAndCancel);
+        return getMessageOrFail(messageId).flatMap(this::validateAndCancel);
     }
 
     private Promise<OutboxMessage> validateAndCancel(OutboxMessage message) {
@@ -129,8 +126,7 @@ final class InMemoryOutboxService implements OutboxService {
 
     @Override
     public Promise<Boolean> delete(String messageId) {
-        return Promise.success(option(messages.remove(messageId))
-                                     .isPresent());
+        return Promise.success(option(messages.remove(messageId)).isPresent());
     }
 
     @Override
@@ -169,9 +165,8 @@ final class InMemoryOutboxService implements OutboxService {
 
     private Promise<OutboxMessage> getMessageOrFail(String messageId) {
         return option(messages.get(messageId))
-                     .fold(() -> OutboxError.messageNotFound(messageId)
-                                            .<OutboxMessage> promise(),
-                           Promise::success);
+        .fold(() -> OutboxError.messageNotFound(messageId)
+                               .<OutboxMessage> promise(), Promise::success);
     }
 
     private Promise<OutboxMessage> updateMessage(String messageId,
@@ -179,7 +174,7 @@ final class InMemoryOutboxService implements OutboxService {
                                                  OutboxMessageStatus requiredStatus,
                                                  java.util.function.Function<OutboxMessage, OutboxMessage> updater) {
         return getMessageOrFail(messageId)
-                               .flatMap(message -> validateAndUpdate(message, operation, requiredStatus, updater));
+        .flatMap(message -> validateAndUpdate(message, operation, requiredStatus, updater));
     }
 
     private Promise<OutboxMessage> validateAndUpdate(OutboxMessage message,

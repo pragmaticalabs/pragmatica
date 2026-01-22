@@ -3,6 +3,7 @@ package org.pragmatica.aether.infra.http;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 
 import java.net.URI;
@@ -38,7 +39,7 @@ final class JdkHttpClientSlice implements HttpClientSlice {
         return JdkHttpOperations.jdkHttpOperations(Duration.ofMillis(config.connectTimeout()
                                                                            .millis()),
                                                    config.followRedirects(),
-                                                   null);
+                                                   Option.none());
     }
 
     @Override

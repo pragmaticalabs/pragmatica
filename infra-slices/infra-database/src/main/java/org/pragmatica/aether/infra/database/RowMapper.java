@@ -53,8 +53,7 @@ public interface RowMapper<T> {
 
     private static <V> Result<V> extractColumn(Map<String, Object> row, String columnName, Class<V> type) {
         return option(row.get(columnName))
-                     .fold(() -> columnNotFound(columnName),
-                           value -> castColumn(value, columnName, type));
+        .fold(() -> columnNotFound(columnName), value -> castColumn(value, columnName, type));
     }
 
     private static <V> Result<V> columnNotFound(String columnName) {

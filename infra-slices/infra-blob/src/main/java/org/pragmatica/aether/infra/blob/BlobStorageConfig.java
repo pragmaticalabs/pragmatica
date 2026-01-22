@@ -32,8 +32,7 @@ public record BlobStorageConfig(String name,
      * Creates configuration with specified name.
      */
     public static Result<BlobStorageConfig> blobStorageConfig(String name) {
-        return validateName(name)
-                           .map(n -> new BlobStorageConfig(n, DEFAULT_MAX_BLOB_SIZE, DEFAULT_BUCKET));
+        return validateName(name).map(n -> new BlobStorageConfig(n, DEFAULT_MAX_BLOB_SIZE, DEFAULT_BUCKET));
     }
 
     private static Result<String> validateName(String name) {

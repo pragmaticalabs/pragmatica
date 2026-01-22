@@ -20,10 +20,10 @@ public record TransactionConfig(TransactionPropagation propagation,
                                 IsolationLevel isolation,
                                 Option<TimeSpan> timeout,
                                 boolean readOnly,
-                                Class< ?>[] rollbackFor) {
+                                Class<?>[] rollbackFor) {
     private static final TransactionPropagation DEFAULT_PROPAGATION = TransactionPropagation.REQUIRED;
     private static final IsolationLevel DEFAULT_ISOLATION = IsolationLevel.DEFAULT;
-    private static final Class< ? >[] EMPTY_ROLLBACK_FOR = new Class< ?>[0];
+    private static final Class<?>[] EMPTY_ROLLBACK_FOR = new Class<?>[0];
 
     /**
      * Creates default transaction configuration.
@@ -40,8 +40,7 @@ public record TransactionConfig(TransactionPropagation propagation,
      * Creates configuration with specified propagation.
      */
     public static Result<TransactionConfig> transactionConfig(TransactionPropagation propagation) {
-        return option(propagation)
-                     .toResult(TransactionError.invalidConfig("Propagation cannot be null"))
+        return option(propagation).toResult(TransactionError.invalidConfig("Propagation cannot be null"))
                      .map(p -> new TransactionConfig(p,
                                                      DEFAULT_ISOLATION,
                                                      Option.none(),
@@ -54,10 +53,8 @@ public record TransactionConfig(TransactionPropagation propagation,
      */
     public static Result<TransactionConfig> transactionConfig(TransactionPropagation propagation,
                                                               IsolationLevel isolation) {
-        return option(propagation)
-                     .toResult(TransactionError.invalidConfig("Propagation cannot be null"))
-                     .flatMap(p -> option(isolation)
-                                         .toResult(TransactionError.invalidConfig("Isolation cannot be null"))
+        return option(propagation).toResult(TransactionError.invalidConfig("Propagation cannot be null"))
+                     .flatMap(p -> option(isolation).toResult(TransactionError.invalidConfig("Isolation cannot be null"))
                                          .map(i -> new TransactionConfig(p,
                                                                          i,
                                                                          Option.none(),
