@@ -1,13 +1,8 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.e2e.containers.AetherCluster;
-
-import java.nio.file.Path;
-import java.time.Duration;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -23,23 +18,11 @@ import static org.awaitility.Awaitility.await;
  *   <li>Minority partition (quorum lost)</li>
  * </ul>
  */
-class NodeFailureE2ETest {
-    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(30);
-    private AetherCluster cluster;
+class NodeFailureE2ETest extends AbstractE2ETest {
 
-    @BeforeEach
-    void setUp() {
-        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
-        cluster.start();
-        cluster.awaitQuorum();
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (cluster != null) {
-            cluster.close();
-        }
+    @Override
+    protected int clusterSize() {
+        return 5;
     }
 
     @Test
@@ -76,22 +59,23 @@ class NodeFailureE2ETest {
 
     @Test
     void leaderFailure_newLeaderElected() {
-        var originalLeader = cluster.leader().orElseThrow();
+        var originalLeader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
         var originalLeaderId = originalLeader.nodeId();
 
         // Kill the leader
         cluster.killNode(originalLeaderId);
 
         // Wait for new leader election
-        await().atMost(RECOVERY_TIMEOUT)
+        await().atMost(RECOVERY_TIMEOUT.duration())
+               .pollInterval(POLL_INTERVAL.duration())
                .until(() -> {
                    var newLeader = cluster.leader();
                    return newLeader.isPresent() &&
-                          !newLeader.get().nodeId().equals(originalLeaderId);
+                          !newLeader.toResult(Causes.cause("No leader")).unwrap().nodeId().equals(originalLeaderId);
                });
 
         // New leader should be different
-        var newLeader = cluster.leader().orElseThrow();
+        var newLeader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
         assertThat(newLeader.nodeId()).isNotEqualTo(originalLeaderId);
     }
 
@@ -106,7 +90,8 @@ class NodeFailureE2ETest {
         cluster.restartNode("node-2");
 
         // Wait for node to rejoin
-        await().atMost(RECOVERY_TIMEOUT)
+        await().atMost(RECOVERY_TIMEOUT.duration())
+               .pollInterval(POLL_INTERVAL.duration())
                .until(() -> cluster.runningNodeCount() == 5);
 
         // All nodes should be visible again

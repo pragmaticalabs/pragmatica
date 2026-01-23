@@ -1,14 +1,8 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.e2e.containers.AetherCluster;
-
-import java.nio.file.Path;
-import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -28,25 +22,7 @@ import static org.awaitility.Awaitility.await;
  * The place-order has no methods, so some tests focus on infrastructure
  * and error handling rather than successful invocations.
  */
-class SliceInvocationE2ETest {
-    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:place-order-place-order:0.8.0";
-    private AetherCluster cluster;
-
-    @BeforeEach
-    void setUp() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
-        cluster.start();
-        cluster.awaitQuorum();
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (cluster != null) {
-            cluster.close();
-        }
-    }
+class SliceInvocationE2ETest extends AbstractE2ETest {
 
     @Nested
     class RouteHandling {
@@ -80,7 +56,7 @@ class SliceInvocationE2ETest {
             // Deploy a slice
             cluster.anyNode().deploy(TEST_ARTIFACT, 1);
 
-            await().atMost(WAIT_TIMEOUT).until(() -> {
+            await().atMost(DEFAULT_TIMEOUT.duration()).until(() -> {
                 var slices = cluster.anyNode().getSlices();
                 return slices.contains("place-order");
             });
@@ -115,14 +91,14 @@ class SliceInvocationE2ETest {
         void invokeAfterSliceUndeploy_returnsNotFound() {
             // Deploy
             cluster.anyNode().deploy(TEST_ARTIFACT, 1);
-            await().atMost(WAIT_TIMEOUT).until(() -> {
+            await().atMost(DEFAULT_TIMEOUT.duration()).until(() -> {
                 var slices = cluster.anyNode().getSlices();
                 return slices.contains("place-order");
             });
 
             // Undeploy
             cluster.anyNode().undeploy(TEST_ARTIFACT);
-            await().atMost(WAIT_TIMEOUT).until(() -> {
+            await().atMost(DEFAULT_TIMEOUT.duration()).until(() -> {
                 var slices = cluster.anyNode().getSlices();
                 return !slices.contains("place-order");
             });
@@ -141,7 +117,7 @@ class SliceInvocationE2ETest {
             // Deploy slice across all nodes
             cluster.anyNode().deploy(TEST_ARTIFACT, 3);
 
-            await().atMost(WAIT_TIMEOUT).until(() -> {
+            await().atMost(DEFAULT_TIMEOUT.duration()).until(() -> {
                 var slices = cluster.anyNode().getSlices();
                 return slices.contains("place-order");
             });

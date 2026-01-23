@@ -1,16 +1,13 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.e2e.containers.AetherCluster;
 
-import java.nio.file.Path;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
  * E2E tests for rolling update functionality.
@@ -28,30 +25,22 @@ import static org.awaitility.Awaitility.await;
  * Run with: mvn test -pl e2e-tests -Dtest=RollingUpdateE2ETest
  */
 @Disabled("Requires two versions of place-order artifact (0.7.5 and 0.8.0), only 0.8.0 exists")
-class RollingUpdateE2ETest {
-    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
+class RollingUpdateE2ETest extends AbstractE2ETest {
     private static final String OLD_VERSION = "org.pragmatica-lite.aether.example:place-order:0.7.5";
     private static final String NEW_VERSION = "org.pragmatica-lite.aether.example:place-order-place-order:0.8.0";
     private static final Duration UPDATE_TIMEOUT = Duration.ofSeconds(120);
-    private AetherCluster cluster;
 
-    @BeforeEach
-    void setUp() {
-        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
-        cluster.start();
-        cluster.awaitQuorum();
-
-        // Deploy old version
-        cluster.anyNode().deploy(OLD_VERSION, 3);
-        await().atMost(Duration.ofSeconds(60))
-               .until(() -> sliceIsActive(OLD_VERSION));
+    @Override
+    protected int clusterSize() {
+        return 5;
     }
 
-    @AfterEach
-    void tearDown() {
-        if (cluster != null) {
-            cluster.close();
-        }
+    @Override
+    protected void additionalSetUp() {
+        // Deploy old version
+        cluster.anyNode().deploy(OLD_VERSION, 3);
+        await().atMost(timeSpan(60).seconds().duration())
+               .until(() -> sliceIsActive(OLD_VERSION));
     }
 
     @Test
@@ -270,11 +259,4 @@ class RollingUpdateE2ETest {
         }
     }
 
-    private void sleep(Duration duration) {
-        try {
-            Thread.sleep(duration.toMillis());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
 }

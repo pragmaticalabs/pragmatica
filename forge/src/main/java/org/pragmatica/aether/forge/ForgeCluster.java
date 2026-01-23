@@ -49,11 +49,13 @@ public final class ForgeCluster {
     private final int initialClusterSize;
     private final int basePort;
     private final int baseMgmtPort;
+    private final String nodeIdPrefix;
 
-    private ForgeCluster(int initialClusterSize, int basePort, int baseMgmtPort) {
+    private ForgeCluster(int initialClusterSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
         this.initialClusterSize = initialClusterSize;
         this.basePort = basePort;
         this.baseMgmtPort = baseMgmtPort;
+        this.nodeIdPrefix = nodeIdPrefix;
     }
 
     public static ForgeCluster forgeCluster() {
@@ -61,7 +63,7 @@ public final class ForgeCluster {
     }
 
     public static ForgeCluster forgeCluster(int initialSize) {
-        return new ForgeCluster(initialSize, DEFAULT_BASE_PORT, DEFAULT_BASE_MGMT_PORT);
+        return new ForgeCluster(initialSize, DEFAULT_BASE_PORT, DEFAULT_BASE_MGMT_PORT, "node");
     }
 
     /**
@@ -73,11 +75,25 @@ public final class ForgeCluster {
      * @param baseMgmtPort Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
      */
     public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort) {
-        return new ForgeCluster(initialSize, basePort, baseMgmtPort);
+        return new ForgeCluster(initialSize, basePort, baseMgmtPort, "node");
+    }
+
+    /**
+     * Create a ForgeCluster with custom port ranges and node ID prefix.
+     * Use this to avoid port conflicts when running multiple tests in parallel.
+     *
+     * @param initialSize   Number of nodes to start with
+     * @param basePort      Base port for cluster communication (each node uses basePort + nodeIndex)
+     * @param baseMgmtPort  Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
+     * @param nodeIdPrefix  Prefix for node IDs (e.g., "cf" creates nodes "cf-1", "cf-2", etc.)
+     */
+    public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
+        return new ForgeCluster(initialSize, basePort, baseMgmtPort, nodeIdPrefix);
     }
 
     /**
      * Start the initial cluster with configured number of nodes.
+     * If any node fails to start, all successfully started nodes are stopped and the failure is returned.
      */
     public Promise<Unit> start() {
         log.info("Starting Forge cluster with {} nodes on ports {}-{}",
@@ -87,26 +103,82 @@ public final class ForgeCluster {
         // Create node infos for initial cluster
         var initialNodes = new ArrayList<NodeInfo>();
         for (int i = 1; i <= initialClusterSize; i++) {
-            var nodeId = nodeId("node-" + i).unwrap();
+            var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
             var port = basePort + i - 1;
             var info = nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
             initialNodes.add(info);
             nodeInfos.put(nodeId.id(), info);
         }
         nodeCounter.set(initialClusterSize);
-        // Create and start all nodes
-        var startPromises = new ArrayList<Promise<Unit>>();
+        // Create and start all nodes, tracking results individually
+        var startPromises = new ArrayList<Promise<NodeStartResult>>();
         for (int i = 0; i < initialClusterSize; i++) {
             var nodeInfo = initialNodes.get(i);
-            var node = createNode(nodeInfo.id(), basePort + i, baseMgmtPort + i, initialNodes);
-            nodes.put(nodeInfo.id()
-                              .id(),
-                      node);
-            startPromises.add(node.start());
+            var nodeIdStr = nodeInfo.id()
+                                    .id();
+            var port = basePort + i;
+            var mgmtPort = baseMgmtPort + i;
+            var node = createNode(nodeInfo.id(), port, mgmtPort, initialNodes);
+            nodes.put(nodeIdStr, node);
+            // Wrap start() to capture success/failure with node context
+            startPromises.add(node.start()
+                                  .map(_ -> new NodeStartResult(nodeIdStr, port, mgmtPort, null))
+                                  .recover(cause -> new NodeStartResult(nodeIdStr, port, mgmtPort, cause)));
         }
         return Promise.allOf(startPromises)
-                      .map(_ -> Unit.unit())
-                      .onSuccess(_ -> log.info("Forge cluster started with {} nodes", initialClusterSize));
+                      .flatMap(this::handleStartResults);
+    }
+
+    private record NodeStartResult(String nodeId, int port, int mgmtPort, org.pragmatica.lang.Cause failure) {
+        boolean succeeded() {
+            return failure == null;
+        }
+    }
+
+    private Promise<Unit> handleStartResults(List<Result<NodeStartResult>> results) {
+        // Extract NodeStartResult from each Result (all succeed due to recover())
+        var nodeResults = results.stream()
+                                 .map(r -> r.fold(_ -> null, r1 -> r1))
+                                 .filter(r -> r != null)
+                                 .toList();
+        var failed = nodeResults.stream()
+                                .filter(r -> !r.succeeded())
+                                .toList();
+        var succeeded = nodeResults.stream()
+                                   .filter(NodeStartResult::succeeded)
+                                   .toList();
+        if (failed.isEmpty()) {
+            log.info("Forge cluster started with {} nodes", initialClusterSize);
+            return Promise.success(Unit.unit());
+        }
+        // Log all failures with details
+        for (var f : failed) {
+            log.error("Node {} failed to start on port {} (mgmt: {}): {}",
+                      f.nodeId(),
+                      f.port(),
+                      f.mgmtPort(),
+                      f.failure()
+                       .message());
+        }
+        log.error("Cluster startup failed: {} of {} nodes failed to start", failed.size(), initialClusterSize);
+        // Stop successfully started nodes
+        var stopPromises = succeeded.stream()
+                                    .map(r -> Option.option(nodes.get(r.nodeId()))
+                                                    .fold(() -> Promise.success(Unit.unit()),
+                                                          node -> node.stop()
+                                                                      .timeout(NODE_TIMEOUT)
+                                                                      .recover(_ -> Unit.unit())))
+                                    .toList();
+        return Promise.allOf(stopPromises)
+                      .map(_ -> {
+                          nodes.clear();
+                          nodeInfos.clear();
+                          nodeCounter.set(0);
+                          return Unit.unit();
+                      })
+                      .flatMap(_ -> failed.getFirst()
+                                          .failure()
+                                          .promise());
     }
 
     /**
@@ -136,7 +208,7 @@ public final class ForgeCluster {
      */
     public Promise<NodeId> addNode() {
         var nodeNum = nodeCounter.incrementAndGet();
-        var nodeId = nodeId("node-" + nodeNum).unwrap();
+        var nodeId = nodeId(nodeIdPrefix + "-" + nodeNum).unwrap();
         var port = basePort + nodeNum - 1;
         var info = nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
         log.info("Adding new node {} on port {}", nodeId.id(), port);
@@ -153,7 +225,7 @@ public final class ForgeCluster {
     }
 
     /**
-     * Gracefully stop a node.
+     * Gracefully stop a node (keeps nodeInfo for potential restart).
      */
     public Promise<Unit> killNode(String nodeIdStr) {
         return Option.option(nodes.get(nodeIdStr))
@@ -162,6 +234,36 @@ public final class ForgeCluster {
                                return Promise.success(Unit.unit());
                            },
                            node -> killNodeInternal(nodeIdStr, node));
+    }
+
+    /**
+     * Restart a previously killed node with the same ID and topology.
+     * The node must have been killed but not fully removed (nodeInfo still exists).
+     */
+    public Promise<Unit> restartNode(String nodeIdStr) {
+        var nodeInfo = nodeInfos.get(nodeIdStr);
+        if (nodeInfo == null) {
+            log.warn("Cannot restart node {}: nodeInfo not found (node was never part of cluster or fully removed)",
+                     nodeIdStr);
+            return Promise.success(Unit.unit());
+        }
+        if (nodes.containsKey(nodeIdStr)) {
+            log.warn("Cannot restart node {}: node is already running", nodeIdStr);
+            return Promise.success(Unit.unit());
+        }
+        log.info("Restarting node {} on port {}",
+                 nodeIdStr,
+                 nodeInfo.address()
+                         .port());
+        var port = nodeInfo.address()
+                           .port();
+        var mgmtPort = baseMgmtPort + (port - basePort);
+        var topology = new ArrayList<>(nodeInfos.values());
+        var node = createNode(nodeInfo.id(), port, mgmtPort, topology);
+        nodes.put(nodeIdStr, node);
+        return node.start()
+                   .map(_ -> Unit.unit())
+                   .onSuccess(_ -> log.info("Node {} restarted and rejoined the cluster", nodeIdStr));
     }
 
     /**
@@ -180,8 +282,13 @@ public final class ForgeCluster {
         log.info("Killing node {}", nodeIdStr);
         return node.stop()
                    .timeout(NODE_TIMEOUT)
-                   .map(_ -> removeNodeState(nodeIdStr))
-                   .onSuccess(_ -> log.info("Node {} killed", nodeIdStr));
+                   .map(_ -> {
+                            // Only remove from nodes map, keep nodeInfo for potential restart
+        nodes.remove(nodeIdStr);
+                            return Unit.unit();
+                        })
+                   .onSuccess(_ -> log.info("Node {} killed (can be restarted)",
+                                            nodeIdStr));
     }
 
     private Promise<Unit> crashNodeInternal(String nodeIdStr, AetherNode node) {
@@ -190,14 +297,34 @@ public final class ForgeCluster {
                    .timeout(TimeSpan.timeSpan(1)
                                     .seconds())
                    .recover(_ -> Unit.unit())
-                   .map(_ -> removeNodeState(nodeIdStr))
-                   .onSuccess(_ -> log.info("Node {} crashed", nodeIdStr));
+                   .map(_ -> {
+                            // Only remove from nodes map, keep nodeInfo for potential restart
+        nodes.remove(nodeIdStr);
+                            return Unit.unit();
+                        })
+                   .onSuccess(_ -> log.info("Node {} crashed (can be restarted)",
+                                            nodeIdStr));
     }
 
-    private Unit removeNodeState(String nodeIdStr) {
-        nodes.remove(nodeIdStr);
+    /**
+     * Permanently remove a node from the cluster (cannot be restarted).
+     */
+    public Promise<Unit> removeNode(String nodeIdStr) {
+        return Option.option(nodes.get(nodeIdStr))
+                     .fold(() -> {
+                               // Node already stopped, just remove nodeInfo
         nodeInfos.remove(nodeIdStr);
-        return Unit.unit();
+                               log.info("Node {} removed from cluster", nodeIdStr);
+                               return Promise.success(Unit.unit());
+                           },
+                           node -> node.stop()
+                                       .timeout(NODE_TIMEOUT)
+                                       .map(_ -> {
+                                                nodes.remove(nodeIdStr);
+                                                nodeInfos.remove(nodeIdStr);
+                                                return Unit.unit();
+                                            })
+                                       .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr)));
     }
 
     /**

@@ -3,6 +3,7 @@ package org.pragmatica.aether.forge;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInfo;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
@@ -34,14 +35,16 @@ class BootstrapTest {
     private static final int BASE_MGMT_PORT = 5210;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether:example-slice:0.7.2";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:place-order-place-order:0.8.0";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
 
     @BeforeEach
-    void setUp() {
-        cluster = forgeCluster(3, BASE_PORT, BASE_MGMT_PORT);
+    void setUp(TestInfo testInfo) {
+        // Use method-specific port offset to avoid port conflicts between tests
+        int portOffset = getPortOffset(testInfo);
+        cluster = forgeCluster(3, BASE_PORT + portOffset, BASE_MGMT_PORT + portOffset, "bt");
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
                                .build();
@@ -57,6 +60,16 @@ class BootstrapTest {
                .until(() -> cluster.currentLeader().isPresent());
     }
 
+    private int getPortOffset(TestInfo testInfo) {
+        return switch (testInfo.getTestMethod().map(m -> m.getName()).orElse("")) {
+            case "nodeRestart_rejoinsCluster" -> 0;
+            case "nodeRestart_recoversState" -> 10;
+            case "rollingRestart_maintainsAvailability" -> 20;
+            case "multipleNodeRestarts_clusterRemainsFunctional" -> 30;
+            default -> 40;
+        };
+    }
+
     @AfterEach
     void tearDown() {
         if (cluster != null) {
@@ -67,8 +80,8 @@ class BootstrapTest {
 
     @Test
     void nodeRestart_rejoinsCluster() {
-        // Kill node-2
-        cluster.killNode("node-2")
+        // Kill bt-2
+        cluster.killNode("bt-2")
                .await();
 
         // Wait for cluster to stabilize with 2 nodes
@@ -81,8 +94,8 @@ class BootstrapTest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.currentLeader().isPresent());
 
-        // Add a new node (ForgeCluster uses addNode instead of restartNode)
-        cluster.addNode()
+        // Restart the killed node
+        cluster.restartNode("bt-2")
                .await();
 
         // Wait for all 3 nodes to be running
@@ -120,21 +133,27 @@ class BootstrapTest {
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
+               .failFast(() -> {
+                   var slices = getSlices(leaderPort);
+                   if (slices.contains("\"error\"")) {
+                       throw new AssertionError("Slice query failed: " + slices);
+                   }
+               })
                .until(() -> {
                    var slices = getSlices(leaderPort);
-                   return slices.contains("example-slice");
+                   return slices.contains("place-order-place-order");
                });
 
         // Kill a node
-        cluster.killNode("node-3")
+        cluster.killNode("bt-3")
                .await();
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.nodeCount() == 2);
 
-        // Add a new node
-        cluster.addNode()
+        // Restart the killed node
+        cluster.restartNode("bt-3")
                .await();
 
         await().atMost(WAIT_TIMEOUT)
@@ -148,11 +167,19 @@ class BootstrapTest {
         // Slice should still be visible (state recovered from consensus)
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
+               .failFast(() -> {
+                   var currentLeaderPort = cluster.getLeaderManagementPort()
+                                                  .or(leaderPort);
+                   var slices = getSlices(currentLeaderPort);
+                   if (slices.contains("\"error\"")) {
+                       throw new AssertionError("Slice query failed: " + slices);
+                   }
+               })
                .until(() -> {
                    var currentLeaderPort = cluster.getLeaderManagementPort()
                                                   .or(leaderPort);
                    var slices = getSlices(currentLeaderPort);
-                   return slices.contains("example-slice");
+                   return slices.contains("place-order-place-order");
                });
     }
 
@@ -195,7 +222,7 @@ class BootstrapTest {
 
         // Restart each non-leader node one at a time
         for (int i = 2; i <= 3; i++) {
-            var nodeId = "node-" + i;
+            var nodeId = "bt-" + i;
 
             cluster.killNode(nodeId)
                    .await();
@@ -208,8 +235,8 @@ class BootstrapTest {
                    .pollInterval(POLL_INTERVAL)
                    .until(() -> cluster.currentLeader().isPresent());
 
-            // Add a new node (ForgeCluster uses addNode instead of restartNode)
-            cluster.addNode()
+            // Restart the killed node
+            cluster.restartNode(nodeId)
                    .await();
 
             await().atMost(WAIT_TIMEOUT)
@@ -274,7 +301,7 @@ class BootstrapTest {
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             return response.body();
         } catch (IOException | InterruptedException e) {
-            return "";
+            return "{\"error\":\"" + e.getMessage() + "\"}";
         }
     }
 
