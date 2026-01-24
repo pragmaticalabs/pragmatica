@@ -75,7 +75,7 @@ class ChaosTest {
     private int getPortOffset(TestInfo testInfo) {
         return switch (testInfo.getTestMethod().map(m -> m.getName()).orElse("")) {
             case "randomNodeKills_clusterRecovers" -> 0;
-            case "rapidKillRestart_clusterRemainsFunctional" -> 10;
+            case "rapidKillAdd_clusterRemainsFunctional" -> 10;
             case "concurrentChaos_clusterMaintainsConsistency" -> 20;
             case "leaderKillSpree_clusterSurvives" -> 30;
             case "splitBrainRecovery_clusterReconverges" -> 40;
@@ -113,9 +113,9 @@ class ChaosTest {
 
         assertThat(killCount.get()).isGreaterThan(0);
 
-        // Restore nodes by restarting killed ones
+        // Restore nodes by adding new ones
         for (var killedId : killedNodeIds) {
-            cluster.restartNode(killedId).await();
+            cluster.addNode().await();
         }
         killedNodeIds.clear();
 
@@ -126,17 +126,18 @@ class ChaosTest {
     }
 
     @Test
-    void rapidKillRestart_clusterRemainsFunctional() {
+    void rapidKillAdd_clusterRemainsFunctional() {
         var iterations = 10;
         var successfulOps = new AtomicInteger(0);
 
-        // Pick a non-leader node for rapid cycling
-        var targetNodeId = getRunningNodeIds().stream()
-                                              .filter(id -> !cluster.currentLeader().map(l -> l.equals(id)).or(false))
-                                              .findFirst()
-                                              .orElseThrow();
-
         for (int i = 0; i < iterations; i++) {
+            // Pick a non-leader node for killing
+            var targetNodeId = getRunningNodeIds().stream()
+                                                  .filter(id -> !cluster.currentLeader().map(l -> l.equals(id)).or(false))
+                                                  .findFirst()
+                                                  .orElse(null);
+            if (targetNodeId == null) continue;
+
             // Kill target node
             cluster.killNode(targetNodeId).await();
             sleep(Duration.ofMillis(500));
@@ -150,8 +151,8 @@ class ChaosTest {
             } catch (Exception ignored) {
             }
 
-            // Restart the killed node
-            cluster.restartNode(targetNodeId).await();
+            // Add a new node
+            cluster.addNode().await();
             sleep(Duration.ofMillis(500));
         }
 
@@ -180,7 +181,7 @@ class ChaosTest {
                         var victimId = nodeIds.get(random.nextInt(nodeIds.size()));
                         cluster.killNode(victimId).await();
                         sleep(Duration.ofSeconds(1));
-                        cluster.restartNode(victimId).await();
+                        cluster.addNode().await();
                     }
                     sleep(Duration.ofSeconds(2));
                 } catch (Exception e) {
@@ -245,9 +246,9 @@ class ChaosTest {
 
         assertThat(leaderKills).isGreaterThanOrEqualTo(2);
 
-        // Restore nodes by restarting killed ones
+        // Restore nodes by adding new ones
         for (var killedId : killedNodeIds) {
-            cluster.restartNode(killedId).await();
+            cluster.addNode().await();
         }
         killedNodeIds.clear();
 
@@ -278,10 +279,10 @@ class ChaosTest {
         // Now only 2 nodes - no quorum
         assertThat(cluster.nodeCount()).isEqualTo(2);
 
-        // Restore all nodes by restarting killed ones
-        cluster.restartNode(killed1).await();
-        cluster.restartNode(killed2).await();
-        cluster.restartNode(killed3).await();
+        // Restore nodes by adding new ones
+        cluster.addNode().await();
+        cluster.addNode().await();
+        cluster.addNode().await();
 
         // Cluster should reconverge
         await().atMost(RECOVERY_TIMEOUT)

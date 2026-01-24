@@ -225,149 +225,45 @@ public final class ForgeCluster {
     }
 
     /**
-     * Gracefully stop a node (keeps nodeInfo for potential restart).
+     * Gracefully stop and remove a node from the cluster.
+     * The node cannot be restarted - use addNode() to create a new node.
      */
     public Promise<Unit> killNode(String nodeIdStr) {
+        return killNode(nodeIdStr, true);
+    }
+
+    /**
+     * Stop and remove a node from the cluster.
+     *
+     * @param nodeIdStr Node ID to kill
+     * @param graceful  If true, waits for normal timeout; if false, uses 1-second timeout
+     */
+    public Promise<Unit> killNode(String nodeIdStr, boolean graceful) {
         return Option.option(nodes.get(nodeIdStr))
                      .fold(() -> {
                                log.warn("Node {} not found", nodeIdStr);
                                return Promise.success(Unit.unit());
                            },
-                           node -> killNodeInternal(nodeIdStr, node));
+                           node -> killNodeInternal(nodeIdStr, node, graceful));
     }
 
-    /**
-     * Restart a previously killed node with the same ID and topology.
-     * The node must have been killed but not fully removed (nodeInfo still exists).
-     */
-    public Promise<Unit> restartNode(String nodeIdStr) {
-        var nodeInfo = nodeInfos.get(nodeIdStr);
-        if (nodeInfo == null) {
-            log.warn("Cannot restart node {}: nodeInfo not found (node was never part of cluster or fully removed)",
-                     nodeIdStr);
-            return Promise.success(Unit.unit());
-        }
-        if (nodes.containsKey(nodeIdStr)) {
-            log.warn("Cannot restart node {}: node is already running", nodeIdStr);
-            return Promise.success(Unit.unit());
-        }
-        log.info("Restarting node {} on port {}",
-                 nodeIdStr,
-                 nodeInfo.address()
-                         .port());
-        var port = nodeInfo.address()
-                           .port();
-        var mgmtPort = baseMgmtPort + (port - basePort);
-        var topology = new ArrayList<>(nodeInfos.values());
-        var node = createNode(nodeInfo.id(), port, mgmtPort, topology);
-        nodes.put(nodeIdStr, node);
-        return node.start()
-                   .map(_ -> Unit.unit())
-                   .onSuccess(_ -> log.info("Node {} restarted and rejoined the cluster", nodeIdStr));
-    }
-
-    /**
-     * Abruptly crash a node (immediate stop).
-     */
-    public Promise<Unit> crashNode(String nodeIdStr) {
-        return Option.option(nodes.get(nodeIdStr))
-                     .fold(() -> {
-                               log.warn("Node {} not found", nodeIdStr);
-                               return Promise.success(Unit.unit());
-                           },
-                           node -> crashNodeInternal(nodeIdStr, node));
-    }
-
-    private Promise<Unit> killNodeInternal(String nodeIdStr, AetherNode node) {
-        log.info("Killing node {}", nodeIdStr);
+    private Promise<Unit> killNodeInternal(String nodeIdStr, AetherNode node, boolean graceful) {
+        var timeout = graceful
+                      ? NODE_TIMEOUT
+                      : TimeSpan.timeSpan(1)
+                                .seconds();
+        log.info("{} node {}", graceful
+                              ? "Stopping"
+                              : "Force-killing", nodeIdStr);
         return node.stop()
-                   .timeout(NODE_TIMEOUT)
-                   .map(_ -> {
-                            // Only remove from nodes map, keep nodeInfo for potential restart
-        nodes.remove(nodeIdStr);
-                            return Unit.unit();
-                        })
-                   .onSuccess(_ -> log.info("Node {} killed (can be restarted)",
-                                            nodeIdStr));
-    }
-
-    private Promise<Unit> crashNodeInternal(String nodeIdStr, AetherNode node) {
-        log.info("Crashing node {} abruptly", nodeIdStr);
-        return node.stop()
-                   .timeout(TimeSpan.timeSpan(1)
-                                    .seconds())
+                   .timeout(timeout)
                    .recover(_ -> Unit.unit())
                    .map(_ -> {
-                            // Only remove from nodes map, keep nodeInfo for potential restart
-        nodes.remove(nodeIdStr);
-                            return Unit.unit();
-                        })
-                   .onSuccess(_ -> log.info("Node {} crashed (can be restarted)",
-                                            nodeIdStr));
-    }
-
-    /**
-     * Permanently remove a node from the cluster (cannot be restarted).
-     */
-    public Promise<Unit> removeNode(String nodeIdStr) {
-        return Option.option(nodes.get(nodeIdStr))
-                     .fold(() -> {
-                               // Node already stopped, just remove nodeInfo
-        nodeInfos.remove(nodeIdStr);
-                               log.info("Node {} removed from cluster", nodeIdStr);
-                               return Promise.success(Unit.unit());
-                           },
-                           node -> node.stop()
-                                       .timeout(NODE_TIMEOUT)
-                                       .map(_ -> {
-                                                nodes.remove(nodeIdStr);
-                                                nodeInfos.remove(nodeIdStr);
-                                                return Unit.unit();
-                                            })
-                                       .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr)));
-    }
-
-    /**
-     * Perform a rolling restart of all nodes.
-     * Restarts one node at a time, waiting for it to rejoin before continuing.
-     */
-    public Promise<Unit> rollingRestart() {
-        log.info("Starting rolling restart");
-        var nodeIds = new ArrayList<>(nodes.keySet());
-        var currentTopology = new ArrayList<>(nodeInfos.values());
-        // Chain restarts sequentially
-        Promise<Unit> chain = Promise.success(Unit.unit());
-        for (var nodeIdStr : nodeIds) {
-            chain = chain.flatMap(_ -> Option.option(nodeInfos.get(nodeIdStr))
-                                             .fold(() -> Promise.success(Unit.unit()),
-                                                   nodeInfo -> restartNode(nodeIdStr, nodeInfo, currentTopology)));
-        }
-        return chain.onSuccess(_ -> log.info("Rolling restart completed"));
-    }
-
-    private Promise<Unit> restartNode(String nodeIdStr, NodeInfo nodeInfo, List<NodeInfo> topology) {
-        log.info("Rolling restart: restarting {}", nodeIdStr);
-        return Option.option(nodes.get(nodeIdStr))
-                     .fold(() -> Promise.success(Unit.unit()),
-                           node -> node.stop()
-                                       .timeout(NODE_TIMEOUT)
-                                       .flatMap(_ -> Promise.promise(TimeSpan.timeSpan(300)
-                                                                             .millis(),
-                                                                     () -> Result.success(Unit.unit())))
-                                       .flatMap(_ -> recreateAndStartNode(nodeIdStr, nodeInfo, topology))
-                                       .flatMap(_ -> Promise.promise(TimeSpan.timeSpan(500)
-                                                                             .millis(),
-                                                                     () -> Result.success(Unit.unit())))
-                                       .onSuccess(_ -> log.info("Node {} restarted", nodeIdStr)));
-    }
-
-    private Promise<Unit> recreateAndStartNode(String nodeIdStr, NodeInfo nodeInfo, List<NodeInfo> topology) {
-        var port = nodeInfo.address()
-                           .port();
-        var mgmtPort = baseMgmtPort + (port - basePort);
-        var newNode = createNode(nodeInfo.id(), port, mgmtPort, topology);
-        nodes.put(nodeIdStr, newNode);
-        return newNode.start();
+                       nodes.remove(nodeIdStr);
+                       nodeInfos.remove(nodeIdStr);
+                       return Unit.unit();
+                   })
+                   .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr));
     }
 
     /**

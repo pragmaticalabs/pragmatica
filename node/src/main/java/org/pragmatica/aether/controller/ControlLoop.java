@@ -19,12 +19,15 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
 
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.stream.Collectors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -59,6 +62,12 @@ public interface ControlLoop {
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
     /**
+     * Handle quorum state changes (stop evaluation when quorum disappears).
+     */
+    @MessageReceiver
+    void onQuorumStateChange(QuorumStateNotification notification);
+
+    /**
      * Register a blueprint for controller management.
      */
     void registerBlueprint(Artifact artifact, int instances);
@@ -77,8 +86,8 @@ public interface ControlLoop {
                                    ClusterController controller,
                                    MetricsCollector metricsCollector,
                                    ClusterNode<KVCommand<AetherKey>> cluster,
-                                   long intervalMs) {
-        return new ControlLoopImpl(self, controller, metricsCollector, cluster, intervalMs);
+                                   TimeSpan interval) {
+        return new ControlLoopImpl(self, controller, metricsCollector, cluster, interval);
     }
 
     /**
@@ -88,7 +97,12 @@ public interface ControlLoop {
                                    ClusterController controller,
                                    MetricsCollector metricsCollector,
                                    ClusterNode<KVCommand<AetherKey>> cluster) {
-        return controlLoop(self, controller, metricsCollector, cluster, 5000);
+        return controlLoop(self,
+                           controller,
+                           metricsCollector,
+                           cluster,
+                           TimeSpan.timeSpan(5)
+                                   .seconds());
     }
 }
 
@@ -99,14 +113,7 @@ class ControlLoopImpl implements ControlLoop {
     private final ClusterController controller;
     private final MetricsCollector metricsCollector;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
-    private final long intervalMs;
-
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                                                                                                      var thread = new Thread(r,
-                                                                                                                              "control-loop");
-                                                                                                      thread.setDaemon(true);
-                                                                                                      return thread;
-                                                                                                  });
+    private final TimeSpan interval;
 
     private final AtomicReference<ScheduledFuture<?>> evaluationTask = new AtomicReference<>();
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
@@ -116,12 +123,12 @@ class ControlLoopImpl implements ControlLoop {
                     ClusterController controller,
                     MetricsCollector metricsCollector,
                     ClusterNode<KVCommand<AetherKey>> cluster,
-                    long intervalMs) {
+                    TimeSpan interval) {
         this.self = self;
         this.controller = controller;
         this.metricsCollector = metricsCollector;
         this.cluster = cluster;
-        this.intervalMs = intervalMs;
+        this.interval = interval;
     }
 
     @Override
@@ -141,6 +148,14 @@ class ControlLoopImpl implements ControlLoop {
             case NodeAdded(_, List<NodeId> newTopology) -> topology.set(newTopology);
             case NodeRemoved(_, List<NodeId> newTopology) -> topology.set(newTopology);
             default -> {}
+        }
+    }
+
+    @Override
+    public void onQuorumStateChange(QuorumStateNotification notification) {
+        if (notification == QuorumStateNotification.DISAPPEARED) {
+            log.info("Quorum disappeared, stopping control loop evaluation");
+            stopEvaluation();
         }
     }
 
@@ -179,21 +194,11 @@ class ControlLoopImpl implements ControlLoop {
     @Override
     public void stop() {
         stopEvaluation();
-        scheduler.shutdown();
-        try{
-            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                scheduler.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            scheduler.shutdownNow();
-            Thread.currentThread()
-                  .interrupt();
-        }
     }
 
     private void startEvaluation() {
         stopEvaluation();
-        var task = scheduler.scheduleAtFixedRate(this::runEvaluation, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
+        var task = SharedScheduler.scheduleAtFixedRate(this::runEvaluation, interval);
         evaluationTask.set(task);
     }
 

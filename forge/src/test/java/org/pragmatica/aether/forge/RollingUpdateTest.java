@@ -272,8 +272,8 @@ class RollingUpdateTest {
         var status = getUpdateStatus();
         assertThat(status).contains("\"state\":\"ROUTING\"");
 
-        // Restore the killed node
-        cluster.restartNode(nodeToKill)
+        // Add a new node to replace the killed one
+        cluster.addNode()
                .await();
 
         await().atMost(WAIT_TIMEOUT)

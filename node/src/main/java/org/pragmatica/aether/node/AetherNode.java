@@ -71,6 +71,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -216,6 +217,11 @@ public interface AetherNode {
      */
     List<NodeId> initialTopology();
 
+    /**
+     * Route a message to registered handlers via the internal MessageRouter.
+     */
+    void route(Message message);
+
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
         var serializer = furySerializer(AetherCustomClasses::configure);
@@ -355,6 +361,11 @@ public interface AetherNode {
             @Override
             public Promise<Unit> stop() {
                 log.info("Stopping Aether node {}", self());
+                // 1. Notify components that quorum is gone (stops scheduled tasks via SharedScheduler)
+                router.route(QuorumStateNotification.DISAPPEARED);
+                // 2. Stop message delivery (no new messages will be routed)
+                router.quiesce();
+                // 3. Stop components (they've already stopped their activities via quorum notification)
                 controlLoop.stop();
                 metricsScheduler.stop();
                 deploymentMetricsScheduler.stop();
@@ -362,6 +373,7 @@ public interface AetherNode {
                 snapshotCollector.stop();
                 SliceRuntime.clear();
                 InfraStore.clear();
+                // 4. Stop servers and network
                 return managementServer.map(ManagementServer::stop)
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.stop())
@@ -434,6 +446,11 @@ public interface AetherNode {
                              .stream()
                              .map(org.pragmatica.consensus.net.NodeInfo::id)
                              .toList();
+            }
+
+            @Override
+            public void route(Message message) {
+                router.route(message);
             }
         }
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
@@ -688,6 +705,10 @@ public interface AetherNode {
                                                                                                                   .key())));
         // Quorum state notifications
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, controlLoop::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, metricsScheduler::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
+                                              deploymentMetricsScheduler::onQuorumStateChange));
         // Leader change notifications
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               clusterDeploymentManager::onLeaderChange));

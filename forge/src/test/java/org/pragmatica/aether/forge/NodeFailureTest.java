@@ -65,7 +65,7 @@ class NodeFailureTest {
             case "twoNodeFailure_clusterMaintainsQuorum" -> 10;
             case "leaderFailure_newLeaderElected" -> 20;
             case "nodeRecovery_newNodeJoinsCluster" -> 30;
-            case "rollingRestart_maintainsQuorum" -> 40;
+            case "manualRollingRestart_maintainsQuorum" -> 40;
             case "minorityPartition_quorumLost_thenRecovered" -> 50;
             default -> 60;
         };
@@ -153,8 +153,8 @@ class NodeFailureTest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.nodeCount() == 4);
 
-        // Restart the killed node
-        cluster.restartNode("nf-2")
+        // Add a new node to replace the killed one
+        cluster.addNode()
                .await();
 
         // Wait for node to join
@@ -169,13 +169,29 @@ class NodeFailureTest {
     }
 
     @Test
-    void rollingRestart_maintainsQuorum() {
-        // Perform rolling restart using ForgeCluster's built-in method
-        cluster.rollingRestart()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Rolling restart failed: " + cause.message());
-               });
+    void manualRollingRestart_maintainsQuorum() {
+        // Perform a manual rolling restart: kill and add nodes one at a time
+        var nodeIds = cluster.status().nodes().stream()
+                             .map(ForgeCluster.NodeStatus::id)
+                             .toList();
+
+        for (var nodeId : nodeIds) {
+            cluster.killNode(nodeId).await();
+
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> cluster.nodeCount() == 4);
+
+            cluster.addNode().await();
+
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> cluster.nodeCount() == 5);
+
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> cluster.currentLeader().isPresent());
+        }
 
         // Cluster should still have quorum after rolling restart
         await().atMost(WAIT_TIMEOUT)
@@ -198,8 +214,8 @@ class NodeFailureTest {
         assertThat(cluster.nodeCount()).isEqualTo(2);
 
         // Remaining nodes may not have quorum (no leader or degraded)
-        // Restart a killed node to restore quorum (3 of original 5 topology)
-        cluster.restartNode("nf-1")
+        // Add a new node to restore quorum (3 nodes needed)
+        cluster.addNode()
                .await();
 
         // Wait for quorum to be restored

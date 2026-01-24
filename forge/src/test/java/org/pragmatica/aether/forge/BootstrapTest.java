@@ -64,7 +64,7 @@ class BootstrapTest {
         return switch (testInfo.getTestMethod().map(m -> m.getName()).orElse("")) {
             case "nodeRestart_rejoinsCluster" -> 0;
             case "nodeRestart_recoversState" -> 10;
-            case "rollingRestart_maintainsAvailability" -> 20;
+            case "manualRollingRestart_maintainsAvailability" -> 20;
             case "multipleNodeRestarts_clusterRemainsFunctional" -> 30;
             default -> 40;
         };
@@ -94,8 +94,8 @@ class BootstrapTest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.currentLeader().isPresent());
 
-        // Restart the killed node
-        cluster.restartNode("bt-2")
+        // Add a new node to replace the killed one
+        cluster.addNode()
                .await();
 
         // Wait for all 3 nodes to be running
@@ -152,8 +152,8 @@ class BootstrapTest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.nodeCount() == 2);
 
-        // Restart the killed node
-        cluster.restartNode("bt-3")
+        // Add a new node to replace the killed one
+        cluster.addNode()
                .await();
 
         await().atMost(WAIT_TIMEOUT)
@@ -184,24 +184,36 @@ class BootstrapTest {
     }
 
     @Test
-    void rollingRestart_maintainsAvailability() {
+    void manualRollingRestart_maintainsAvailability() {
         // Wait for all nodes to be healthy
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
 
-        // Perform a rolling restart
-        cluster.rollingRestart()
-               .await()
-               .onFailure(cause -> {
-                   throw new AssertionError("Rolling restart failed: " + cause.message());
-               });
+        // Perform a manual rolling restart: kill and add nodes one at a time
+        for (int i = 1; i <= 3; i++) {
+            var nodeId = "bt-" + i;
+
+            // Kill node
+            cluster.killNode(nodeId).await();
+
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> cluster.nodeCount() == 2);
+
+            // Add new node
+            cluster.addNode().await();
+
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> cluster.nodeCount() == 3);
+
+            await().atMost(WAIT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> cluster.currentLeader().isPresent());
+        }
 
         // After rolling restart, cluster should be healthy
-        await().atMost(WAIT_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.currentLeader().isPresent());
-
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
@@ -235,8 +247,8 @@ class BootstrapTest {
                    .pollInterval(POLL_INTERVAL)
                    .until(() -> cluster.currentLeader().isPresent());
 
-            // Restart the killed node
-            cluster.restartNode(nodeId)
+            // Add a new node to replace the killed one
+            cluster.addNode()
                    .await();
 
             await().atMost(WAIT_TIMEOUT)

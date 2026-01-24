@@ -15,6 +15,7 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.Server;
 
@@ -42,7 +43,7 @@ class DeploymentMetricsSchedulerTest {
         network = new TestClusterNetwork();
         collector = new TestDeploymentMetricsCollector();
         // Use short interval for tests
-        scheduler = DeploymentMetricsScheduler.deploymentMetricsScheduler(self, network, collector, 50);
+        scheduler = DeploymentMetricsScheduler.deploymentMetricsScheduler(self, network, collector, TimeSpan.timeSpan(50).millis());
     }
 
     @AfterEach

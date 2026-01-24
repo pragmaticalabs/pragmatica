@@ -108,7 +108,7 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
 
     private static void executeChaosEvent(ForgeCluster cluster, ChaosEvent event) {
         switch (event) {
-            case ChaosEvent.NodeKill kill -> cluster.crashNode(kill.nodeId());
+            case ChaosEvent.NodeKill kill -> cluster.killNode(kill.nodeId(), false);
             case ChaosEvent.LatencySpike _ -> {}
             case ChaosEvent.SliceCrash _ -> {}
             case ChaosEvent.InvocationFailure _ -> {}

@@ -154,10 +154,10 @@ class NetworkPartitionTest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.nodeCount() == 1);
 
-        // Heal partition - restart the killed nodes
-        cluster.restartNode("np-2")
+        // Heal partition - add new nodes
+        cluster.addNode()
                .await();
-        cluster.restartNode("np-3")
+        cluster.addNode()
                .await();
 
         // Cluster should reconverge
@@ -214,8 +214,8 @@ class NetworkPartitionTest {
         var slices = getSlicesFromAnyNode();
         assertThat(slices).contains("place-order-place-order");
 
-        // Restore full cluster by restarting the killed node
-        cluster.restartNode("np-3")
+        // Restore full cluster by adding a new node
+        cluster.addNode()
                .await();
 
         await().atMost(WAIT_TIMEOUT)

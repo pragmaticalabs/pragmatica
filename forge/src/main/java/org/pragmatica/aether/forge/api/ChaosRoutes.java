@@ -52,8 +52,7 @@ public final class ChaosRoutes {
                stopRoute(chaosController, eventLogger),
                stopAllRoute(chaosController, eventLogger),
                addNodeRoute(cluster, eventLogger),
-               killNodeRoute(cluster, eventLogger),
-               rollingRestartRoute(cluster, eventLogger));
+               killNodeRoute(cluster, eventLogger));
     }
 
     // ========== Route Definitions ==========
@@ -102,12 +101,6 @@ public final class ChaosRoutes {
                     .withPath(aString())
                     .to(nodeId -> killNode(cluster, eventLogger, nodeId))
                     .asJson();
-    }
-
-    private static Route<SuccessResponse> rollingRestartRoute(ForgeCluster cluster,
-                                                              Consumer<EventLogEntry> eventLogger) {
-        return Route.<SuccessResponse> post("/rolling-restart")
-                    .toJson(_ -> rollingRestart(cluster, eventLogger));
     }
 
     // ========== Request Records ==========
@@ -291,19 +284,5 @@ public final class ChaosRoutes {
                                                                              ? ", new leader: " + newLeader
                                                                              : "")));
         return new NodeActionResponse(true, newLeader);
-    }
-
-    private static Promise<SuccessResponse> rollingRestart(ForgeCluster cluster,
-                                                           Consumer<EventLogEntry> eventLogger) {
-        eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Starting rolling restart of all nodes"));
-        return cluster.rollingRestart()
-                      .map(_ -> logAndBuildRollingRestartResponse(eventLogger))
-                      .onFailure(cause -> eventLogger.accept(new EventLogEntry("ROLLING_RESTART_FAILED",
-                                                                               "Rolling restart failed: " + cause.message())));
-    }
-
-    private static SuccessResponse logAndBuildRollingRestartResponse(Consumer<EventLogEntry> eventLogger) {
-        eventLogger.accept(new EventLogEntry("ROLLING_RESTART_COMPLETE", "Rolling restart completed successfully"));
-        return SuccessResponse.OK;
     }
 }

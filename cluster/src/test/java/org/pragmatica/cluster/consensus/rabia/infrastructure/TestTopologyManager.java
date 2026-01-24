@@ -2,6 +2,7 @@ package org.pragmatica.consensus.rabia.infrastructure;
 
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.consensus.topology.NodeState;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -9,6 +10,8 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
 import java.net.SocketAddress;
+import java.time.Instant;
+import java.util.List;
 
 public record TestTopologyManager(int clusterSize, NodeInfo self) implements TopologyManager {
     @Override
@@ -39,5 +42,28 @@ public record TestTopologyManager(int clusterSize, NodeInfo self) implements Top
     @Override
     public TimeSpan helloTimeout() {
         return TimeSpan.timeSpan(5).seconds();
+    }
+
+    @Override
+    public int activeClusterSize() {
+        return clusterSize;
+    }
+
+    @Override
+    public List<NodeId> fullTopology() {
+        return List.of(self.id());
+    }
+
+    @Override
+    public List<NodeId> activeTopology() {
+        return fullTopology();
+    }
+
+    @Override
+    public Option<NodeState> getState(NodeId id) {
+        if (id.equals(self.id())) {
+            return Option.option(NodeState.healthy(self, Instant.now()));
+        }
+        return Option.empty();
     }
 }
