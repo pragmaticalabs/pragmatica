@@ -27,7 +27,6 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.aether.artifact.Artifact.artifact;
 import static org.pragmatica.consensus.NodeId.nodeId;
-import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /**
@@ -45,9 +44,9 @@ class AetherNodeIT {
     private static final Duration AWAIT_DURATION = Duration.ofSeconds(10);
 
     private static final List<NodeInfo> NODES = List.of(
-            nodeInfo(nodeId("aether-1").unwrap(), nodeAddress("localhost", BASE_PORT).unwrap()),
-            nodeInfo(nodeId("aether-2").unwrap(), nodeAddress("localhost", BASE_PORT + 1).unwrap()),
-            nodeInfo(nodeId("aether-3").unwrap(), nodeAddress("localhost", BASE_PORT + 2).unwrap())
+            new NodeInfo(nodeId("aether-1").unwrap(), nodeAddress("localhost", BASE_PORT).unwrap()),
+            new NodeInfo(nodeId("aether-2").unwrap(), nodeAddress("localhost", BASE_PORT + 1).unwrap()),
+            new NodeInfo(nodeId("aether-3").unwrap(), nodeAddress("localhost", BASE_PORT + 2).unwrap())
     );
 
     private final List<AetherNode> nodes = new ArrayList<>();

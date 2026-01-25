@@ -3,7 +3,7 @@ package org.pragmatica.cluster.net.local;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
@@ -67,17 +67,27 @@ public class LocalNetwork implements ClusterNetwork {
     }
 
     @Override
-    public void connect(NetworkManagementOperation.ConnectNode connectNode) {
+    public void connect(NetworkServiceMessage.ConnectNode connectNode) {
 
     }
 
     @Override
-    public void disconnect(NetworkManagementOperation.DisconnectNode disconnectNode) {
+    public void disconnect(NetworkServiceMessage.DisconnectNode disconnectNode) {
 
     }
 
     @Override
-    public void listNodes(NetworkManagementOperation.ListConnectedNodes listConnectedNodes) {
+    public void listNodes(NetworkServiceMessage.ListConnectedNodes listConnectedNodes) {
+
+    }
+
+    @Override
+    public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {
+
+    }
+
+    @Override
+    public void handleSend(NetworkServiceMessage.Send send) {
 
     }
 
@@ -106,7 +116,7 @@ public class LocalNetwork implements ClusterNetwork {
         return Unit.unit();
     }
 
-    public void disconnect(NodeId nodeId) {
+    public void disconnectNode(NodeId nodeId) {
         nodes.remove(nodeId);
         if (nodes.size() == topologyManager.quorumSize() - 1) {
             routers.values()

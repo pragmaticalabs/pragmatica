@@ -12,7 +12,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 
-import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -385,13 +385,19 @@ class DeploymentMetricsCollectorTest {
         }
 
         @Override
-        public void connect(NetworkManagementOperation.ConnectNode connectNode) {}
+        public void connect(NetworkServiceMessage.ConnectNode connectNode) {}
 
         @Override
-        public void disconnect(NetworkManagementOperation.DisconnectNode disconnectNode) {}
+        public void disconnect(NetworkServiceMessage.DisconnectNode disconnectNode) {}
 
         @Override
-        public void listNodes(NetworkManagementOperation.ListConnectedNodes listConnectedNodes) {}
+        public void listNodes(NetworkServiceMessage.ListConnectedNodes listConnectedNodes) {}
+
+        @Override
+        public void handleSend(NetworkServiceMessage.Send send) {}
+
+        @Override
+        public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
         @Override
         public void handlePing(NetworkMessage.Ping ping) {}

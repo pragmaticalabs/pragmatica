@@ -18,7 +18,6 @@ import java.util.stream.IntStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /**
@@ -168,7 +167,7 @@ public record Main(String[] args) {
     }
 
     private List<NodeInfo> parsePeers(NodeId self, int selfPort, Option<AetherConfig> aetherConfig) {
-        var selfInfo = nodeInfo(self, nodeAddress("localhost", selfPort).unwrap());
+        var selfInfo = new NodeInfo(self, nodeAddress("localhost", selfPort).unwrap());
         return findArg("--peers=").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo))
                       .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo)))
                       .orElse(aetherConfig.map(this::generatePeersFromConfig))
@@ -194,9 +193,9 @@ public record Main(String[] args) {
         var port = clusterPort + (env == Environment.LOCAL
                                   ? index
                                   : 0);
-        return nodeInfo(NodeId.nodeId("node-" + index)
-                              .unwrap(),
-                        nodeAddress(host, port).unwrap());
+        return new NodeInfo(NodeId.nodeId("node-" + index)
+                                  .unwrap(),
+                            nodeAddress(host, port).unwrap());
     }
 
     private List<NodeInfo> parsePeersFromString(String peersStr, NodeId self, NodeInfo selfInfo) {
@@ -234,7 +233,7 @@ public record Main(String[] args) {
         var port = Integer.parseInt(parts[1]);
         var nodeId = NodeId.nodeId("node-" + host + "-" + port)
                            .unwrap();
-        return nodeAddress(host, port).map(addr -> nodeInfo(nodeId, addr))
+        return nodeAddress(host, port).map(addr -> new NodeInfo(nodeId, addr))
                           .option();
     }
 
@@ -242,7 +241,7 @@ public record Main(String[] args) {
         var host = parts[1];
         var port = Integer.parseInt(parts[2]);
         return NodeId.nodeId(parts[0])
-                     .flatMap(nodeId -> nodeAddress(host, port).map(addr -> nodeInfo(nodeId, addr)))
+                     .flatMap(nodeId -> nodeAddress(host, port).map(addr -> new NodeInfo(nodeId, addr)))
                      .option();
     }
 

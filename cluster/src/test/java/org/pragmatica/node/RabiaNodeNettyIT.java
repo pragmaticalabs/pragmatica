@@ -28,7 +28,6 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
 import static org.pragmatica.consensus.NodeId.nodeId;
-import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.cluster.node.rabia.NodeConfig.nodeConfig;
 import static org.pragmatica.cluster.node.rabia.RabiaNode.rabiaNode;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
@@ -42,11 +41,11 @@ class RabiaNodeNettyIT {
     private static final int CLUSTER_SIZE = 5;
     private static final int BASE_PORT = 13040;
     private static final List<NodeInfo> NODES = List.of(
-            nodeInfo(nodeId("node-1").unwrap(), nodeAddress("localhost", BASE_PORT).unwrap()),
-            nodeInfo(nodeId("node-2").unwrap(), nodeAddress("localhost", BASE_PORT + 1).unwrap()),
-            nodeInfo(nodeId("node-3").unwrap(), nodeAddress("localhost", BASE_PORT + 2).unwrap()),
-            nodeInfo(nodeId("node-4").unwrap(), nodeAddress("localhost", BASE_PORT + 3).unwrap()),
-            nodeInfo(nodeId("node-5").unwrap(), nodeAddress("localhost", BASE_PORT + 4).unwrap()));
+            new NodeInfo(nodeId("node-1").unwrap(), nodeAddress("localhost", BASE_PORT).unwrap()),
+            new NodeInfo(nodeId("node-2").unwrap(), nodeAddress("localhost", BASE_PORT + 1).unwrap()),
+            new NodeInfo(nodeId("node-3").unwrap(), nodeAddress("localhost", BASE_PORT + 2).unwrap()),
+            new NodeInfo(nodeId("node-4").unwrap(), nodeAddress("localhost", BASE_PORT + 3).unwrap()),
+            new NodeInfo(nodeId("node-5").unwrap(), nodeAddress("localhost", BASE_PORT + 4).unwrap()));
     private static final TimeSpan RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
     private static final TimeSpan PING_INTERVAL = TimeSpan.timeSpan(100).seconds();
     private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();

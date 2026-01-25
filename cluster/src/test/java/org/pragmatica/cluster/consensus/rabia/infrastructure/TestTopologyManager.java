@@ -45,18 +45,8 @@ public record TestTopologyManager(int clusterSize, NodeInfo self) implements Top
     }
 
     @Override
-    public int activeClusterSize() {
-        return clusterSize;
-    }
-
-    @Override
-    public List<NodeId> fullTopology() {
+    public List<NodeId> topology() {
         return List.of(self.id());
-    }
-
-    @Override
-    public List<NodeId> activeTopology() {
-        return fullTopology();
     }
 
     @Override

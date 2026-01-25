@@ -28,7 +28,6 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider.furySerializerFactoryProvider;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.consensus.NodeId.nodeId;
-import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /**
@@ -105,7 +104,7 @@ public final class ForgeCluster {
         for (int i = 1; i <= initialClusterSize; i++) {
             var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
             var port = basePort + i - 1;
-            var info = nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
+            var info = new NodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
             initialNodes.add(info);
             nodeInfos.put(nodeId.id(), info);
         }
@@ -210,7 +209,7 @@ public final class ForgeCluster {
         var nodeNum = nodeCounter.incrementAndGet();
         var nodeId = nodeId(nodeIdPrefix + "-" + nodeNum).unwrap();
         var port = basePort + nodeNum - 1;
-        var info = nodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
+        var info = new NodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
         log.info("Adding new node {} on port {}", nodeId.id(), port);
         nodeInfos.put(nodeId.id(), info);
         // Get current topology including the new node

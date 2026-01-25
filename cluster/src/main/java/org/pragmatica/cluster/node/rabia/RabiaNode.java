@@ -6,15 +6,18 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.consensus.net.NetworkManagementOperation;
-import org.pragmatica.consensus.net.NetworkManagementOperation.ConnectedNodesList;
-import org.pragmatica.consensus.net.NetworkManagementOperation.ConnectNode;
-import org.pragmatica.consensus.net.NetworkManagementOperation.ConnectionEstablished;
-import org.pragmatica.consensus.net.NetworkManagementOperation.ConnectionFailed;
-import org.pragmatica.consensus.net.NetworkManagementOperation.DisconnectNode;
-import org.pragmatica.consensus.net.NetworkManagementOperation.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkMessage;
+import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
+import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
 import org.pragmatica.consensus.net.NetworkMessage.Ping;
 import org.pragmatica.consensus.net.NetworkMessage.Pong;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectedNodesList;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectNode;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionEstablished;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionFailed;
+import org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
 import org.pragmatica.consensus.net.netty.NettyClusterNetwork;
 import org.pragmatica.consensus.rabia.ConsensusMetrics;
 import org.pragmatica.consensus.rabia.RabiaEngine;
@@ -30,16 +33,11 @@ import org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous.VoteRound
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TcpTopologyManager;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.AllNodesReset;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDisabled;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
-import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeReactivated;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.AddNode;
-import org.pragmatica.consensus.topology.TopologyManagementMessage.DiscoverNodes;
-import org.pragmatica.consensus.topology.TopologyManagementMessage.DiscoveredNodes;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.RemoveNode;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Promise;
@@ -149,30 +147,25 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class)
                                               .route(route(AddNode.class, topologyManager::handleAddNodeMessage),
-                                                     route(RemoveNode.class, topologyManager::handleRemoveNodeMessage),
-                                                     route(DiscoverNodes.class,
-                                                           topologyManager::handleDiscoverNodesMessage),
-                                                     route(DiscoveredNodes.class,
-                                                           topologyManager::handleMergeNodesMessage));
-        var networkMgmtRoutes = SealedBuilder.from(NetworkManagementOperation.class)
-                                             .route(route(ConnectedNodesList.class, topologyManager::reconcile),
-                                                    route(ConnectNode.class, network::connect),
-                                                    route(DisconnectNode.class, network::disconnect),
-                                                    route(ListConnectedNodes.class, network::listNodes),
-                                                    route(ConnectionFailed.class,
-                                                          topologyManager::handleConnectionFailed),
-                                                    route(ConnectionEstablished.class,
-                                                          topologyManager::handleConnectionEstablished));
+                                                     route(RemoveNode.class, topologyManager::handleRemoveNodeMessage));
+        var networkMsgRoutes = SealedBuilder.from(NetworkMessage.class)
+                                            .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),
+                                                   route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
+                                                   route(Ping.class, network::handlePing),
+                                                   route(Pong.class, network::handlePong));
+        var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class)
+                                                .route(route(ConnectedNodesList.class, topologyManager::reconcile),
+                                                       route(ConnectNode.class, network::connect),
+                                                       route(DisconnectNode.class, network::disconnect),
+                                                       route(ListConnectedNodes.class, network::listNodes),
+                                                       route(ConnectionFailed.class,
+                                                             topologyManager::handleConnectionFailed),
+                                                       route(ConnectionEstablished.class,
+                                                             topologyManager::handleConnectionEstablished));
         var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)
                                                 .route(route(NodeAdded.class, leaderManager::nodeAdded),
                                                        route(NodeRemoved.class, leaderManager::nodeRemoved),
-                                                       route(NodeDown.class, leaderManager::nodeDown),
-                                                       route(NodeDisabled.class,
-                                                             _ -> {}),
-                                                       route(NodeReactivated.class,
-                                                             _ -> {}),
-                                                       route(AllNodesReset.class,
-                                                             _ -> {}));
+                                                       route(NodeDown.class, leaderManager::nodeDown));
         var syncRoutes = SealedBuilder.from(Synchronous.class)
                                       .route(route(Propose.class, consensus::processPropose),
                                              route(VoteRound1.class, consensus::processVoteRound1),
@@ -187,14 +180,13 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // Collect all entries
         var allEntries = new ArrayList<Entry<?>>();
         allEntries.add(topologyMgmtRoutes);
-        allEntries.add(networkMgmtRoutes);
+        allEntries.add(networkMsgRoutes);
+        allEntries.add(networkServiceRoutes);
         allEntries.add(topologyChangeRoutes);
         allEntries.add(syncRoutes);
         allEntries.add(asyncRoutes);
         allEntries.add(route(QuorumStateNotification.class, leaderManager::watchQuorumState));
         allEntries.add(route(QuorumStateNotification.class, consensus::quorumState));
-        allEntries.add(route(Ping.class, network::handlePing));
-        allEntries.add(route(Pong.class, network::handlePong));
         record rabiaNode<C extends Command>(NodeConfig config,
                                             StateMachine<C> stateMachine,
                                             ClusterNetwork network,
