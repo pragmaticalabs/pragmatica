@@ -26,11 +26,14 @@ class AppHttpServerTest {
     private HttpClient httpClient;
     private int port;
 
+    private static final int TEST_PORT = 18080;
+
     @BeforeEach
     void setUp() {
         registry = HttpRouteRegistry.httpRouteRegistry();
-        // Use port 0 to let OS assign available port
-        var config = AppHttpConfig.enabledOnPort(0);
+        // Use fixed port (pragmatica-lite HttpServer doesn't properly return OS-assigned ports)
+        var config = AppHttpConfig.enabledOnPort(TEST_PORT);
+        port = TEST_PORT;
         server = AppHttpServer.appHttpServer(config, registry, Option.none());
         httpClient = HttpClient.newBuilder()
                                .connectTimeout(Duration.ofSeconds(5))
@@ -46,14 +49,12 @@ class AppHttpServerTest {
     void start_binds_to_port() {
         server.start().await();
         assertThat(server.boundPort().isPresent()).isTrue();
-        port = server.boundPort().unwrap();
-        assertThat(port).isGreaterThan(0);
+        assertThat(server.boundPort().unwrap()).isEqualTo(TEST_PORT);
     }
 
     @Test
     void request_to_unknown_route_returns_404() throws Exception {
         server.start().await();
-        port = server.boundPort().unwrap();
 
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/unknown/path"))
@@ -73,7 +74,6 @@ class AppHttpServerTest {
         registerRoute("GET", "/users/", "org.example:user-service:1.0.0", "getUsers");
 
         server.start().await();
-        port = server.boundPort().unwrap();
 
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/users/123"))
@@ -102,7 +102,6 @@ class AppHttpServerTest {
         registerRoute("POST", "/orders/", "org.example:order-service:1.0.0", "createOrder");
 
         server.start().await();
-        port = server.boundPort().unwrap();
 
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/orders/"))
@@ -119,7 +118,6 @@ class AppHttpServerTest {
     @Test
     void problem_detail_includes_request_id() throws Exception {
         server.start().await();
-        port = server.boundPort().unwrap();
 
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/not-found"))
