@@ -178,6 +178,8 @@ mvn test -Dtest=ClassName  # Specific test class
 mvn test -pl module-name   # Specific module
 ```
 
+**Important:** Run `mvn install -DskipTests` before testing forge module. Forge tests depend on locally installed artifacts from other modules.
+
 ## Key Files
 
 ### Core
