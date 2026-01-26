@@ -256,7 +256,8 @@ class GracefulShutdownTest {
         var port = status.nodes()
                          .get(0)
                          .mgmtPort();
-        return httpGet(port, "/api/slices");
+        // Use /api/slices/status for cluster-wide view (reads from KVStore)
+        return httpGet(port, "/api/slices/status");
     }
 
     private String deploySlice(String artifact, int instances) {

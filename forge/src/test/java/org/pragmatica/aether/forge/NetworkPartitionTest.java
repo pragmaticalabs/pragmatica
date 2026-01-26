@@ -279,7 +279,8 @@ class NetworkPartitionTest {
             return "";
         }
         var port = status.nodes().getFirst().mgmtPort();
-        return httpGet(port, "/api/slices");
+        // Use /api/slices/status for cluster-wide view (reads from KVStore)
+        return httpGet(port, "/api/slices/status");
     }
 
     private String deploySlice(String artifact, int instances) {

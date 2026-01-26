@@ -150,7 +150,7 @@ class ManagementApiTest {
             var slices = getSlices(port);
             assertThat(slices).doesNotContain("\"error\"");
 
-            // Deploy a slice and verify it appears
+            // Deploy a slice and verify it appears (use slices/status for cluster-wide view)
             deploy(port, TEST_ARTIFACT, 1);
 
             await().atMost(WAIT_TIMEOUT)
@@ -160,12 +160,12 @@ class ManagementApiTest {
                        }
                    })
                    .until(() -> {
-                       var response = getSlices(anyNodePort());
+                       var response = getSlicesStatus(anyNodePort());
                        return response.contains("place-order");
                    });
 
-            slices = getSlices(port);
-            assertThat(slices).contains("place-order");
+            var slicesStatus = getSlicesStatus(port);
+            assertThat(slicesStatus).contains("place-order");
         }
     }
 
@@ -201,8 +201,8 @@ class ManagementApiTest {
                        }
                    })
                    .until(() -> {
-                       var slices = getSlices(anyNodePort());
-                       return slices.contains("place-order");
+                       var slicesStatus = getSlicesStatus(anyNodePort());
+                       return slicesStatus.contains("place-order");
                    });
 
             var invocationMetrics = getInvocationMetrics(port);
@@ -345,8 +345,8 @@ class ManagementApiTest {
                        }
                    })
                    .until(() -> {
-                       var slices = getSlices(anyNodePort());
-                       return slices.contains("place-order");
+                       var slicesStatus = getSlicesStatus(anyNodePort());
+                       return slicesStatus.contains("place-order");
                    });
 
             var slicesStatus = getSlicesStatus(port);
