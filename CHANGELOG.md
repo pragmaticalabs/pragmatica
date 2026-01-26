@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-01-26
+
 ### Changed
+- **Dependencies** - Updated pragmatica-lite from 0.10.1 to 0.11.1 (assertj-core XXE vulnerability fix)
 - **E2E Test Consolidation** - Refactored all E2E test classes to share clusters within each test class
   - Static cluster lifecycle with `@BeforeAll`/`@AfterAll` instead of per-test clusters
   - `@TestMethodOrder` and `@Order` annotations for deterministic test execution
