@@ -271,27 +271,27 @@ public interface AetherNode {
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
         var networkMetricsHandler = NetworkMetricsHandler.networkMetricsHandler();
-        var clusterNode = RabiaNode.rabiaNode(nodeConfig,
-                                              delegateRouter,
-                                              kvStore,
-                                              serializer,
-                                              deserializer,
-                                              rabiaMetricsCollector,
-                                              List.of(networkMetricsHandler));
         // Assemble all components and collect routes
-        return assembleNode(config,
-                            delegateRouter,
-                            kvStore,
-                            sliceRegistry,
-                            sliceStore,
-                            deferredInvoker,
-                            clusterNode,
-                            rabiaMetricsCollector,
-                            networkMetricsHandler,
-                            serializer,
-                            deserializer,
-                            artifactStore,
-                            repositories);
+        return RabiaNode.rabiaNode(nodeConfig,
+                                   delegateRouter,
+                                   kvStore,
+                                   serializer,
+                                   deserializer,
+                                   rabiaMetricsCollector,
+                                   List.of(networkMetricsHandler))
+                        .flatMap(clusterNode -> assembleNode(config,
+                                                             delegateRouter,
+                                                             kvStore,
+                                                             sliceRegistry,
+                                                             sliceStore,
+                                                             deferredInvoker,
+                                                             clusterNode,
+                                                             rabiaMetricsCollector,
+                                                             networkMetricsHandler,
+                                                             serializer,
+                                                             deserializer,
+                                                             artifactStore,
+                                                             repositories));
     }
 
     private static Result<AetherNode> assembleNode(AetherNodeConfig config,

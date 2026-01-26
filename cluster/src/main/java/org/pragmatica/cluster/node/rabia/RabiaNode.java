@@ -89,11 +89,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /**
      * Creates a RabiaNode without metrics collection.
      */
-    static <C extends Command> RabiaNode<C> rabiaNode(NodeConfig config,
-                                                      DelegateRouter delegateRouter,
-                                                      StateMachine<C> stateMachine,
-                                                      Serializer serializer,
-                                                      Deserializer deserializer) {
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                               DelegateRouter delegateRouter,
+                                                               StateMachine<C> stateMachine,
+                                                               Serializer serializer,
+                                                               Deserializer deserializer) {
         return rabiaNode(config,
                          delegateRouter,
                          stateMachine,
@@ -106,12 +106,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /**
      * Creates a RabiaNode with metrics collection.
      */
-    static <C extends Command> RabiaNode<C> rabiaNode(NodeConfig config,
-                                                      DelegateRouter delegateRouter,
-                                                      StateMachine<C> stateMachine,
-                                                      Serializer serializer,
-                                                      Deserializer deserializer,
-                                                      ConsensusMetrics metrics) {
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                               DelegateRouter delegateRouter,
+                                                               StateMachine<C> stateMachine,
+                                                               Serializer serializer,
+                                                               Deserializer deserializer,
+                                                               ConsensusMetrics metrics) {
         return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer, metrics, List.of());
     }
 
@@ -128,17 +128,35 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
      * @param deserializer       Message deserializer
      * @param metrics            Consensus metrics collector
      * @param additionalHandlers Additional Netty handlers (e.g., NetworkMetricsHandler)
-     * @return RabiaNode instance (always succeeds - route validation is caller's responsibility)
+     * @return Result containing RabiaNode instance, or failure if topology manager creation fails
      */
-    static <C extends Command> RabiaNode<C> rabiaNode(NodeConfig config,
-                                                      DelegateRouter delegateRouter,
-                                                      StateMachine<C> stateMachine,
-                                                      Serializer serializer,
-                                                      Deserializer deserializer,
-                                                      ConsensusMetrics metrics,
-                                                      List<ChannelHandler> additionalHandlers) {
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                               DelegateRouter delegateRouter,
+                                                               StateMachine<C> stateMachine,
+                                                               Serializer serializer,
+                                                               Deserializer deserializer,
+                                                               ConsensusMetrics metrics,
+                                                               List<ChannelHandler> additionalHandlers) {
         // Create components with delegate router (routes configured after construction)
-        var topologyManager = TcpTopologyManager.tcpTopologyManager(config.topology(), delegateRouter);
+        return TcpTopologyManager.tcpTopologyManager(config.topology(), delegateRouter)
+                                 .map(topologyManager -> assembleNode(config,
+                                                                      delegateRouter,
+                                                                      stateMachine,
+                                                                      serializer,
+                                                                      deserializer,
+                                                                      metrics,
+                                                                      additionalHandlers,
+                                                                      topologyManager));
+    }
+
+    private static <C extends Command> RabiaNode<C> assembleNode(NodeConfig config,
+                                                                  DelegateRouter delegateRouter,
+                                                                  StateMachine<C> stateMachine,
+                                                                  Serializer serializer,
+                                                                  Deserializer deserializer,
+                                                                  ConsensusMetrics metrics,
+                                                                  List<ChannelHandler> additionalHandlers,
+                                                                  TcpTopologyManager topologyManager) {
         var leaderManager = LeaderManager.leaderManager(config.topology()
                                                               .self(),
                                                         delegateRouter);

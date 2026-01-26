@@ -75,12 +75,15 @@ class RabiaNodeNettyIT {
 
             stores.add(store);
 
-            var node = rabiaNode(nodeConfig(protocolConfig, topologyConfig),
-                                 delegateRouter, store, serializer, deserializer);
-            // Wire the router with all entries
-            RabiaNode.buildAndWireRouter(delegateRouter, node.routeEntries())
-                     .onFailure(cause -> fail("Failed to build router: " + cause.message()));
-            nodes.add(node);
+            rabiaNode(nodeConfig(protocolConfig, topologyConfig),
+                      delegateRouter, store, serializer, deserializer)
+                .onFailure(cause -> fail("Failed to create RabiaNode: " + cause.message()))
+                .onSuccess(node -> {
+                    // Wire the router with all entries
+                    RabiaNode.buildAndWireRouter(delegateRouter, node.routeEntries())
+                             .onFailure(cause -> fail("Failed to build router: " + cause.message()));
+                    nodes.add(node);
+                });
         }
         // Start all nodes
         var promises = nodes.stream()

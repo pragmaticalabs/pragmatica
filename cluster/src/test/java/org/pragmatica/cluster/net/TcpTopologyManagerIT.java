@@ -18,6 +18,7 @@ import java.net.InetSocketAddress;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.consensus.NodeId.randomNodeId;
 import static org.pragmatica.consensus.topology.TcpTopologyManager.tcpTopologyManager;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -54,15 +55,18 @@ class TcpTopologyManagerIT {
                                         TimeSpan.timeSpan(10).seconds(),
                                         List.of(nodeInfo1, nodeInfo2));
 
-        var tcpManager = tcpTopologyManager(config, router);
-        topologyManager = tcpManager;
+        tcpTopologyManager(config, router)
+            .onFailure(cause -> fail("Failed to create topology manager: " + cause.message()))
+            .onSuccess(tcpManager -> {
+                topologyManager = tcpManager;
 
-        // Register routes for @MessageReceiver methods
-        router.addRoute(TopologyManagementMessage.AddNode.class, tcpManager::handleAddNodeMessage);
-        router.addRoute(TopologyManagementMessage.RemoveNode.class, tcpManager::handleRemoveNodeMessage);
-        router.addRoute(NetworkMessage.DiscoverNodes.class, tcpManager::handleDiscoverNodes);
-        router.addRoute(NetworkMessage.DiscoveredNodes.class, tcpManager::handleDiscoveredNodes);
-        router.addRoute(NetworkServiceMessage.ConnectedNodesList.class, tcpManager::reconcile);
+                // Register routes for @MessageReceiver methods
+                router.addRoute(TopologyManagementMessage.AddNode.class, tcpManager::handleAddNodeMessage);
+                router.addRoute(TopologyManagementMessage.RemoveNode.class, tcpManager::handleRemoveNodeMessage);
+                router.addRoute(NetworkMessage.DiscoverNodes.class, tcpManager::handleDiscoverNodes);
+                router.addRoute(NetworkMessage.DiscoveredNodes.class, tcpManager::handleDiscoveredNodes);
+                router.addRoute(NetworkServiceMessage.ConnectedNodesList.class, tcpManager::reconcile);
+            });
     }
 
     @Test
