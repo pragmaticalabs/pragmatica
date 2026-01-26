@@ -40,7 +40,8 @@ class RollingUpdateTest {
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String OLD_VERSION = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.1-test";
     private static final String NEW_VERSION = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.2-test";
-    private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.example:place-order";
+    private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.example:place-order-place-order";
+    private static final String NEW_VERSION_NUMBER = "0.0.2-test";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -81,6 +82,9 @@ class RollingUpdateTest {
                    if (slices.contains("\"error\"")) {
                        throw new AssertionError("Slice query failed: " + slices);
                    }
+                   if (sliceHasFailed(OLD_VERSION)) {
+                       throw new AssertionError("Slice deployment failed: " + OLD_VERSION);
+                   }
                })
                .until(() -> sliceIsActive(OLD_VERSION));
     }
@@ -108,11 +112,16 @@ class RollingUpdateTest {
 
     @Test
     void rollingUpdate_deploysNewVersion_withoutTraffic() {
-        var response = startRollingUpdate("0.8.0", 3);
+        var response = startRollingUpdate(NEW_VERSION_NUMBER, 3);
         assertThat(response).doesNotContain("\"error\"");
 
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
+               .failFast(() -> {
+                   if (sliceHasFailed(NEW_VERSION)) {
+                       throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
+                   }
+               })
                .until(() -> sliceIsActive(NEW_VERSION));
 
         var slices = getSlices();
@@ -125,9 +134,14 @@ class RollingUpdateTest {
 
     @Test
     void rollingUpdate_graduallyShiftsTraffic() {
-        startRollingUpdate("0.8.0", 3);
+        startRollingUpdate(NEW_VERSION_NUMBER, 3);
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
+               .failFast(() -> {
+                   if (sliceHasFailed(NEW_VERSION)) {
+                       throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
+                   }
+               })
                .until(() -> sliceIsActive(NEW_VERSION));
 
         // Shift traffic 1:3 (25% to new)
@@ -151,9 +165,14 @@ class RollingUpdateTest {
 
     @Test
     void rollingUpdate_completion_removesOldVersion() {
-        startRollingUpdate("0.8.0", 3);
+        startRollingUpdate(NEW_VERSION_NUMBER, 3);
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
+               .failFast(() -> {
+                   if (sliceHasFailed(NEW_VERSION)) {
+                       throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
+                   }
+               })
                .until(() -> sliceIsActive(NEW_VERSION));
 
         // Route all traffic to new version
@@ -173,9 +192,14 @@ class RollingUpdateTest {
 
     @Test
     void rollingUpdate_rollback_restoresOldVersion() {
-        startRollingUpdate("0.8.0", 3);
+        startRollingUpdate(NEW_VERSION_NUMBER, 3);
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
+               .failFast(() -> {
+                   if (sliceHasFailed(NEW_VERSION)) {
+                       throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
+                   }
+               })
                .until(() -> sliceIsActive(NEW_VERSION));
 
         // Shift some traffic to new version
@@ -222,9 +246,14 @@ class RollingUpdateTest {
         loadThread.start();
 
         // Perform rolling update
-        startRollingUpdate("0.8.0", 3);
+        startRollingUpdate(NEW_VERSION_NUMBER, 3);
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
+               .failFast(() -> {
+                   if (sliceHasFailed(NEW_VERSION)) {
+                       throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
+                   }
+               })
                .until(() -> sliceIsActive(NEW_VERSION));
 
         adjustRouting("1:3");
@@ -250,9 +279,14 @@ class RollingUpdateTest {
 
     @Test
     void rollingUpdate_nodeFailure_continuesUpdate() {
-        startRollingUpdate("0.8.0", 3);
+        startRollingUpdate(NEW_VERSION_NUMBER, 3);
         await().atMost(WAIT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
+               .failFast(() -> {
+                   if (sliceHasFailed(NEW_VERSION)) {
+                       throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
+                   }
+               })
                .until(() -> sliceIsActive(NEW_VERSION));
 
         // Kill a non-leader node during update
@@ -375,6 +409,17 @@ class RollingUpdateTest {
             return slicesStatus.stream()
                                .anyMatch(s -> s.artifact().equals(artifact) &&
                                               s.state().equals("ACTIVE"));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean sliceHasFailed(String artifact) {
+        try {
+            var slicesStatus = cluster.slicesStatus();
+            return slicesStatus.stream()
+                               .anyMatch(s -> s.artifact().equals(artifact) &&
+                                              s.state().equals("FAILED"));
         } catch (Exception e) {
             return false;
         }
