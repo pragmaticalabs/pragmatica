@@ -206,13 +206,11 @@ class RollingUpdateTest {
         adjustRouting("1:1");
 
         // Rollback
-        rollback();
+        var rollbackResponse = rollback();
+        assertThat(rollbackResponse).doesNotContain("\"error\"");
 
-        // Check state
-        var status = getUpdateStatus();
-        assertThat(status).contains("\"state\":\"ROLLED_BACK\"");
-
-        // New version should be removed
+        // After rollback completes, update is removed from active list (terminal state)
+        // Verify by checking that new version slices are removed and old version remains
         await().atMost(Duration.ofSeconds(30))
                .pollInterval(POLL_INTERVAL)
                .until(() -> {
@@ -391,8 +389,8 @@ class RollingUpdateTest {
         post("/rolling-update/current/complete", "{}");
     }
 
-    private void rollback() {
-        post("/rolling-update/current/rollback", "{}");
+    private String rollback() {
+        return post("/rolling-update/current/rollback", "{}");
     }
 
     private String getSlices() {
