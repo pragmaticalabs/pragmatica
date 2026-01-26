@@ -79,6 +79,16 @@
             <version>${compile-testing.version}</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- Logging (SLF4J provider for tests) -->
+        <dependency>
+            <groupId>org.tinylog</groupId>
+            <artifactId>tinylog-impl</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.tinylog</groupId>
+            <artifactId>slf4j-tinylog</artifactId>
+        </dependency>
     </dependencies>
 
     <build>
