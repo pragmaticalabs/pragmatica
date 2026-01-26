@@ -221,6 +221,7 @@ result.unwrap()             // Result<T> → T (throws on failure)
 
 | Topic | Location |
 |-------|----------|
+| **Future Work** | [docs/internal/progress/development-priorities.md](docs/internal/progress/development-priorities.md) |
 | Architecture | [docs/contributors/architecture.md](docs/contributors/architecture.md) |
 | Slice Lifecycle | [docs/contributors/slice-lifecycle.md](docs/contributors/slice-lifecycle.md) |
 | Metrics & Control | [docs/contributors/metrics-control.md](docs/contributors/metrics-control.md) |

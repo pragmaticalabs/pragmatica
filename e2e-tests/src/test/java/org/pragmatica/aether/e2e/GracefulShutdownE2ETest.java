@@ -48,7 +48,7 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
 
         // Deploy a slice
         deployAndAssert(TEST_ARTIFACT, 2);
-        awaitSliceVisible("place-order");
+        awaitSliceVisible("inventory");
 
         // Shutdown one node
         cluster.killNode("node-2");
@@ -63,7 +63,7 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
 
         // Slice should still be accessible
         var slices = cluster.anyNode().getSlices();
-        assertThat(slices).contains("place-order");
+        assertThat(slices).contains("inventory");
     }
 
     @Test
@@ -85,7 +85,7 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
                .until(() -> {
                    try {
                        var slices = cluster.anyNode().getSlices();
-                       return slices.contains("place-order") || !slices.contains("\"error\"");
+                       return slices.contains("inventory") || !slices.contains("\"error\"");
                    } catch (Exception e) {
                        return false;
                    }

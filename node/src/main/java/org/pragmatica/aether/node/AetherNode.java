@@ -262,7 +262,11 @@ public interface AetherNode {
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var sharedLibraryLoader = createSharedLibraryLoader(config);
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
-        var sliceStore = SliceStore.sliceStore(sliceRegistry, repositories, sharedLibraryLoader, deferredInvoker);
+        var sliceStore = SliceStore.sliceStore(sliceRegistry,
+                                               repositories,
+                                               sharedLibraryLoader,
+                                               deferredInvoker,
+                                               config.sliceAction());
         // Create Rabia cluster node with metrics
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();

@@ -46,7 +46,8 @@ class SliceStoreImplTest {
     void loaded_slice_entry_returns_artifact() {
         var slice = createTestSlice();
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, EntryState.LOADED);
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
 
         assertThat(entry.artifact()).isEqualTo(artifact);
     }
@@ -55,7 +56,8 @@ class SliceStoreImplTest {
     void loaded_slice_entry_returns_slice() {
         var slice = createTestSlice();
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, EntryState.LOADED);
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
 
         assertThat(entry.slice()).isSameAs(slice);
     }
@@ -64,7 +66,8 @@ class SliceStoreImplTest {
     void loaded_slice_entry_with_state_returns_new_entry() {
         var slice = createTestSlice();
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, EntryState.LOADED);
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
 
         var activeEntry = entry.withState(EntryState.ACTIVE);
 
@@ -78,7 +81,7 @@ class SliceStoreImplTest {
 
     @Test
     void slice_store_factory_creates_instance() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER);
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
 
         assertThat(store).isNotNull();
         assertThat(store.loaded()).isEmpty();
@@ -137,7 +140,7 @@ class SliceStoreImplTest {
 
     @Test
     void activate_not_loaded_fails() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER);
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
 
         store.activateSlice(artifact)
              .await()
@@ -202,7 +205,7 @@ class SliceStoreImplTest {
 
     @Test
     void deactivate_not_loaded_fails() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER);
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
 
         store.deactivateSlice(artifact)
              .await()
@@ -266,7 +269,7 @@ class SliceStoreImplTest {
 
     @Test
     void unload_nonexistent_succeeds() {
-        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER);
+        var store = SliceStore.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
 
         store.unloadSlice(artifact)
              .await()
@@ -282,7 +285,7 @@ class SliceStoreImplTest {
         var artifact1 = Artifact.artifact("org.example:slice1:1.0.0").unwrap();
         var artifact2 = Artifact.artifact("org.example:slice2:1.0.0").unwrap();
 
-        var store = SliceStoreImpl.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER);
+        var store = SliceStoreImpl.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
         addPreloadedSlice(store, artifact1, slice1, EntryState.LOADED);
         addPreloadedSlice(store, artifact2, slice2, EntryState.ACTIVE);
 
@@ -325,7 +328,7 @@ class SliceStoreImplTest {
     }
 
     private SliceStore createStoreWithPreloadedSlice(Slice slice, EntryState state) {
-        var store = SliceStoreImpl.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER);
+        var store = SliceStoreImpl.sliceStore(registry, List.of(), sharedLoader, STUB_INVOKER, SliceActionConfig.defaultConfiguration());
         addPreloadedSlice(store, artifact, slice, state);
         return store;
     }
@@ -336,7 +339,8 @@ class SliceStoreImplTest {
         // Since SliceStoreRecord is a record, we need to work with its entries map
         var impl = (SliceStoreImpl.SliceStoreRecord) store;
         var classLoader = new SliceClassLoader(new URL[0], getClass().getClassLoader());
-        var entry = new LoadedSliceEntry(artifact, slice, classLoader, state);
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(STUB_INVOKER);
+        var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, state);
         impl.entries().put(artifact, Promise.success(entry));
     }
 }

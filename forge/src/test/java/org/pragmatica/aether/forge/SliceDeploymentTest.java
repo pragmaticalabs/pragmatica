@@ -40,7 +40,7 @@ class SliceDeploymentTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.1-test";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -210,7 +210,7 @@ class SliceDeploymentTest {
             id = "org.test:blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.1-test"
+            artifact = "org.pragmatica-lite.aether.example:inventory:0.0.1-test"
             instances = 2
             """;
 

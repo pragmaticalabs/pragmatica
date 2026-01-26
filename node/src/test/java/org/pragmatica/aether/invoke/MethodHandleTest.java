@@ -220,6 +220,11 @@ class MethodHandleTest {
         }
 
         @Override
+        public Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method) {
+            return Result.unitResult();
+        }
+
+        @Override
         public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
                                                                String methodName,
                                                                TypeToken<T> requestType,

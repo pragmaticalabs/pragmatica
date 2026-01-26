@@ -5,11 +5,13 @@ import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.utility.DockerImageName;
+import org.testcontainers.utility.MountableFile;
 
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.Future;
@@ -62,8 +64,15 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     }
 
     // Local Maven repository path - mounted into containers for artifact resolution
-    private static final String M2_REPO_PATH = System.getProperty("user.home") + "/.m2/repository";
+    private static final Path M2_REPO_PATH = Path.of(System.getProperty("user.home"), ".m2", "repository");
     private static final String CONTAINER_M2_PATH = "/home/aether/.m2/repository";
+
+    // Test artifact paths relative to Maven repository
+    private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/example";
+    private static final String[] TEST_ARTIFACTS = {
+        "inventory/0.0.1-test/inventory-0.0.1-test.jar",
+        "inventory/0.0.2-test/inventory-0.0.2-test.jar"
+    };
 
     /**
      * Creates a new Aether node container with the specified node ID.
@@ -85,15 +94,35 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                  .withEnv("CLUSTER_PORT", String.valueOf(CLUSTER_PORT))
                  .withEnv("MANAGEMENT_PORT", String.valueOf(MANAGEMENT_PORT))
                  .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC")
-                 // Mount local Maven repository for artifact resolution
-                 .withFileSystemBind(M2_REPO_PATH, CONTAINER_M2_PATH,
-                     org.testcontainers.containers.BindMode.READ_ONLY)
                  .waitingFor(Wait.forHttp("/api/health")
                                  .forPort(MANAGEMENT_PORT)
                                  .forStatusCode(200)
                                  .withStartupTimeout(STARTUP_TIMEOUT))
                  .withNetworkAliases(nodeId);
+
+        // Copy specific test artifacts into container
+        // (more reliable than bind mount across different container runtimes)
+        copyTestArtifacts(container);
+
         return container;
+    }
+
+    /**
+     * Copies test slice artifacts into the container's Maven repository.
+     */
+    private static void copyTestArtifacts(AetherNodeContainer container) {
+        for (var artifact : TEST_ARTIFACTS) {
+            var hostPath = M2_REPO_PATH.resolve(TEST_GROUP_PATH).resolve(artifact);
+            var containerPath = CONTAINER_M2_PATH + "/" + TEST_GROUP_PATH + "/" + artifact;
+
+            if (Files.exists(hostPath)) {
+                container.withCopyFileToContainer(
+                    MountableFile.forHostPath(hostPath, 0644),
+                    containerPath);
+            } else {
+                System.err.println("[WARN] Test artifact not found: " + hostPath);
+            }
+        }
     }
 
     private static AetherNodeContainer createContainer(String nodeId, Path projectRoot) {
@@ -633,10 +662,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return true if the slice is in FAILED state
      */
     public boolean isSliceFailed(String artifact) {
-        var status = getSlicesStatus();
-        // Check for FAILED state in slice status
-        // Format: {"slices":[{"artifact":"...","state":"FAILED",...}]}
-        return status.contains("\"state\":\"FAILED\"") && status.contains(artifact);
+        return "FAILED".equals(getSliceState(artifact));
     }
 
     /**
@@ -646,9 +672,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      * @return true if the slice is in ACTIVE state
      */
     public boolean isSliceActive(String artifact) {
-        var status = getSlicesStatus();
-        // Check for ACTIVE state in slice status
-        return status.contains("\"state\":\"ACTIVE\"") && status.contains(artifact);
+        return "ACTIVE".equals(getSliceState(artifact));
     }
 
     /**

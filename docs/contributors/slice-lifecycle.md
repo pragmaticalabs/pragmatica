@@ -160,6 +160,47 @@ end
 
 </details>
 
+## Lifecycle Hook Semantics
+
+### start() Method
+
+- **When called:** During ACTIVATING phase, after dependency materialization, before endpoint registration
+- **Timeout:** `startStopTimeout` from `SliceActionConfig` (default: 5 seconds)
+- **On success:** Endpoint and route registration proceeds, then transition to ACTIVE
+- **On failure:** Transition to FAILED state
+
+### stop() Method
+
+- **When called:** During DEACTIVATING phase, after endpoint and route removal
+- **Timeout:** `startStopTimeout` from `SliceActionConfig` (default: 5 seconds)
+- **On success:** Transition to LOADED state
+- **On failure:** Transition to FAILED state (logged at WARNING level)
+
+### Dependency Materialization
+
+Before `start()` is called, all method handles created during slice loading are materialized:
+- Each handle verifies its target endpoint exists in EndpointRegistry
+- If any dependency is unavailable, activation fails with clear error
+- This ensures no technical failures after slice reaches ACTIVE state
+
+### Execution Order
+
+**ACTIVATING phase:**
+1. Transition to ACTIVATING state (consensus)
+2. Materialize all dependency handles (verify endpoints exist)
+3. Call `slice.start()` with `startStopTimeout`
+4. Register endpoints in KV-store
+5. Register HTTP routes in KV-store
+6. Transition to ACTIVE state
+
+**DEACTIVATING phase:**
+1. Transition to DEACTIVATING state (consensus)
+2. Remove endpoints from KV-store
+3. If last instance: remove routes from KV-store
+4. Unregister from invocation handler
+5. Call `slice.stop()` with `startStopTimeout`
+6. Transition to LOADED (success) or FAILED (failure)
+
 ## Route Self-Registration
 
 Slices can declare HTTP routes via the `routes()` method returning `List<SliceRoute>`. Routes are managed automatically during slice lifecycle:

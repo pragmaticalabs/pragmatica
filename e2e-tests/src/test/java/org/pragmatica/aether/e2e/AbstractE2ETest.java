@@ -28,7 +28,7 @@ public abstract class AbstractE2ETest {
     protected static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
 
     // Common artifact for slice deployment tests
-    protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.1-test";
+    protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
 
     protected AetherCluster cluster;
 
@@ -114,7 +114,8 @@ public abstract class AbstractE2ETest {
     }
 
     /**
-     * Waits for a slice to be visible (partial match on artifact name).
+     * Waits for a slice to be visible and ACTIVE (partial match on artifact name).
+     * Uses proper state parsing and fails fast on FAILED state.
      *
      * @param artifactPartial partial artifact name to match
      */
@@ -122,19 +123,20 @@ public abstract class AbstractE2ETest {
         await().atMost(DEFAULT_TIMEOUT.duration())
                .pollInterval(POLL_INTERVAL.duration())
                .failFast(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   if (slices.contains("\"error\"") && !slices.contains(artifactPartial)) {
-                       throw new AssertionError("Slice query failed: " + slices);
+                   var state = cluster.anyNode().getSliceState(artifactPartial);
+                   if ("FAILED".equals(state)) {
+                       throw new AssertionError("Slice failed: " + artifactPartial);
                    }
                })
                .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   return slices.contains(artifactPartial);
+                   var state = cluster.anyNode().getSliceState(artifactPartial);
+                   return "ACTIVE".equals(state);
                });
     }
 
     /**
      * Waits for a slice to be removed (no longer visible).
+     * Uses cluster-wide status API.
      *
      * @param artifactPartial partial artifact name to match
      */
@@ -142,8 +144,8 @@ public abstract class AbstractE2ETest {
         await().atMost(DEFAULT_TIMEOUT.duration())
                .pollInterval(POLL_INTERVAL.duration())
                .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   return !slices.contains(artifactPartial);
+                   var status = cluster.anyNode().getSlicesStatus();
+                   return !status.contains(artifactPartial);
                });
     }
 }

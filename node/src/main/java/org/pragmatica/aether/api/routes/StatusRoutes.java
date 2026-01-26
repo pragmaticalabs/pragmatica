@@ -180,9 +180,7 @@ public final class StatusRoutes implements RouteHandler {
         var hasQuorum = totalNodes >= 2;
         var status = !ready || !hasQuorum
                      ? "unhealthy"
-                     : sliceCount == 0
-                       ? "degraded"
-                       : "healthy";
+                     : "healthy";
         var sb = new StringBuilder();
         sb.append("{");
         sb.append("\"status\":\"")

@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **E2E Test Consolidation** - Refactored all E2E test classes to share clusters within each test class
+  - Static cluster lifecycle with `@BeforeAll`/`@AfterAll` instead of per-test clusters
+  - `@TestMethodOrder` and `@Order` annotations for deterministic test execution
+  - `@BeforeEach` cleanup methods to undeploy slices and restore nodes between tests
+  - Extended timeouts (120s) for node restore operations in containerized environments
+  - Added `failFast()` checks to detect FAILED slice state early
+  - Enabled previously disabled tests with proper timeout handling
+  - Increased `QUORUM_TIMEOUT` in `AetherCluster` from 60s to 120s
+- **Test Infrastructure Improvements**
+  - Added `getSliceState()` method to `AetherNodeContainer` for proper JSON parsing
+  - Added `@TestMethodOrder` to nested test classes in `SliceInvocationE2ETest`
+  - Fixed timing issues in `RollingUpdateE2ETest` with proper await() polling
+
+### Disabled (Infrastructure Limitation)
+- Tests requiring node restart to rejoin cluster (restarted containers get new identities):
+  - `BootstrapE2ETest`: `rollingRestart_maintainsAvailability`, `multipleNodeRestarts_clusterRemainsFunctional`
+  - `NodeFailureE2ETest`: `nodeRecovery_rejoinsCluster`, `rollingRestart_maintainsQuorum`, `minorityPartition_quorumLost_thenRecovered`
+  - `ChaosE2ETest`: entire class (5 tests)
+
 ## [0.8.0] - 2026-01-15
 
 ### Added

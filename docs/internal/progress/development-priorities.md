@@ -1,8 +1,8 @@
 # Development Priorities
 
-## Current Status (v0.7.2)
+## Current Status (v0.8.0)
 
-Release 0.7.2 focuses on **production readiness** with comprehensive E2E testing and documentation.
+Release 0.8.0 focuses on **slice lifecycle robustness** with eager dependency validation and proper timeout handling.
 
 ## Completed ✅
 
@@ -24,6 +24,7 @@ Release 0.7.2 focuses on **production readiness** with comprehensive E2E testing
 - **Alert Thresholds** - Persistent threshold configuration via consensus
 - **Controller Configuration** - Runtime-configurable scaling thresholds
 - **Decision Tree Controller** - Programmatic scaling rules
+- **TTM Predictive Scaling** - ONNX-based traffic prediction and scaling recommendations
 
 ### Deployment Features
 - **Rolling Updates** - Two-stage deploy/route model
@@ -31,76 +32,105 @@ Release 0.7.2 focuses on **production readiness** with comprehensive E2E testing
 - **Blueprint Parser** - Standard TOML format
 - **Docker Infrastructure** - Separate images for node and forge
 
+### Slice Lifecycle (v0.8.0)
+- **start()/stop() Timeouts** - Configurable via `SliceActionConfig.startStopTimeout`
+- **Eager Dependency Validation** - Dependencies verified during ACTIVATING before start()
+- **SliceLoadingContext** - Deferred handle materialization pattern
+- **Lifecycle Hook Documentation** - Complete semantics documented
+
+### Infrastructure Services (infra-slices)
+- **Distributed Cache** - `infra-cache` with consistent hashing
+- **Pub/Sub** - `infra-pubsub` topic-based messaging
+- **State Machine** - `infra-statemachine` for local state transitions
+- **Artifact Repository** - Maven protocol subset, deploy/resolve operations
+- **Database** - `infra-database` abstraction
+- **Blob Storage** - `infra-blob` for binary objects
+- **Secrets** - `infra-secrets` management
+- **Rate Limiter** - `infra-ratelimit` for throttling
+- **Distributed Lock** - `infra-lock` for coordination
+- **Feature Flags** - `infra-feature` for feature toggles
+- **Scheduler** - `infra-scheduler` for timed tasks
+- **Outbox** - `infra-outbox` for transactional messaging
+
 ### Examples & Testing
 - **Order Domain Demo** - 5-slice order domain example
 - **Aether Forge** - Local development environment with dashboard
-- **Comprehensive E2E Suite** - 80 tests across 12 test classes
-  - Cluster formation, deployment, rolling updates
-  - Node failure, chaos, network partition
-  - Management API, metrics, controller
-  - Bootstrap, graceful shutdown
+- **Comprehensive Forge Test Suite** - Tests use InventoryService (no slice dependencies)
 
 ### Documentation
 - **CLI Reference** - Complete command documentation
 - **Management API** - Full HTTP API reference
 - **Runbooks** - Deployment, scaling, troubleshooting
 - **Developer Guides** - Slice development, migration
+- **Slice Lifecycle** - Hook semantics, materialization, execution order
 
-## Current Priorities
+---
 
-### HIGH PRIORITY
+## Future Work
 
-1. **Production Validation**
-   - Run full E2E test suite in CI
-   - Fix any failing tests
-   - Performance benchmarking
+### HIGH PRIORITY - Cluster Operations
 
-2. **Release 0.7.2**
-   - Final documentation review
-   - CHANGELOG finalization
-   - Create release branch
+1. **Topology in KV Store**
+   - Leader maintains cluster topology in consensus KV store
+   - Best-effort updates on membership changes
+   - Enables external observability without direct node queries
 
-### MEDIUM PRIORITY
+2. **Dynamic Configuration via KV Store**
+   - Expose most configuration in consensus KV store
+   - Nodes automatically pick up configuration changes
+   - No restart required for config updates
 
-3. **CLI Polish**
-   - Improve command feedback
-   - Better error messages
-   - Add more diagnostic commands
+3. **Dependency Lifecycle Management**
+   - Handle dependency removal while dependent slice is ACTIVE
+   - Options when dependency becomes unavailable:
+     - **Cascade deactivation** - Automatically deactivate dependent slices
+     - **Graceful degradation** - Mark dependency calls as failing, let slice handle it
+     - **Blocking** - Prevent dependency undeployment while dependents are ACTIVE
+   - Dependency graph tracking in KV store
+   - Clear error reporting with dependency chain visualization
+   - Consider: Should slices declare "required" vs "optional" dependencies?
 
-4. **SharedLibraryClassLoader Optimization**
-   - Test with more complex dependencies
-   - Improve compatibility detection
-   - Performance tuning
+### MEDIUM PRIORITY - Infrastructure Services
 
-### FUTURE (Infrastructure Services)
+4. **Mini-Kafka (Message Streaming)**
+   - Ordered message streaming with partitions (differs from pub/sub)
+   - In-memory storage (initial implementation)
+   - Consumer group coordination
+   - Retention policies
 
-See [infrastructure-services.md](../slice-developers/infra-services.md) for full vision.
+5. **Distributed Saga Orchestration**
+   - Long-running transaction orchestration (saga pattern)
+   - Durable state transitions with compensation on failure
+   - Differs from local state machine - coordinates across multiple slices
+   - Automatic retry, timeout, and dead-letter handling
+   - Visualization of in-flight sagas and their states
 
-5. **Distributed Hash Map Foundation**
-   - Consistent hashing implementation
-   - Pluggable storage engines
-   - Partition management via SMR
+### LOWER PRIORITY - Security & Operations
 
-6. **Artifact Repository**
-   - Maven protocol subset
-   - Deploy/resolve operations
-   - Bootstrap: bundled → self-hosted
+6. **TLS Certificate Management**
+   - Certificate provisioning and rotation
+   - Mutual TLS between nodes
+   - Integration with external CA or self-signed
 
-### FUTURE (AI Integration)
+7. **End-to-End Slice Invocation Tests**
+   - Tests that invoke slice methods via HTTP
+   - Verify full request/response cycle
+   - Cross-node invocation validation
 
-7. **SLM Integration (Layer 2)**
-   - Local model integration (Ollama)
-   - Pattern learning
-   - Anomaly detection
+### FUTURE - AI Integration
 
 8. **LLM Integration (Layer 3)**
    - Claude/GPT API integration
    - Complex reasoning workflows
    - Multi-cloud decision support
 
+---
+
 ## Deprecated
 
-- **MCP Server** - Replaced by direct agent API (see [metrics-and-control.md](../contributors/metrics-control.md))
+- **MCP Server** - Replaced by direct agent API (see [metrics-control.md](../../contributors/metrics-control.md))
+
+---
 
 ## Implementation Approach
 
@@ -110,24 +140,6 @@ Focus on stability and production readiness:
 2. CLI must be reliable for human operators
 3. Agent API must be well-documented
 4. Decision tree must handle all common cases
-5. Only then add SLM/LLM layers
+5. Only then add LLM layer
 
-See [metrics-and-control.md](../contributors/metrics-control.md) for controller architecture.
-
-## Test Coverage Summary
-
-| Category | Test Classes | Tests |
-|----------|--------------|-------|
-| Cluster Formation | ClusterFormationE2ETest | 4 |
-| Slice Deployment | SliceDeploymentE2ETest | 6 |
-| Rolling Updates | RollingUpdateE2ETest | 6 |
-| Node Failure | NodeFailureE2ETest | 6 |
-| Chaos Testing | ChaosE2ETest | 5 |
-| Management API | ManagementApiE2ETest | 19 |
-| Slice Invocation | SliceInvocationE2ETest | 9 |
-| Metrics | MetricsE2ETest | 6 |
-| Controller | ControllerE2ETest | 7 |
-| Bootstrap | BootstrapE2ETest | 4 |
-| Graceful Shutdown | GracefulShutdownE2ETest | 4 |
-| Network Partition | NetworkPartitionE2ETest | 4 |
-| **Total** | **12 classes** | **80 tests** |
+See [metrics-control.md](../../contributors/metrics-control.md) for controller architecture.

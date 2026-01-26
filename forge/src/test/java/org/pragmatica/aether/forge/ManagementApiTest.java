@@ -37,7 +37,7 @@ class ManagementApiTest {
     private static final int BASE_MGMT_PORT = 5500;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.1-test";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -161,11 +161,11 @@ class ManagementApiTest {
                    })
                    .until(() -> {
                        var response = getSlicesStatus(anyNodePort());
-                       return response.contains("place-order");
+                       return response.contains("inventory");
                    });
 
             var slicesStatus = getSlicesStatus(port);
-            assertThat(slicesStatus).contains("place-order");
+            assertThat(slicesStatus).contains("inventory");
         }
     }
 
@@ -202,7 +202,7 @@ class ManagementApiTest {
                    })
                    .until(() -> {
                        var slicesStatus = getSlicesStatus(anyNodePort());
-                       return slicesStatus.contains("place-order");
+                       return slicesStatus.contains("inventory");
                    });
 
             var invocationMetrics = getInvocationMetrics(port);
@@ -213,7 +213,7 @@ class ManagementApiTest {
         void invocationMetrics_filtering_byArtifactAndMethod() {
             var port = anyNodePort();
 
-            var filtered = getInvocationMetrics(port, "place-order", null);
+            var filtered = getInvocationMetrics(port, "inventory", null);
             assertThat(filtered).doesNotContain("\"error\"");
 
             var methodFiltered = getInvocationMetrics(port, null, "process");
@@ -346,7 +346,7 @@ class ManagementApiTest {
                    })
                    .until(() -> {
                        var slicesStatus = getSlicesStatus(anyNodePort());
-                       return slicesStatus.contains("place-order");
+                       return slicesStatus.contains("inventory");
                    });
 
             var slicesStatus = getSlicesStatus(port);

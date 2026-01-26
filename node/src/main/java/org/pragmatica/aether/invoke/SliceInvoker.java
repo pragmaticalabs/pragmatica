@@ -103,7 +103,22 @@ public interface SliceInvoker extends SliceInvokerFacade {
         public String artifactCoordinate() {
             return artifact.asString();
         }
+
+        @Override
+        public Result<Unit> materialize() {
+            return invoker.verifyEndpointExists(artifact, methodName);
+        }
     }
+
+    /**
+     * Verify that an endpoint exists for the given artifact and method.
+     * Used during slice activation to eagerly validate dependencies.
+     *
+     * @param artifact Target slice artifact
+     * @param method   Method to verify
+     * @return Success if endpoint exists, failure if not found
+     */
+    Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method);
 
     /**
      * Fire-and-forget invocation - sends request without waiting for response.
@@ -714,5 +729,15 @@ class SliceInvokerImpl implements SliceInvoker {
         buf.readBytes(bytes);
         buf.release();
         return bytes;
+    }
+
+    @Override
+    public Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method) {
+        var endpoints = endpointRegistry.findEndpoints(artifact, method);
+        if (endpoints.isEmpty()) {
+            return Causes.cause("No endpoint found for " + artifact.asString() + "/" + method.name())
+                         .result();
+        }
+        return Result.unitResult();
     }
 }

@@ -101,10 +101,17 @@
                             <artifactItems>
                                 <artifactItem>
                                     <groupId>org.pragmatica-lite.aether.example</groupId>
-                                    <artifactId>place-order-place-order</artifactId>
+                                    <artifactId>inventory</artifactId>
                                     <version>${project.version}</version>
                                     <type>jar</type>
-                                    <destFileName>place-order-place-order-base.jar</destFileName>
+                                    <destFileName>inventory-base.jar</destFileName>
+                                </artifactItem>
+                                <artifactItem>
+                                    <groupId>org.pragmatica-lite.aether.example</groupId>
+                                    <artifactId>shared</artifactId>
+                                    <version>${project.version}</version>
+                                    <type>jar</type>
+                                    <destFileName>shared-base.jar</destFileName>
                                 </artifactItem>
                             </artifactItems>
                             <outputDirectory>${project.build.directory}/test-artifacts</outputDirectory>
@@ -125,32 +132,48 @@
                         </goals>
                         <configuration>
                             <target>
+                                <!-- Extract shared classes to temp dir -->
+                                <mkdir dir="${project.build.directory}/test-artifacts/shared-classes"/>
+                                <unzip src="${project.build.directory}/test-artifacts/shared-base.jar"
+                                       dest="${project.build.directory}/test-artifacts/shared-classes">
+                                    <patternset>
+                                        <include name="**/*.class"/>
+                                    </patternset>
+                                </unzip>
+
                                 <!-- Create v1 JAR with updated manifest -->
-                                <copy file="${project.build.directory}/test-artifacts/place-order-place-order-base.jar"
-                                      tofile="${project.build.directory}/test-artifacts/place-order-place-order-0.0.1-test.jar"/>
+                                <copy file="${project.build.directory}/test-artifacts/inventory-base.jar"
+                                      tofile="${project.build.directory}/test-artifacts/inventory-0.0.1-test.jar"/>
                                 <mkdir dir="${project.build.directory}/test-artifacts/manifest-v1"/>
                                 <echo file="${project.build.directory}/test-artifacts/manifest-v1/MANIFEST.MF">Manifest-Version: 1.0
-Slice-Artifact: org.pragmatica-lite.aether.example:place-order-place-order:0.0.1-test
-Slice-Class: org.pragmatica.aether.example.order.PlaceOrderFactory
+Slice-Artifact: org.pragmatica-lite.aether.example:inventory:0.0.1-test
+Slice-Class: org.pragmatica.aether.example.inventory.InventoryServiceFactory
 </echo>
-                                <exec executable="jar" dir="${project.build.directory}/test-artifacts">
-                                    <arg value="--update"/>
-                                    <arg value="--file=place-order-place-order-0.0.1-test.jar"/>
-                                    <arg value="--manifest=manifest-v1/MANIFEST.MF"/>
-                                </exec>
+                                <jar destfile="${project.build.directory}/test-artifacts/inventory-0.0.1-test.jar"
+                                     update="true"
+                                     manifest="${project.build.directory}/test-artifacts/manifest-v1/MANIFEST.MF"/>
+                                <!-- Add shared classes to v1 JAR -->
+                                <jar destfile="${project.build.directory}/test-artifacts/inventory-0.0.1-test.jar"
+                                     update="true">
+                                    <fileset dir="${project.build.directory}/test-artifacts/shared-classes"/>
+                                </jar>
+
                                 <!-- Create v2 JAR with updated manifest -->
-                                <copy file="${project.build.directory}/test-artifacts/place-order-place-order-base.jar"
-                                      tofile="${project.build.directory}/test-artifacts/place-order-place-order-0.0.2-test.jar"/>
+                                <copy file="${project.build.directory}/test-artifacts/inventory-base.jar"
+                                      tofile="${project.build.directory}/test-artifacts/inventory-0.0.2-test.jar"/>
                                 <mkdir dir="${project.build.directory}/test-artifacts/manifest-v2"/>
                                 <echo file="${project.build.directory}/test-artifacts/manifest-v2/MANIFEST.MF">Manifest-Version: 1.0
-Slice-Artifact: org.pragmatica-lite.aether.example:place-order-place-order:0.0.2-test
-Slice-Class: org.pragmatica.aether.example.order.PlaceOrderFactory
+Slice-Artifact: org.pragmatica-lite.aether.example:inventory:0.0.2-test
+Slice-Class: org.pragmatica.aether.example.inventory.InventoryServiceFactory
 </echo>
-                                <exec executable="jar" dir="${project.build.directory}/test-artifacts">
-                                    <arg value="--update"/>
-                                    <arg value="--file=place-order-place-order-0.0.2-test.jar"/>
-                                    <arg value="--manifest=manifest-v2/MANIFEST.MF"/>
-                                </exec>
+                                <jar destfile="${project.build.directory}/test-artifacts/inventory-0.0.2-test.jar"
+                                     update="true"
+                                     manifest="${project.build.directory}/test-artifacts/manifest-v2/MANIFEST.MF"/>
+                                <!-- Add shared classes to v2 JAR -->
+                                <jar destfile="${project.build.directory}/test-artifacts/inventory-0.0.2-test.jar"
+                                     update="true">
+                                    <fileset dir="${project.build.directory}/test-artifacts/shared-classes"/>
+                                </jar>
                             </target>
                         </configuration>
                     </execution>
@@ -168,9 +191,9 @@ Slice-Class: org.pragmatica.aether.example.order.PlaceOrderFactory
                             <goal>install-file</goal>
                         </goals>
                         <configuration>
-                            <file>${project.build.directory}/test-artifacts/place-order-place-order-0.0.1-test.jar</file>
+                            <file>${project.build.directory}/test-artifacts/inventory-0.0.1-test.jar</file>
                             <groupId>org.pragmatica-lite.aether.example</groupId>
-                            <artifactId>place-order-place-order</artifactId>
+                            <artifactId>inventory</artifactId>
                             <version>0.0.1-test</version>
                             <packaging>jar</packaging>
                         </configuration>
@@ -182,9 +205,9 @@ Slice-Class: org.pragmatica.aether.example.order.PlaceOrderFactory
                             <goal>install-file</goal>
                         </goals>
                         <configuration>
-                            <file>${project.build.directory}/test-artifacts/place-order-place-order-0.0.2-test.jar</file>
+                            <file>${project.build.directory}/test-artifacts/inventory-0.0.2-test.jar</file>
                             <groupId>org.pragmatica-lite.aether.example</groupId>
-                            <artifactId>place-order-place-order</artifactId>
+                            <artifactId>inventory</artifactId>
                             <version>0.0.2-test</version>
                             <packaging>jar</packaging>
                         </configuration>

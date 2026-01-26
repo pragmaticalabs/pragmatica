@@ -1,11 +1,17 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.e2e.containers.AetherCluster;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
+
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
  * E2E tests for Management API endpoints.
@@ -17,11 +23,56 @@ import static org.awaitility.Awaitility.await;
  *   <li>Metrics endpoints (/metrics, /metrics/prometheus, /invocation-metrics)</li>
  *   <li>Threshold & Alert endpoints (/thresholds, /alerts)</li>
  *   <li>Controller endpoints (/controller/*)</li>
+ *   <li>Slice status endpoints (/slices/status)</li>
  * </ul>
+ *
+ * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
+ * Tests run in order and each test cleans up previous state before running.
  */
-class ManagementApiE2ETest extends AbstractE2ETest {
+@TestClassOrder(ClassOrderer.OrderAnnotation.class)
+@Execution(ExecutionMode.SAME_THREAD)
+class ManagementApiE2ETest {
+    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
+
+    // Common timeouts
+    private static final TimeSpan DEFAULT_TIMEOUT = timeSpan(30).seconds();
+    private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(3).minutes();
+    private static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
+    private static final TimeSpan CLEANUP_TIMEOUT = timeSpan(60).seconds();
+
+    private static AetherCluster cluster;
+
+    @BeforeAll
+    static void createCluster() {
+        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster.start();
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
+    }
+
+    @AfterAll
+    static void destroyCluster() {
+        if (cluster != null) {
+            cluster.close();
+        }
+    }
+
+    @BeforeEach
+    void cleanupAndPrepare() {
+        cluster.awaitLeader();
+        cluster.awaitAllHealthy();
+        sleep(timeSpan(1).seconds());
+
+        // Undeploy all slices to ensure clean state
+        undeployAllSlices();
+        awaitNoSlices();
+    }
+
+    // ===== Nested Test Classes =====
 
     @Nested
+    @Order(1)
     class StatusEndpoints {
 
         @Test
@@ -69,14 +120,15 @@ class ManagementApiE2ETest extends AbstractE2ETest {
 
             // Deploy a slice and verify it appears
             deployAndAssert(TEST_ARTIFACT, 1);
-            awaitSliceVisible("place-order");
+            awaitSliceActive(TEST_ARTIFACT);
 
             slices = cluster.anyNode().getSlices();
-            assertThat(slices).contains("place-order");
+            assertThat(slices).contains("inventory");
         }
     }
 
     @Nested
+    @Order(2)
     class MetricsEndpoints {
 
         @Test
@@ -99,11 +151,10 @@ class ManagementApiE2ETest extends AbstractE2ETest {
         }
 
         @Test
-        @Disabled("Flaky in containerized environments - requires longer timeouts")
         void invocationMetrics_tracksCallsPerMethod() {
             // Deploy a slice to generate some invocation data
             deployAndAssert(TEST_ARTIFACT, 1);
-            awaitSliceVisible("place-order");
+            awaitSliceActive(TEST_ARTIFACT);
 
             var invocationMetrics = cluster.anyNode().getInvocationMetrics();
             assertThat(invocationMetrics).doesNotContain("\"error\"");
@@ -111,7 +162,7 @@ class ManagementApiE2ETest extends AbstractE2ETest {
 
         @Test
         void invocationMetrics_filtering_byArtifactAndMethod() {
-            var filtered = cluster.anyNode().getInvocationMetrics("place-order", null);
+            var filtered = cluster.anyNode().getInvocationMetrics("inventory", null);
             assertThat(filtered).doesNotContain("\"error\"");
 
             var methodFiltered = cluster.anyNode().getInvocationMetrics(null, "process");
@@ -135,6 +186,7 @@ class ManagementApiE2ETest extends AbstractE2ETest {
     }
 
     @Nested
+    @Order(3)
     class ThresholdAndAlertEndpoints {
 
         @Test
@@ -156,7 +208,6 @@ class ManagementApiE2ETest extends AbstractE2ETest {
         }
 
         @Test
-        @Disabled("Flaky in containerized environments - requires longer timeouts")
         void thresholds_delete_removesThreshold() {
             // First set a threshold
             cluster.anyNode().setThreshold("test.metric", 0.5, 0.8);
@@ -205,6 +256,7 @@ class ManagementApiE2ETest extends AbstractE2ETest {
     }
 
     @Nested
+    @Order(4)
     class ControllerEndpoints {
 
         @Test
@@ -237,17 +289,80 @@ class ManagementApiE2ETest extends AbstractE2ETest {
     }
 
     @Nested
+    @Order(5)
     class SliceStatusEndpoints {
 
         @Test
-        @Disabled("Flaky in containerized environments - requires longer timeouts")
         void slicesStatus_returnsDetailedHealth() {
             // Deploy a slice first
             deployAndAssert(TEST_ARTIFACT, 2);
-            awaitSliceVisible("place-order");
+            awaitSliceActive(TEST_ARTIFACT);
 
             var slicesStatus = cluster.anyNode().getSlicesStatus();
             assertThat(slicesStatus).doesNotContain("\"error\"");
+        }
+    }
+
+    // ===== Helper Methods =====
+
+    private void undeployAllSlices() {
+        try {
+            var leader = cluster.leader()
+                                .toResult(Causes.cause("No leader"))
+                                .unwrap();
+
+            var slices = leader.getSlices();
+            System.out.println("[DEBUG] Deployed slices: " + slices);
+
+            if (slices.contains(TEST_ARTIFACT)) {
+                var result = leader.undeploy(TEST_ARTIFACT);
+                System.out.println("[DEBUG] Undeploy " + TEST_ARTIFACT + ": " + result);
+            }
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Error undeploying slices: " + e.getMessage());
+        }
+    }
+
+    private void awaitNoSlices() {
+        await().atMost(CLEANUP_TIMEOUT.duration())
+               .pollInterval(POLL_INTERVAL.duration())
+               .ignoreExceptions()
+               .until(() -> {
+                   var slices = cluster.anyNode().getSlices();
+                   System.out.println("[DEBUG] Waiting for no slices, current: " + slices);
+                   return !slices.contains(TEST_ARTIFACT);
+               });
+    }
+
+    private String deployAndAssert(String artifact, int instances) {
+        var response = cluster.anyNode().deploy(artifact, instances);
+        assertThat(response)
+            .describedAs("Deployment of %s should succeed", artifact)
+            .doesNotContain("\"error\"");
+        return response;
+    }
+
+    private void awaitSliceActive(String artifact) {
+        await().atMost(DEPLOY_TIMEOUT.duration())
+               .pollInterval(POLL_INTERVAL.duration())
+               .failFast(() -> {
+                   var state = cluster.anyNode().getSliceState(artifact);
+                   if ("FAILED".equals(state)) {
+                       throw new AssertionError("Slice deployment failed: " + artifact);
+                   }
+               })
+               .until(() -> {
+                   var state = cluster.anyNode().getSliceState(artifact);
+                   System.out.println("[DEBUG] Slice " + artifact + " state: " + state);
+                   return "ACTIVE".equals(state);
+               });
+    }
+
+    private void sleep(TimeSpan duration) {
+        try {
+            Thread.sleep(duration.duration().toMillis());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 }

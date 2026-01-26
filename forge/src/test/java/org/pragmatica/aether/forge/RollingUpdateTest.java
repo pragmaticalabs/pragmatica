@@ -38,9 +38,9 @@ class RollingUpdateTest {
     private static final int BASE_MGMT_PORT = 5370;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String OLD_VERSION = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.1-test";
-    private static final String NEW_VERSION = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.2-test";
-    private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.example:place-order-place-order";
+    private static final String OLD_VERSION = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
+    private static final String NEW_VERSION = "org.pragmatica-lite.aether.example:inventory:0.0.2-test";
+    private static final String ARTIFACT_BASE = "org.pragmatica-lite.aether.example:inventory";
     private static final String NEW_VERSION_NUMBER = "0.0.2-test";
 
     private ForgeCluster cluster;

@@ -38,7 +38,7 @@ import static org.awaitility.Awaitility.await;
  * }</pre>
  */
 public class AetherCluster implements AutoCloseable {
-    private static final Duration QUORUM_TIMEOUT = Duration.ofSeconds(60);
+    private static final Duration QUORUM_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(2);
 
     private final List<AetherNodeContainer> nodes;

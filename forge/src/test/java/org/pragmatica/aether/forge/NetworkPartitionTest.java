@@ -39,7 +39,7 @@ class NetworkPartitionTest {
     private static final int BASE_MGMT_PORT = 5640;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.1-test";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -203,7 +203,7 @@ class NetworkPartitionTest {
                })
                .until(() -> {
                    var slices = getSlicesFromAnyNode();
-                   return slices.contains("place-order-place-order");
+                   return slices.contains("inventory");
                });
 
         // Reduce to 2 nodes (still has quorum)
@@ -216,7 +216,7 @@ class NetworkPartitionTest {
 
         // Slice state should be preserved
         var slices = getSlicesFromAnyNode();
-        assertThat(slices).contains("place-order-place-order");
+        assertThat(slices).contains("inventory");
 
         // Restore full cluster by adding a new node
         cluster.addNode()
@@ -232,7 +232,7 @@ class NetworkPartitionTest {
 
         // State should still be consistent
         slices = getSlicesFromAnyNode();
-        assertThat(slices).contains("place-order-place-order");
+        assertThat(slices).contains("inventory");
     }
 
     private boolean allNodesHealthy() {

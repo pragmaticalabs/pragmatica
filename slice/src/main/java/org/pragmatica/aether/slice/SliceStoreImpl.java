@@ -2,10 +2,10 @@ package org.pragmatica.aether.slice;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.dependency.DependencyResolver;
+import org.pragmatica.aether.slice.dependency.DependencyResolver.ResolvedSlice;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
-import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -45,6 +45,7 @@ public interface SliceStoreImpl {
     record LoadedSliceEntry(Artifact artifact,
                             Slice sliceInstance,
                             SliceClassLoader classLoader,
+                            SliceLoadingContext loadingContext,
                             EntryState state) implements SliceStore.LoadedSlice {
         @Override
         public Slice slice() {
@@ -52,7 +53,7 @@ public interface SliceStoreImpl {
         }
 
         LoadedSliceEntry withState(EntryState newState) {
-            return new LoadedSliceEntry(artifact, sliceInstance, classLoader, newState);
+            return new LoadedSliceEntry(artifact, sliceInstance, classLoader, loadingContext, newState);
         }
 
         SliceStore.LoadedSlice asLoadedSlice() {
@@ -63,11 +64,13 @@ public interface SliceStoreImpl {
     static SliceStore sliceStore(SliceRegistry registry,
                                  List<Repository> repositories,
                                  SharedLibraryClassLoader sharedLibraryLoader,
-                                 SliceInvokerFacade invokerFacade) {
+                                 SliceInvokerFacade invokerFacade,
+                                 SliceActionConfig config) {
         return new SliceStoreRecord(registry,
                                     repositories,
                                     sharedLibraryLoader,
                                     invokerFacade,
+                                    config,
                                     new ConcurrentHashMap<>());
     }
 
@@ -81,6 +84,7 @@ public interface SliceStoreImpl {
                             List<Repository> repositories,
                             SharedLibraryClassLoader sharedLibraryLoader,
                             SliceInvokerFacade invokerFacade,
+                            SliceActionConfig config,
                             ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>> entries) implements SliceStore {
         private static final Logger log = LoggerFactory.getLogger(SliceStoreRecord.class);
 
@@ -97,17 +101,21 @@ public interface SliceStoreImpl {
         }
 
         private Promise<LoadedSliceEntry> loadFromLocation(Artifact artifact) {
-            return DependencyResolver.resolve(artifact,
-                                              compositeRepository(),
-                                              registry,
-                                              sharedLibraryLoader,
-                                              invokerFacade)
-                                     .map(slice -> {
+            return DependencyResolver.resolveWithContext(artifact,
+                                                         compositeRepository(),
+                                                         registry,
+                                                         sharedLibraryLoader,
+                                                         invokerFacade)
+                                     .map(resolved -> {
                                               // Extract the classloader from the slice's class
-            var sliceClassLoader = slice.getClass()
-                                        .getClassLoader();
+            var sliceClassLoader = resolved.slice()
+                                           .getClass()
+                                           .getClassLoader();
                                               if (sliceClassLoader instanceof SliceClassLoader scl) {
-                                                  return createEntry(artifact, slice, scl);
+                                                  return createEntry(artifact,
+                                                                     resolved.slice(),
+                                                                     scl,
+                                                                     resolved.loadingContext());
                                               }
                                               // Fallback - create a minimal classloader entry
             log.warn("Slice {} loaded with unexpected classloader type: {}. Resource access may be limited.",
@@ -115,16 +123,20 @@ public interface SliceStoreImpl {
                      sliceClassLoader.getClass()
                                      .getName());
                                               return createEntry(artifact,
-                                                                 slice,
-                                                                 new SliceClassLoader(new URL[0], sharedLibraryLoader));
+                                                                 resolved.slice(),
+                                                                 new SliceClassLoader(new URL[0], sharedLibraryLoader),
+                                                                 resolved.loadingContext());
                                           })
                                      .onFailure(cause -> log.error("Failed to load slice {}: {}",
                                                                    artifact,
                                                                    cause.message()));
         }
 
-        private LoadedSliceEntry createEntry(Artifact artifact, Slice slice, SliceClassLoader classLoader) {
-            var entry = new LoadedSliceEntry(artifact, slice, classLoader, EntryState.LOADED);
+        private LoadedSliceEntry createEntry(Artifact artifact,
+                                             Slice slice,
+                                             SliceClassLoader classLoader,
+                                             SliceLoadingContext loadingContext) {
+            var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
             log.info("Slice {} loaded successfully", artifact);
             return entry;
         }
@@ -147,12 +159,27 @@ public interface SliceStoreImpl {
                                                .promise();
             }
             log.info("Activating slice {}", artifact);
-            return entry.sliceInstance()
-                        .start()
-                        .map(_ -> transitionToActive(artifact, entry))
-                        .onFailure(cause -> log.error("Failed to activate slice {}: {}",
-                                                      artifact,
-                                                      cause.message()));
+            // Eager dependency validation: materialize all method handles before start()
+            // This ensures no technical failures occur after the slice reaches ACTIVE state
+            return materializeHandles(artifact, entry).flatMap(_ -> entry.sliceInstance()
+                                                                         .start()
+                                                                         .timeout(config.startStopTimeout()))
+                                     .map(_ -> transitionToActive(artifact, entry))
+                                     .onFailure(cause -> log.error("Failed to activate slice {}: {}",
+                                                                   artifact,
+                                                                   cause.message()));
+        }
+
+        private Promise<Unit> materializeHandles(Artifact artifact, LoadedSliceEntry entry) {
+            var loadingContext = entry.loadingContext();
+            if (loadingContext == null) {
+                log.debug("No loading context for slice {}, skipping materialization", artifact);
+                return Promise.unitPromise();
+            }
+            log.debug("Materializing {} handles for slice {}", loadingContext.bufferedHandleCount(), artifact);
+            return loadingContext.materializeAll()
+                                 .onSuccess(_ -> loadingContext.markMaterialized())
+                                 .async();
         }
 
         private LoadedSlice transitionToActive(Artifact artifact, LoadedSliceEntry entry) {
@@ -182,10 +209,11 @@ public interface SliceStoreImpl {
             log.info("Deactivating slice {}", artifact);
             return entry.sliceInstance()
                         .stop()
+                        .timeout(config.startStopTimeout())
                         .map(_ -> transitionToLoaded(artifact, entry))
-                        .onFailure(cause -> log.error("Failed to deactivate slice {}: {}",
-                                                      artifact,
-                                                      cause.message()));
+                        .onFailure(cause -> log.warn("Failed to deactivate slice {}: {}",
+                                                     artifact,
+                                                     cause.message()));
         }
 
         private LoadedSlice transitionToLoaded(Artifact artifact, LoadedSliceEntry entry) {
@@ -210,11 +238,12 @@ public interface SliceStoreImpl {
             Promise<Unit> deactivatePromise = entry.state() == EntryState.ACTIVE
                                               ? entry.sliceInstance()
                                                      .stop()
+                                                     .timeout(config.startStopTimeout())
                                               : Promise.unitPromise();
             return deactivatePromise.map(_ -> cleanup(artifact, entry))
-                                    .onFailure(cause -> log.error("Failed to unload slice {}: {}",
-                                                                  artifact,
-                                                                  cause.message()));
+                                    .onFailure(cause -> log.warn("Failed to unload slice {}: {}",
+                                                                 artifact,
+                                                                 cause.message()));
         }
 
         private Unit cleanup(Artifact artifact, LoadedSliceEntry entry) {

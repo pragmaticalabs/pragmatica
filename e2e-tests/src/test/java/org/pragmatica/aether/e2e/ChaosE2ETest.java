@@ -1,10 +1,14 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.Disabled;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.e2e.containers.AetherCluster;
 import org.pragmatica.aether.e2e.containers.AetherNodeContainer;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
+import java.nio.file.Path;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -21,25 +25,69 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  *   <li>Random node kills with recovery</li>
  *   <li>Rapid kill/restart cycles</li>
  *   <li>Concurrent operations during chaos</li>
- *   <li>Cluster stability after chaos</li>
+ *   <li>Leader kill sprees</li>
+ *   <li>Split-brain recovery</li>
  * </ul>
+ *
+ * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
+ * Tests run in order and each test restores stopped nodes before running.
  */
-@Disabled("Flaky in containerized environments - requires longer timeouts")
-class ChaosE2ETest extends AbstractE2ETest {
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@Execution(ExecutionMode.SAME_THREAD)
+@Disabled("Node restart infrastructure doesn't support proper cluster rejoin - restarted nodes get new identities")
+class ChaosE2ETest {
+    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static final long CHAOS_DURATION_MS = timeSpan(30).seconds().duration().toMillis();
+    private static final TimeSpan RECOVERY_TIMEOUT = timeSpan(60).seconds();
+    private static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
+
+    private static AetherCluster cluster;
     private Random random;
 
-    @Override
-    protected int clusterSize() {
-        return 5;
+    @BeforeAll
+    static void createCluster() {
+        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
+        cluster.start();
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
     }
 
-    @Override
-    protected void additionalSetUp() {
-        random = new Random(42); // Deterministic for reproducibility
+    @AfterAll
+    static void destroyCluster() {
+        if (cluster != null) {
+            cluster.close();
+        }
+    }
+
+    @BeforeEach
+    void restoreClusterAndSetup() {
+        // Deterministic random for reproducibility
+        random = new Random(42);
+
+        // First restart any stopped nodes
+        for (var node : cluster.nodes()) {
+            if (!node.isRunning()) {
+                try {
+                    System.out.println("[DEBUG] Restarting stopped node: " + node.nodeId());
+                    cluster.restartNode(node.nodeId());
+                } catch (Exception e) {
+                    System.out.println("[DEBUG] Error restarting " + node.nodeId() + ": " + e.getMessage());
+                }
+            }
+        }
+
+        // Wait for all nodes with extended timeout (containers may take longer after chaos)
+        await().atMost(java.time.Duration.ofSeconds(120))
+               .pollInterval(POLL_INTERVAL.duration())
+               .ignoreExceptions()
+               .until(() -> cluster.runningNodeCount() == 5);
+
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
     }
 
     @Test
+    @Order(1)
     void randomNodeKills_clusterRecovers() {
         var killCount = new AtomicInteger(0);
 
@@ -76,6 +124,7 @@ class ChaosE2ETest extends AbstractE2ETest {
     }
 
     @Test
+    @Order(2)
     void rapidKillRestart_clusterRemainsFunctional() {
         var iterations = 10;
         var successfulOps = new AtomicInteger(0);
@@ -108,6 +157,7 @@ class ChaosE2ETest extends AbstractE2ETest {
     }
 
     @Test
+    @Order(3)
     void concurrentChaos_clusterMaintainsConsistency() throws InterruptedException {
         var chaosRunning = new AtomicBoolean(true);
         var errors = new AtomicInteger(0);
@@ -175,6 +225,7 @@ class ChaosE2ETest extends AbstractE2ETest {
     }
 
     @Test
+    @Order(4)
     void leaderKillSpree_clusterSurvives() {
         var leaderKills = 0;
 
@@ -206,6 +257,7 @@ class ChaosE2ETest extends AbstractE2ETest {
     }
 
     @Test
+    @Order(5)
     void splitBrainRecovery_clusterReconverges() {
         // Simulate split-brain by killing nodes on one "side"
         cluster.killNode("node-1");
@@ -238,6 +290,16 @@ class ChaosE2ETest extends AbstractE2ETest {
         for (var node : cluster.nodes()) {
             var status = node.getStatus();
             assertThat(status).contains(leader.nodeId());
+        }
+    }
+
+    // ===== Utility Helpers =====
+
+    private void sleep(TimeSpan duration) {
+        try {
+            Thread.sleep(duration.duration().toMillis());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 }
