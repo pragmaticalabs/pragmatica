@@ -57,6 +57,7 @@
     </dependencies>
 
     <build>
+        <!-- jbct-maven-plugin commented out until 0.5.0 is published
         <pluginManagement>
             <plugins>
                 <plugin>
@@ -89,6 +90,7 @@
                 <artifactId>jbct-maven-plugin</artifactId>
             </plugin>
         </plugins>
+        -->
     </build>
 
     <dependencyManagement>
