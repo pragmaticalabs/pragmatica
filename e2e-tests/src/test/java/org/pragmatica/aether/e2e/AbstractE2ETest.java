@@ -28,7 +28,7 @@ public abstract class AbstractE2ETest {
     protected static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
 
     // Common artifact for slice deployment tests
-    protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:place-order-place-order:0.8.0";
+    protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.1-test";
 
     protected AetherCluster cluster;
 

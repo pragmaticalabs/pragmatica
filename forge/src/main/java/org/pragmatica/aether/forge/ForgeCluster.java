@@ -335,7 +335,11 @@ public final class ForgeCluster {
     }
 
     private AetherNode createNode(NodeId nodeId, int port, int mgmtPort, List<NodeInfo> coreNodes) {
-        var topology = new TopologyConfig(nodeId, timeSpan(500).millis(), timeSpan(100).millis(), coreNodes);
+        var topology = new TopologyConfig(nodeId,
+                                          coreNodes.size(),
+                                          timeSpan(500).millis(),
+                                          timeSpan(100).millis(),
+                                          coreNodes);
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
                                           SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider()),

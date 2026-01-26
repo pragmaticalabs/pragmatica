@@ -314,6 +314,7 @@ class ManagementApiIT {
             int managementPort) {
         var topology = new org.pragmatica.consensus.topology.TopologyConfig(
                 self,
+                coreNodes.size(),
                 timeSpan(500).millis(),
                 timeSpan(100).millis(),
                 coreNodes);

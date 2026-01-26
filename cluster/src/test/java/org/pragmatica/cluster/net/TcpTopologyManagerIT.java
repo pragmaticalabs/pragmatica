@@ -49,6 +49,7 @@ class TcpTopologyManagerIT {
         nodeInfo2 = new NodeInfo(nodeId2, NodeAddress.nodeAddress(socketAddress2).unwrap());
 
         var config = new TopologyConfig(nodeId1,
+                                        2,
                                         timeSpan(100).hours(),
                                         TimeSpan.timeSpan(10).seconds(),
                                         List.of(nodeInfo1, nodeInfo2));

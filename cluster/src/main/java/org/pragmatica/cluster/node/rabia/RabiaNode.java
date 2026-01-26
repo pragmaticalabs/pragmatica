@@ -9,15 +9,18 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
 import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
+import org.pragmatica.consensus.net.NetworkMessage.Hello;
 import org.pragmatica.consensus.net.NetworkMessage.Ping;
 import org.pragmatica.consensus.net.NetworkMessage.Pong;
 import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.NetworkServiceMessage.Broadcast;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectedNodesList;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectNode;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionEstablished;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionFailed;
 import org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode;
 import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.netty.NettyClusterNetwork;
 import org.pragmatica.consensus.rabia.ConsensusMetrics;
 import org.pragmatica.consensus.rabia.RabiaEngine;
@@ -39,6 +42,7 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.AddNode;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.RemoveNode;
+import org.pragmatica.consensus.topology.TopologyManagementMessage.SetClusterSize;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -147,10 +151,13 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class)
                                               .route(route(AddNode.class, topologyManager::handleAddNodeMessage),
-                                                     route(RemoveNode.class, topologyManager::handleRemoveNodeMessage));
+                                                     route(RemoveNode.class, topologyManager::handleRemoveNodeMessage),
+                                                     route(SetClusterSize.class, topologyManager::handleSetClusterSize));
         var networkMsgRoutes = SealedBuilder.from(NetworkMessage.class)
                                             .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),
                                                    route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
+                                                   route(Hello.class,
+                                                         _ -> {}),
                                                    route(Ping.class, network::handlePing),
                                                    route(Pong.class, network::handlePong));
         var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class)
@@ -161,7 +168,9 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                        route(ConnectionFailed.class,
                                                              topologyManager::handleConnectionFailed),
                                                        route(ConnectionEstablished.class,
-                                                             topologyManager::handleConnectionEstablished));
+                                                             topologyManager::handleConnectionEstablished),
+                                                       route(Send.class, network::handleSend),
+                                                       route(Broadcast.class, network::handleBroadcast));
         var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)
                                                 .route(route(NodeAdded.class, leaderManager::nodeAdded),
                                                        route(NodeRemoved.class, leaderManager::nodeRemoved),

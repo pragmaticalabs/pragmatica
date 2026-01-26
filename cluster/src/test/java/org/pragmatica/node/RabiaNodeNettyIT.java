@@ -64,6 +64,7 @@ class RabiaNodeNettyIT {
 
         for (int i = 0; i < CLUSTER_SIZE; i++) {
             var topologyConfig = new TopologyConfig(NODES.get(i).id(),
+                                                    CLUSTER_SIZE,
                                                     RECONCILE_INTERVAL,
                                                     PING_INTERVAL,
                                                     configuredNodes);

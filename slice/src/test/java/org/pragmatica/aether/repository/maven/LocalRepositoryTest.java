@@ -110,7 +110,7 @@ class LocalRepositoryTest {
         var jarDir = tempRepo
                 .resolve(groupPath)
                 .resolve(artifactId)
-                .resolve(version.bareVersion());
+                .resolve(version.withQualifier());
 
         Files.createDirectories(jarDir);
 

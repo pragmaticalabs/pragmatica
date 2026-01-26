@@ -62,7 +62,7 @@ public interface LocalRepository extends Repository {
                                                  .id()
                                                  .replace('.', '/'))
                                 .resolve(artifactId)
-                                .resolve(version.bareVersion())
+                                .resolve(version.withQualifier())
                                 .resolve(artifactId + "-" + version.withQualifier() + "." + packaging);
             }
 

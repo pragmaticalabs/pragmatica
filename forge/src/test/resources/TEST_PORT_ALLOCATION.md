@@ -9,7 +9,7 @@ Tests use per-method port offsets to avoid TIME_WAIT issues between sequential t
 
 | Test Class                    | Base Port | Base Mgmt Port | Max Offset | Max Cluster Port | Max Mgmt Port | Nodes |
 |-------------------------------|-----------|----------------|------------|------------------|---------------|-------|
-| ForgeClusterIntegrationTest   | 5000      | 5100           | 15         | 5017             | 5117          | 3     |
+| ForgeClusterIntegrationTest   | 5770      | 5870           | 15         | 5787             | 5887          | 3     |
 | ClusterFormationTest          | 5020      | 5120           | 20         | 5042             | 5142          | 3     |
 | SliceDeploymentTest           | 5050      | 5150           | 30         | 5082             | 5182          | 3     |
 | SliceInvocationTest           | 5090      | 5190           | 45         | 5137             | 5237          | 3     |
@@ -64,4 +64,4 @@ When adding a new test class:
 
 ## Reserved Ranges
 
-- 5770+ / 5870+: Reserved for future tests
+- 5790+ / 5890+: Reserved for future tests

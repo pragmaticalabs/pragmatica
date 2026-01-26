@@ -129,7 +129,7 @@ class SliceDeploymentE2ETest extends AbstractE2ETest {
             id = "org.test:e2e-blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.example:place-order-place-order:0.8.0"
+            artifact = "org.pragmatica-lite.aether.example:place-order-place-order:0.0.1-test"
             instances = 1
             """;
 
