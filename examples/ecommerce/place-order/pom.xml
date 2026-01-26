@@ -68,7 +68,6 @@
                     </compilerArgs>
                 </configuration>
             </plugin>
-            <!-- jbct-maven-plugin commented out until 0.5.0 is published
             <plugin>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>jbct-maven-plugin</artifactId>
@@ -82,7 +81,6 @@
                     </execution>
                 </executions>
             </plugin>
-            -->
         </plugins>
     </build>
 </project>
