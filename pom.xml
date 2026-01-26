@@ -48,7 +48,9 @@
         <module>slice</module>
         <module>cluster</module>
         <module>cli</module>
+        <!-- examples commented out until jbct-cli 0.5.0 is published (uses slice-processor)
         <module>examples</module>
+        -->
         <module>forge</module>
         <module>infra-services</module>
         <module>e2e-tests</module>
