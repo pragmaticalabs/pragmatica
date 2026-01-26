@@ -87,8 +87,25 @@ public final class RollingUpdateRoutes implements RouteHandler {
 
     private String extractUpdateId(String uri, String suffix) {
         var path = uri.substring("/api/rolling-update/".length());
-        return path.substring(0,
-                              path.length() - suffix.length());
+        var updateId = path.substring(0,
+                                      path.length() - suffix.length());
+        return resolveUpdateId(updateId);
+    }
+
+    /**
+     * Resolves "current" to the first active rolling update ID.
+     */
+    private String resolveUpdateId(String updateId) {
+        if ("current".equals(updateId)) {
+            var updates = nodeSupplier.get()
+                                      .rollingUpdateManager()
+                                      .activeUpdates();
+            if (!updates.isEmpty()) {
+                return updates.getFirst()
+                              .updateId();
+            }
+        }
+        return updateId;
     }
 
     private void handleRollingUpdateStart(ResponseWriter response, String body) {

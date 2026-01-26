@@ -127,6 +127,9 @@ class SliceInvocationTest {
                        if (slices.contains("\"error\"")) {
                            throw new AssertionError("Slice query failed: " + slices);
                        }
+                       if (sliceHasFailed(TEST_ARTIFACT)) {
+                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
+                       }
                    })
                    .until(() -> getSlices().contains("place-order-place-order"));
 
@@ -165,6 +168,9 @@ class SliceInvocationTest {
                        if (slices.contains("\"error\"")) {
                            throw new AssertionError("Slice query failed: " + slices);
                        }
+                       if (sliceHasFailed(TEST_ARTIFACT)) {
+                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
+                       }
                    })
                    .until(() -> getSlices().contains("place-order-place-order"));
 
@@ -192,6 +198,9 @@ class SliceInvocationTest {
                        var slices = getSlices();
                        if (slices.contains("\"error\"")) {
                            throw new AssertionError("Slice query failed: " + slices);
+                       }
+                       if (sliceHasFailed(TEST_ARTIFACT)) {
+                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
                        }
                    })
                    .until(() -> getSlices().contains("place-order-place-order"));
@@ -262,6 +271,17 @@ class SliceInvocationTest {
             .describedAs("Deployment response")
             .doesNotContain("\"error\"")
             .contains("\"status\":\"deployed\"");
+    }
+
+    private boolean sliceHasFailed(String artifact) {
+        try {
+            var slicesStatus = cluster.slicesStatus();
+            return slicesStatus.stream()
+                               .anyMatch(s -> s.artifact().equals(artifact) &&
+                                              s.state().equals("FAILED"));
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private void undeploy(String artifact) {

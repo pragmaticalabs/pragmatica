@@ -197,6 +197,9 @@ class NetworkPartitionTest {
                    if (slices.contains("\"error\"")) {
                        throw new AssertionError("Slice query failed: " + slices);
                    }
+                   if (sliceHasFailed(TEST_ARTIFACT)) {
+                       throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
+                   }
                })
                .until(() -> {
                    var slices = getSlicesFromAnyNode();
@@ -305,6 +308,17 @@ class NetworkPartitionTest {
             .describedAs("Deployment response")
             .doesNotContain("\"error\"")
             .contains("\"status\":\"deployed\"");
+    }
+
+    private boolean sliceHasFailed(String artifact) {
+        try {
+            var slicesStatus = cluster.slicesStatus();
+            return slicesStatus.stream()
+                               .anyMatch(s -> s.artifact().equals(artifact) &&
+                                              s.state().equals("FAILED"));
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private String httpGet(int port, String path) {

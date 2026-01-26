@@ -153,10 +153,16 @@ class ManagementApiTest {
             // Deploy a slice and verify it appears
             deploy(port, TEST_ARTIFACT, 1);
 
-            await().atMost(WAIT_TIMEOUT).until(() -> {
-                var response = getSlices(anyNodePort());
-                return response.contains("place-order");
-            });
+            await().atMost(WAIT_TIMEOUT)
+                   .failFast(() -> {
+                       if (sliceHasFailed(TEST_ARTIFACT)) {
+                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
+                       }
+                   })
+                   .until(() -> {
+                       var response = getSlices(anyNodePort());
+                       return response.contains("place-order");
+                   });
 
             slices = getSlices(port);
             assertThat(slices).contains("place-order");
@@ -188,10 +194,16 @@ class ManagementApiTest {
 
             deploy(port, TEST_ARTIFACT, 1);
 
-            await().atMost(WAIT_TIMEOUT).until(() -> {
-                var slices = getSlices(anyNodePort());
-                return slices.contains("place-order");
-            });
+            await().atMost(WAIT_TIMEOUT)
+                   .failFast(() -> {
+                       if (sliceHasFailed(TEST_ARTIFACT)) {
+                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
+                       }
+                   })
+                   .until(() -> {
+                       var slices = getSlices(anyNodePort());
+                       return slices.contains("place-order");
+                   });
 
             var invocationMetrics = getInvocationMetrics(port);
             assertThat(invocationMetrics).doesNotContain("\"error\"");
@@ -326,10 +338,16 @@ class ManagementApiTest {
 
             deploy(port, TEST_ARTIFACT, 2);
 
-            await().atMost(WAIT_TIMEOUT).until(() -> {
-                var slices = getSlices(anyNodePort());
-                return slices.contains("place-order");
-            });
+            await().atMost(WAIT_TIMEOUT)
+                   .failFast(() -> {
+                       if (sliceHasFailed(TEST_ARTIFACT)) {
+                           throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
+                       }
+                   })
+                   .until(() -> {
+                       var slices = getSlices(anyNodePort());
+                       return slices.contains("place-order");
+                   });
 
             var slicesStatus = getSlicesStatus(port);
             assertThat(slicesStatus).doesNotContain("\"error\"");
@@ -358,6 +376,17 @@ class ManagementApiTest {
             var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             return response.statusCode() == 200 && response.body().contains("\"quorum\":true");
         } catch (IOException | InterruptedException e) {
+            return false;
+        }
+    }
+
+    private boolean sliceHasFailed(String artifact) {
+        try {
+            var slicesStatus = cluster.slicesStatus();
+            return slicesStatus.stream()
+                               .anyMatch(s -> s.artifact().equals(artifact) &&
+                                              s.state().equals("FAILED"));
+        } catch (Exception e) {
             return false;
         }
     }
