@@ -38,9 +38,9 @@ public final class GitHubVersionResolver {
     private static final Pattern TAG_PATTERN = Pattern.compile("\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
 
     // Default fallback versions when offline or API fails
-    private static final String DEFAULT_PRAGMATICA_VERSION = "0.9.10";
-    private static final String DEFAULT_AETHER_VERSION = "0.7.4";
-    private static final String DEFAULT_JBCT_VERSION = "0.4.9";
+    private static final String DEFAULT_PRAGMATICA_VERSION = "0.11.1";
+    private static final String DEFAULT_AETHER_VERSION = "0.8.1";
+    private static final String DEFAULT_JBCT_VERSION = "0.6.0";
 
     private final HttpOperations http;
     private final Properties cache;

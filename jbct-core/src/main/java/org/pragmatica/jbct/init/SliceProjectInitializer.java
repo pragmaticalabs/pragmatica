@@ -180,15 +180,6 @@ public final class SliceProjectInitializer {
         return Result.allOf(createFile("Slice.java.template",
                                        srcMainJava.resolve(packagePath)
                                                   .resolve(sliceName + ".java")),
-                            createFile("SliceImpl.java.template",
-                                       srcMainJava.resolve(packagePath)
-                                                  .resolve(sliceName + "Impl.java")),
-                            createFile("SampleRequest.java.template",
-                                       srcMainJava.resolve(packagePath)
-                                                  .resolve("SampleRequest.java")),
-                            createFile("SampleResponse.java.template",
-                                       srcMainJava.resolve(packagePath)
-                                                  .resolve("SampleResponse.java")),
                             createFile("SliceTest.java.template",
                                        srcTestJava.resolve(packagePath)
                                                   .resolve(sliceName + "Test.java")));
@@ -261,9 +252,6 @@ public final class SliceProjectInitializer {
             case "gitignore.template" -> GITIGNORE_TEMPLATE;
             case "CLAUDE.md" -> CLAUDE_MD_TEMPLATE;
             case "Slice.java.template" -> SLICE_INTERFACE_TEMPLATE;
-            case "SliceImpl.java.template" -> SLICE_IMPL_TEMPLATE;
-            case "SampleRequest.java.template" -> SAMPLE_REQUEST_TEMPLATE;
-            case "SampleResponse.java.template" -> SAMPLE_RESPONSE_TEMPLATE;
             case "SliceTest.java.template" -> SLICE_TEST_TEMPLATE;
             case "deploy-forge.sh.template" -> DEPLOY_FORGE_TEMPLATE;
             case "deploy-test.sh.template" -> DEPLOY_TEST_TEMPLATE;
@@ -331,7 +319,7 @@ public final class SliceProjectInitializer {
 
             <properties>
                 <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-                <maven.compiler.release>21</maven.compiler.release>
+                <maven.compiler.release>25</maven.compiler.release>
                 <pragmatica-lite.version>{{pragmaticaVersion}}</pragmatica-lite.version>
                 <aether.version>{{aetherVersion}}</aether.version>
                 <jbct.version>{{jbctVersion}}</jbct.version>
@@ -524,6 +512,7 @@ public final class SliceProjectInitializer {
 
         import org.pragmatica.aether.slice.annotation.Slice;
         import org.pragmatica.lang.Promise;
+        import org.pragmatica.lang.Result;
 
         /**
          * {{sliceName}} slice interface.
@@ -531,56 +520,54 @@ public final class SliceProjectInitializer {
         @Slice
         public interface {{sliceName}} {
 
+            /**
+             * Sample request record.
+             */
+            record SampleRequest(String value) {
+                public static Result<SampleRequest> sampleRequest(String value) {
+                    if (value == null || value.isBlank()) {
+                        return Result.failure(ValidationError.emptyValue());
+                    }
+                    return Result.success(new SampleRequest(value));
+                }
+            }
+
+            /**
+             * Sample response record.
+             */
+            record SampleResponse(String result) {}
+
+            /**
+             * Configuration record for slice dependencies.
+             */
+            record Config(String prefix) {
+                public static Config config(String prefix) {
+                    return new Config(prefix);
+                }
+            }
+
+            /**
+             * Validation error.
+             */
+            sealed interface ValidationError {
+                record EmptyValue() implements ValidationError {}
+
+                static ValidationError emptyValue() {
+                    return new EmptyValue();
+                }
+            }
+
             Promise<SampleResponse> process(SampleRequest request);
 
-            static {{sliceName}} {{factoryMethodName}}() {
-                return new {{sliceName}}Impl();
-            }
-        }
-        """;
-
-    private static final String SLICE_IMPL_TEMPLATE = """
-        package {{basePackage}};
-
-        import org.pragmatica.lang.Promise;
-
-        /**
-         * Implementation of {{sliceName}} slice.
-         */
-        final class {{sliceName}}Impl implements {{sliceName}} {
-
-            @Override
-            public Promise<SampleResponse> process(SampleRequest request) {
-                var response = new SampleResponse("Processed: " + request.value());
-                return Promise.successful(response);
-            }
-        }
-        """;
-
-    private static final String SAMPLE_REQUEST_TEMPLATE = """
-        package {{basePackage}};
-
-        /**
-         * Sample request for {{sliceName}} slice.
-         */
-        public record SampleRequest(String value) {
-
-            public static SampleRequest sampleRequest(String value) {
-                return new SampleRequest(value);
-            }
-        }
-        """;
-
-    private static final String SAMPLE_RESPONSE_TEMPLATE = """
-        package {{basePackage}};
-
-        /**
-         * Sample response from {{sliceName}} slice.
-         */
-        public record SampleResponse(String result) {
-
-            public static SampleResponse sampleResponse(String result) {
-                return new SampleResponse(result);
+            static {{sliceName}} {{factoryMethodName}}(Config config) {
+                record {{sliceName}}Impl(Config config) implements {{sliceName}} {
+                    @Override
+                    public Promise<SampleResponse> process(SampleRequest request) {
+                        var response = new SampleResponse(config.prefix() + ": " + request.value());
+                        return Promise.successful(response);
+                    }
+                }
+                return new {{sliceName}}Impl(config);
             }
         }
         """;
@@ -594,16 +581,18 @@ public final class SliceProjectInitializer {
 
         class {{sliceName}}Test {
 
-            private final {{sliceName}} slice = {{sliceName}}.{{factoryMethodName}}();
+            private final {{sliceName}}.Config config = {{sliceName}}.Config.config("Processed");
+            private final {{sliceName}} slice = {{sliceName}}.{{factoryMethodName}}(config);
 
             @Test
             void should_process_request() {
-                var request = SampleRequest.sampleRequest("test");
+                var request = {{sliceName}}.SampleRequest.sampleRequest("test")
+                                                         .getOrThrow();
 
                 var response = slice.process(request).await();
 
                 assertThat(response.isSuccess()).isTrue();
-                response.onSuccess(r -> assertThat(r.result()).contains("test"));
+                response.onSuccess(r -> assertThat(r.result()).isEqualTo("Processed: test"));
             }
         }
         """;

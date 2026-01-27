@@ -7,6 +7,12 @@
 ### Changed
 - Build: bump Aether to 0.8.1
 - CI: re-enabled slice-processor-tests module
+- Slice init: Java version 21 → 25
+- Slice init: updated default versions (Pragmatica Lite 0.11.1, Aether 0.8.1, JBCT 0.6.0)
+- Slice init: implementation pattern changed to record-based (nested record in interface)
+- Slice init: factory now accepts Config dependency parameter
+- Slice init: removed separate *Impl.java, SampleRequest.java, SampleResponse.java files
+- Slice init: Request/Response/Error records now nested in @Slice interface
 
 ### Fixed
 

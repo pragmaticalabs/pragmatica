@@ -30,7 +30,7 @@ class SliceProjectInitializerTest {
                                        .exists();
                              assertThat(projectDir.resolve("src/main/java/org/example/myslice/MySlice.java"))
                                        .exists();
-                             assertThat(projectDir.resolve("src/main/java/org/example/myslice/MySliceImpl.java"))
+                             assertThat(projectDir.resolve("src/test/java/org/example/myslice/MySliceTest.java"))
                                        .exists();
                              // Slice config file
                              assertThat(projectDir.resolve("src/main/resources/slices/MySlice.toml"))
@@ -76,7 +76,13 @@ class SliceProjectInitializerTest {
         assertThat(content)
                   .contains("public interface InventoryService");
         assertThat(content)
-                  .contains("static InventoryService inventoryService()");
+                  .contains("static InventoryService inventoryService(Config config)");
+        assertThat(content)
+                  .contains("record SampleRequest");
+        assertThat(content)
+                  .contains("record SampleResponse");
+        assertThat(content)
+                  .contains("record Config");
     }
 
     @Test
