@@ -2,7 +2,6 @@ package org.pragmatica.aether.slice.blueprint;
 
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.artifact.Version;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -10,21 +9,22 @@ class BlueprintIdTest {
 
     @Test
     void blueprintId_succeeds_withValidInput() {
-        BlueprintId.blueprintId("my-app:1.0.0")
+        BlueprintId.blueprintId("org.example:my-app:1.0.0")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(id -> {
-                       assertThat(id.name()).isEqualTo("my-app");
-                       assertThat(id.version().bareVersion()).isEqualTo("1.0.0");
+                       assertThat(id.artifact().groupId().id()).isEqualTo("org.example");
+                       assertThat(id.artifact().artifactId().id()).isEqualTo("my-app");
+                       assertThat(id.artifact().version().bareVersion()).isEqualTo("1.0.0");
                    });
     }
 
     @Test
     void blueprintId_succeeds_withQualifier() {
-        BlueprintId.blueprintId("my-app:1.0.0-SNAPSHOT")
+        BlueprintId.blueprintId("org.example:my-app:1.0.0-SNAPSHOT")
                    .onFailureRun(Assertions::fail)
                    .onSuccess(id -> {
-                       assertThat(id.name()).isEqualTo("my-app");
-                       assertThat(id.version().withQualifier()).isEqualTo("1.0.0-SNAPSHOT");
+                       assertThat(id.artifact().artifactId().id()).isEqualTo("my-app");
+                       assertThat(id.artifact().version().withQualifier()).isEqualTo("1.0.0-SNAPSHOT");
                    });
     }
 
@@ -36,20 +36,21 @@ class BlueprintIdTest {
     }
 
     @Test
-    void blueprintId_fails_withInvalidName() {
-        BlueprintId.blueprintId("My-App:1.0.0")
-                   .onSuccessRun(Assertions::fail);
+    void blueprintId_fails_withTwoPartsOnly() {
+        BlueprintId.blueprintId("my-app:1.0.0")
+                   .onSuccessRun(Assertions::fail)
+                   .onFailure(cause -> assertThat(cause.message()).contains("Invalid blueprint ID format"));
     }
 
     @Test
     void blueprintId_fails_withInvalidVersion() {
-        BlueprintId.blueprintId("my-app:invalid")
+        BlueprintId.blueprintId("org.example:my-app:invalid")
                    .onSuccessRun(Assertions::fail);
     }
 
     @Test
     void asString_roundtrip() {
-        var original = "my-app:1.0.0";
+        var original = "org.example:my-app:1.0.0";
         BlueprintId.blueprintId(original)
                    .map(BlueprintId::asString)
                    .onSuccess(result -> assertThat(result).isEqualTo(original))
@@ -58,21 +59,10 @@ class BlueprintIdTest {
 
     @Test
     void asString_roundtrip_withQualifier() {
-        var original = "my-app:1.0.0-SNAPSHOT";
+        var original = "org.example:my-app:1.0.0-SNAPSHOT";
         BlueprintId.blueprintId(original)
                    .map(BlueprintId::asString)
                    .onSuccess(result -> assertThat(result).isEqualTo(original))
                    .onFailureRun(Assertions::fail);
-    }
-
-    @Test
-    void factory_creates_blueprintId() {
-        Version.version("2.1.0")
-               .map(version -> BlueprintId.blueprintId("test-app", version))
-               .onSuccess(id -> {
-                   assertThat(id.name()).isEqualTo("test-app");
-                   assertThat(id.version().bareVersion()).isEqualTo("2.1.0");
-               })
-               .onFailureRun(Assertions::fail);
     }
 }

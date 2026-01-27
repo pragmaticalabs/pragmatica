@@ -12,7 +12,7 @@ class ExpandedBlueprintTest {
 
     @Test
     void expandedBlueprint_succeeds_withLoadOrder() {
-        BlueprintId.blueprintId("my-app:1.0.0")
+        BlueprintId.blueprintId("org.example:my-app:1.0.0")
                    .flatMap(id ->
                                     Artifact.artifact("org.example:slice:1.0.0")
                                             .flatMap(artifact -> ResolvedSlice.resolvedSlice(artifact, 2, false))
@@ -30,7 +30,7 @@ class ExpandedBlueprintTest {
                            )
                    .onFailureRun(Assertions::fail)
                    .onSuccess(expanded -> {
-                       assertThat(expanded.id().asString()).isEqualTo("my-app:1.0.0");
+                       assertThat(expanded.id().asString()).isEqualTo("org.example:my-app:1.0.0");
                        assertThat(expanded.loadOrder()).hasSize(2);
                        assertThat(expanded.loadOrder().get(0).isDependency()).isTrue();
                        assertThat(expanded.loadOrder().get(1).isDependency()).isFalse();
@@ -39,11 +39,11 @@ class ExpandedBlueprintTest {
 
     @Test
     void expandedBlueprint_succeeds_withEmptyConfig() {
-        BlueprintId.blueprintId("my-app:1.0.0")
+        BlueprintId.blueprintId("org.example:my-app:1.0.0")
                    .map(id -> ExpandedBlueprint.expandedBlueprint(id, List.of()))
                    .onFailureRun(Assertions::fail)
                    .onSuccess(expanded -> {
-                       assertThat(expanded.id().asString()).isEqualTo("my-app:1.0.0");
+                       assertThat(expanded.id().asString()).isEqualTo("org.example:my-app:1.0.0");
                        assertThat(expanded.loadOrder()).isEmpty();
                    });
     }

@@ -182,7 +182,8 @@ public interface ClusterDeploymentManager {
             private void handleAppBlueprintRemoval(AppBlueprintKey key) {
                 log.info("App blueprint '{}' removed",
                          key.blueprintId()
-                            .name());
+                            .artifact()
+                            .asString());
                 // Remove all blueprints that were part of this app
                 var artifactsToRemove = blueprints.keySet()
                                                   .stream()

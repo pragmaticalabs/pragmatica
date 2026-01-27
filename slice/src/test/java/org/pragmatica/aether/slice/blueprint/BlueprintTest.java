@@ -12,7 +12,7 @@ class BlueprintTest {
 
     @Test
     void blueprint_fails_withEmptySlices() {
-        BlueprintId.blueprintId("my-app:1.0.0")
+        BlueprintId.blueprintId("org.example:my-app:1.0.0")
                    .flatMap(id -> Blueprint.blueprint(id, List.of()))
                    .onSuccessRun(Assertions::fail)
                    .onFailure(cause -> assertThat(cause.message()).contains("empty"));
@@ -20,7 +20,7 @@ class BlueprintTest {
 
     @Test
     void blueprint_succeeds_withSlices() {
-        BlueprintId.blueprintId("my-app:1.0.0")
+        BlueprintId.blueprintId("org.example:my-app:1.0.0")
                    .flatMap(id ->
                                     Artifact.artifact("org.example:slice:1.0.0")
                                             .flatMap(artifact -> SliceSpec.sliceSpec(artifact, 3))
@@ -36,7 +36,7 @@ class BlueprintTest {
 
     @Test
     void blueprint_succeeds_withMultipleSlices() {
-        BlueprintId.blueprintId("my-app:1.0.0")
+        BlueprintId.blueprintId("org.example:my-app:1.0.0")
                    .flatMap(id ->
                                     Artifact.artifact("org.example:slice-a:1.0.0")
                                             .flatMap(SliceSpec::sliceSpec)
@@ -49,7 +49,7 @@ class BlueprintTest {
                            )
                    .onFailureRun(Assertions::fail)
                    .onSuccess(blueprint -> {
-                       assertThat(blueprint.id().asString()).isEqualTo("my-app:1.0.0");
+                       assertThat(blueprint.id().asString()).isEqualTo("org.example:my-app:1.0.0");
                        assertThat(blueprint.slices()).hasSize(2);
                        assertThat(blueprint.slices().get(0).instances()).isEqualTo(1);
                        assertThat(blueprint.slices().get(1).instances()).isEqualTo(2);
