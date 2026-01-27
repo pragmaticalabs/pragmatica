@@ -9,7 +9,7 @@ Do NOT write code directly - delegate to `jbct-coder` agent.
 
 ## Project Overview
 
-**Pragmatica Aether** (v0.8.1) - AI-driven distributed runtime for Java with predictive scaling and seamless multi-cloud deployment.
+**Pragmatica Aether** (v0.8.2) - AI-driven distributed runtime for Java with predictive scaling and seamless multi-cloud deployment.
 
 **Key Principle:** Every inter-slice call will **EVENTUALLY SUCCEED** if the cluster is alive. Slices are NOT prepared for communication errors - runtime handles retries, failover, recovery. Design slices to be idempotent.
 
