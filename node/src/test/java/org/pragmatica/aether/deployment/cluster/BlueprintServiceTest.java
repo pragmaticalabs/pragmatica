@@ -5,6 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
@@ -77,7 +78,7 @@ class BlueprintServiceTest {
     class GetTests {
         @Test
         void get_returnsNone_whenBlueprintNotFound() {
-            var id = BlueprintId.blueprintId("org.example:missing:1.0.0").unwrap();
+            var id = BlueprintId.blueprintId("missing", Version.version("1.0.0").unwrap());
 
             var result = service.get(id);
 
@@ -86,7 +87,7 @@ class BlueprintServiceTest {
 
         @Test
         void get_returnsSome_whenBlueprintExists() {
-            var blueprintId = BlueprintId.blueprintId("org.example:existing:1.0.0").unwrap();
+            var blueprintId = BlueprintId.blueprintId("existing", Version.version("1.0.0").unwrap());
             var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
             var expanded = ExpandedBlueprint.expandedBlueprint(
                     blueprintId,
@@ -101,7 +102,7 @@ class BlueprintServiceTest {
 
             assertThat(result.isPresent()).isTrue();
             result.onPresent(retrieved ->
-                                     assertThat(retrieved.id().artifact().artifactId().id()).isEqualTo("existing")
+                                     assertThat(retrieved.id().name()).isEqualTo("existing")
                             );
         }
     }
@@ -117,8 +118,8 @@ class BlueprintServiceTest {
 
         @Test
         void list_returnsAll_whenMultipleBlueprints() {
-            var id1 = BlueprintId.blueprintId("org.example:app1:1.0.0").unwrap();
-            var id2 = BlueprintId.blueprintId("org.example:app2:2.0.0").unwrap();
+            var id1 = BlueprintId.blueprintId("app1", Version.version("1.0.0").unwrap());
+            var id2 = BlueprintId.blueprintId("app2", Version.version("2.0.0").unwrap());
             var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
 
             var expanded1 = ExpandedBlueprint.expandedBlueprint(
@@ -136,7 +137,7 @@ class BlueprintServiceTest {
             var result = service.list();
 
             assertThat(result).hasSize(2);
-            assertThat(result.stream().map(e -> e.id().artifact().artifactId().id())).containsExactlyInAnyOrder("app1", "app2");
+            assertThat(result.stream().map(e -> e.id().name())).containsExactlyInAnyOrder("app1", "app2");
         }
     }
 
@@ -144,7 +145,7 @@ class BlueprintServiceTest {
     class DeleteTests {
         @Test
         void delete_succeeds_whenBlueprintExists() {
-            var blueprintId = BlueprintId.blueprintId("org.example:to-delete:1.0.0").unwrap();
+            var blueprintId = BlueprintId.blueprintId("to-delete", Version.version("1.0.0").unwrap());
             var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
             var expanded = ExpandedBlueprint.expandedBlueprint(
                     blueprintId,
@@ -164,7 +165,7 @@ class BlueprintServiceTest {
 
         @Test
         void delete_succeeds_whenBlueprintNotFound() {
-            var id = BlueprintId.blueprintId("org.example:non-existent:1.0.0").unwrap();
+            var id = BlueprintId.blueprintId("non-existent", Version.version("1.0.0").unwrap());
 
             service.delete(id)
                    .await()
