@@ -9,6 +9,7 @@ import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.lang.io.TimeSpan;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
@@ -16,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
  * Server-side component that handles incoming slice invocation requests.
@@ -59,10 +62,17 @@ public interface InvocationHandler {
     Option<InvocationMetricsCollector> metricsCollector();
 
     /**
+     * Default invocation timeout (5 minutes).
+     * Long timeout to allow operations that may trigger rebalance/node launch.
+     */
+    TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(5)
+                                                  .minutes();
+
+    /**
      * Create a new InvocationHandler without metrics.
      */
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {
-        return new InvocationHandlerImpl(self, network, Option.empty());
+        return new InvocationHandlerImpl(self, network, Option.empty(), DEFAULT_INVOCATION_TIMEOUT);
     }
 
     /**
@@ -73,7 +83,20 @@ public interface InvocationHandler {
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector) {
-        return new InvocationHandlerImpl(self, network, Option.option(metricsCollector));
+        return new InvocationHandlerImpl(self, network, Option.option(metricsCollector), DEFAULT_INVOCATION_TIMEOUT);
+    }
+
+    /**
+     * Create a new InvocationHandler with metrics collection and custom timeout.
+     *
+     * @param metricsCollector The metrics collector to use
+     * @param invocationTimeout Timeout for slice invocations
+     */
+    static InvocationHandler invocationHandler(NodeId self,
+                                               ClusterNetwork network,
+                                               InvocationMetricsCollector metricsCollector,
+                                               TimeSpan invocationTimeout) {
+        return new InvocationHandlerImpl(self, network, Option.option(metricsCollector), invocationTimeout);
     }
 }
 
@@ -83,14 +106,19 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final NodeId self;
     private final ClusterNetwork network;
     private final Option<InvocationMetricsCollector> metricsCollector;
+    private final TimeSpan invocationTimeout;
 
     // Local slice bridges available for invocation
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
 
-    InvocationHandlerImpl(NodeId self, ClusterNetwork network, Option<InvocationMetricsCollector> metricsCollector) {
+    InvocationHandlerImpl(NodeId self,
+                          ClusterNetwork network,
+                          Option<InvocationMetricsCollector> metricsCollector,
+                          TimeSpan invocationTimeout) {
         this.self = self;
         this.network = network;
         this.metricsCollector = metricsCollector;
+        this.invocationTimeout = invocationTimeout;
     }
 
     @Override
@@ -124,11 +152,9 @@ class InvocationHandlerImpl implements InvocationHandler {
                   request.method());
         // Set the request ID in context for chain propagation
         InvocationContext.setRequestId(request.requestId());
-        try{
-            Option.option(localSlices.get(request.targetSlice()))
-                  .onEmpty(() -> handleSliceNotFound(request))
-                  .onPresent(bridge -> invokeSliceMethod(request, bridge));
-        } finally{}
+        Option.option(localSlices.get(request.targetSlice()))
+              .onEmpty(() -> handleSliceNotFound(request))
+              .onPresent(bridge -> invokeSliceMethod(request, bridge));
     }
 
     private void handleSliceNotFound(InvokeRequest request) {
@@ -141,51 +167,53 @@ class InvocationHandlerImpl implements InvocationHandler {
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
-        var requestId = request.requestId();
         // SliceBridge uses byte[] directly - no ByteBuf conversion needed
         bridge.invoke(request.method()
                              .name(),
                       request.payload())
-              .onSuccess(responseData -> {
-                             var durationNs = System.nanoTime() - startTime;
-                             var responseBytes = responseData.length;
-                             if (request.expectResponse()) {
-                                 sendSuccessResponse(request, responseData);
-                             }
-                             log.debug("[requestId={}] Invocation completed in {}ms: {}.{}",
-                                       requestId,
-                                       durationNs / 1_000_000,
-                                       request.targetSlice(),
-                                       request.method());
-                             // Record success metrics
+              .timeout(invocationTimeout)
+              .onSuccess(responseData -> handleInvocationSuccess(request, responseData, startTime, requestBytes))
+              .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
+    }
+
+    private void handleInvocationSuccess(InvokeRequest request, byte[] responseData, long startTime, int requestBytes) {
+        var durationNs = System.nanoTime() - startTime;
+        var responseBytes = responseData.length;
+        if (request.expectResponse()) {
+            sendSuccessResponse(request, responseData);
+        }
+        log.debug("[requestId={}] Invocation completed in {}ms: {}.{}",
+                  request.requestId(),
+                  durationNs / 1_000_000,
+                  request.targetSlice(),
+                  request.method());
         metricsCollector.onPresent(mc -> mc.recordSuccess(request.targetSlice(),
                                                           request.method(),
                                                           durationNs,
                                                           requestBytes,
                                                           responseBytes));
-                             // Clear context after async completion
         InvocationContext.clear();
-                         })
-              .onFailure(cause -> {
-                             var durationNs = System.nanoTime() - startTime;
-                             log.error("[requestId={}] Invocation failed [{}]: {}",
-                                       requestId,
-                                       request.correlationId(),
-                                       cause.message());
-                             if (request.expectResponse()) {
-                                 sendErrorResponse(request,
-                                                   cause.message());
-                             }
-                             // Record failure metrics
+    }
+
+    private void handleInvocationFailure(InvokeRequest request,
+                                         org.pragmatica.lang.Cause cause,
+                                         long startTime,
+                                         int requestBytes) {
+        var durationNs = System.nanoTime() - startTime;
+        log.error("[requestId={}] Invocation failed [{}]: {}",
+                  request.requestId(),
+                  request.correlationId(),
+                  cause.message());
+        if (request.expectResponse()) {
+            sendErrorResponse(request, cause.message());
+        }
         metricsCollector.onPresent(mc -> mc.recordFailure(request.targetSlice(),
                                                           request.method(),
                                                           durationNs,
                                                           requestBytes,
                                                           cause.getClass()
                                                                .getSimpleName()));
-                             // Clear context after async completion
         InvocationContext.clear();
-                         });
     }
 
     private void sendSuccessResponse(InvokeRequest request, byte[] payload) {

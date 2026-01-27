@@ -533,6 +533,22 @@ public interface NodeDeploymentManager {
                                        .message() + ": {}",
                           cause.message());
             }
+
+            /**
+             * Deactivate all slices on quorum loss.
+             * Called before transitioning to dormant state.
+             */
+            void deactivateAllSlices() {
+                log.warn("Deactivating all {} slices due to quorum loss", deployments.size());
+                for (var entry : deployments.entrySet()) {
+                    var sliceKey = entry.getKey();
+                    var deployment = entry.getValue();
+                    if (deployment.state() == SliceState.ACTIVE) {
+                        forceCleanupSlice(sliceKey);
+                    }
+                }
+                deployments.clear();
+            }
         }
     }
 
@@ -626,9 +642,13 @@ public interface NodeDeploymentManager {
                         }
                     }
                     case DISAPPEARED -> {
-                        // Clean up any pending operations before going dormant
-                        // Individual Promise timeouts will handle their own cleanup
-                        state().set(new NodeDeploymentState.DormantNodeDeploymentState());
+                        // Deactivate all slices before going dormant
+                        if (state()
+                                 .get() instanceof NodeDeploymentState.ActiveNodeDeploymentState activeState) {
+                            activeState.deactivateAllSlices();
+                        }
+                        state()
+                             .set(new NodeDeploymentState.DormantNodeDeploymentState());
                     }
                 }
             }
