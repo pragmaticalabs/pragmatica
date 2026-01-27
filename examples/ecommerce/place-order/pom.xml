@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>ecommerce</artifactId>
-        <version>0.7.5</version>
+        <version>0.8.1</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -46,18 +46,7 @@
             <version>${project.version}</version>
             <scope>provided</scope>
         </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>slice-annotations</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>slice-api</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite</groupId>
-            <artifactId>core</artifactId>
-        </dependency>
+        <!-- slice-api, slice-annotations, core inherited from parent with provided scope -->
     </dependencies>
 
     <build>
@@ -82,28 +71,12 @@
             <plugin>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>jbct-maven-plugin</artifactId>
-                <version>${jbct.version}</version>
                 <executions>
                     <execution>
                         <id>collect-deps</id>
                         <phase>generate-sources</phase>
                         <goals>
                             <goal>collect-slice-deps</goal>
-                        </goals>
-                    </execution>
-                    <execution>
-                        <id>package-slices</id>
-                        <phase>package</phase>
-                        <goals>
-                            <goal>package-slices</goal>
-                            <goal>generate-blueprint</goal>
-                        </goals>
-                    </execution>
-                    <execution>
-                        <id>install-slices</id>
-                        <phase>install</phase>
-                        <goals>
-                            <goal>install-slices</goal>
                         </goals>
                     </execution>
                 </executions>

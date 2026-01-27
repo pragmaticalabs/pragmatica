@@ -112,10 +112,7 @@ public record StateMachineDefinition<S, E, C>(String name,
 
         public Result<StateMachineDefinition<S, E, C>> build() {
             return validate()
-                           .map(v -> new StateMachineDefinition<>(name,
-                                                                  initialState,
-                                                                  Set.copyOf(finalStates),
-                                                                  List.copyOf(transitions)));
+            .map(v -> new StateMachineDefinition<>(name, initialState, Set.copyOf(finalStates), List.copyOf(transitions)));
         }
 
         private Result<Builder<S, E, C>> validate() {

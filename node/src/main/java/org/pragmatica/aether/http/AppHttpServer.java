@@ -2,7 +2,6 @@ package org.pragmatica.aether.http;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.config.AppHttpConfig;
-import org.pragmatica.aether.http.adapter.SliceRouter;
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.handler.security.SecurityContext;
@@ -11,47 +10,26 @@ import org.pragmatica.aether.http.security.SecurityValidator;
 import org.pragmatica.aether.invoke.SliceInvoker;
 import org.pragmatica.aether.invoke.SliceInvoker.SliceInvokerError;
 import org.pragmatica.aether.slice.MethodHandle;
-import org.pragmatica.lang.Cause;
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.server.HttpServer;
+import org.pragmatica.http.server.HttpServerConfig;
+import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.http.routing.HttpStatus;
 import org.pragmatica.http.routing.ProblemDetail;
+import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
-import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.net.tcp.TlsConfig;
-import org.pragmatica.net.tcp.TlsContextFactory;
-import org.pragmatica.json.JsonMapper;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
-import io.netty.bootstrap.ServerBootstrap;
-import io.netty.buffer.Unpooled;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInitializer;
-import io.netty.channel.ChannelPipeline;
-import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.channel.nio.NioIoHandler;
-import io.netty.channel.socket.SocketChannel;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpObjectAggregator;
-import io.netty.handler.codec.http.HttpResponseStatus;
-import io.netty.handler.codec.http.HttpServerCodec;
-import io.netty.handler.codec.http.HttpVersion;
-import io.netty.handler.codec.http.QueryStringDecoder;
-import io.netty.handler.ssl.SslContext;
-import io.netty.util.CharsetUtil;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -111,11 +89,8 @@ class AppHttpServerImpl implements AppHttpServer {
     private final Option<SliceInvoker> sliceInvoker;
     private final Option<HttpRoutePublisher> httpRoutePublisher;
     private final SecurityValidator securityValidator;
-    private final MultiThreadIoEventLoopGroup bossGroup;
-    private final MultiThreadIoEventLoopGroup workerGroup;
-    private final Option<SslContext> sslContext;
-    private final AtomicReference<Channel> serverChannel = new AtomicReference<>();
-    private final AtomicReference<Integer> boundPortRef = new AtomicReference<>();
+    private final Option<TlsConfig> tls;
+    private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
 
     AppHttpServerImpl(AppHttpConfig config,
                       HttpRouteRegistry routeRegistry,
@@ -129,10 +104,7 @@ class AppHttpServerImpl implements AppHttpServer {
         this.securityValidator = config.securityEnabled()
                                  ? SecurityValidator.apiKeyValidator(config.apiKeys())
                                  : SecurityValidator.noOpValidator();
-        this.bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-        this.workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
-        this.sslContext = tls.map(TlsContextFactory::create)
-                             .flatMap(r -> r.option());
+        this.tls = tls;
     }
 
     @Override
@@ -141,83 +113,89 @@ class AppHttpServerImpl implements AppHttpServer {
             log.info("App HTTP server is disabled");
             return Promise.success(unit());
         }
-        return Promise.promise(promise -> configureAndBind(promise));
+        var serverConfig = buildServerConfig();
+        var requestHandler = new AppHttpRequestHandler(routeRegistry,
+                                                       sliceInvoker,
+                                                       httpRoutePublisher,
+                                                       securityValidator);
+        return HttpServer.httpServer(serverConfig, requestHandler::handle)
+                         .map(server -> {
+                             serverRef.set(server);
+                             return unit();
+                         });
     }
 
-    private void configureAndBind(Promise<Unit> promise) {
-        var bootstrap = new ServerBootstrap().group(bossGroup, workerGroup)
-                                             .channel(NioServerSocketChannel.class)
-                                             .childHandler(createChannelInitializer());
-        bootstrap.bind(config.port())
-                 .addListener(future -> handleBindResult(future, promise));
-    }
-
-    private ChannelInitializer<SocketChannel> createChannelInitializer() {
-        return new ChannelInitializer<>() {
-            @Override
-            protected void initChannel(SocketChannel ch) {
-                var pipeline = ch.pipeline();
-                sslContext.onPresent(ctx -> pipeline.addLast(ctx.newHandler(ch.alloc())));
-                pipeline.addLast(new HttpServerCodec());
-                pipeline.addLast(new HttpObjectAggregator(MAX_CONTENT_LENGTH));
-                pipeline.addLast(new AppHttpRequestHandler(routeRegistry,
-                                                           sliceInvoker,
-                                                           httpRoutePublisher,
-                                                           securityValidator));
-            }
-        };
-    }
-
-    private void handleBindResult(io.netty.util.concurrent.Future< ?> future, Promise<Unit> promise) {
-        if (future.isSuccess()) {
-            var channel = ((io.netty.channel.ChannelFuture) future).channel();
-            serverChannel.set(channel);
-            var addr = (java.net.InetSocketAddress) channel.localAddress();
-            boundPortRef.set(addr.getPort());
-            var protocol = sslContext.isPresent()
-                           ? "HTTPS"
-                           : "HTTP";
-            log.info("{} app server started on port {}", protocol, addr.getPort());
-            promise.succeed(unit());
-        } else {
-            log.error("Failed to start app HTTP server on port {}", config.port(), future.cause());
-            promise.fail(Causes.fromThrowable(future.cause()));
-        }
+    private HttpServerConfig buildServerConfig() {
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http",
+                                                             config.port())
+                                           .withMaxContentLength(MAX_CONTENT_LENGTH);
+        return tls.fold(() -> serverConfig, serverConfig::withTls);
     }
 
     @Override
     public Promise<Unit> stop() {
-        return Promise.promise(promise -> {
-                                   var channel = serverChannel.get();
-                                   if (channel != null) {
-                                       channel.close()
-                                              .addListener(_ -> shutdownEventLoops(promise));
-                                   } else {
-                                       shutdownEventLoops(promise);
-                                   }
-                               });
+        return Option.option(serverRef.get())
+                     .fold(() -> Promise.success(unit()),
+                           server -> server.stop()
+                                           .onSuccessRun(() -> log.info("App HTTP server stopped")));
     }
 
     @Override
     public Option<Integer> boundPort() {
-        return Option.option(boundPortRef.get());
-    }
-
-    private void shutdownEventLoops(Promise<Unit> promise) {
-        var bossFuture = bossGroup.shutdownGracefully();
-        var workerFuture = workerGroup.shutdownGracefully();
-        bossFuture.addListener(_ -> workerFuture.addListener(_ -> {
-                                                                 log.info("App HTTP server stopped");
-                                                                 promise.succeed(unit());
-                                                             }));
+        return Option.option(serverRef.get())
+                     .map(HttpServer::port);
     }
 }
 
-class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
+class AppHttpRequestHandler {
     private static final Logger log = LoggerFactory.getLogger(AppHttpRequestHandler.class);
-    private static final String CONTENT_TYPE_JSON = "application/json";
-    private static final String CONTENT_TYPE_PROBLEM = "application/problem+json";
     private static final JsonMapper JSON_MAPPER = JsonMapper.defaultJsonMapper();
+    private static final org.pragmatica.http.ContentType CONTENT_TYPE_PROBLEM = org.pragmatica.http.ContentType.contentType("application/problem+json",
+                                                                                                                            org.pragmatica.http.ContentCategory.JSON);
+    private static final Map<Integer, org.pragmatica.http.HttpStatus> STATUS_MAP = Map.ofEntries(Map.entry(200,
+                                                                                                           org.pragmatica.http.HttpStatus.OK),
+                                                                                                 Map.entry(201,
+                                                                                                           org.pragmatica.http.HttpStatus.CREATED),
+                                                                                                 Map.entry(202,
+                                                                                                           org.pragmatica.http.HttpStatus.ACCEPTED),
+                                                                                                 Map.entry(204,
+                                                                                                           org.pragmatica.http.HttpStatus.NO_CONTENT),
+                                                                                                 Map.entry(301,
+                                                                                                           org.pragmatica.http.HttpStatus.MOVED_PERMANENTLY),
+                                                                                                 Map.entry(302,
+                                                                                                           org.pragmatica.http.HttpStatus.FOUND),
+                                                                                                 Map.entry(304,
+                                                                                                           org.pragmatica.http.HttpStatus.NOT_MODIFIED),
+                                                                                                 Map.entry(307,
+                                                                                                           org.pragmatica.http.HttpStatus.TEMPORARY_REDIRECT),
+                                                                                                 Map.entry(308,
+                                                                                                           org.pragmatica.http.HttpStatus.PERMANENT_REDIRECT),
+                                                                                                 Map.entry(400,
+                                                                                                           org.pragmatica.http.HttpStatus.BAD_REQUEST),
+                                                                                                 Map.entry(401,
+                                                                                                           org.pragmatica.http.HttpStatus.UNAUTHORIZED),
+                                                                                                 Map.entry(403,
+                                                                                                           org.pragmatica.http.HttpStatus.FORBIDDEN),
+                                                                                                 Map.entry(404,
+                                                                                                           org.pragmatica.http.HttpStatus.NOT_FOUND),
+                                                                                                 Map.entry(405,
+                                                                                                           org.pragmatica.http.HttpStatus.METHOD_NOT_ALLOWED),
+                                                                                                 Map.entry(409,
+                                                                                                           org.pragmatica.http.HttpStatus.CONFLICT),
+                                                                                                 Map.entry(422,
+                                                                                                           org.pragmatica.http.HttpStatus.UNPROCESSABLE_ENTITY),
+                                                                                                 Map.entry(429,
+                                                                                                           org.pragmatica.http.HttpStatus.TOO_MANY_REQUESTS),
+                                                                                                 Map.entry(500,
+                                                                                                           org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR),
+                                                                                                 Map.entry(501,
+                                                                                                           org.pragmatica.http.HttpStatus.NOT_IMPLEMENTED),
+                                                                                                 Map.entry(502,
+                                                                                                           org.pragmatica.http.HttpStatus.BAD_GATEWAY),
+                                                                                                 Map.entry(503,
+                                                                                                           org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE),
+                                                                                                 Map.entry(504,
+                                                                                                           org.pragmatica.http.HttpStatus.GATEWAY_TIMEOUT));
 
     private final HttpRouteRegistry routeRegistry;
     private final Option<SliceInvoker> sliceInvoker;
@@ -236,40 +214,26 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         this.methodHandleCache = new ConcurrentHashMap<>();
     }
 
-    @Override
-    protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
-        if (!request.decoderResult()
-                    .isSuccess()) {
-            sendProblem(ctx, HttpStatus.BAD_REQUEST, "Invalid HTTP request", request.uri());
-            return;
-        }
+    void handle(RequestContext request, ResponseWriter response) {
         var method = request.method()
                             .name();
-        var uri = request.uri();
-        var requestId = UUID.randomUUID()
-                            .toString();
-        log.debug("Received {} {} [{}]", method, uri, requestId);
-        // Parse URI to extract path and query params
-        var queryDecoder = new QueryStringDecoder(uri);
-        var path = queryDecoder.path();
-        var queryParams = convertQueryParams(queryDecoder.parameters());
-        // Look up route
+        var path = request.path();
+        var requestId = request.requestId();
+        log.debug("Received {} {} [{}]", method, path, requestId);
         routeRegistry.findRoute(method, path)
-                     .onPresent(route -> handleRouteFound(ctx, request, route, path, queryParams, requestId))
-                     .onEmpty(() -> sendProblem(ctx,
+                     .onPresent(route -> handleRouteFound(request, response, route, path, requestId))
+                     .onEmpty(() -> sendProblem(response,
                                                 HttpStatus.NOT_FOUND,
                                                 "No route found for " + method + " " + path,
                                                 path,
                                                 requestId));
     }
 
-    private void handleRouteFound(ChannelHandlerContext ctx,
-                                  FullHttpRequest request,
+    private void handleRouteFound(RequestContext request,
+                                  ResponseWriter response,
                                   HttpRouteRegistry.RouteInfo route,
                                   String path,
-                                  Map<String, List<String>> queryParams,
                                   String requestId) {
-        // Check if SliceInvoker is available
         if (sliceInvoker.isEmpty()) {
             log.debug("Route found but SliceInvoker not available: {} {} -> {}:{} [{}]",
                       route.httpMethod(),
@@ -277,42 +241,42 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                       route.artifact(),
                       route.sliceMethod(),
                       requestId);
-            sendProblem(ctx, HttpStatus.SERVICE_UNAVAILABLE, "Slice invoker not initialized", path, requestId);
+            sendProblem(response, HttpStatus.SERVICE_UNAVAILABLE, "Slice invoker not initialized", path, requestId);
             return;
         }
-        // Build initial HttpRequestContext (with anonymous security for validation)
-        var headers = convertHeaders(request.headers());
-        var body = new byte[request.content()
-                                   .readableBytes()];
-        request.content()
-               .readBytes(body);
-        var initialContext = HttpRequestContext.httpRequestContext(path,
-                                                                   request.method()
-                                                                          .name(),
-                                                                   queryParams,
-                                                                   headers,
-                                                                   body,
-                                                                   requestId);
-        // Validate security and proceed
+        var initialContext = toHttpRequestContext(request, requestId);
         securityValidator.validate(initialContext,
                                    route.securityPolicy())
-                         .fold(cause -> {
-                                   sendSecurityError(ctx, cause, path, requestId);
-                                   return null;
-                               },
-                               securityContext -> {
-                                   invokeSecuredRoute(ctx, initialContext, securityContext, route, path, requestId);
-                                   return null;
-                               });
+                         .onFailure(cause -> sendSecurityError(response, cause, path, requestId))
+                         .onSuccess(securityContext -> invokeSecuredRoute(response,
+                                                                          initialContext,
+                                                                          securityContext,
+                                                                          route,
+                                                                          path,
+                                                                          requestId));
     }
 
-    private void invokeSecuredRoute(ChannelHandlerContext ctx,
+    private HttpRequestContext toHttpRequestContext(RequestContext request, String requestId) {
+        var queryParams = request.queryParams()
+                                 .asMap();
+        var headers = request.headers()
+                             .asMap();
+        var body = request.body();
+        return HttpRequestContext.httpRequestContext(request.path(),
+                                                     request.method()
+                                                            .name(),
+                                                     queryParams,
+                                                     headers,
+                                                     body,
+                                                     requestId);
+    }
+
+    private void invokeSecuredRoute(ResponseWriter response,
                                     HttpRequestContext initialContext,
                                     SecurityContext securityContext,
                                     HttpRouteRegistry.RouteInfo route,
                                     String path,
                                     String requestId) {
-        // Create final context with security info
         var securedContext = initialContext.withSecurity(securityContext);
         log.debug("Route found: {} {} -> {}:{} [{}] security={}",
                   route.httpMethod(),
@@ -333,48 +297,44 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 log.debug("Using local SliceRouter for {} [{}]", artObj, requestId);
                 localRouter.unwrap()
                            .handle(securedContext)
-                           .onSuccess(response -> sendResponse(ctx, response, requestId))
-                           .onFailure(cause -> handleInvocationError(ctx, cause, path, requestId));
+                           .onSuccess(responseData -> sendResponse(response, responseData, requestId))
+                           .onFailure(cause -> handleInvocationError(response, cause, path, requestId));
                 return;
             }
         }
         // FALL BACK to remote SliceInvoker path
-        // Get or create MethodHandle for this route
         var cacheKey = route.artifact() + ":" + route.sliceMethod();
         var methodHandle = getOrCreateMethodHandle(cacheKey, route);
         if (methodHandle.isEmpty()) {
-            sendProblem(ctx,
+            sendProblem(response,
                         HttpStatus.INTERNAL_SERVER_ERROR,
                         "Failed to create method handle for route",
                         path,
                         requestId);
             return;
         }
-        // Invoke the slice method with secured context
         methodHandle.unwrap()
                     .invoke(securedContext)
-                    .onSuccess(responseData -> sendResponse(ctx, responseData, requestId))
-                    .onFailure(cause -> handleInvocationError(ctx, cause, path, requestId));
+                    .onSuccess(responseData -> sendResponse(response, responseData, requestId))
+                    .onFailure(cause -> handleInvocationError(response, cause, path, requestId));
     }
 
-    private void sendSecurityError(ChannelHandlerContext ctx, Cause cause, String path, String requestId) {
+    private void sendSecurityError(ResponseWriter response, Cause cause, String path, String requestId) {
         log.debug("Security validation failed [{}]: {}", requestId, cause.message());
         var status = switch (cause) {
             case SecurityError.MissingCredentials _ -> HttpStatus.UNAUTHORIZED;
             case SecurityError.InvalidCredentials _ -> HttpStatus.UNAUTHORIZED;
             default -> HttpStatus.UNAUTHORIZED;
         };
-        sendProblem(ctx, status, cause.message(), path, requestId);
+        sendProblem(response, status, cause.message(), path, requestId);
     }
 
-    private void handleInvocationError(ChannelHandlerContext ctx, Cause cause, String path, String requestId) {
+    private void handleInvocationError(ResponseWriter response, Cause cause, String path, String requestId) {
         log.error("Slice invocation failed [{}]: {}", requestId, cause.message());
-        // Map error types to appropriate HTTP status codes
         var status = switch (cause) {
             case SliceInvokerError.AllInstancesFailedError _ -> HttpStatus.SERVICE_UNAVAILABLE;
             case SliceInvokerError.InvocationError _ -> HttpStatus.BAD_GATEWAY;
             default -> {
-                // Check for timeout in message (best effort since no specific type)
                 if (cause.message() != null && cause.message()
                                                     .toLowerCase()
                                                     .contains("timeout")) {
@@ -383,7 +343,7 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
                 yield HttpStatus.BAD_GATEWAY;
             }
         };
-        sendProblem(ctx, status, "Slice invocation failed: " + cause.message(), path, requestId);
+        sendProblem(response, status, "Slice invocation failed: " + cause.message(), path, requestId);
     }
 
     private Option<MethodHandle<HttpResponseData, HttpRequestContext>> getOrCreateMethodHandle(String cacheKey,
@@ -394,101 +354,55 @@ class AppHttpRequestHandler extends SimpleChannelInboundHandler<FullHttpRequest>
         }
         return sliceInvoker.flatMap(invoker -> invoker.methodHandle(route.artifact(),
                                                                     route.sliceMethod(),
-                                                                    HttpRequestContext.class,
-                                                                    HttpResponseData.class)
+                                                                    TypeToken.of(HttpRequestContext.class),
+                                                                    TypeToken.of(HttpResponseData.class))
                                                       .onSuccess(handle -> methodHandleCache.put(cacheKey, handle))
                                                       .option());
     }
 
-    private Map<String, List<String>> convertQueryParams(Map<String, List<String>> nettyParams) {
-        var result = new HashMap<String, List<String>>();
-        for (var entry : nettyParams.entrySet()) {
-            result.put(entry.getKey(), new ArrayList<>(entry.getValue()));
-        }
-        return result;
-    }
-
-    private Map<String, List<String>> convertHeaders(io.netty.handler.codec.http.HttpHeaders nettyHeaders) {
-        var result = new HashMap<String, List<String>>();
-        for (var name : nettyHeaders.names()) {
-            result.put(name, nettyHeaders.getAll(name));
-        }
-        return result;
-    }
-
-    private void sendProblem(ChannelHandlerContext ctx, HttpStatus status, String detail, String instance) {
-        sendProblem(ctx,
-                    status,
-                    detail,
-                    instance,
-                    UUID.randomUUID()
-                        .toString());
-    }
-
-    private void sendProblem(ChannelHandlerContext ctx,
+    private void sendProblem(ResponseWriter response,
                              HttpStatus status,
                              String detail,
                              String instance,
                              String requestId) {
         var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
         JSON_MAPPER.writeAsString(problem)
-                   .onSuccess(json -> {
-                                  var buf = Unpooled.copiedBuffer(json, CharsetUtil.UTF_8);
-                                  var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
-                                                                             HttpResponseStatus.valueOf(status.code()),
-                                                                             buf);
-                                  response.headers()
-                                          .set(HttpHeaderNames.CONTENT_TYPE, CONTENT_TYPE_PROBLEM);
-                                  response.headers()
-                                          .setInt(HttpHeaderNames.CONTENT_LENGTH,
-                                                  buf.readableBytes());
-                                  ctx.writeAndFlush(response)
-                                     .addListener(ChannelFutureListener.CLOSE);
-                              })
+                   .onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                                              .write(toServerStatus(status.code()),
+                                                     json.getBytes(StandardCharsets.UTF_8),
+                                                     CONTENT_TYPE_PROBLEM))
                    .onFailure(cause -> {
                                   log.error("Failed to serialize ProblemDetail: {}",
                                             cause.message());
-                                  sendPlainError(ctx, status);
+                                  sendPlainError(response, status, requestId);
                               });
     }
 
-    private void sendResponse(ChannelHandlerContext ctx, HttpResponseData responseData, String requestId) {
-        var buf = Unpooled.wrappedBuffer(responseData.body());
-        var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
-                                                   HttpResponseStatus.valueOf(responseData.statusCode()),
-                                                   buf);
+    private void sendResponse(ResponseWriter response, HttpResponseData responseData, String requestId) {
+        log.debug("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());
+        var writer = response.header(ResponseWriter.X_REQUEST_ID, requestId);
         for (var entry : responseData.headers()
                                      .entrySet()) {
-            response.headers()
-                    .set(entry.getKey(),
-                         entry.getValue());
+            writer = writer.header(entry.getKey(), entry.getValue());
         }
-        response.headers()
-                .setInt(HttpHeaderNames.CONTENT_LENGTH,
-                        buf.readableBytes());
-        log.debug("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());
-        ctx.writeAndFlush(response)
-           .addListener(ChannelFutureListener.CLOSE);
+        var contentType = Option.option(responseData.headers()
+                                                    .get("Content-Type"))
+                                .map(ct -> org.pragmatica.http.ContentType.contentType(ct,
+                                                                                       org.pragmatica.http.ContentCategory.JSON))
+                                .or(CommonContentType.APPLICATION_JSON);
+        writer.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
     }
 
-    private void sendPlainError(ChannelHandlerContext ctx, HttpStatus status) {
+    private void sendPlainError(ResponseWriter response, HttpStatus status, String requestId) {
         var content = "{\"error\":\"" + status.message() + "\"}";
-        var buf = Unpooled.copiedBuffer(content, CharsetUtil.UTF_8);
-        var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1,
-                                                   HttpResponseStatus.valueOf(status.code()),
-                                                   buf);
-        response.headers()
-                .set(HttpHeaderNames.CONTENT_TYPE, CONTENT_TYPE_JSON);
-        response.headers()
-                .setInt(HttpHeaderNames.CONTENT_LENGTH,
-                        buf.readableBytes());
-        ctx.writeAndFlush(response)
-           .addListener(ChannelFutureListener.CLOSE);
+        response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                .write(toServerStatus(status.code()),
+                       content.getBytes(StandardCharsets.UTF_8),
+                       CommonContentType.APPLICATION_JSON);
     }
 
-    @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        log.error("Error handling HTTP request", cause);
-        ctx.close();
+    private static org.pragmatica.http.HttpStatus toServerStatus(int code) {
+        return Option.option(STATUS_MAP.get(code))
+                     .or(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR);
     }
 }

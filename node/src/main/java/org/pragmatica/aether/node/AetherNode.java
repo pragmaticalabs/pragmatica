@@ -42,6 +42,7 @@ import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.ttm.TTMState;
 import org.pragmatica.aether.update.RollingUpdateManager;
 import org.pragmatica.aether.update.RollingUpdateManagerImpl;
+import org.pragmatica.aether.slice.DeferredSliceInvokerFacade;
 import org.pragmatica.aether.slice.FrameworkClassLoader;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.SliceRuntime;
@@ -70,6 +71,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
@@ -184,6 +186,11 @@ public interface AetherNode {
     boolean isLeader();
 
     /**
+     * Check if this node is ready for operations (consensus active).
+     */
+    boolean isReady();
+
+    /**
      * Get the current leader node ID.
      */
     Option<NodeId> leader();
@@ -203,6 +210,17 @@ public interface AetherNode {
      * Get the node uptime in seconds since start.
      */
     long uptimeSeconds();
+
+    /**
+     * Get the initial topology node IDs from configuration.
+     * This includes all core nodes that were configured at startup.
+     */
+    List<NodeId> initialTopology();
+
+    /**
+     * Route a message to registered handlers via the internal MessageRouter.
+     */
+    void route(Message message);
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
         var delegateRouter = MessageRouter.DelegateRouter.delegate();
@@ -243,31 +261,37 @@ public interface AetherNode {
         // Create slice management components
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var sharedLibraryLoader = createSharedLibraryLoader(config);
-        var sliceStore = SliceStore.sliceStore(sliceRegistry, repositories, sharedLibraryLoader);
+        var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
+        var sliceStore = SliceStore.sliceStore(sliceRegistry,
+                                               repositories,
+                                               sharedLibraryLoader,
+                                               deferredInvoker,
+                                               config.sliceAction());
         // Create Rabia cluster node with metrics
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
         var networkMetricsHandler = NetworkMetricsHandler.networkMetricsHandler();
-        var clusterNode = RabiaNode.rabiaNode(nodeConfig,
-                                              delegateRouter,
-                                              kvStore,
-                                              serializer,
-                                              deserializer,
-                                              rabiaMetricsCollector,
-                                              List.of(networkMetricsHandler));
         // Assemble all components and collect routes
-        return assembleNode(config,
-                            delegateRouter,
-                            kvStore,
-                            sliceRegistry,
-                            sliceStore,
-                            clusterNode,
-                            rabiaMetricsCollector,
-                            networkMetricsHandler,
-                            serializer,
-                            deserializer,
-                            artifactStore,
-                            repositories);
+        return RabiaNode.rabiaNode(nodeConfig,
+                                   delegateRouter,
+                                   kvStore,
+                                   serializer,
+                                   deserializer,
+                                   rabiaMetricsCollector,
+                                   List.of(networkMetricsHandler))
+                        .flatMap(clusterNode -> assembleNode(config,
+                                                             delegateRouter,
+                                                             kvStore,
+                                                             sliceRegistry,
+                                                             sliceStore,
+                                                             deferredInvoker,
+                                                             clusterNode,
+                                                             rabiaMetricsCollector,
+                                                             networkMetricsHandler,
+                                                             serializer,
+                                                             deserializer,
+                                                             artifactStore,
+                                                             repositories));
     }
 
     private static Result<AetherNode> assembleNode(AetherNodeConfig config,
@@ -275,6 +299,7 @@ public interface AetherNode {
                                                    KVStore<AetherKey, AetherValue> kvStore,
                                                    SliceRegistry sliceRegistry,
                                                    SliceStore sliceStore,
+                                                   DeferredSliceInvokerFacade deferredInvoker,
                                                    RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                    RabiaMetricsCollector rabiaMetricsCollector,
                                                    NetworkMetricsHandler networkMetricsHandler,
@@ -340,6 +365,11 @@ public interface AetherNode {
             @Override
             public Promise<Unit> stop() {
                 log.info("Stopping Aether node {}", self());
+                // 1. Notify components that quorum is gone (stops scheduled tasks via SharedScheduler)
+                router.route(QuorumStateNotification.DISAPPEARED);
+                // 2. Stop message delivery (no new messages will be routed)
+                router.quiesce();
+                // 3. Stop components (they've already stopped their activities via quorum notification)
                 controlLoop.stop();
                 metricsScheduler.stop();
                 deploymentMetricsScheduler.stop();
@@ -347,6 +377,7 @@ public interface AetherNode {
                 snapshotCollector.stop();
                 SliceRuntime.clear();
                 InfraStore.clear();
+                // 4. Stop servers and network
                 return managementServer.map(ManagementServer::stop)
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.stop())
@@ -357,14 +388,11 @@ public interface AetherNode {
             }
 
             private Promise<Unit> startClusterAsync() {
-                clusterNode.start()
-                           .onSuccess(_ -> {
-                                          log.info("Aether node {} cluster formation complete",
-                                                   self());
-                                          // Ensure NodeDeploymentManager is activated after cluster formation
-                // This guarantees activation even if QuorumStateNotification was missed
-                nodeDeploymentManager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
-                                          // Register Netty EventLoopGroups for metrics collection
+                return clusterNode.start()
+                                  .onSuccess(_ -> {
+                                                 log.info("Aether node {} cluster formation complete",
+                                                          self());
+                                                 // Register Netty EventLoopGroups for metrics collection
                 clusterNode.network()
                            .server()
                            .onPresent(server -> {
@@ -372,10 +400,9 @@ public interface AetherNode {
                                           eventLoopMetricsCollector.register(server.workerGroup());
                                           log.info("Registered EventLoopGroups for metrics collection");
                                       });
-                                      })
-                           .onFailure(cause -> log.error("Cluster formation failed: {}",
-                                                         cause.message()));
-                return Promise.success(Unit.unit());
+                                             })
+                                  .onFailure(cause -> log.error("Cluster formation failed: {}",
+                                                                cause.message()));
             }
 
             @Override
@@ -396,6 +423,11 @@ public interface AetherNode {
             }
 
             @Override
+            public boolean isReady() {
+                return clusterNode.isActive();
+            }
+
+            @Override
             public Option<NodeId> leader() {
                 return clusterNode.leaderManager()
                                   .leader();
@@ -409,6 +441,20 @@ public interface AetherNode {
             @Override
             public long uptimeSeconds() {
                 return (System.currentTimeMillis() - startTimeMs) / 1000;
+            }
+
+            @Override
+            public List<NodeId> initialTopology() {
+                return config.topology()
+                             .coreNodes()
+                             .stream()
+                             .map(org.pragmatica.consensus.net.NodeInfo::id)
+                             .toList();
+            }
+
+            @Override
+            public void route(Message message) {
+                router.route(message);
             }
         }
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
@@ -493,6 +539,8 @@ public interface AetherNode {
                                                      serializer,
                                                      deserializer,
                                                      rollingUpdateManager);
+        // Wire the deferred invoker facade to the actual SliceInvoker
+        deferredInvoker.setDelegate(sliceInvoker);
         // Create node deployment manager (now created after sliceInvoker for HTTP route publishing)
         var nodeDeploymentManager = NodeDeploymentManager.nodeDeploymentManager(config.self(),
                                                                                 delegateRouter,
@@ -612,191 +660,113 @@ public interface AetherNode {
                              });
     }
 
-    /**
-     * Collect all route entries for the Aether node.
-     *
-     * <p>Routes are organized by concern area using {@link org.pragmatica.aether.message.RouteGroup}
-     * and compile-time validated using SealedBuilder for sealed hierarchies.
-     */
-    private static List<MessageRouter.Entry< ?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
-                                                                     NodeDeploymentManager nodeDeploymentManager,
-                                                                     ClusterDeploymentManager clusterDeploymentManager,
-                                                                     EndpointRegistry endpointRegistry,
-                                                                     HttpRouteRegistry httpRouteRegistry,
-                                                                     MetricsCollector metricsCollector,
-                                                                     MetricsScheduler metricsScheduler,
-                                                                     DeploymentMetricsCollector deploymentMetricsCollector,
-                                                                     DeploymentMetricsScheduler deploymentMetricsScheduler,
-                                                                     ControlLoop controlLoop,
-                                                                     SliceInvoker sliceInvoker,
-                                                                     InvocationHandler invocationHandler,
-                                                                     AlertManager alertManager,
-                                                                     TTMManager ttmManager,
-                                                                     RabiaMetricsCollector rabiaMetricsCollector,
-                                                                     RollingUpdateManagerImpl rollingUpdateManager,
-                                                                     RollbackManager rollbackManager,
-                                                                     ArtifactMetricsCollector artifactMetricsCollector) {
-        var entries = new ArrayList<MessageRouter.Entry< ?>>();
-        // === KV-Store Notifications (fan-out to multiple handlers) ===
-        entries.addAll(kvStoreRoutes(nodeDeploymentManager,
-                                     clusterDeploymentManager,
-                                     endpointRegistry,
-                                     httpRouteRegistry,
-                                     controlLoop,
-                                     alertManager,
-                                     rollbackManager,
-                                     artifactMetricsCollector));
-        // === Cluster Lifecycle Events (quorum, leader, topology) ===
-        entries.addAll(clusterLifecycleRoutes(nodeDeploymentManager,
-                                              clusterDeploymentManager,
-                                              metricsScheduler,
-                                              controlLoop,
-                                              ttmManager,
-                                              rabiaMetricsCollector,
-                                              rollingUpdateManager,
-                                              rollbackManager,
-                                              deploymentMetricsCollector,
-                                              deploymentMetricsScheduler));
-        // === Metrics Collection (sealed hierarchies) ===
-        entries.addAll(metricsRoutes(metricsCollector, deploymentMetricsCollector));
-        // === Deployment Events (sealed hierarchy with SealedBuilder) ===
-        entries.add(deploymentEventRoutes(deploymentMetricsCollector));
-        // === Slice Failure Events ===
-        entries.add(sliceFailureRoutes(rollbackManager));
-        // === Invocation Messages (sealed hierarchy with SealedBuilder) ===
-        entries.add(invocationRoutes(invocationHandler, sliceInvoker));
-        // === KV-Store Local I/O ===
+    private static List<MessageRouter.Entry<?>> collectRouteEntries(KVStore<AetherKey, AetherValue> kvStore,
+                                                                    NodeDeploymentManager nodeDeploymentManager,
+                                                                    ClusterDeploymentManager clusterDeploymentManager,
+                                                                    EndpointRegistry endpointRegistry,
+                                                                    HttpRouteRegistry httpRouteRegistry,
+                                                                    MetricsCollector metricsCollector,
+                                                                    MetricsScheduler metricsScheduler,
+                                                                    DeploymentMetricsCollector deploymentMetricsCollector,
+                                                                    DeploymentMetricsScheduler deploymentMetricsScheduler,
+                                                                    ControlLoop controlLoop,
+                                                                    SliceInvoker sliceInvoker,
+                                                                    InvocationHandler invocationHandler,
+                                                                    AlertManager alertManager,
+                                                                    TTMManager ttmManager,
+                                                                    RabiaMetricsCollector rabiaMetricsCollector,
+                                                                    RollingUpdateManagerImpl rollingUpdateManager,
+                                                                    RollbackManager rollbackManager,
+                                                                    ArtifactMetricsCollector artifactMetricsCollector) {
+        var entries = new ArrayList<MessageRouter.Entry<?>>();
+        // KVStore notifications to deployment managers
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, nodeDeploymentManager::onValuePut));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, clusterDeploymentManager::onValuePut));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, endpointRegistry::onValuePut));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                              nodeDeploymentManager::onValueRemove));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                              clusterDeploymentManager::onValueRemove));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, endpointRegistry::onValueRemove));
+        // HTTP route registry for application HTTP routing
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, httpRouteRegistry::onValuePut));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, httpRouteRegistry::onValueRemove));
+        // Artifact metrics tracking via KV-Store
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, artifactMetricsCollector::onValuePut));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                              artifactMetricsCollector::onValueRemove));
+        // ControlLoop blueprint sync via KV-Store
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, controlLoop::onValuePut));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, controlLoop::onValueRemove));
+        // Alert threshold sync via KV-Store
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                              notification -> alertManager.onKvStoreUpdate((AetherKey) notification.cause()
+                                                                                                                  .key(),
+                                                                                           (AetherValue) notification.cause()
+                                                                                                                    .value())));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                              notification -> alertManager.onKvStoreRemove((AetherKey) notification.cause()
+                                                                                                                  .key())));
+        // Quorum state notifications - these handlers activate/deactivate components.
+        // NOTE: RabiaNode's handlers run first (consensus activates before LeaderManager emits LeaderChange).
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, controlLoop::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, metricsScheduler::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class,
+                                              deploymentMetricsScheduler::onQuorumStateChange));
+        // Leader change notifications - handlers may call cluster.apply(), which is safe because
+        // consensus engine is already active by the time LeaderChange is emitted (see RabiaNode handler order).
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              clusterDeploymentManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, metricsScheduler::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, controlLoop::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
+                                                                                         change.leaderId()
+                                                                                               .map(NodeId::id))));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, ttmManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              rollingUpdateManager::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, rollbackManager::onLeaderChange));
+        // RollbackManager KV-Store notifications and slice failure events
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, rollbackManager::onValuePut));
+        entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
+                                              rollbackManager::onAllInstancesFailed));
+        // Topology change notifications
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class,
+                                              clusterDeploymentManager::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class, metricsScheduler::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class, controlLoop::onTopologyChange));
+        // Metrics messages
+        entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPing.class, metricsCollector::onMetricsPing));
+        entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPong.class, metricsCollector::onMetricsPong));
+        // Deployment metrics messages
+        entries.add(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPing.class,
+                                              deploymentMetricsCollector::onDeploymentMetricsPing));
+        entries.add(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPong.class,
+                                              deploymentMetricsCollector::onDeploymentMetricsPong));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class,
+                                              deploymentMetricsCollector::onTopologyChange));
+        // Deployment events (dispatched locally via MessageRouter)
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentStarted.class,
+                                              deploymentMetricsCollector::onDeploymentStarted));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.StateTransition.class,
+                                              deploymentMetricsCollector::onStateTransition));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentCompleted.class,
+                                              deploymentMetricsCollector::onDeploymentCompleted));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
+                                              deploymentMetricsCollector::onDeploymentFailed));
+        // Deployment metrics scheduler leader/topology notifications
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                              deploymentMetricsScheduler::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class,
+                                              deploymentMetricsScheduler::onTopologyChange));
+        // Invocation messages
+        entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
+        entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
+        // KVStore local operations
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
         return entries;
-    }
-
-    /**
-     * KV-Store notification routes - fan-out pattern where multiple handlers
-     * react to the same notification for different purposes.
-     */
-    private static List<MessageRouter.Entry< ?>> kvStoreRoutes(NodeDeploymentManager nodeDeploymentManager,
-                                                               ClusterDeploymentManager clusterDeploymentManager,
-                                                               EndpointRegistry endpointRegistry,
-                                                               HttpRouteRegistry httpRouteRegistry,
-                                                               ControlLoop controlLoop,
-                                                               AlertManager alertManager,
-                                                               RollbackManager rollbackManager,
-                                                               ArtifactMetricsCollector artifactMetricsCollector) {
-        return org.pragmatica.aether.message.RouteGroup.routeGroup("kvstore")
-                  .fanOut(KVStoreNotification.ValuePut.class,
-                          nodeDeploymentManager::onValuePut,
-                          clusterDeploymentManager::onValuePut,
-                          endpointRegistry::onValuePut,
-                          httpRouteRegistry::onValuePut,
-                          controlLoop::onValuePut,
-                          rollbackManager::onValuePut,
-                          artifactMetricsCollector::onValuePut,
-                          notification -> alertManager.onKvStoreUpdate((AetherKey) notification.cause()
-                                                                                              .key(),
-                                                                       (AetherValue) notification.cause()
-                                                                                                .value()))
-                  .fanOut(KVStoreNotification.ValueRemove.class,
-                          nodeDeploymentManager::onValueRemove,
-                          clusterDeploymentManager::onValueRemove,
-                          endpointRegistry::onValueRemove,
-                          httpRouteRegistry::onValueRemove,
-                          controlLoop::onValueRemove,
-                          artifactMetricsCollector::onValueRemove,
-                          notification -> alertManager.onKvStoreRemove((AetherKey) notification.cause()
-                                                                                              .key()))
-                  .build()
-                  .toList();
-    }
-
-    /**
-     * Cluster lifecycle routes - leader changes, topology changes, quorum state.
-     */
-    private static List<MessageRouter.Entry< ?>> clusterLifecycleRoutes(NodeDeploymentManager nodeDeploymentManager,
-                                                                        ClusterDeploymentManager clusterDeploymentManager,
-                                                                        MetricsScheduler metricsScheduler,
-                                                                        ControlLoop controlLoop,
-                                                                        TTMManager ttmManager,
-                                                                        RabiaMetricsCollector rabiaMetricsCollector,
-                                                                        RollingUpdateManagerImpl rollingUpdateManager,
-                                                                        RollbackManager rollbackManager,
-                                                                        DeploymentMetricsCollector deploymentMetricsCollector,
-                                                                        DeploymentMetricsScheduler deploymentMetricsScheduler) {
-        return org.pragmatica.aether.message.RouteGroup.routeGroup("cluster-lifecycle")
-                  .route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange)
-                  .fanOut(LeaderNotification.LeaderChange.class,
-                          clusterDeploymentManager::onLeaderChange,
-                          metricsScheduler::onLeaderChange,
-                          controlLoop::onLeaderChange,
-                          ttmManager::onLeaderChange,
-                          rollingUpdateManager::onLeaderChange,
-                          rollbackManager::onLeaderChange,
-                          deploymentMetricsScheduler::onLeaderChange,
-                          change -> rabiaMetricsCollector.updateRole(change.localNodeIsLeader(),
-                                                                     change.leaderId()
-                                                                           .map(NodeId::id)))
-                  .fanOut(TopologyChangeNotification.class,
-                          clusterDeploymentManager::onTopologyChange,
-                          metricsScheduler::onTopologyChange,
-                          controlLoop::onTopologyChange,
-                          deploymentMetricsCollector::onTopologyChange,
-                          deploymentMetricsScheduler::onTopologyChange)
-                  .build()
-                  .toList();
-    }
-
-    /**
-     * Metrics collection routes - uses SealedBuilder for sealed message hierarchies.
-     */
-    private static List<MessageRouter.Entry< ?>> metricsRoutes(MetricsCollector metricsCollector,
-                                                               DeploymentMetricsCollector deploymentMetricsCollector) {
-        // MetricsMessage sealed hierarchy (Ping/Pong)
-        var metricsMessageRoutes = MessageRouter.Entry.SealedBuilder.from(MetricsMessage.class)
-                                                .route(MessageRouter.Entry.route(MetricsMessage.MetricsPing.class,
-                                                                                 metricsCollector::onMetricsPing),
-                                                       MessageRouter.Entry.route(MetricsMessage.MetricsPong.class,
-                                                                                 metricsCollector::onMetricsPong));
-        // DeploymentMetricsMessage sealed hierarchy (Ping/Pong)
-        var deploymentMetricsRoutes = MessageRouter.Entry.SealedBuilder.from(DeploymentMetricsMessage.class)
-                                                   .route(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPing.class,
-                                                                                    deploymentMetricsCollector::onDeploymentMetricsPing),
-                                                          MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPong.class,
-                                                                                    deploymentMetricsCollector::onDeploymentMetricsPong));
-        return List.of(metricsMessageRoutes, deploymentMetricsRoutes);
-    }
-
-    /**
-     * Deployment event routes - SealedBuilder validates all DeploymentEvent variants are handled.
-     */
-    private static MessageRouter.Entry< ?> deploymentEventRoutes(DeploymentMetricsCollector collector) {
-        return MessageRouter.Entry.SealedBuilder.from(DeploymentEvent.class)
-                            .route(MessageRouter.Entry.route(DeploymentEvent.DeploymentStarted.class,
-                                                             collector::onDeploymentStarted),
-                                   MessageRouter.Entry.route(DeploymentEvent.StateTransition.class,
-                                                             collector::onStateTransition),
-                                   MessageRouter.Entry.route(DeploymentEvent.DeploymentCompleted.class,
-                                                             collector::onDeploymentCompleted),
-                                   MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
-                                                             collector::onDeploymentFailed));
-    }
-
-    /**
-     * Slice failure event routes - SealedBuilder validates all SliceFailureEvent variants are handled.
-     */
-    private static MessageRouter.Entry< ?> sliceFailureRoutes(RollbackManager rollbackManager) {
-        return MessageRouter.Entry.SealedBuilder.from(SliceFailureEvent.class)
-                            .route(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
-                                                             rollbackManager::onAllInstancesFailed));
-    }
-
-    /**
-     * Invocation message routes - SealedBuilder validates all InvocationMessage variants are handled.
-     */
-    private static MessageRouter.Entry< ?> invocationRoutes(InvocationHandler handler, SliceInvoker invoker) {
-        return MessageRouter.Entry.SealedBuilder.from(InvocationMessage.class)
-                            .route(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class,
-                                                             handler::onInvokeRequest),
-                                   MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class,
-                                                             invoker::onInvokeResponse));
     }
 
     /**

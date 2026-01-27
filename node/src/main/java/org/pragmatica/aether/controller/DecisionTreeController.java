@@ -117,8 +117,9 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
                                                     double avgCpu,
                                                     java.util.Map<org.pragmatica.consensus.NodeId, java.util.Map<String, Double>> metrics,
                                                     ControllerConfig currentConfig) {
-        return evaluateCpuRules(artifact, blueprint, avgCpu, currentConfig)
-                               .orElse(() -> evaluateCallRateRule(artifact, metrics, currentConfig))
+        return evaluateCpuRules(artifact, blueprint, avgCpu, currentConfig).orElse(() -> evaluateCallRateRule(artifact,
+                                                                                                              metrics,
+                                                                                                              currentConfig))
                                .or(List::of);
     }
 

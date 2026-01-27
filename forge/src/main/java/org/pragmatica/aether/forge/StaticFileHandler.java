@@ -1,5 +1,10 @@
 package org.pragmatica.aether.forge;
 
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.ContentType;
+import org.pragmatica.http.HttpStatus;
+import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 
 import java.io.IOException;
@@ -8,40 +13,30 @@ import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
-import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandler.Sharable;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.handler.codec.http.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import static io.netty.handler.codec.http.HttpResponseStatus.*;
-import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 /**
  * Serves static files from classpath resources.
  */
-@Sharable
-public final class StaticFileHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
+public final class StaticFileHandler {
     private static final Logger log = LoggerFactory.getLogger(StaticFileHandler.class);
 
     private static final String STATIC_PREFIX = "static/";
-    private static final Map<String, String> CONTENT_TYPES = Map.of(".html",
-                                                                    "text/html; charset=utf-8",
-                                                                    ".css",
-                                                                    "text/css; charset=utf-8",
-                                                                    ".js",
-                                                                    "application/javascript; charset=utf-8",
-                                                                    ".json",
-                                                                    "application/json; charset=utf-8",
-                                                                    ".png",
-                                                                    "image/png",
-                                                                    ".svg",
-                                                                    "image/svg+xml",
-                                                                    ".ico",
-                                                                    "image/x-icon");
+    private static final Map<String, ContentType> CONTENT_TYPES = Map.of(".html",
+                                                                         CommonContentType.TEXT_HTML,
+                                                                         ".css",
+                                                                         CommonContentType.TEXT_CSS,
+                                                                         ".js",
+                                                                         CommonContentType.TEXT_JAVASCRIPT,
+                                                                         ".json",
+                                                                         CommonContentType.APPLICATION_JSON,
+                                                                         ".png",
+                                                                         CommonContentType.IMAGE_PNG,
+                                                                         ".svg",
+                                                                         CommonContentType.IMAGE_SVG,
+                                                                         ".ico",
+                                                                         CommonContentType.APPLICATION_OCTET_STREAM);
 
     private StaticFileHandler() {}
 
@@ -49,23 +44,17 @@ public final class StaticFileHandler extends SimpleChannelInboundHandler<FullHtt
         return new StaticFileHandler();
     }
 
-    @Override
-    protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
-        var path = request.uri();
+    public void handle(RequestContext request, ResponseWriter response) {
+        var path = request.path();
         // Handle root path
         if (path.equals("/") || path.equals("/index.html")) {
             path = "/index.html";
-        }
-        // Remove query string
-        var queryIdx = path.indexOf('?');
-        if (queryIdx >= 0) {
-            path = path.substring(0, queryIdx);
         }
         // Decode URL before security check to prevent bypass via percent-encoding
         path = URLDecoder.decode(path, StandardCharsets.UTF_8);
         // Security: prevent directory traversal
         if (path.contains("..")) {
-            sendError(ctx, FORBIDDEN, "Invalid path");
+            sendError(response, HttpStatus.FORBIDDEN, "Invalid path");
             return;
         }
         // Load from classpath
@@ -74,32 +63,21 @@ public final class StaticFileHandler extends SimpleChannelInboundHandler<FullHtt
         var resourcePath = STATIC_PREFIX + (finalPath.startsWith("/")
                                             ? finalPath.substring(1)
                                             : finalPath);
-        loadResource(resourcePath)
-                    .onEmpty(() -> {
-                                 log.debug("Static file not found: {}", resourcePath);
-                                 sendError(ctx, NOT_FOUND, "File not found: " + finalPath);
-                             })
-                    .onPresent(content -> sendStaticContent(ctx, finalPath, content));
+        loadResource(resourcePath).onEmpty(() -> {
+                                               log.debug("Static file not found: {}", resourcePath);
+                                               sendError(response, HttpStatus.NOT_FOUND, "File not found: " + finalPath);
+                                           })
+                    .onPresent(content -> sendStaticContent(response, finalPath, content));
     }
 
-    private void sendStaticContent(ChannelHandlerContext ctx, String path, byte[] content) {
+    private void sendStaticContent(ResponseWriter response, String path, byte[] content) {
         var contentType = getContentType(path);
-        var buffer = Unpooled.wrappedBuffer(content);
-        var response = new DefaultFullHttpResponse(HTTP_1_1, OK, buffer);
-        response.headers()
-                .set(HttpHeaderNames.CONTENT_TYPE, contentType);
-        response.headers()
-                .set(HttpHeaderNames.CONTENT_LENGTH,
-                     buffer.readableBytes());
-        response.headers()
-                .set(HttpHeaderNames.CACHE_CONTROL, "no-cache");
-        ctx.writeAndFlush(response)
-           .addListener(ChannelFutureListener.CLOSE);
+        response.header("Cache-Control", "no-cache")
+                .write(HttpStatus.OK, content, contentType);
     }
 
     private Option<byte[]> loadResource(String path) {
-        try (InputStream is = getClass()
-                                      .getClassLoader()
+        try (InputStream is = getClass().getClassLoader()
                                       .getResourceAsStream(path)) {
             if (is == null) {
                 return Option.empty();
@@ -111,30 +89,16 @@ public final class StaticFileHandler extends SimpleChannelInboundHandler<FullHtt
         }
     }
 
-    private String getContentType(String path) {
+    private ContentType getContentType(String path) {
         for (var entry : CONTENT_TYPES.entrySet()) {
             if (path.endsWith(entry.getKey())) {
                 return entry.getValue();
             }
         }
-        return "application/octet-stream";
+        return CommonContentType.APPLICATION_OCTET_STREAM;
     }
 
-    private void sendError(ChannelHandlerContext ctx, HttpResponseStatus status, String message) {
-        var content = Unpooled.copiedBuffer(message, StandardCharsets.UTF_8);
-        var response = new DefaultFullHttpResponse(HTTP_1_1, status, content);
-        response.headers()
-                .set(HttpHeaderNames.CONTENT_TYPE, "text/plain; charset=utf-8");
-        response.headers()
-                .set(HttpHeaderNames.CONTENT_LENGTH,
-                     content.readableBytes());
-        ctx.writeAndFlush(response)
-           .addListener(ChannelFutureListener.CLOSE);
-    }
-
-    @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        log.error("Error in static file handler: {}", cause.getMessage());
-        ctx.close();
+    private void sendError(ResponseWriter response, HttpStatus status, String message) {
+        response.write(status, message.getBytes(StandardCharsets.UTF_8), CommonContentType.TEXT_PLAIN);
     }
 }

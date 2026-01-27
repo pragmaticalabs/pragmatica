@@ -43,15 +43,13 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
 
     @Override
     public Option<TransactionContext> currentTransaction() {
-        return option(currentContext.get())
-                     .filter(TransactionContext::isActive);
+        return option(currentContext.get()).filter(TransactionContext::isActive);
     }
 
     @Override
     public Promise<TransactionContext> begin(TransactionConfig config) {
         return currentTransaction()
-                                 .fold(() -> beginNewTransaction(config),
-                                       existing -> handleExistingTransaction(config, existing));
+        .fold(() -> beginNewTransaction(config), existing -> handleExistingTransaction(config, existing));
     }
 
     private Promise<TransactionContext> beginNewTransaction(TransactionConfig config) {
@@ -97,9 +95,8 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
     @Override
     public Promise<Unit> commit() {
         return currentTransaction()
-                                 .fold(() -> TransactionError.noActiveTransaction("commit")
-                                                             .<Unit> promise(),
-                                       this::commitTransaction);
+        .fold(() -> TransactionError.noActiveTransaction("commit")
+                                    .<Unit> promise(), this::commitTransaction);
     }
 
     private Promise<Unit> commitTransaction(TransactionContext context) {
@@ -111,9 +108,8 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
     @Override
     public Promise<Unit> rollback() {
         return currentTransaction()
-                                 .fold(() -> TransactionError.noActiveTransaction("rollback")
-                                                             .<Unit> promise(),
-                                       this::rollbackTransaction);
+        .fold(() -> TransactionError.noActiveTransaction("rollback")
+                                    .<Unit> promise(), this::rollbackTransaction);
     }
 
     private Promise<Unit> rollbackTransaction(TransactionContext context) {
@@ -167,7 +163,7 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
                                    existing -> executeInExistingTransaction(method, args, existing));
         }
 
-        private Promise< ?> executeInNewTransaction(Method method, Object[] args) {
+        private Promise<?> executeInNewTransaction(Method method, Object[] args) {
             return factory.begin(config)
                           .flatMap(ctx -> executeMethod(method, args))
                           .flatMap(result -> factory.commit()
@@ -175,15 +171,15 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
                           .onFailure(cause -> factory.rollback());
         }
 
-        private Promise< ?> executeInExistingTransaction(Method method,
-                                                         Object[] args,
-                                                         TransactionContext existing) {
+        private Promise<?> executeInExistingTransaction(Method method,
+                                                        Object[] args,
+                                                        TransactionContext existing) {
             return handlePropagation(method, args, existing);
         }
 
-        private Promise< ?> handlePropagation(Method method,
-                                              Object[] args,
-                                              TransactionContext existing) {
+        private Promise<?> handlePropagation(Method method,
+                                             Object[] args,
+                                             TransactionContext existing) {
             return switch (config.propagation()) {
                 case REQUIRED, SUPPORTS, MANDATORY -> executeMethod(method, args);
                 case REQUIRES_NEW -> executeInSuspendedContext(method, args, existing);
@@ -194,9 +190,9 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
             };
         }
 
-        private Promise< ?> executeInSuspendedContext(Method method,
-                                                      Object[] args,
-                                                      TransactionContext existing) {
+        private Promise<?> executeInSuspendedContext(Method method,
+                                                     Object[] args,
+                                                     TransactionContext existing) {
             return factory.begin(config)
                           .flatMap(ctx -> executeMethod(method, args))
                           .flatMap(result -> factory.commit()
@@ -208,28 +204,27 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
                           });
         }
 
-        private Promise< ?> executeWithoutTransaction(Method method,
-                                                      Object[] args,
-                                                      TransactionContext existing) {
+        private Promise<?> executeWithoutTransaction(Method method,
+                                                     Object[] args,
+                                                     TransactionContext existing) {
             factory.currentContext.set(existing.suspend());
             return executeMethod(method, args)
-                                .map(result -> {
-                                    factory.currentContext.set(existing.resume());
-                                    return result;
-                                });
+            .map(result -> {
+                factory.currentContext.set(existing.resume());
+                return result;
+            });
         }
 
-        private Promise< ?> executeInNestedTransaction(Method method,
-                                                       Object[] args,
-                                                       TransactionContext parent) {
+        private Promise<?> executeInNestedTransaction(Method method,
+                                                      Object[] args,
+                                                      TransactionContext parent) {
             var nested = TransactionContext.nestedContext(config, parent);
             factory.currentContext.set(nested);
-            return executeMethod(method, args)
-                                .map(result -> {
-                                         factory.currentContext.set(nested.commit());
-                                         factory.currentContext.set(parent);
-                                         return result;
-                                     })
+            return executeMethod(method, args).map(result -> {
+                                                       factory.currentContext.set(nested.commit());
+                                                       factory.currentContext.set(parent);
+                                                       return result;
+                                                   })
                                 .onFailure(cause -> {
                                                factory.currentContext.set(nested.rollback());
                                                factory.currentContext.set(parent);
@@ -237,9 +232,9 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
         }
 
         @SuppressWarnings("unchecked")
-        private Promise< ?> executeMethod(Method method, Object[] args) {
+        private Promise<?> executeMethod(Method method, Object[] args) {
             try{
-                return (Promise< ? >) method.invoke(delegate, args);
+                return (Promise<?>) method.invoke(delegate, args);
             } catch (Exception e) {
                 return TransactionError.operationFailed(method.getName(),
                                                         e)

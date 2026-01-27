@@ -9,13 +9,15 @@ import org.pragmatica.aether.forge.simulator.ChaosController;
 import org.pragmatica.aether.forge.simulator.ChaosEvent;
 import org.pragmatica.aether.forge.simulator.SimulatorConfig;
 import org.pragmatica.aether.forge.simulator.SimulatorMode;
-import org.pragmatica.http.routing.HttpMethod;
-import org.pragmatica.http.routing.JsonCodecAdapter;
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.HttpStatus;
 import org.pragmatica.http.routing.JsonCodec;
+import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestContextImpl;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
-import org.pragmatica.lang.Cause;
+import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.server.ResponseWriter;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -24,26 +26,17 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicLong;
 
 import io.netty.buffer.Unpooled;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelHandler.Sharable;
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.handler.codec.http.DefaultFullHttpResponse;
-import io.netty.handler.codec.http.FullHttpRequest;
-import io.netty.handler.codec.http.HttpHeaderNames;
-import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.DefaultFullHttpRequest;
+import io.netty.handler.codec.http.HttpMethod;
+import io.netty.handler.codec.http.HttpVersion;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import static io.netty.handler.codec.http.HttpResponseStatus.*;
-import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 /**
  * Handles REST API requests for the Forge dashboard.
  * Uses RequestRouter for endpoint routing and delegates to domain-specific route handlers.
  */
-@Sharable
-public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
+public final class ForgeApiHandler {
     private static final Logger log = LoggerFactory.getLogger(ForgeApiHandler.class);
     private static final int MAX_EVENTS = 100;
 
@@ -108,7 +101,7 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
 
     private static void executeChaosEvent(ForgeCluster cluster, ChaosEvent event) {
         switch (event) {
-            case ChaosEvent.NodeKill kill -> cluster.crashNode(kill.nodeId());
+            case ChaosEvent.NodeKill kill -> cluster.killNode(kill.nodeId(), false);
             case ChaosEvent.LatencySpike _ -> {}
             case ChaosEvent.SliceCrash _ -> {}
             case ChaosEvent.InvocationFailure _ -> {}
@@ -128,29 +121,28 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
         addEvent(entry.type(), entry.message());
     }
 
-    @Override
-    protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) {
-        var path = extractPath(request.uri());
+    public void handle(RequestContext request, ResponseWriter response) {
+        var path = request.path();
         log.debug("API request: {} {}", request.method(), path);
         try{
             // Handle panel endpoints separately (return HTML)
             if (isPanelRequest(path)) {
-                handlePanelRequest(ctx, path);
+                handlePanelRequest(response, path);
                 return;
             }
             // Handle reset metrics (not in router)
-            if (path.equals("/api/chaos/reset-metrics") && request.method() == io.netty.handler.codec.http.HttpMethod.POST) {
-                handleResetMetrics(ctx);
+            if (path.equals("/api/chaos/reset-metrics") && request.method() == org.pragmatica.http.HttpMethod.POST) {
+                handleResetMetrics(response);
                 return;
             }
             // Route API requests via RequestRouter
             var method = convertMethod(request.method());
             router.findRoute(method, path)
-                  .onEmpty(() -> sendNotFound(ctx, path))
-                  .onPresent(route -> handleRoute(ctx, request, route, path));
+                  .onEmpty(() -> sendNotFound(response, path))
+                  .onPresent(route -> handleRoute(request, response, route, path));
         } catch (Exception e) {
             log.error("Error handling API request: {}", e.getMessage(), e);
-            sendError(ctx, INTERNAL_SERVER_ERROR, e.getMessage());
+            sendError(response, HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
         }
     }
 
@@ -158,117 +150,142 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
         return path.equals("/api/panel/chaos") || path.equals("/api/panel/load");
     }
 
-    private void handlePanelRequest(ChannelHandlerContext ctx, String path) {
+    private void handlePanelRequest(ResponseWriter response, String path) {
         var html = switch (path) {
             case "/api/panel/chaos" -> chaosPanelHtml();
             case "/api/panel/load" -> loadPanelHtml();
             default -> "";
         };
-        sendHtml(ctx, html);
+        sendHtml(response, html);
     }
 
-    private void handleRoute(ChannelHandlerContext ctx, FullHttpRequest request, Route< ?> route, String path) {
+    private void handleRoute(RequestContext request, ResponseWriter response, Route<?> route, String path) {
         var requestId = "forge-" + requestCounter.incrementAndGet();
-        var context = RequestContextImpl.requestContext(request, route, jsonCodec, requestId);
+        // Create a Netty FullHttpRequest for the routing RequestContextImpl
+        var nettyRequest = createNettyRequest(request, route.path());
+        var context = RequestContextImpl.requestContext(nettyRequest, route, jsonCodec, requestId);
         route.handler()
              .handle(context)
-             .onSuccess(result -> sendSuccessResponse(ctx, route, result))
-             .onFailure(cause -> sendError(ctx,
-                                           BAD_REQUEST,
+             .onSuccess(result -> sendSuccessResponse(response, route, result))
+             .onFailure(cause -> sendError(response,
+                                           HttpStatus.BAD_REQUEST,
                                            cause.message()));
     }
 
+    private DefaultFullHttpRequest createNettyRequest(RequestContext request, String routePath) {
+        var method = switch (request.method()) {
+            case GET -> HttpMethod.GET;
+            case POST -> HttpMethod.POST;
+            case PUT -> HttpMethod.PUT;
+            case DELETE -> HttpMethod.DELETE;
+            case PATCH -> HttpMethod.PATCH;
+            case HEAD -> HttpMethod.HEAD;
+            case OPTIONS -> HttpMethod.OPTIONS;
+            case TRACE -> HttpMethod.TRACE;
+            case CONNECT -> HttpMethod.CONNECT;
+        };
+        // Build URI with query string
+        var uri = request.path();
+        var queryString = buildQueryString(request.queryParams()
+                                                  .asMap());
+        if (!queryString.isEmpty()) {
+            uri = uri + "?" + queryString;
+        }
+        var nettyRequest = new DefaultFullHttpRequest(HttpVersion.HTTP_1_1,
+                                                      method,
+                                                      uri,
+                                                      Unpooled.wrappedBuffer(request.body()));
+        // Copy headers
+        for (var entry : request.headers()
+                                .asMap()
+                                .entrySet()) {
+            for (var value : entry.getValue()) {
+                nettyRequest.headers()
+                            .add(entry.getKey(),
+                                 value);
+            }
+        }
+        return nettyRequest;
+    }
+
+    private String buildQueryString(java.util.Map<String, java.util.List<String>> params) {
+        if (params.isEmpty()) {
+            return "";
+        }
+        var sb = new StringBuilder();
+        for (var entry : params.entrySet()) {
+            for (var value : entry.getValue()) {
+                if (!sb.isEmpty()) {
+                    sb.append("&");
+                }
+                sb.append(entry.getKey())
+                  .append("=")
+                  .append(value);
+            }
+        }
+        return sb.toString();
+    }
+
     @SuppressWarnings("unchecked")
-    private void sendSuccessResponse(ChannelHandlerContext ctx, Route< ?> route, Object result) {
+    private void sendSuccessResponse(ResponseWriter response, Route<?> route, Object result) {
         jsonCodec.serialize(result)
                  .onSuccess(byteBuf -> {
-                                var response = new DefaultFullHttpResponse(HTTP_1_1, OK, byteBuf);
-                                response.headers()
-                                        .set(HttpHeaderNames.CONTENT_TYPE,
-                                             route.contentType()
-                                                  .headerText());
-                                response.headers()
-                                        .setInt(HttpHeaderNames.CONTENT_LENGTH,
-                                                byteBuf.readableBytes());
-                                addCorsHeaders(response);
-                                ctx.writeAndFlush(response)
-                                   .addListener(ChannelFutureListener.CLOSE);
+                                var bytes = new byte[byteBuf.readableBytes()];
+                                byteBuf.readBytes(bytes);
+                                byteBuf.release();
+                                response.write(HttpStatus.OK,
+                                               bytes,
+                                               toServerContentType(route.contentType()));
                             })
-                 .onFailure(cause -> sendError(ctx,
-                                               INTERNAL_SERVER_ERROR,
+                 .onFailure(cause -> sendError(response,
+                                               HttpStatus.INTERNAL_SERVER_ERROR,
                                                cause.message()));
     }
 
-    private HttpMethod convertMethod(io.netty.handler.codec.http.HttpMethod nettyMethod) {
-        return switch (nettyMethod.name()) {
-            case "GET" -> HttpMethod.GET;
-            case "POST" -> HttpMethod.POST;
-            case "PUT" -> HttpMethod.PUT;
-            case "DELETE" -> HttpMethod.DELETE;
-            case "PATCH" -> HttpMethod.PATCH;
-            case "HEAD" -> HttpMethod.HEAD;
-            case "OPTIONS" -> HttpMethod.OPTIONS;
-            default -> HttpMethod.GET;
+    private org.pragmatica.http.ContentType toServerContentType(org.pragmatica.http.routing.ContentType routingContentType) {
+        return switch (routingContentType.category()) {
+            case JSON -> CommonContentType.APPLICATION_JSON;
+            case PLAIN_TEXT -> CommonContentType.TEXT_PLAIN;
+            case HTML -> CommonContentType.TEXT_HTML;
+            case BINARY -> CommonContentType.APPLICATION_OCTET_STREAM;
+            default -> CommonContentType.APPLICATION_OCTET_STREAM;
         };
     }
 
-    private String extractPath(String uri) {
-        var queryIdx = uri.indexOf('?');
-        return queryIdx >= 0
-               ? uri.substring(0, queryIdx)
-               : uri;
+    private org.pragmatica.http.routing.HttpMethod convertMethod(org.pragmatica.http.HttpMethod method) {
+        return switch (method) {
+            case GET -> org.pragmatica.http.routing.HttpMethod.GET;
+            case POST -> org.pragmatica.http.routing.HttpMethod.POST;
+            case PUT -> org.pragmatica.http.routing.HttpMethod.PUT;
+            case DELETE -> org.pragmatica.http.routing.HttpMethod.DELETE;
+            case PATCH -> org.pragmatica.http.routing.HttpMethod.PATCH;
+            case HEAD -> org.pragmatica.http.routing.HttpMethod.HEAD;
+            case OPTIONS -> org.pragmatica.http.routing.HttpMethod.OPTIONS;
+            case TRACE -> org.pragmatica.http.routing.HttpMethod.TRACE;
+            case CONNECT -> org.pragmatica.http.routing.HttpMethod.CONNECT;
+        };
     }
 
-    private void sendNotFound(ChannelHandlerContext ctx, String path) {
+    private void sendNotFound(ResponseWriter response, String path) {
         log.debug("Route not found: {}", path);
-        sendError(ctx, NOT_FOUND, "Not found: " + path);
+        sendError(response, HttpStatus.NOT_FOUND, "Not found: " + path);
     }
 
-    private void sendError(ChannelHandlerContext ctx, HttpResponseStatus status, String message) {
+    private void sendError(ResponseWriter response, HttpStatus status, String message) {
         var json = "{\"success\":false,\"error\":\"" + escapeJson(message) + "\"}";
-        sendJsonResponse(ctx, status, json);
+        response.write(status, json.getBytes(StandardCharsets.UTF_8), CommonContentType.APPLICATION_JSON);
     }
 
-    private void sendJsonResponse(ChannelHandlerContext ctx, HttpResponseStatus status, String json) {
-        var content = Unpooled.copiedBuffer(json, StandardCharsets.UTF_8);
-        var response = new DefaultFullHttpResponse(HTTP_1_1, status, content);
-        response.headers()
-                .set(HttpHeaderNames.CONTENT_TYPE, "application/json");
-        response.headers()
-                .setInt(HttpHeaderNames.CONTENT_LENGTH,
-                        content.readableBytes());
-        addCorsHeaders(response);
-        ctx.writeAndFlush(response)
-           .addListener(ChannelFutureListener.CLOSE);
+    private void sendHtml(ResponseWriter response, String html) {
+        response.write(HttpStatus.OK, html.getBytes(StandardCharsets.UTF_8), CommonContentType.TEXT_HTML);
     }
 
-    private void sendHtml(ChannelHandlerContext ctx, String html) {
-        var buf = Unpooled.copiedBuffer(html, StandardCharsets.UTF_8);
-        var response = new DefaultFullHttpResponse(HTTP_1_1, OK, buf);
-        response.headers()
-                .set(HttpHeaderNames.CONTENT_TYPE, "text/html; charset=UTF-8");
-        response.headers()
-                .setInt(HttpHeaderNames.CONTENT_LENGTH,
-                        buf.readableBytes());
-        addCorsHeaders(response);
-        ctx.writeAndFlush(response)
-           .addListener(ChannelFutureListener.CLOSE);
-    }
-
-    private void addCorsHeaders(DefaultFullHttpResponse response) {
-        response.headers()
-                .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-        response.headers()
-                .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, PUT, DELETE, OPTIONS");
-        response.headers()
-                .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type");
-    }
-
-    private void handleResetMetrics(ChannelHandlerContext ctx) {
+    private void handleResetMetrics(ResponseWriter response) {
         events.clear();
         inventoryState.reset();
         addEvent("RESET", "Metrics and events reset");
-        sendJsonResponse(ctx, OK, "{\"success\":true}");
+        var json = "{\"success\":true}";
+        response.write(HttpStatus.OK, json.getBytes(StandardCharsets.UTF_8), CommonContentType.APPLICATION_JSON);
     }
 
     public void addEvent(String type, String message) {
@@ -290,12 +307,6 @@ public final class ForgeApiHandler extends SimpleChannelInboundHandler<FullHttpR
                   .replace("\n", "\\n")
                   .replace("\r", "\\r")
                   .replace("\t", "\\t");
-    }
-
-    @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        log.error("Error in API handler: {}", cause.getMessage());
-        ctx.close();
     }
 
     // ========== Panel HTML ==========

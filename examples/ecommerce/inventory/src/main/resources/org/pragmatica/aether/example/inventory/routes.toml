@@ -1,0 +1,12 @@
+prefix = "/api/v1/inventory"
+
+[routes]
+checkStock = "POST /check"
+reserveStock = "POST /reserve"
+releaseStock = "POST /release"
+
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*"]
+HTTP_400 = ["*Insufficient*", "*Invalid*"]
+HTTP_409 = ["*Expired*"]

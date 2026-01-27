@@ -97,18 +97,19 @@ DeploymentStatus status) {
 
     /**
      * Create from protocol message entry.
-     * Returns empty Option if artifact parsing fails (should not happen with valid entries).
+     * Returns empty Option if artifact or nodeId parsing fails (should not happen with valid entries).
      */
     public static Option<DeploymentMetrics> fromEntry(DeploymentMetricsEntry entry) {
         return Artifact.artifact(entry.artifact())
-                       .map(artifact -> new DeploymentMetrics(artifact,
-                                                              NodeId.nodeId(entry.nodeId()),
-                                                              entry.startTime(),
-                                                              entry.loadTime(),
-                                                              entry.loadedTime(),
-                                                              entry.activateTime(),
-                                                              entry.activeTime(),
-                                                              DeploymentStatus.deploymentStatus(entry.status())))
+                       .flatMap(artifact -> NodeId.nodeId(entry.nodeId())
+                                                  .map(nodeId -> new DeploymentMetrics(artifact,
+                                                                                       nodeId,
+                                                                                       entry.startTime(),
+                                                                                       entry.loadTime(),
+                                                                                       entry.loadedTime(),
+                                                                                       entry.activateTime(),
+                                                                                       entry.activeTime(),
+                                                                                       DeploymentStatus.deploymentStatus(entry.status()))))
                        .option();
     }
 

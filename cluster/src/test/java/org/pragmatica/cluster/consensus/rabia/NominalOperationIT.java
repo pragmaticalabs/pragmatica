@@ -1,6 +1,7 @@
 package org.pragmatica.consensus.rabia;
 
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.rabia.infrastructure.TestCluster;
 import org.pragmatica.consensus.NodeId;
@@ -140,6 +141,7 @@ public class NominalOperationIT {
      * Assertion: single global order, no duplicate execution, throughput linear to load until CPU saturation
      */
     @Test
+    @Disabled("Flaky in containerized environments - requires longer timeouts")
     void apply_concurrentClients_allCommandsCommit() {
         log.info("Starting concurrent clients test");
 

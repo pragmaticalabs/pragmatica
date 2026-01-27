@@ -8,9 +8,12 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.SharedScheduler;
+import org.pragmatica.consensus.topology.QuorumStateNotification;
 
 import java.util.List;
-import java.util.concurrent.*;
+import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
@@ -30,6 +33,12 @@ public interface MetricsScheduler {
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
     /**
+     * Handle quorum state changes (stop pinging when quorum disappears).
+     */
+    @MessageReceiver
+    void onQuorumStateChange(QuorumStateNotification notification);
+
+    /**
      * Stop the scheduler (for graceful shutdown).
      */
     void stop();
@@ -40,13 +49,13 @@ public interface MetricsScheduler {
      * @param self             This node's ID
      * @param network          Network for sending messages
      * @param metricsCollector Collector for local metrics
-     * @param intervalMs       Ping interval in milliseconds
+     * @param interval         Ping interval
      */
     static MetricsScheduler metricsScheduler(NodeId self,
                                              ClusterNetwork network,
                                              MetricsCollector metricsCollector,
-                                             long intervalMs) {
-        return new MetricsSchedulerImpl(self, network, metricsCollector, intervalMs);
+                                             TimeSpan interval) {
+        return new MetricsSchedulerImpl(self, network, metricsCollector, interval);
     }
 
     /**
@@ -55,7 +64,11 @@ public interface MetricsScheduler {
     static MetricsScheduler metricsScheduler(NodeId self,
                                              ClusterNetwork network,
                                              MetricsCollector metricsCollector) {
-        return metricsScheduler(self, network, metricsCollector, 1000);
+        return metricsScheduler(self,
+                                network,
+                                metricsCollector,
+                                TimeSpan.timeSpan(1)
+                                        .seconds());
     }
 }
 
@@ -65,26 +78,19 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     private final NodeId self;
     private final ClusterNetwork network;
     private final MetricsCollector metricsCollector;
-    private final long intervalMs;
+    private final TimeSpan interval;
 
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-                                                                                                      var thread = new Thread(r,
-                                                                                                                              "metrics-scheduler");
-                                                                                                      thread.setDaemon(true);
-                                                                                                      return thread;
-                                                                                                  });
-
-    private final AtomicReference<ScheduledFuture< ? >> pingTask = new AtomicReference<>();
+    private final AtomicReference<ScheduledFuture<?>> pingTask = new AtomicReference<>();
     private final AtomicReference<List<NodeId>> topology = new AtomicReference<>(List.of());
 
     MetricsSchedulerImpl(NodeId self,
                          ClusterNetwork network,
                          MetricsCollector metricsCollector,
-                         long intervalMs) {
+                         TimeSpan interval) {
         this.self = self;
         this.network = network;
         this.metricsCollector = metricsCollector;
-        this.intervalMs = intervalMs;
+        this.interval = interval;
     }
 
     @Override
@@ -108,24 +114,21 @@ class MetricsSchedulerImpl implements MetricsScheduler {
     }
 
     @Override
+    public void onQuorumStateChange(QuorumStateNotification notification) {
+        if (notification == QuorumStateNotification.DISAPPEARED) {
+            log.info("Quorum disappeared, stopping metrics scheduler");
+            stopPinging();
+        }
+    }
+
+    @Override
     public void stop() {
         stopPinging();
-        scheduler.shutdown();
-        try{
-            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
-                scheduler.shutdownNow();
-            }
-        } catch (InterruptedException e) {
-            scheduler.shutdownNow();
-            Thread.currentThread()
-                  .interrupt();
-        }
     }
 
     private void startPinging() {
         stopPinging();
-        // Cancel any existing task
-        var task = scheduler.scheduleAtFixedRate(this::sendPingsToAllNodes, 0, intervalMs, TimeUnit.MILLISECONDS);
+        var task = SharedScheduler.scheduleAtFixedRate(this::sendPingsToAllNodes, interval);
         pingTask.set(task);
     }
 

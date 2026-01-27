@@ -150,7 +150,7 @@ public record InventoryServiceSlice() implements Slice {
 
     // === Slice Implementation ===
     @Override
-    public List<SliceMethod< ?, ?>> methods() {
+    public List<SliceMethod<?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("checkStock")
                                                    .expect("Invalid method name: checkStock"),
                                          this::checkStock,

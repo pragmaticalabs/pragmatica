@@ -67,7 +67,7 @@ public record PricingServiceSlice() implements Slice {
 
     // === Slice Implementation ===
     @Override
-    public List<SliceMethod< ?, ?>> methods() {
+    public List<SliceMethod<?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("getPrice")
                                                    .expect("Invalid method name: getPrice"),
                                          this::getPrice,
@@ -90,9 +90,8 @@ public record PricingServiceSlice() implements Slice {
     }
 
     private Promise<OrderTotal> calculateTotal(CalculateTotalRequest request) {
-        return calculateSubtotal(request.items())
-                                .flatMap(subtotal -> applyDiscount(subtotal,
-                                                                   request.discountCode()))
+        return calculateSubtotal(request.items()).flatMap(subtotal -> applyDiscount(subtotal,
+                                                                                    request.discountCode()))
                                 .async();
     }
 

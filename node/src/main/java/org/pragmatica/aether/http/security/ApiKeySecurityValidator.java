@@ -32,8 +32,7 @@ class ApiKeySecurityValidator implements SecurityValidator {
     }
 
     private Result<SecurityContext> validateApiKey(HttpRequestContext request) {
-        return extractApiKey(request.headers())
-                            .toResult(SecurityError.MISSING_API_KEY)
+        return extractApiKey(request.headers()).toResult(SecurityError.MISSING_API_KEY)
                             .flatMap(this::checkApiKey);
     }
 

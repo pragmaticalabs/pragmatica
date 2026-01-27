@@ -1,12 +1,8 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.e2e.containers.AetherCluster;
 import org.pragmatica.aether.e2e.containers.AetherNodeContainer;
-
-import java.nio.file.Path;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -21,27 +17,10 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>Node visibility across cluster</li>
  * </ul>
  */
-class ClusterFormationE2ETest {
-    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private AetherCluster cluster;
-
-    @BeforeEach
-    void setUp() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (cluster != null) {
-            cluster.close();
-        }
-    }
+class ClusterFormationE2ETest extends AbstractE2ETest {
 
     @Test
     void threeNodeCluster_formsQuorum_andElectsLeader() {
-        cluster.start();
-        cluster.awaitQuorum();
-
         // All nodes should be healthy
         cluster.awaitAllHealthy();
         assertThat(cluster.runningNodeCount()).isEqualTo(3);
@@ -53,16 +32,12 @@ class ClusterFormationE2ETest {
         // Wait for leader to be elected (may take a moment after quorum)
         cluster.awaitLeader();
         var leader = cluster.leader();
-        assertThat(leader).isPresent();
+        assertThat(leader.isPresent()).isTrue();
     }
 
     @Test
     void cluster_nodesVisibleToAllMembers() {
-        cluster.start();
-        cluster.awaitQuorum();
-
         // Each node should report 2 connected peers via /health endpoint
-        // (The /nodes endpoint uses metrics which may not be exchanged yet)
         for (var node : cluster.nodes()) {
             var health = node.getHealth();
             assertThat(health).contains("\"connectedPeers\":2");
@@ -72,8 +47,6 @@ class ClusterFormationE2ETest {
 
     @Test
     void cluster_statusConsistent_acrossNodes() {
-        cluster.start();
-        cluster.awaitQuorum();
         cluster.awaitLeader();
 
         // Collect leader info from all nodes
@@ -82,7 +55,7 @@ class ClusterFormationE2ETest {
                               .toList();
 
         // All should report the same leader
-        var leaderNode = cluster.leader().orElseThrow();
+        var leaderNode = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
         for (var status : statuses) {
             assertThat(status).contains(leaderNode.nodeId());
         }
@@ -90,9 +63,6 @@ class ClusterFormationE2ETest {
 
     @Test
     void cluster_metricsAvailable_afterFormation() {
-        cluster.start();
-        cluster.awaitQuorum();
-
         var metrics = cluster.anyNode().getMetrics();
 
         // Metrics should contain expected fields

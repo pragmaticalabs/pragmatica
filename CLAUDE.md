@@ -9,7 +9,7 @@ Do NOT write code directly - delegate to `jbct-coder` agent.
 
 ## Project Overview
 
-**Pragmatica Aether** (v0.7.3) - AI-driven distributed runtime for Java with predictive scaling and seamless multi-cloud deployment.
+**Pragmatica Aether** (v0.8.1) - AI-driven distributed runtime for Java with predictive scaling and seamless multi-cloud deployment.
 
 **Key Principle:** Every inter-slice call will **EVENTUALLY SUCCEED** if the cluster is alive. Slices are NOT prepared for communication errors - runtime handles retries, failover, recovery. Design slices to be idempotent.
 
@@ -32,15 +32,9 @@ Do NOT write code directly - delegate to `jbct-coder` agent.
 
 ### Slices
 
-```java
-public interface Slice {
-    Promise<Unit> start();
-    Promise<Unit> stop();
-    List<SliceMethod<?, ?>> methods();
-}
-```
-
 Two types: **Service Slices** (multiple methods) and **Lean Slices** (single use case). Both managed identically by runtime.
+
+Users write annotated interfaces; `jbct-cli` generates all boilerplate (Slice implementation, routing, factories).
 
 See [docs/contributors/slice-lifecycle.md](docs/contributors/slice-lifecycle.md) for lifecycle states.
 
@@ -184,6 +178,30 @@ mvn test -Dtest=ClassName  # Specific test class
 mvn test -pl module-name   # Specific module
 ```
 
+**Important:** Run `mvn install -DskipTests` before testing forge module. Forge tests depend on locally installed artifacts from other modules.
+
+## Parallel Releases with Circular Dependencies
+
+When releasing projects with circular dependencies (e.g., aether ↔ jbct-cli), use this approach:
+
+1. **Comment out** the unpublished plugin in `pom.xml`:
+   ```xml
+   <!-- jbct-maven-plugin commented out until X.Y.Z is published
+   <plugin>
+       <groupId>org.pragmatica-lite</groupId>
+       <artifactId>jbct-maven-plugin</artifactId>
+   </plugin>
+   -->
+   ```
+
+2. **Release the first project** (aether) without the plugin dependency
+
+3. **Release the second project** (jbct-cli) which depends on the first
+
+4. **Uncomment the plugin** and release a patch version with full functionality
+
+This breaks the circular dependency chain while preserving functionality.
+
 ## Key Files
 
 ### Core
@@ -225,6 +243,7 @@ result.unwrap()             // Result<T> → T (throws on failure)
 
 | Topic | Location |
 |-------|----------|
+| **Future Work** | [docs/internal/progress/development-priorities.md](docs/internal/progress/development-priorities.md) |
 | Architecture | [docs/contributors/architecture.md](docs/contributors/architecture.md) |
 | Slice Lifecycle | [docs/contributors/slice-lifecycle.md](docs/contributors/slice-lifecycle.md) |
 | Metrics & Control | [docs/contributors/metrics-control.md](docs/contributors/metrics-control.md) |

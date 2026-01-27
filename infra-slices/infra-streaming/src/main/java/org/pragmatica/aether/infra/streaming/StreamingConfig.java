@@ -51,11 +51,11 @@ public record StreamingConfig(String name,
      */
     public static Result<StreamingConfig> streamingConfig(String name) {
         return validateName(name)
-                           .map(n -> new StreamingConfig(n,
-                                                         DEFAULT_PARTITIONS,
-                                                         DEFAULT_RETENTION,
-                                                         DEFAULT_MAX_MESSAGE_SIZE,
-                                                         DEFAULT_CONSUMER_TIMEOUT));
+        .map(n -> new StreamingConfig(n,
+                                      DEFAULT_PARTITIONS,
+                                      DEFAULT_RETENTION,
+                                      DEFAULT_MAX_MESSAGE_SIZE,
+                                      DEFAULT_CONSUMER_TIMEOUT));
     }
 
     /**

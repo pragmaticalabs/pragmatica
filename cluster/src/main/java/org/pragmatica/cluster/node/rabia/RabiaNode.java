@@ -6,13 +6,21 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.consensus.net.NetworkManagementOperation;
-import org.pragmatica.consensus.net.NetworkManagementOperation.ConnectedNodesList;
-import org.pragmatica.consensus.net.NetworkManagementOperation.ConnectNode;
-import org.pragmatica.consensus.net.NetworkManagementOperation.DisconnectNode;
-import org.pragmatica.consensus.net.NetworkManagementOperation.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkMessage;
+import org.pragmatica.consensus.net.NetworkMessage.DiscoverNodes;
+import org.pragmatica.consensus.net.NetworkMessage.DiscoveredNodes;
+import org.pragmatica.consensus.net.NetworkMessage.Hello;
 import org.pragmatica.consensus.net.NetworkMessage.Ping;
 import org.pragmatica.consensus.net.NetworkMessage.Pong;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
+import org.pragmatica.consensus.net.NetworkServiceMessage.Broadcast;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectedNodesList;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectNode;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionEstablished;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ConnectionFailed;
+import org.pragmatica.consensus.net.NetworkServiceMessage.DisconnectNode;
+import org.pragmatica.consensus.net.NetworkServiceMessage.ListConnectedNodes;
+import org.pragmatica.consensus.net.NetworkServiceMessage.Send;
 import org.pragmatica.consensus.net.netty.NettyClusterNetwork;
 import org.pragmatica.consensus.rabia.ConsensusMetrics;
 import org.pragmatica.consensus.rabia.RabiaEngine;
@@ -33,9 +41,8 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.AddNode;
-import org.pragmatica.consensus.topology.TopologyManagementMessage.DiscoverNodes;
-import org.pragmatica.consensus.topology.TopologyManagementMessage.DiscoveredNodes;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.RemoveNode;
+import org.pragmatica.consensus.topology.TopologyManagementMessage.SetClusterSize;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -69,19 +76,24 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     LeaderManager leaderManager();
 
     /**
+     * Check if the consensus engine is active and ready for commands.
+     */
+    boolean isActive();
+
+    /**
      * Get the route entries for RabiaNode's internal components.
      * These should be combined with other entries when building the final router.
      */
-    List<Entry< ?>> routeEntries();
+    List<Entry<?>> routeEntries();
 
     /**
      * Creates a RabiaNode without metrics collection.
      */
-    static <C extends Command> RabiaNode<C> rabiaNode(NodeConfig config,
-                                                      DelegateRouter delegateRouter,
-                                                      StateMachine<C> stateMachine,
-                                                      Serializer serializer,
-                                                      Deserializer deserializer) {
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer) {
         return rabiaNode(config,
                          delegateRouter,
                          stateMachine,
@@ -94,12 +106,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /**
      * Creates a RabiaNode with metrics collection.
      */
-    static <C extends Command> RabiaNode<C> rabiaNode(NodeConfig config,
-                                                      DelegateRouter delegateRouter,
-                                                      StateMachine<C> stateMachine,
-                                                      Serializer serializer,
-                                                      Deserializer deserializer,
-                                                      ConsensusMetrics metrics) {
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics) {
         return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer, metrics, List.of());
     }
 
@@ -116,17 +128,36 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
      * @param deserializer       Message deserializer
      * @param metrics            Consensus metrics collector
      * @param additionalHandlers Additional Netty handlers (e.g., NetworkMetricsHandler)
-     * @return RabiaNode instance (always succeeds - route validation is caller's responsibility)
+     * @return Result containing RabiaNode instance, or failure if topology manager creation fails
      */
-    static <C extends Command> RabiaNode<C> rabiaNode(NodeConfig config,
-                                                      DelegateRouter delegateRouter,
-                                                      StateMachine<C> stateMachine,
-                                                      Serializer serializer,
-                                                      Deserializer deserializer,
-                                                      ConsensusMetrics metrics,
-                                                      List<ChannelHandler> additionalHandlers) {
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              List<ChannelHandler> additionalHandlers) {
         // Create components with delegate router (routes configured after construction)
-        var topologyManager = TcpTopologyManager.tcpTopologyManager(config.topology(), delegateRouter);
+        return TcpTopologyManager.tcpTopologyManager(config.topology(),
+                                                     delegateRouter)
+                                 .map(topologyManager -> assembleNode(config,
+                                                                      delegateRouter,
+                                                                      stateMachine,
+                                                                      serializer,
+                                                                      deserializer,
+                                                                      metrics,
+                                                                      additionalHandlers,
+                                                                      topologyManager));
+    }
+
+    private static <C extends Command> RabiaNode<C> assembleNode(NodeConfig config,
+                                                                 DelegateRouter delegateRouter,
+                                                                 StateMachine<C> stateMachine,
+                                                                 Serializer serializer,
+                                                                 Deserializer deserializer,
+                                                                 ConsensusMetrics metrics,
+                                                                 List<ChannelHandler> additionalHandlers,
+                                                                 TcpTopologyManager topologyManager) {
         var leaderManager = LeaderManager.leaderManager(config.topology()
                                                               .self(),
                                                         delegateRouter);
@@ -140,15 +171,25 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class)
                                               .route(route(AddNode.class, topologyManager::handleAddNodeMessage),
                                                      route(RemoveNode.class, topologyManager::handleRemoveNodeMessage),
-                                                     route(DiscoverNodes.class,
-                                                           topologyManager::handleDiscoverNodesMessage),
-                                                     route(DiscoveredNodes.class,
-                                                           topologyManager::handleMergeNodesMessage));
-        var networkMgmtRoutes = SealedBuilder.from(NetworkManagementOperation.class)
-                                             .route(route(ConnectedNodesList.class, topologyManager::reconcile),
-                                                    route(ConnectNode.class, network::connect),
-                                                    route(DisconnectNode.class, network::disconnect),
-                                                    route(ListConnectedNodes.class, network::listNodes));
+                                                     route(SetClusterSize.class, topologyManager::handleSetClusterSize));
+        var networkMsgRoutes = SealedBuilder.from(NetworkMessage.class)
+                                            .route(route(DiscoverNodes.class, topologyManager::handleDiscoverNodes),
+                                                   route(DiscoveredNodes.class, topologyManager::handleDiscoveredNodes),
+                                                   route(Hello.class,
+                                                         _ -> {}),
+                                                   route(Ping.class, network::handlePing),
+                                                   route(Pong.class, network::handlePong));
+        var networkServiceRoutes = SealedBuilder.from(NetworkServiceMessage.class)
+                                                .route(route(ConnectedNodesList.class, topologyManager::reconcile),
+                                                       route(ConnectNode.class, network::connect),
+                                                       route(DisconnectNode.class, network::disconnect),
+                                                       route(ListConnectedNodes.class, network::listNodes),
+                                                       route(ConnectionFailed.class,
+                                                             topologyManager::handleConnectionFailed),
+                                                       route(ConnectionEstablished.class,
+                                                             topologyManager::handleConnectionEstablished),
+                                                       route(Send.class, network::handleSend),
+                                                       route(Broadcast.class, network::handleBroadcast));
         var topologyChangeRoutes = SealedBuilder.from(TopologyChangeNotification.class)
                                                 .route(route(NodeAdded.class, leaderManager::nodeAdded),
                                                        route(NodeRemoved.class, leaderManager::nodeRemoved),
@@ -165,50 +206,53 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                               route(NewBatch.class,
                                                     (NewBatch b) -> consensus.handleNewBatch(b)));
         // Collect all entries
-        var allEntries = new ArrayList<Entry< ?>>();
+        var allEntries = new ArrayList<Entry<?>>();
         allEntries.add(topologyMgmtRoutes);
-        allEntries.add(networkMgmtRoutes);
+        allEntries.add(networkMsgRoutes);
+        allEntries.add(networkServiceRoutes);
         allEntries.add(topologyChangeRoutes);
         allEntries.add(syncRoutes);
         allEntries.add(asyncRoutes);
-        allEntries.add(route(QuorumStateNotification.class, leaderManager::watchQuorumState));
+        // IMPORTANT: Order matters! Consensus must activate BEFORE LeaderManager emits LeaderChange.
+        // LeaderChange handlers (e.g., ClusterDeploymentManager) may immediately call cluster.apply(),
+        // which requires the consensus engine to be active.
         allEntries.add(route(QuorumStateNotification.class, consensus::quorumState));
-        allEntries.add(route(Ping.class, network::handlePing));
-        allEntries.add(route(Pong.class, network::handlePong));
+        allEntries.add(route(QuorumStateNotification.class, leaderManager::watchQuorumState));
         record rabiaNode<C extends Command>(NodeConfig config,
                                             StateMachine<C> stateMachine,
                                             ClusterNetwork network,
                                             TopologyManager topologyManager,
                                             RabiaEngine<C> consensus,
                                             LeaderManager leaderManager,
-                                            List<Entry< ?>> routeEntries) implements RabiaNode<C> {
+                                            List<Entry<?>> routeEntries) implements RabiaNode<C> {
             @Override
             public NodeId self() {
-                return config()
-                             .topology()
+                return config().topology()
                              .self();
             }
 
             @Override
             public Promise<Unit> start() {
-                return network()
-                              .start()
+                return network().start()
                               .onSuccessRunAsync(topologyManager()::start)
                               .flatMap(consensus()::start);
             }
 
             @Override
             public Promise<Unit> stop() {
-                return consensus()
-                                .stop()
+                return consensus().stop()
                                 .onResultRun(topologyManager()::stop)
                                 .flatMap(network()::stop);
             }
 
             @Override
+            public boolean isActive() {
+                return consensus().isActive();
+            }
+
+            @Override
             public <R> Promise<List<R>> apply(List<C> commands) {
-                return consensus()
-                                .apply(commands);
+                return consensus().apply(commands);
             }
         }
         return new rabiaNode<>(config,
@@ -229,9 +273,9 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
      * @return Result containing the ImmutableRouter, or failure if validation fails
      */
     @SuppressWarnings({"rawtypes", "unchecked"})
-    static Result<MessageRouter> buildAndWireRouter(DelegateRouter delegateRouter, List<Entry< ?>> entries) {
+    static Result<MessageRouter> buildAndWireRouter(DelegateRouter delegateRouter, List<Entry<?>> entries) {
         // Validate all sealed hierarchies
-        Set<Class< ?>> validationErrors = new HashSet<>();
+        Set<Class<?>> validationErrors = new HashSet<>();
         for (var entry : entries) {
             validationErrors.addAll(entry.validate());
         }

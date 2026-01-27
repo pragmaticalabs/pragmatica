@@ -52,7 +52,7 @@ public final class ComprehensiveSnapshotCollector {
     private final MemoryMXBean memoryMxBean;
 
     private final ScheduledExecutorService scheduler;
-    private ScheduledFuture< ? > collectionTask;
+    private ScheduledFuture<?> collectionTask;
     private volatile boolean started = false;
 
     private ComprehensiveSnapshotCollector(GCMetricsCollector gcCollector,

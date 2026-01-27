@@ -51,15 +51,14 @@ public interface BlueprintExpander {
     static Promise<ExpandedBlueprint> expand(Blueprint blueprint, DependencyLoader loader) {
         var explicitSlices = collectExplicitSlices(blueprint);
         return resolveDependencies(explicitSlices, loader)
-                                  .flatMap(allDeps -> buildExpandedBlueprint(blueprint, explicitSlices, allDeps));
+        .flatMap(allDeps -> buildExpandedBlueprint(blueprint, explicitSlices, allDeps));
     }
 
     private static Promise<ExpandedBlueprint> buildExpandedBlueprint(Blueprint blueprint,
                                                                      Map<Artifact, SliceSpec> explicitSlices,
                                                                      Map<Artifact, Set<Artifact>> allDeps) {
         var graph = buildDependencyGraph(allDeps);
-        return checkCycles(graph)
-                          .flatMap(_ -> buildLoadOrder(explicitSlices, allDeps, graph))
+        return checkCycles(graph).flatMap(_ -> buildLoadOrder(explicitSlices, allDeps, graph))
                           .map(loadOrder -> ExpandedBlueprint.expandedBlueprint(blueprint.id(),
                                                                                 loadOrder))
                           .async();
@@ -82,11 +81,8 @@ public interface BlueprintExpander {
                                                                              DependencyLoader loader) {
         var processed = new HashSet<Artifact>();
         var dependencies = new HashMap<Artifact, Set<Artifact>>();
-        return resolveDependenciesRecursive(explicitSlices.keySet(),
-                                            loader,
-                                            processed,
-                                            dependencies)
-                                           .map(_ -> Collections.unmodifiableMap(dependencies));
+        return resolveDependenciesRecursive(explicitSlices.keySet(), loader, processed, dependencies)
+        .map(_ -> Collections.unmodifiableMap(dependencies));
     }
 
     /**

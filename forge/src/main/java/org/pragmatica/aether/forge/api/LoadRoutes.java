@@ -42,15 +42,15 @@ public sealed interface LoadRoutes {
      */
     static RouteSource loadRoutes(LoadGenerator loadGenerator, ConfigurableLoadRunner loadRunner) {
         return in("/api/load")
-                 .serve(getConfigRoute(loadRunner),
-                        postConfigRoute(loadRunner),
-                        getStatusRoute(loadRunner),
-                        startRoute(loadRunner),
-                        stopRoute(loadRunner),
-                        pauseRoute(loadRunner),
-                        resumeRoute(loadRunner),
-                        rampRoute(loadGenerator),
-                        setRateRoute(loadGenerator));
+        .serve(getConfigRoute(loadRunner),
+               postConfigRoute(loadRunner),
+               getStatusRoute(loadRunner),
+               startRoute(loadRunner),
+               stopRoute(loadRunner),
+               pauseRoute(loadRunner),
+               resumeRoute(loadRunner),
+               rampRoute(loadGenerator),
+               setRateRoute(loadGenerator));
     }
 
     // ========== Route Definitions ==========

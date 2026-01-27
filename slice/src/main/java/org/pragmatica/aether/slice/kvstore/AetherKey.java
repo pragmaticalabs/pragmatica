@@ -134,9 +134,9 @@ public sealed interface AetherKey extends StructuredKey {
                 return SLICE_KEY_FORMAT_ERROR.apply(key)
                                              .result();
             }
-            return Artifact.artifact(parts[2])
-                           .map(artifact -> new SliceNodeKey(artifact,
-                                                             NodeId.nodeId(parts[1])));
+            return Result.all(Artifact.artifact(parts[2]),
+                              NodeId.nodeId(parts[1]))
+                         .map(SliceNodeKey::new);
         }
     }
 

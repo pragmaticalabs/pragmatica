@@ -23,7 +23,7 @@ public record ArtifactRepoSlice(MavenProtocolHandler mavenHandler) implements Sl
     }
 
     @Override
-    public List<SliceMethod< ?, ?>> methods() {
+    public List<SliceMethod<?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("get")
                                                    .unwrap(),
                                          this::handleGet,

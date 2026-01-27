@@ -18,7 +18,6 @@ import java.util.stream.IntStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
 /**
@@ -64,8 +63,7 @@ public record Main(String[] args) {
     }
 
     private Option<AetherConfig> loadConfig() {
-        return findArg("--config=")
-                      .map(Path::of)
+        return findArg("--config=").map(Path::of)
                       .filter(p -> p.toFile()
                                     .exists())
                       .flatMap(this::loadConfigFile);
@@ -135,18 +133,16 @@ public record Main(String[] args) {
     }
 
     private NodeId parseNodeId(Option<AetherConfig> aetherConfig) {
-        return findArg("--node-id=")
-                      .map(NodeId::nodeId)
-                      .orElse(findEnv("NODE_ID")
-                                     .map(NodeId::nodeId))
+        return findArg("--node-id=").flatMap(id -> NodeId.nodeId(id)
+                                                         .option())
+                      .orElse(findEnv("NODE_ID").flatMap(id -> NodeId.nodeId(id)
+                                                                     .option()))
                       .or(NodeId::randomNodeId);
     }
 
     private int parsePort(Option<AetherConfig> aetherConfig) {
-        return findArg("--port=")
-                      .map(Integer::parseInt)
-                      .orElse(findEnv("CLUSTER_PORT")
-                                     .map(Integer::parseInt))
+        return findArg("--port=").map(Integer::parseInt)
+                      .orElse(findEnv("CLUSTER_PORT").map(Integer::parseInt))
                       .or(() -> portFromConfig(aetherConfig));
     }
 
@@ -158,10 +154,8 @@ public record Main(String[] args) {
     }
 
     private int parseManagementPort(Option<AetherConfig> aetherConfig) {
-        return findArg("--management-port=")
-                      .map(Integer::parseInt)
-                      .orElse(findEnv("MANAGEMENT_PORT")
-                                     .map(Integer::parseInt))
+        return findArg("--management-port=").map(Integer::parseInt)
+                      .orElse(findEnv("MANAGEMENT_PORT").map(Integer::parseInt))
                       .or(() -> managementPortFromConfig(aetherConfig));
     }
 
@@ -173,11 +167,9 @@ public record Main(String[] args) {
     }
 
     private List<NodeInfo> parsePeers(NodeId self, int selfPort, Option<AetherConfig> aetherConfig) {
-        var selfInfo = nodeInfo(self, nodeAddress("localhost", selfPort));
-        return findArg("--peers=")
-                      .map(peersStr -> parsePeersFromString(peersStr, self, selfInfo))
-                      .orElse(findEnv("CLUSTER_PEERS")
-                                     .map(peersStr -> parsePeersFromString(peersStr, self, selfInfo)))
+        var selfInfo = new NodeInfo(self, nodeAddress("localhost", selfPort).unwrap());
+        return findArg("--peers=").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo))
+                      .orElse(findEnv("CLUSTER_PEERS").map(peersStr -> parsePeersFromString(peersStr, self, selfInfo)))
                       .orElse(aetherConfig.map(this::generatePeersFromConfig))
                       .or(() -> List.of(selfInfo));
     }
@@ -201,15 +193,16 @@ public record Main(String[] args) {
         var port = clusterPort + (env == Environment.LOCAL
                                   ? index
                                   : 0);
-        return nodeInfo(NodeId.nodeId("node-" + index), nodeAddress(host, port));
+        return new NodeInfo(NodeId.nodeId("node-" + index)
+                                  .unwrap(),
+                            nodeAddress(host, port).unwrap());
     }
 
     private List<NodeInfo> parsePeersFromString(String peersStr, NodeId self, NodeInfo selfInfo) {
         var peers = Arrays.stream(peersStr.split(","))
                           .map(String::trim)
                           .filter(s -> !s.isEmpty())
-                          .flatMap(peerStr -> parsePeerAddress(peerStr)
-                                                              .stream())
+                          .flatMap(peerStr -> parsePeerAddress(peerStr).stream())
                           .toList();
         return ensureSelfIncluded(peers, self, selfInfo);
     }
@@ -238,15 +231,18 @@ public record Main(String[] args) {
     private Option<NodeInfo> parseHostPortPeer(String[] parts) {
         var host = parts[0];
         var port = Integer.parseInt(parts[1]);
-        var nodeId = NodeId.nodeId("node-" + host + "-" + port);
-        return Option.option(nodeInfo(nodeId, nodeAddress(host, port)));
+        var nodeId = NodeId.nodeId("node-" + host + "-" + port)
+                           .unwrap();
+        return nodeAddress(host, port).map(addr -> new NodeInfo(nodeId, addr))
+                          .option();
     }
 
     private Option<NodeInfo> parseIdHostPortPeer(String[] parts) {
-        var nodeId = NodeId.nodeId(parts[0]);
         var host = parts[1];
         var port = Integer.parseInt(parts[2]);
-        return Option.option(nodeInfo(nodeId, nodeAddress(host, port)));
+        return NodeId.nodeId(parts[0])
+                     .flatMap(nodeId -> nodeAddress(host, port).map(addr -> new NodeInfo(nodeId, addr)))
+                     .option();
     }
 
     private Option<NodeInfo> logInvalidPeerFormat(String peerStr) {

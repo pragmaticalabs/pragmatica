@@ -45,8 +45,7 @@ public interface BuiltinRepository extends Repository {
                                 return tempFile.toUri()
                                                .toURL();
                             })
-                      .flatMap(url -> location(artifact, url)
-                                              .async());
+                      .flatMap(url -> location(artifact, url).async());
     }
 
     sealed interface RepositoryError extends Cause {

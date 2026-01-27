@@ -40,10 +40,7 @@ public record DatabaseConfig(String name,
      */
     public static Result<DatabaseConfig> databaseConfig(String name) {
         return validateName(name)
-                           .map(n -> new DatabaseConfig(n,
-                                                        DEFAULT_CONNECTION_TIMEOUT,
-                                                        DEFAULT_QUERY_TIMEOUT,
-                                                        DEFAULT_MAX_CONNECTIONS));
+        .map(n -> new DatabaseConfig(n, DEFAULT_CONNECTION_TIMEOUT, DEFAULT_QUERY_TIMEOUT, DEFAULT_MAX_CONNECTIONS));
     }
 
     private static Result<String> validateName(String name) {

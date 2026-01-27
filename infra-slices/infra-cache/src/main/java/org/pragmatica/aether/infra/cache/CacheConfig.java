@@ -53,8 +53,7 @@ public record CacheConfig(String name,
      * @return Result containing configuration
      */
     public static Result<CacheConfig> cacheConfig(String name) {
-        return validateName(name)
-                           .map(n -> new CacheConfig(n, DEFAULT_MAX_SIZE, DEFAULT_TTL, DEFAULT_EVICTION));
+        return validateName(name).map(n -> new CacheConfig(n, DEFAULT_MAX_SIZE, DEFAULT_TTL, DEFAULT_EVICTION));
     }
 
     /**

@@ -33,8 +33,7 @@ final class InMemoryDistributedLock implements DistributedLock {
                                                     TimeSpan timeout,
                                                     long startTime,
                                                     long timeoutNanos) {
-        return tryAcquireInternal(lockId)
-                                 .map(Promise::success)
+        return tryAcquireInternal(lockId).map(Promise::success)
                                  .or(() -> retryAfterDelay(lockId, timeout, startTime, timeoutNanos));
     }
 
@@ -42,10 +41,9 @@ final class InMemoryDistributedLock implements DistributedLock {
         if (System.nanoTime() - startTime >= timeoutNanos) {
             return new LockError.AcquisitionTimeout(lockId, timeout).promise();
         }
-        return Promise.<LockHandle>promise(timeSpan(10)
-                                                   .millis(),
+        return Promise.<LockHandle>promise(timeSpan(10).millis(),
                                            promise -> tryAcquireWithRetry(lockId, timeout, startTime, timeoutNanos)
-                                                                         .onResult(promise::resolve));
+        .onResult(promise::resolve));
     }
 
     @Override
@@ -55,9 +53,8 @@ final class InMemoryDistributedLock implements DistributedLock {
 
     @Override
     public <T> Promise<T> withLock(String lockId, TimeSpan timeout, Fn0<Promise<T>> action) {
-        return acquire(lockId, timeout)
-                      .flatMap(handle -> action.apply()
-                                               .onResultRun(handle::release));
+        return acquire(lockId, timeout).flatMap(handle -> action.apply()
+                                                                .onResultRun(handle::release));
     }
 
     private Option<LockHandle> tryAcquireInternal(String lockId) {

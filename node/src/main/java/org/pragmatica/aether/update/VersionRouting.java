@@ -34,14 +34,12 @@ public record VersionRouting(int newWeight, int oldWeight) {
     /**
      * Initial routing: all traffic to old version.
      */
-    public static final VersionRouting ALL_OLD = versionRouting(0, 1)
-                                                               .unwrap();
+    public static final VersionRouting ALL_OLD = versionRouting(0, 1).unwrap();
 
     /**
      * Final routing: all traffic to new version.
      */
-    public static final VersionRouting ALL_NEW = versionRouting(1, 0)
-                                                               .unwrap();
+    public static final VersionRouting ALL_NEW = versionRouting(1, 0).unwrap();
 
     /**
      * Creates a routing configuration.

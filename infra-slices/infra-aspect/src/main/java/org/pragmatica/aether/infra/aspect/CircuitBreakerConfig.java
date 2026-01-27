@@ -22,8 +22,7 @@ public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, 
      * @return Result containing configuration
      */
     public static Result<CircuitBreakerConfig> circuitBreakerConfig() {
-        return Result.success(new CircuitBreakerConfig(5, timeSpan(30)
-                                                                  .seconds(), 3));
+        return Result.success(new CircuitBreakerConfig(5, timeSpan(30).seconds(), 3));
     }
 
     /**
@@ -34,10 +33,7 @@ public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, 
      */
     public static Result<CircuitBreakerConfig> circuitBreakerConfig(int failureThreshold) {
         return ensure(failureThreshold, Verify.Is::positive)
-                     .map(threshold -> new CircuitBreakerConfig(threshold,
-                                                                timeSpan(30)
-                                                                        .seconds(),
-                                                                3));
+        .map(threshold -> new CircuitBreakerConfig(threshold, timeSpan(30).seconds(), 3));
     }
 
     /**
@@ -52,10 +48,8 @@ public record CircuitBreakerConfig(int failureThreshold, TimeSpan resetTimeout, 
                                                                     TimeSpan resetTimeout,
                                                                     int testAttempts) {
         return ensure(failureThreshold, Verify.Is::positive)
-                     .flatMap(threshold -> ensure(resetTimeout, Verify.Is::notNull)
-                                                 .flatMap(timeout -> ensure(testAttempts, Verify.Is::positive)
-                                                                           .map(attempts -> new CircuitBreakerConfig(threshold,
-                                                                                                                     timeout,
-                                                                                                                     attempts))));
+        .flatMap(threshold -> ensure(resetTimeout, Verify.Is::notNull)
+        .flatMap(timeout -> ensure(testAttempts, Verify.Is::positive)
+        .map(attempts -> new CircuitBreakerConfig(threshold, timeout, attempts))));
     }
 }

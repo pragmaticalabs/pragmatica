@@ -1,12 +1,11 @@
 package org.pragmatica.aether.api;
 
-import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.SimpleChannelInboundHandler;
-import io.netty.channel.group.ChannelGroup;
-import io.netty.channel.group.DefaultChannelGroup;
-import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
-import io.netty.handler.codec.http.websocketx.WebSocketFrame;
-import io.netty.util.concurrent.GlobalEventExecutor;
+import org.pragmatica.http.websocket.WebSocketHandler;
+import org.pragmatica.http.websocket.WebSocketMessage;
+import org.pragmatica.http.websocket.WebSocketSession;
+
+import java.util.concurrent.ConcurrentHashMap;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -14,10 +13,11 @@ import org.slf4j.LoggerFactory;
  * WebSocket handler for dashboard real-time updates.
  *
  * <p>Manages connected dashboard clients and broadcasts metrics updates.
+ * Uses pragmatica-lite's WebSocket API.
  */
-public class DashboardWebSocketHandler extends SimpleChannelInboundHandler<WebSocketFrame> {
+public class DashboardWebSocketHandler implements WebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(DashboardWebSocketHandler.class);
-    private static final ChannelGroup channels = new DefaultChannelGroup(GlobalEventExecutor.INSTANCE);
+    private static final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
 
     private final DashboardMetricsPublisher metricsPublisher;
 
@@ -26,65 +26,60 @@ public class DashboardWebSocketHandler extends SimpleChannelInboundHandler<WebSo
     }
 
     @Override
-    public void handlerAdded(ChannelHandlerContext ctx) {
-        channels.add(ctx.channel());
-        log.info("Dashboard client connected: {}",
-                 ctx.channel()
-                    .remoteAddress());
-        // Send initial state snapshot
-        var initialState = metricsPublisher.buildInitialState();
-        ctx.writeAndFlush(new TextWebSocketFrame(initialState));
-    }
-
-    @Override
-    public void handlerRemoved(ChannelHandlerContext ctx) {
-        channels.remove(ctx.channel());
-        log.info("Dashboard client disconnected: {}",
-                 ctx.channel()
-                    .remoteAddress());
-    }
-
-    @Override
-    protected void channelRead0(ChannelHandlerContext ctx, WebSocketFrame frame) {
-        if (frame instanceof TextWebSocketFrame textFrame) {
-            handleClientMessage(ctx, textFrame.text());
+    public void handle(WebSocketSession session, WebSocketMessage message) {
+        switch (message) {
+            case WebSocketMessage.Open _ -> onOpen(session);
+            case WebSocketMessage.Text text -> onText(session, text.content());
+            case WebSocketMessage.Binary _ -> {}
+            case WebSocketMessage.Close _ -> onClose(session);
         }
     }
 
-    private void handleClientMessage(ChannelHandlerContext ctx, String message) {
-        log.debug("Received from dashboard client: {}", message);
+    private void onOpen(WebSocketSession session) {
+        sessions.put(session.id(), session);
+        log.info("Dashboard client connected: {}", session.id());
+        // Send initial state snapshot
+        var initialState = metricsPublisher.buildInitialState();
+        session.send(initialState);
+    }
+
+    private void onText(WebSocketSession session, String message) {
+        log.debug("Received from dashboard client {}: {}", session.id(), message);
         // Parse client messages (subscribe, set threshold, get history)
         if (message.contains("\"type\":\"SUBSCRIBE\"")) {
-            // Client subscribing to streams - currently all clients get all updates
-            log.debug("Client subscribed to streams");
+            log.debug("Client {} subscribed to streams", session.id());
         } else if (message.contains("\"type\":\"SET_THRESHOLD\"")) {
             metricsPublisher.handleSetThreshold(message);
         } else if (message.contains("\"type\":\"GET_HISTORY\"")) {
             var history = metricsPublisher.buildHistoryResponse(message);
-            ctx.writeAndFlush(new TextWebSocketFrame(history));
+            session.send(history);
         }
+    }
+
+    private void onClose(WebSocketSession session) {
+        sessions.remove(session.id());
+        log.info("Dashboard client disconnected: {}", session.id());
     }
 
     /**
      * Broadcast a message to all connected dashboard clients.
      */
     public static void broadcast(String message) {
-        channels.writeAndFlush(new TextWebSocketFrame(message));
+        sessions.values()
+                .forEach(session -> {
+                    if (session.isOpen()) {
+                        session.send(message);
+                    }
+                });
     }
 
     /**
      * Get the number of connected dashboard clients.
      */
     public static int connectedClients() {
-        return channels.size();
-    }
-
-    @Override
-    public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        log.error("WebSocket error for client {}",
-                  ctx.channel()
-                     .remoteAddress(),
-                  cause);
-        ctx.close();
+        return (int) sessions.values()
+                            .stream()
+                            .filter(WebSocketSession::isOpen)
+                            .count();
     }
 }

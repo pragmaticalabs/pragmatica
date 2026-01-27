@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Asynchronous;
 import static org.pragmatica.consensus.rabia.RabiaProtocolMessage.Synchronous;
 import static org.pragmatica.consensus.NodeId.randomNodeId;
-import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
+import org.pragmatica.consensus.net.NodeInfo;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
@@ -59,12 +59,12 @@ public class TestCluster {
 
     public TestCluster(int size) {
         this.size = size;
-        var topologyManager = new TestTopologyManager(size, nodeInfo(randomNodeId(), nodeAddress("localhost", 8090)));
+        var topologyManager = new TestTopologyManager(size, new NodeInfo(randomNodeId(), nodeAddress("localhost", 8090).unwrap()));
         network = new LocalNetwork(topologyManager, routers, new FaultInjector());
 
         // create nodes
         for (int i = 1; i <= size; i++) {
-            var id = NodeId.nodeId("node-" + i);
+            var id = NodeId.nodeId("node-" + i).unwrap();
             ids.add(id);
             addNewNode(id);
         }
@@ -96,13 +96,13 @@ public class TestCluster {
     }
 
     public void disconnect(NodeId id) {
-        network.disconnect(id);
+        network.disconnectNode(id);
     }
 
     public void addNewNode(NodeId id) {
         var router = MessageRouter.mutable();
         var store = new KVStore<StringKey, String>(router, serializer, deserializer);
-        var topologyManager = new TestTopologyManager(size, nodeInfo(id, nodeAddress("localhost", 8090)));
+        var topologyManager = new TestTopologyManager(size, new NodeInfo(id, nodeAddress("localhost", 8090).unwrap()));
         var engine = new RabiaEngine<>(topologyManager, network, store, ProtocolConfig.testConfig());
 
         router.addRoute(KVStoreLocalIO.Request.Find.class, store::find);

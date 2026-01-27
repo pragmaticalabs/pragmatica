@@ -17,21 +17,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 // for actual timeout configuration and can override these defaults.
 public enum SliceState {
     LOAD,
-    LOADING(timeSpan(2)
-                    .minutes()),
+    LOADING(timeSpan(2).minutes()),
     LOADED,
     ACTIVATE,
-    ACTIVATING(timeSpan(1)
-                       .minutes()),
+    ACTIVATING(timeSpan(1).minutes()),
     ACTIVE,
     DEACTIVATE,
     DEACTIVATING(
-    timeSpan(30)
-            .seconds()),
+    timeSpan(30).seconds()),
     FAILED,
     UNLOAD,
-    UNLOADING(timeSpan(2)
-                      .minutes());
+    UNLOADING(timeSpan(2).minutes());
     private final Option<TimeSpan> timeout;
     SliceState() {
         this(Option.none());
@@ -66,8 +62,7 @@ public enum SliceState {
         };
     }
     public boolean canTransitionTo(SliceState target) {
-        return validTransitions()
-                               .contains(target);
+        return validTransitions().contains(target);
     }
     public Result<SliceState> nextState() {
         return switch (this) {

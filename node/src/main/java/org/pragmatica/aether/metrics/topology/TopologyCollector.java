@@ -53,13 +53,12 @@ public final class TopologyCollector {
     public void setTopologyManager(TopologyManager manager) {
         topologyManager.set(manager);
         // Register self
-        option(manager)
-              .onPresent(m -> {
-                  var self = m.self();
-                  knownNodes.put(self.id()
-                                     .id(),
-                                 self);
-              });
+        option(manager).onPresent(m -> {
+            var self = m.self();
+            knownNodes.put(self.id()
+                               .id(),
+                           self);
+        });
     }
 
     /**

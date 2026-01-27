@@ -181,14 +181,13 @@ class RollbackManagerImpl implements RollbackManager {
         }
         var artifactBase = event.artifact()
                                 .base();
-        var state = rollbackStates.get(artifactBase);
-        if (state == null) {
-            log.warn("[requestId={}] No previous version tracked for {}, cannot rollback",
-                     event.requestId(),
-                     event.artifact());
-            return;
-        }
-        initiateRollback(event.artifact(), state, event.requestId());
+        Option.option(rollbackStates.get(artifactBase))
+              .onPresent(state -> initiateRollback(event.artifact(),
+                                                   state,
+                                                   event.requestId()))
+              .onEmpty(() -> log.warn("[requestId={}] No previous version tracked for {}, cannot rollback",
+                                      event.requestId(),
+                                      event.artifact()));
     }
 
     @Override
@@ -203,14 +202,14 @@ class RollbackManagerImpl implements RollbackManager {
 
     @Override
     public void resetRollbackCount(ArtifactBase artifactBase) {
-        var state = rollbackStates.get(artifactBase);
-        if (state != null) {
-            state.rollbackCount = 0;
-            state.lastRollbackTimestamp = 0;
-            state.lastRolledBackFrom = Option.none();
-            state.lastRolledBackTo = Option.none();
-            log.info("Rollback count reset for {}", artifactBase);
-        }
+        Option.option(rollbackStates.get(artifactBase))
+              .onPresent(state -> {
+                             state.rollbackCount = 0;
+                             state.lastRollbackTimestamp = 0;
+                             state.lastRolledBackFrom = Option.none();
+                             state.lastRolledBackTo = Option.none();
+                             log.info("Rollback count reset for {}", artifactBase);
+                         });
     }
 
     private void loadPreviousVersionsFromKvStore() {
@@ -231,13 +230,14 @@ class RollbackManagerImpl implements RollbackManager {
     }
 
     private RollbackState computePreviousVersionState(RollbackState existing, PreviousVersionValue value) {
-        if (existing == null) {
-            return new RollbackState(Option.some(value.previousVersion()),
-                                     value.currentVersion());
-        }
-        existing.previousVersion = Option.some(value.previousVersion());
-        existing.currentVersion = value.currentVersion();
-        return existing;
+        return Option.option(existing)
+                     .fold(() -> new RollbackState(Option.some(value.previousVersion()),
+                                                   value.currentVersion()),
+                           state -> {
+                               state.previousVersion = Option.some(value.previousVersion());
+                               state.currentVersion = value.currentVersion();
+                               return state;
+                           });
     }
 
     private void trackVersionChange(Artifact artifact) {
@@ -257,23 +257,27 @@ class RollbackManagerImpl implements RollbackManager {
                                                     Artifact artifact,
                                                     ArtifactBase artifactBase,
                                                     Version currentVersion) {
-        if (existing == null) {
-            // First deployment, no previous version yet
-            log.debug("First deployment of {}, no previous version to track", artifact);
-            return new RollbackState(Option.none(), currentVersion);
-        }
-        if (!existing.currentVersion.equals(currentVersion)) {
-            // Version changed, store previous version in KVStore
-            var previousVersion = existing.currentVersion;
-            log.info("Version change detected for {}: {} -> {}",
-                     artifactBase,
-                     previousVersion,
-                     currentVersion);
-            storePreviousVersion(artifactBase, previousVersion, currentVersion);
-            existing.previousVersion = Option.some(previousVersion);
-            existing.currentVersion = currentVersion;
-        }
-        return existing;
+        return Option.option(existing)
+                     .fold(() -> {
+                               // First deployment, no previous version yet
+        log.debug("First deployment of {}, no previous version to track", artifact);
+                               return new RollbackState(Option.none(),
+                                                        currentVersion);
+                           },
+                           state -> {
+                               if (!state.currentVersion.equals(currentVersion)) {
+                                   // Version changed, store previous version in KVStore
+        var previousVersion = state.currentVersion;
+                                   log.info("Version change detected for {}: {} -> {}",
+                                            artifactBase,
+                                            previousVersion,
+                                            currentVersion);
+                                   storePreviousVersion(artifactBase, previousVersion, currentVersion);
+                                   state.previousVersion = Option.some(previousVersion);
+                                   state.currentVersion = currentVersion;
+                               }
+                               return state;
+                           });
     }
 
     private void storePreviousVersion(ArtifactBase artifactBase, Version previousVersion, Version currentVersion) {

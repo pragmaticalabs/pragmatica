@@ -46,14 +46,13 @@ public final class ChaosRoutes {
                                           ChaosController chaosController,
                                           Consumer<EventLogEntry> eventLogger) {
         return in("/api/chaos")
-                 .serve(statusRoute(chaosController),
-                        enableRoute(chaosController, eventLogger),
-                        injectRoute(chaosController, eventLogger),
-                        stopRoute(chaosController, eventLogger),
-                        stopAllRoute(chaosController, eventLogger),
-                        addNodeRoute(cluster, eventLogger),
-                        killNodeRoute(cluster, eventLogger),
-                        rollingRestartRoute(cluster, eventLogger));
+        .serve(statusRoute(chaosController),
+               enableRoute(chaosController, eventLogger),
+               injectRoute(chaosController, eventLogger),
+               stopRoute(chaosController, eventLogger),
+               stopAllRoute(chaosController, eventLogger),
+               addNodeRoute(cluster, eventLogger),
+               killNodeRoute(cluster, eventLogger));
     }
 
     // ========== Route Definitions ==========
@@ -102,12 +101,6 @@ public final class ChaosRoutes {
                     .withPath(aString())
                     .to(nodeId -> killNode(cluster, eventLogger, nodeId))
                     .asJson();
-    }
-
-    private static Route<SuccessResponse> rollingRestartRoute(ForgeCluster cluster,
-                                                              Consumer<EventLogEntry> eventLogger) {
-        return Route.<SuccessResponse> post("/rolling-restart")
-                    .toJson(_ -> rollingRestart(cluster, eventLogger));
     }
 
     // ========== Request Records ==========
@@ -176,8 +169,7 @@ public final class ChaosRoutes {
         Duration duration = Duration.ofSeconds(request.durationSeconds() != null
                                                ? request.durationSeconds()
                                                : 60);
-        return parseChaosEvent(request, duration)
-                              .async()
+        return parseChaosEvent(request, duration).async()
                               .flatMap(controller::injectChaos)
                               .map(eventId -> logAndBuildInjectResponse(eventLogger, request, eventId));
     }
@@ -292,19 +284,5 @@ public final class ChaosRoutes {
                                                                              ? ", new leader: " + newLeader
                                                                              : "")));
         return new NodeActionResponse(true, newLeader);
-    }
-
-    private static Promise<SuccessResponse> rollingRestart(ForgeCluster cluster,
-                                                           Consumer<EventLogEntry> eventLogger) {
-        eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Starting rolling restart of all nodes"));
-        return cluster.rollingRestart()
-                      .map(_ -> logAndBuildRollingRestartResponse(eventLogger))
-                      .onFailure(cause -> eventLogger.accept(new EventLogEntry("ROLLING_RESTART_FAILED",
-                                                                               "Rolling restart failed: " + cause.message())));
-    }
-
-    private static SuccessResponse logAndBuildRollingRestartResponse(Consumer<EventLogEntry> eventLogger) {
-        eventLogger.accept(new EventLogEntry("ROLLING_RESTART_COMPLETE", "Rolling restart completed successfully"));
-        return SuccessResponse.OK;
     }
 }

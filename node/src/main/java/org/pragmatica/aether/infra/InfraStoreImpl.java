@@ -1,5 +1,7 @@
 package org.pragmatica.aether.infra;
 
+import org.pragmatica.lang.Option;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
@@ -13,16 +15,12 @@ import org.slf4j.LoggerFactory;
  * <p>
  * Uses ConcurrentHashMap for atomic operations and version-based instance storage.
  * Each artifact key maps to a list of versioned instances.
- * <p>
- * Note: Internal implementation uses null for the double-checked locking pattern,
- * which is appropriate for this performance-sensitive synchronization context.
- * The public API never exposes null values.
  */
 public final class InfraStoreImpl implements InfraStore {
     private static final Logger log = LoggerFactory.getLogger(InfraStoreImpl.class);
 
     // Map: artifactKey -> list of versioned instances
-    private final ConcurrentHashMap<String, List<VersionedInstance< ? >>> store = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, List<VersionedInstance<?>>> store = new ConcurrentHashMap<>();
 
     // Lock for atomic getOrCreate operations
     private final Object createLock = new Object();
@@ -49,28 +47,29 @@ public final class InfraStoreImpl implements InfraStore {
 
     @Override
     public <T> T getOrCreate(String artifactKey, String version, Class<T> type, Supplier<T> factory) {
-        // Fast path: check if exact version exists (null indicates absence)
+        // Fast path: check if exact version exists
         var existing = findExactVersion(artifactKey, version, type);
-        if (existing != null) {
+        if (existing.isPresent()) {
             log.debug("Returning existing instance for {}:{}", artifactKey, version);
-            return existing;
+            return existing.unwrap();
         }
-        // Slow path: synchronized creation with double-check
+        // Slow path: synchronized creation
         synchronized (createLock) {
+            // Double-check after acquiring lock
             existing = findExactVersion(artifactKey, version, type);
-            if (existing != null) {
+            if (existing.isPresent()) {
                 log.debug("Returning existing instance for {}:{} (after lock)", artifactKey, version);
-                return existing;
+                return existing.unwrap();
             }
             // Create new instance
             log.info("Creating new instance for {}:{}", artifactKey, version);
             var instance = factory.get();
             var versionedInstance = new VersionedInstance<>(version, instance);
-            // Add to store atomically
+            // Add to store
             store.compute(artifactKey,
                           (_, existingList) -> {
                               var list = existingList == null
-                                         ? new ArrayList<VersionedInstance< ?>>()
+                                         ? new ArrayList<VersionedInstance<?>>()
                                          : new ArrayList<>(existingList);
                               list.add(versionedInstance);
                               return list;
@@ -79,25 +78,19 @@ public final class InfraStoreImpl implements InfraStore {
         }
     }
 
-    /**
-     * Find an instance matching the exact version (ignoring qualifiers).
-     * <p>
-     * Returns null if not found. This internal method uses null for the
-     * double-checked locking pattern which requires separate check/extract phases.
-     */
-    private <T> T findExactVersion(String artifactKey, String version, Class<T> type) {
-        var instances = store.get(artifactKey);
-        if (instances == null) {
-            return null;
-        }
+    private <T> Option<T> findExactVersion(String artifactKey, String version, Class<T> type) {
+        return Option.option(store.get(artifactKey))
+                     .flatMap(instances -> findMatchingVersion(instances, version, type));
+    }
+
+    private <T> Option<T> findMatchingVersion(List<VersionedInstance<?>> instances, String version, Class<T> type) {
         var strippedVersion = stripQualifier(version);
         for (var vi : instances) {
-            if (stripQualifier(vi.version())
-                              .equals(strippedVersion) && type.isInstance(vi.instance())) {
-                return type.cast(vi.instance());
+            if (stripQualifier(vi.version()).equals(strippedVersion) && type.isInstance(vi.instance())) {
+                return Option.some(type.cast(vi.instance()));
             }
         }
-        return null;
+        return Option.none();
     }
 
     private static String stripQualifier(String version) {

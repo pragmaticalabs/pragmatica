@@ -340,9 +340,8 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
             log.info("Config file not found at {}, using defaults", path);
             return defaultConfig();
         }
-        return loadFromFile(path)
-                           .onFailure(cause -> log.warn("Failed to load config: {}, using defaults",
-                                                        cause.message()))
+        return loadFromFile(path).onFailure(cause -> log.warn("Failed to load config: {}, using defaults",
+                                                              cause.message()))
                            .or(defaultConfig());
     }
 

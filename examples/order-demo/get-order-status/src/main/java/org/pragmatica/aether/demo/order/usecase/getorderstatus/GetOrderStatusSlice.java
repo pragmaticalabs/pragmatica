@@ -67,7 +67,7 @@ public record GetOrderStatusSlice() implements Slice {
 
     // === Slice Implementation ===
     @Override
-    public List<SliceMethod< ?, ?>> methods() {
+    public List<SliceMethod<?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("getOrderStatus")
                                                    .expect("Invalid method name: getOrderStatus"),
                                          this::execute,
@@ -82,9 +82,8 @@ public record GetOrderStatusSlice() implements Slice {
     }
 
     private Promise<GetOrderStatusResponse> findOrder(ValidGetOrderStatusRequest validRequest) {
-        return repository()
-                         .findById(validRequest.orderId()
-                                               .value())
+        return repository().findById(validRequest.orderId()
+                                                 .value())
                          .toResult(orderNotFound(validRequest))
                          .async()
                          .flatMap(this::toResponse);

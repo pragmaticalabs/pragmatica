@@ -14,21 +14,18 @@ public enum CleanupPolicy {
     /**
      * Remove old version instances immediately upon completion.
      */
-    IMMEDIATE(timeSpan(0)
-                      .nanos()),
+    IMMEDIATE(timeSpan(0).nanos()),
     /**
      * Keep old version instances for a grace period (default 5 minutes)
      * before removal. Allows for quick rollback if issues are detected
      * after completion.
      */
-    GRACE_PERIOD(timeSpan(5)
-                         .minutes()),
+    GRACE_PERIOD(timeSpan(5).minutes()),
     /**
      * Do not automatically remove old version instances. Requires
      * explicit manual cleanup via API call.
      */
-    MANUAL(timeSpan(Long.MAX_VALUE)
-                   .nanos());
+    MANUAL(timeSpan(Long.MAX_VALUE).nanos());
     private final TimeSpan gracePeriod;
     CleanupPolicy(TimeSpan gracePeriod) {
         this.gracePeriod = gracePeriod;

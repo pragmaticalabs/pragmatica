@@ -1,17 +1,10 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.e2e.containers.AetherCluster;
 import org.pragmatica.aether.e2e.containers.AetherNodeContainer;
 
-import java.nio.file.Path;
-import java.time.Duration;
-
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.awaitility.Awaitility.await;
 
 /**
  * E2E tests for TTM (Tiny Time Mixers) predictive scaling.
@@ -28,24 +21,7 @@ import static org.awaitility.Awaitility.await;
  * Prediction accuracy testing requires a trained ONNX model and is better
  * suited for unit tests with mocked predictors.
  */
-class TtmE2ETest {
-    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
-    private AetherCluster cluster;
-
-    @BeforeEach
-    void setUp() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
-        cluster.start();
-        cluster.awaitQuorum();
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (cluster != null) {
-            cluster.close();
-        }
-    }
+class TtmE2ETest extends AbstractE2ETest {
 
     @Nested
     class TtmStatusEndpoint {

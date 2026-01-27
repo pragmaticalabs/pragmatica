@@ -3,7 +3,7 @@ package org.pragmatica.cluster.net.local;
 import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.rabia.RabiaProtocolMessage;
 import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
@@ -60,23 +60,34 @@ public class LocalNetwork implements ClusterNetwork {
     }
 
     @Override
-    public <M extends ProtocolMessage> void broadcast(M message) {
+    public <M extends ProtocolMessage> Unit broadcast(M message) {
         nodes.keySet()
              .forEach(nodeId -> send(nodeId, message));
+        return Unit.unit();
     }
 
     @Override
-    public void connect(NetworkManagementOperation.ConnectNode connectNode) {
-
-    }
-
-    @Override
-    public void disconnect(NetworkManagementOperation.DisconnectNode disconnectNode) {
+    public void connect(NetworkServiceMessage.ConnectNode connectNode) {
 
     }
 
     @Override
-    public void listNodes(NetworkManagementOperation.ListConnectedNodes listConnectedNodes) {
+    public void disconnect(NetworkServiceMessage.DisconnectNode disconnectNode) {
+
+    }
+
+    @Override
+    public void listNodes(NetworkServiceMessage.ListConnectedNodes listConnectedNodes) {
+
+    }
+
+    @Override
+    public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {
+
+    }
+
+    @Override
+    public void handleSend(NetworkServiceMessage.Send send) {
 
     }
 
@@ -91,20 +102,21 @@ public class LocalNetwork implements ClusterNetwork {
     }
 
     @Override
-    public <M extends ProtocolMessage> void send(NodeId nodeId, M message) {
+    public <M extends ProtocolMessage> Unit send(NodeId nodeId, M message) {
         // For Byzantine behavior - only check if it's a Byzantine node if we can get the sender
         var sender = message.sender();
         if (sender != null && faultInjector.isFaultyNode(sender, FaultType.NODE_BYZANTINE)) {
             // Handle Byzantine behavior - for now, just drop the message
-            return;
+            return Unit.unit();
         }
 
         if (nodes.containsKey(nodeId)) {
             processWithFaultInjection(nodeId, (RabiaProtocolMessage) message);
         }
+        return Unit.unit();
     }
 
-    public void disconnect(NodeId nodeId) {
+    public void disconnectNode(NodeId nodeId) {
         nodes.remove(nodeId);
         if (nodes.size() == topologyManager.quorumSize() - 1) {
             routers.values()

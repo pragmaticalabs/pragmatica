@@ -41,16 +41,9 @@ public record StartupConfig(Option<Path> forgeConfig,
         var loadRate = envOrArgInt("LOAD_RATE", parsed, "load-rate", DEFAULT_LOAD_RATE);
         // Validate paths exist
         return validatePath(forgeConfigPath, "FORGE_CONFIG")
-                           .flatMap(forgeConfig -> validatePath(blueprintPath, "FORGE_BLUEPRINT")
-                                                               .flatMap(blueprint -> validatePath(loadConfigPath,
-                                                                                                  "FORGE_LOAD_CONFIG")
-                                                                                                 .map(loadConfig -> new StartupConfig(forgeConfig,
-                                                                                                                                      blueprint,
-                                                                                                                                      loadConfig,
-                                                                                                                                      autoStart,
-                                                                                                                                      port,
-                                                                                                                                      clusterSize,
-                                                                                                                                      loadRate))));
+        .flatMap(forgeConfig -> validatePath(blueprintPath, "FORGE_BLUEPRINT")
+        .flatMap(blueprint -> validatePath(loadConfigPath, "FORGE_LOAD_CONFIG")
+        .map(loadConfig -> new StartupConfig(forgeConfig, blueprint, loadConfig, autoStart, port, clusterSize, loadRate))));
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -71,19 +64,16 @@ public record StartupConfig(Option<Path> forgeConfig,
     }
 
     private static Option<String> envOrArg(String envName, Map<String, String> args, String argName) {
-        return option(System.getenv(envName))
-                     .orElse(() -> option(args.get(argName)));
+        return option(System.getenv(envName)).orElse(() -> option(args.get(argName)));
     }
 
     private static boolean envOrArgBool(String envName, Map<String, String> args, String argName) {
-        return envOrArg(envName, args, argName)
-                       .map(v -> v.equalsIgnoreCase("true") || v.equals("1"))
+        return envOrArg(envName, args, argName).map(v -> v.equalsIgnoreCase("true") || v.equals("1"))
                        .or(false);
     }
 
     private static int envOrArgInt(String envName, Map<String, String> args, String argName, int defaultValue) {
-        return envOrArg(envName, args, argName)
-                       .flatMap(StartupConfig::parseIntSafe)
+        return envOrArg(envName, args, argName).flatMap(StartupConfig::parseIntSafe)
                        .or(defaultValue);
     }
 

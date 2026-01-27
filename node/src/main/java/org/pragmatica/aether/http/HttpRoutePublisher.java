@@ -162,7 +162,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     @SuppressWarnings("unchecked")
     private Promise<Unit> publishViaSliceRouterFactory(Artifact artifact,
-                                                       SliceRouterFactory< ?> factory,
+                                                       SliceRouterFactory<?> factory,
                                                        Object sliceInstance) {
         log.info("Found SliceRouterFactory for slice {}: {}",
                  artifact,

@@ -37,7 +37,7 @@ public final class EventLoopMetricsCollector {
     private final AtomicInteger totalActiveChannels = new AtomicInteger(0);
 
     private ScheduledExecutorService scheduler;
-    private ScheduledFuture< ? > probeFuture;
+    private ScheduledFuture<?> probeFuture;
     private volatile boolean started = false;
 
     private EventLoopMetricsCollector() {}

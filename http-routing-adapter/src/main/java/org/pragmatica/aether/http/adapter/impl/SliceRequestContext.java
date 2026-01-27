@@ -32,7 +32,7 @@ public final class SliceRequestContext implements RequestContext {
     private static final int PATH_PARAM_LIMIT = 1024;
 
     private final HttpRequestContext httpContext;
-    private final Route< ? > route;
+    private final Route<?> route;
     private final JsonMapper jsonMapper;
     private final ByteBuf bodyBuf;
     private final HttpHeaders responseHeaders;
@@ -41,7 +41,7 @@ public final class SliceRequestContext implements RequestContext {
     private Supplier<Map<String, String>> headersSupplier = lazy(() -> headersSupplier = value(initRequestHeaders()));
 
     private SliceRequestContext(HttpRequestContext httpContext,
-                                Route< ?> route,
+                                Route<?> route,
                                 JsonMapper jsonMapper) {
         this.httpContext = httpContext;
         this.route = route;
@@ -53,7 +53,7 @@ public final class SliceRequestContext implements RequestContext {
     }
 
     public static SliceRequestContext sliceRequestContext(HttpRequestContext httpContext,
-                                                          Route< ?> route,
+                                                          Route<?> route,
                                                           JsonMapper jsonMapper) {
         return new SliceRequestContext(httpContext, route, jsonMapper);
     }
@@ -73,7 +73,7 @@ public final class SliceRequestContext implements RequestContext {
     }
 
     @Override
-    public Route< ?> route() {
+    public Route<?> route() {
         return route;
     }
 

@@ -17,10 +17,14 @@ import static org.pragmatica.lang.Unit.unit;
 
 /**
  * In-memory implementation of SecretsManager.
- * Note: This implementation does NOT actually encrypt values - use only for testing.
+ *
+ * <p><strong>WARNING: This implementation does NOT encrypt values.</strong>
+ * The {@code encryptionEnabled} config flag is ignored - secrets are stored in plain text.
+ * Use this implementation ONLY for testing and development. For production, use a proper
+ * secrets manager with actual encryption (e.g., HashiCorp Vault, AWS Secrets Manager).
  */
 final class InMemorySecretsManager implements SecretsManager {
-    private static final SecretsConfig DEFAULT_CONFIG = new SecretsConfig("default", true, Option.none(), 10);
+    private static final SecretsConfig DEFAULT_CONFIG = new SecretsConfig("default", false, Option.none(), 10);
 
     private final SecretsConfig config;
     private final ConcurrentHashMap<String, SecretEntry> secrets = new ConcurrentHashMap<>();
@@ -46,8 +50,7 @@ final class InMemorySecretsManager implements SecretsManager {
 
     @Override
     public Promise<SecretMetadata> createSecret(String name, SecretValue value, Map<String, String> tags) {
-        return validateSecretName(name)
-                                 .flatMap(validName -> createNewSecret(validName, value, tags));
+        return validateSecretName(name).flatMap(validName -> createNewSecret(validName, value, tags));
     }
 
     private Promise<SecretMetadata> createNewSecret(String name, SecretValue value, Map<String, String> tags) {
@@ -55,34 +58,30 @@ final class InMemorySecretsManager implements SecretsManager {
         var entry = new SecretEntry(metadata, new ConcurrentHashMap<>());
         entry.versions.put(1, value);
         return option(secrets.putIfAbsent(name, entry))
-                     .fold(() -> Promise.success(metadata),
-                           existing -> SecretsError.secretAlreadyExists(name)
-                                                   .promise());
+        .fold(() -> Promise.success(metadata),
+              existing -> SecretsError.secretAlreadyExists(name)
+                                      .promise());
     }
 
     @Override
     public Promise<SecretValue> getSecret(String name) {
-        return getSecretEntryOrFail(name)
-                                   .map(entry -> entry.versions.get(entry.metadata.version()));
+        return getSecretEntryOrFail(name).map(entry -> entry.versions.get(entry.metadata.version()));
     }
 
     @Override
     public Promise<SecretValue> getSecretVersion(String name, int version) {
-        return getSecretEntryOrFail(name)
-                                   .flatMap(entry -> getVersionOrFail(entry, name, version));
+        return getSecretEntryOrFail(name).flatMap(entry -> getVersionOrFail(entry, name, version));
     }
 
     private Promise<SecretValue> getVersionOrFail(SecretEntry entry, String name, int version) {
         return option(entry.versions.get(version))
-                     .fold(() -> SecretsError.versionNotFound(name, version)
-                                             .<SecretValue> promise(),
-                           Promise::success);
+        .fold(() -> SecretsError.versionNotFound(name, version)
+                                .<SecretValue> promise(), Promise::success);
     }
 
     @Override
     public Promise<SecretMetadata> updateSecret(String name, SecretValue value) {
-        return getSecretEntryOrFail(name)
-                                   .map(entry -> updateSecretEntry(entry, value));
+        return getSecretEntryOrFail(name).map(entry -> updateSecretEntry(entry, value));
     }
 
     private SecretMetadata updateSecretEntry(SecretEntry entry, SecretValue value) {
@@ -95,8 +94,7 @@ final class InMemorySecretsManager implements SecretsManager {
 
     @Override
     public Promise<Boolean> deleteSecret(String name) {
-        return Promise.success(option(secrets.remove(name))
-                                     .onPresent(entry -> clearAllVersions(entry))
+        return Promise.success(option(secrets.remove(name)).onPresent(entry -> clearAllVersions(entry))
                                      .isPresent());
     }
 
@@ -113,8 +111,7 @@ final class InMemorySecretsManager implements SecretsManager {
     // ========== Metadata Operations ==========
     @Override
     public Promise<Option<SecretMetadata>> getMetadata(String name) {
-        return Promise.success(option(secrets.get(name))
-                                     .map(entry -> entry.metadata));
+        return Promise.success(option(secrets.get(name)).map(entry -> entry.metadata));
     }
 
     @Override
@@ -150,8 +147,7 @@ final class InMemorySecretsManager implements SecretsManager {
 
     @Override
     public Promise<SecretMetadata> updateTags(String name, Map<String, String> tags) {
-        return getSecretEntryOrFail(name)
-                                   .map(entry -> updateEntryTags(entry, tags));
+        return getSecretEntryOrFail(name).map(entry -> updateEntryTags(entry, tags));
     }
 
     private SecretMetadata updateEntryTags(SecretEntry entry, Map<String, String> tags) {
@@ -163,8 +159,7 @@ final class InMemorySecretsManager implements SecretsManager {
     // ========== Version Management ==========
     @Override
     public Promise<List<Integer>> listVersions(String name) {
-        return getSecretEntryOrFail(name)
-                                   .map(entry -> listEntryVersions(entry));
+        return getSecretEntryOrFail(name).map(entry -> listEntryVersions(entry));
     }
 
     private List<Integer> listEntryVersions(SecretEntry entry) {
@@ -176,24 +171,21 @@ final class InMemorySecretsManager implements SecretsManager {
 
     @Override
     public Promise<Boolean> deleteVersion(String name, int version) {
-        return getSecretEntryOrFail(name)
-                                   .map(entry -> deleteEntryVersion(entry, version));
+        return getSecretEntryOrFail(name).map(entry -> deleteEntryVersion(entry, version));
     }
 
     private boolean deleteEntryVersion(SecretEntry entry, int version) {
         if (entry.versions.size() <= 1) {
             return false;
         }
-        return option(entry.versions.remove(version))
-                     .onPresent(SecretValue::clear)
+        return option(entry.versions.remove(version)).onPresent(SecretValue::clear)
                      .isPresent();
     }
 
     // ========== Rotation ==========
     @Override
     public Promise<SecretMetadata> rotateSecret(String name, SecretValue newValue) {
-        return getSecretEntryOrFail(name)
-                                   .map(entry -> rotateSecretEntry(entry, newValue));
+        return getSecretEntryOrFail(name).map(entry -> rotateSecretEntry(entry, newValue));
     }
 
     private SecretMetadata rotateSecretEntry(SecretEntry entry, SecretValue newValue) {
@@ -215,8 +207,7 @@ final class InMemorySecretsManager implements SecretsManager {
 
     // ========== Internal Helpers ==========
     private Promise<String> validateSecretName(String name) {
-        return option(name)
-                     .filter(n -> !n.isBlank())
+        return option(name).filter(n -> !n.isBlank())
                      .filter(n -> n.matches("^[a-zA-Z][a-zA-Z0-9._-]*$"))
                      .map(String::trim)
                      .fold(() -> SecretsError.invalidSecretName(name,
@@ -227,9 +218,8 @@ final class InMemorySecretsManager implements SecretsManager {
 
     private Promise<SecretEntry> getSecretEntryOrFail(String name) {
         return option(secrets.get(name))
-                     .fold(() -> SecretsError.secretNotFound(name)
-                                             .<SecretEntry> promise(),
-                           Promise::success);
+        .fold(() -> SecretsError.secretNotFound(name)
+                                .<SecretEntry> promise(), Promise::success);
     }
 
     private void pruneOldVersions(SecretEntry entry) {
@@ -251,8 +241,7 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private boolean removeVersion(SecretEntry entry, int version) {
-        option(entry.versions.remove(version))
-              .onPresent(SecretValue::clear);
+        option(entry.versions.remove(version)).onPresent(SecretValue::clear);
         return true;
     }
 

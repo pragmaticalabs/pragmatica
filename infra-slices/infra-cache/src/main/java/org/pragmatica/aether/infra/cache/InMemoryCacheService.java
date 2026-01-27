@@ -75,8 +75,7 @@ final class InMemoryCacheService implements CacheService {
 
     @Override
     public Promise<Option<String>> get(String key) {
-        return Promise.success(option(cache.get(key))
-                                     .flatMap(entry -> getIfNotExpired(key, entry))
+        return Promise.success(option(cache.get(key)).flatMap(entry -> getIfNotExpired(key, entry))
                                      .onPresent(_ -> recordHit())
                                      .onEmpty(this::recordMiss));
     }
@@ -93,22 +92,19 @@ final class InMemoryCacheService implements CacheService {
     @Override
     public Promise<Boolean> delete(String key) {
         updateSize();
-        return Promise.success(option(cache.remove(key))
-                                     .isPresent());
+        return Promise.success(option(cache.remove(key)).isPresent());
     }
 
     @Override
     public Promise<Boolean> exists(String key) {
-        return Promise.success(option(cache.get(key))
-                                     .filter(entry -> !entry.isExpired())
+        return Promise.success(option(cache.get(key)).filter(entry -> !entry.isExpired())
                                      .isPresent());
     }
 
     // ========== TTL Operations ==========
     @Override
     public Promise<Boolean> expire(String key, Duration ttl) {
-        return Promise.success(option(cache.get(key))
-                                     .filter(entry -> !entry.isExpired())
+        return Promise.success(option(cache.get(key)).filter(entry -> !entry.isExpired())
                                      .map(entry -> {
                                               var expiry = Instant.now()
                                                                   .plus(ttl);
@@ -122,8 +118,7 @@ final class InMemoryCacheService implements CacheService {
 
     @Override
     public Promise<Option<Duration>> ttl(String key) {
-        return Promise.success(option(cache.get(key))
-                                     .filter(entry -> !entry.isExpired())
+        return Promise.success(option(cache.get(key)).filter(entry -> !entry.isExpired())
                                      .flatMap(entry -> entry.expiry()
                                                             .map(this::remainingDuration)));
     }
@@ -139,8 +134,7 @@ final class InMemoryCacheService implements CacheService {
     @Override
     public Promise<Map<String, String>> getMulti(Set<String> keys) {
         var result = new HashMap<String, String>();
-        keys.forEach(key -> option(cache.get(key))
-                                  .filter(entry -> !entry.isExpired())
+        keys.forEach(key -> option(cache.get(key)).filter(entry -> !entry.isExpired())
                                   .onPresent(entry -> {
                          result.put(key,
                                     entry.value());
@@ -169,8 +163,7 @@ final class InMemoryCacheService implements CacheService {
     @Override
     public Promise<Integer> deleteMulti(Set<String> keys) {
         var count = (int) keys.stream()
-                             .filter(key -> option(cache.remove(key))
-                                                  .isPresent())
+                             .filter(key -> option(cache.remove(key)).isPresent())
                              .count();
         updateSize();
         return Promise.success(count);
@@ -186,8 +179,7 @@ final class InMemoryCacheService implements CacheService {
     public Promise<Long> incrementBy(String key, long delta) {
         var entry = cache.compute(key,
                                   (k, existing) -> {
-                                      var currentValue = option(existing)
-                                                               .filter(e -> !e.isExpired())
+                                      var currentValue = option(existing).filter(e -> !e.isExpired())
                                                                .map(e -> parseLong(e.value()))
                                                                .or(0L);
                                       var newValue = currentValue + delta;
@@ -232,8 +224,7 @@ final class InMemoryCacheService implements CacheService {
                               .stream()
                               .filter(key -> regex.matcher(key)
                                                   .matches())
-                              .filter(key -> option(cache.remove(key))
-                                                   .isPresent())
+                              .filter(key -> option(cache.remove(key)).isPresent())
                               .count();
         updateSize();
         return Promise.success(count);

@@ -166,8 +166,7 @@ public interface EndpointRegistry {
             @Override
             public Option<Endpoint> selectEndpoint(Artifact artifact, MethodName methodName) {
                 // Sort endpoints to ensure consistent round-robin order across calls
-                var available = findEndpoints(artifact, methodName)
-                                             .stream()
+                var available = findEndpoints(artifact, methodName).stream()
                                              .sorted(Comparator.comparing(e -> e.nodeId()
                                                                                 .id()))
                                              .toList();
@@ -185,8 +184,7 @@ public interface EndpointRegistry {
             public Option<Endpoint> selectEndpointExcluding(Artifact artifact,
                                                             MethodName methodName,
                                                             java.util.Set<NodeId> excludeNodes) {
-                var available = findEndpoints(artifact, methodName)
-                                             .stream()
+                var available = findEndpoints(artifact, methodName).stream()
                                              .filter(e -> !excludeNodes.contains(e.nodeId()))
                                              .sorted(Comparator.comparing(e -> e.nodeId()
                                                                                 .id()))

@@ -39,13 +39,11 @@ public interface LocalRepository extends Repository {
      */
     static LocalRepository localRepository(Path localRepo) {
         record repository(Path localRepo) implements LocalRepository {
-            private static final TimeSpan LOCATE_TIMEOUT = timeSpan(30)
-                                                                   .seconds();
+            private static final TimeSpan LOCATE_TIMEOUT = timeSpan(30).seconds();
 
             @Override
             public Promise<Location> locate(Artifact artifact) {
-                return resolveLocation(artifact)
-                                      .async()
+                return resolveLocation(artifact).async()
                                       .timeout(LOCATE_TIMEOUT);
             }
 
@@ -69,7 +67,7 @@ public interface LocalRepository extends Repository {
                                                  .id()
                                                  .replace('.', '/'))
                                 .resolve(artifactId)
-                                .resolve(version.bareVersion())
+                                .resolve(version.withQualifier())
                                 .resolve(artifactId + "-" + version.withQualifier() + "." + packaging);
             }
 

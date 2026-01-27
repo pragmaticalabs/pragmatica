@@ -1,12 +1,8 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.e2e.containers.AetherCluster;
 
-import java.nio.file.Path;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -24,25 +20,8 @@ import static org.awaitility.Awaitility.await;
  *   <li>Metrics snapshot distribution to all nodes</li>
  * </ul>
  */
-class MetricsE2ETest {
-    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
+class MetricsE2ETest extends AbstractE2ETest {
     private static final Duration METRICS_INTERVAL = Duration.ofSeconds(2);
-    private AetherCluster cluster;
-
-    @BeforeEach
-    void setUp() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
-        cluster.start();
-        cluster.awaitQuorum();
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (cluster != null) {
-            cluster.close();
-        }
-    }
 
     @Nested
     class MetricsCollection {
@@ -59,7 +38,7 @@ class MetricsE2ETest {
         @Test
         void metricsCollected_everySecond() {
             // Wait for a few collection cycles
-            await().atMost(WAIT_TIMEOUT)
+            await().atMost(DEFAULT_TIMEOUT.duration())
                    .pollInterval(METRICS_INTERVAL)
                    .until(() -> {
                        var metrics = cluster.anyNode().getMetrics();
@@ -73,7 +52,7 @@ class MetricsE2ETest {
         @Test
         void cpuMetrics_reportedPerNode() {
             // Wait for metrics to be collected
-            await().atMost(WAIT_TIMEOUT).until(() -> {
+            await().atMost(DEFAULT_TIMEOUT.duration()).until(() -> {
                 var metrics = cluster.anyNode().getMetrics();
                 return metrics != null && !metrics.isBlank();
             });
@@ -117,7 +96,7 @@ class MetricsE2ETest {
             cluster.awaitLeader();
 
             // Wait for a few metrics cycles to ensure distribution
-            await().atMost(WAIT_TIMEOUT)
+            await().atMost(DEFAULT_TIMEOUT.duration())
                    .pollInterval(METRICS_INTERVAL)
                    .pollDelay(Duration.ofSeconds(3))
                    .until(() -> {

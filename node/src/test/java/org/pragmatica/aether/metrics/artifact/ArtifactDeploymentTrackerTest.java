@@ -31,8 +31,8 @@ class ArtifactDeploymentTrackerTest {
         artifact1 = Artifact.artifact("org.example:slice1:1.0.0").unwrap();
         artifact2 = Artifact.artifact("org.example:slice2:2.0.0").unwrap();
 
-        node1 = NodeId.nodeId("node-1");
-        node2 = NodeId.nodeId("node-2");
+        node1 = NodeId.nodeId("node-1").unwrap();
+        node2 = NodeId.nodeId("node-2").unwrap();
     }
 
     @Test

@@ -56,13 +56,12 @@ public final class SliceRouterImpl implements SliceRouter {
                             .or(() -> Promise.success(notFound(request)));
     }
 
-    private Promise<HttpResponseData> handleRoute(Route< ?> route, HttpRequestContext request) {
+    private Promise<HttpResponseData> handleRoute(Route<?> route, HttpRequestContext request) {
         var context = SliceRequestContext.sliceRequestContext(request, route, jsonMapper);
         return invokeHandler(route, context)
-                            .<HttpResponseData> fold(result -> Promise.success(result.fold(cause -> errorToResponse(cause,
-                                                                                                                    request),
-                                                                                           value -> successToResponse(value,
-                                                                                                                      route.contentType()))));
+        .<HttpResponseData>fold(result -> Promise.success(result.fold(cause -> errorToResponse(cause, request),
+                                                                      value -> successToResponse(value,
+                                                                                                 route.contentType()))));
     }
 
     @SuppressWarnings("unchecked")

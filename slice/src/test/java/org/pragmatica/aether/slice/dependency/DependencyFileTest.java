@@ -12,13 +12,12 @@ class DependencyFileTest {
         var content = """
                 # Comment line
 
-                [api]
-                org.example:inventory-service-api:^1.0.0
-                org.example:pricing-service-api:^1.0.0
-
                 [shared]
                 org.pragmatica-lite:core:^0.8.0
                 org.example:order-domain:^1.0.0
+
+                [infra]
+                org.pragmatica-lite.aether:infra-cache:^0.7.0
 
                 [slices]
                 org.example:notification-service:^1.0.0
@@ -27,38 +26,13 @@ class DependencyFileTest {
         DependencyFile.dependencyFile(content)
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
-                          assertThat(file.api()).hasSize(2);
                           assertThat(file.shared()).hasSize(2);
-                          assertThat(file.infra()).isEmpty();
+                          assertThat(file.infra()).hasSize(1);
                           assertThat(file.slices()).hasSize(1);
 
-                          assertThat(file.api().get(0).groupId()).isEqualTo("org.example");
-                          assertThat(file.api().get(0).artifactId()).isEqualTo("inventory-service-api");
-
-                          assertThat(file.hasApiDependencies()).isTrue();
                           assertThat(file.hasSharedDependencies()).isTrue();
-                          assertThat(file.hasInfraDependencies()).isFalse();
+                          assertThat(file.hasInfraDependencies()).isTrue();
                           assertThat(file.hasSliceDependencies()).isTrue();
-                      });
-    }
-
-    @Test
-    void parse_only_api_section() {
-        var content = """
-                [api]
-                org.example:inventory-service-api:^1.0.0
-                org.example:pricing-service-api:^1.0.0
-                """;
-
-        DependencyFile.dependencyFile(content)
-                      .onFailureRun(Assertions::fail)
-                      .onSuccess(file -> {
-                          assertThat(file.api()).hasSize(2);
-                          assertThat(file.shared()).isEmpty();
-                          assertThat(file.slices()).isEmpty();
-                          assertThat(file.hasApiDependencies()).isTrue();
-                          assertThat(file.hasSharedDependencies()).isFalse();
-                          assertThat(file.hasSliceDependencies()).isFalse();
                       });
     }
 
@@ -79,7 +53,6 @@ class DependencyFileTest {
         DependencyFile.dependencyFile(content)
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
-                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).hasSize(2);
                           assertThat(file.slices()).hasSize(2);
 
@@ -102,10 +75,8 @@ class DependencyFileTest {
         DependencyFile.dependencyFile(content)
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
-                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).hasSize(2);
                           assertThat(file.slices()).isEmpty();
-                          assertThat(file.hasApiDependencies()).isFalse();
                           assertThat(file.hasSharedDependencies()).isTrue();
                           assertThat(file.hasSliceDependencies()).isFalse();
                       });
@@ -121,10 +92,8 @@ class DependencyFileTest {
         DependencyFile.dependencyFile(content)
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
-                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).isEmpty();
                           assertThat(file.slices()).hasSize(1);
-                          assertThat(file.hasApiDependencies()).isFalse();
                           assertThat(file.hasSharedDependencies()).isFalse();
                           assertThat(file.hasSliceDependencies()).isTrue();
                       });
@@ -142,7 +111,6 @@ class DependencyFileTest {
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
                           // Lines without section are treated as slice dependencies
-                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).isEmpty();
                           assertThat(file.slices()).hasSize(2);
                       });
@@ -156,7 +124,6 @@ class DependencyFileTest {
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
                           assertThat(file.isEmpty()).isTrue();
-                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).isEmpty();
                           assertThat(file.infra()).isEmpty();
                           assertThat(file.slices()).isEmpty();
@@ -251,7 +218,6 @@ class DependencyFileTest {
         DependencyFile.dependencyFile(content)
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
-                          assertThat(file.api()).isEmpty();
                           assertThat(file.shared()).isEmpty();
                           assertThat(file.infra()).hasSize(2);
                           assertThat(file.slices()).isEmpty();
@@ -266,9 +232,6 @@ class DependencyFileTest {
     @Test
     void parse_full_file_with_infra_section() {
         var content = """
-                [api]
-                org.example:inventory-service-api:^1.0.0
-
                 [shared]
                 org.pragmatica-lite:core:^0.8.0
 
@@ -282,12 +245,10 @@ class DependencyFileTest {
         DependencyFile.dependencyFile(content)
                       .onFailureRun(Assertions::fail)
                       .onSuccess(file -> {
-                          assertThat(file.api()).hasSize(1);
                           assertThat(file.shared()).hasSize(1);
                           assertThat(file.infra()).hasSize(1);
                           assertThat(file.slices()).hasSize(1);
                           assertThat(file.isEmpty()).isFalse();
-                          assertThat(file.hasApiDependencies()).isTrue();
                           assertThat(file.hasSharedDependencies()).isTrue();
                           assertThat(file.hasInfraDependencies()).isTrue();
                           assertThat(file.hasSliceDependencies()).isTrue();
@@ -314,22 +275,6 @@ class DependencyFileTest {
                           assertThat(file.shared().get(2).versionPattern()).isInstanceOf(VersionPattern.Tilde.class);
                           assertThat(file.shared().get(3).versionPattern()).isInstanceOf(VersionPattern.Range.class);
                           assertThat(file.shared().get(4).versionPattern()).isInstanceOf(VersionPattern.Comparison.class);
-                      });
-    }
-
-    @Test
-    void parse_rejects_slice_api_in_api_section() {
-        var content = """
-                [api]
-                org.pragmatica-lite.aether:slice-api:^0.7.0
-                """;
-
-        DependencyFile.dependencyFile(content)
-                      .onSuccessRun(Assertions::fail)
-                      .onFailure(cause -> {
-                          assertThat(cause.message()).contains("Slice incorrectly packaged");
-                          assertThat(cause.message()).contains("[api]");
-                          assertThat(cause.message()).contains("slice-api");
                       });
     }
 

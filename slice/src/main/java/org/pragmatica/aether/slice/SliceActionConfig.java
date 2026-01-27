@@ -43,16 +43,11 @@ public record SliceActionConfig(TimeSpan loadingTimeout,
     }
 
     public static SliceActionConfig defaultConfiguration(SerializerFactoryProvider serializerProvider) {
-        return new SliceActionConfig(timeSpan(2)
-                                             .minutes(),
-                                     timeSpan(1)
-                                             .minutes(),
-                                     timeSpan(30)
-                                             .seconds(),
-                                     timeSpan(2)
-                                             .minutes(),
-                                     timeSpan(5)
-                                             .seconds(),
+        return new SliceActionConfig(timeSpan(2).minutes(),
+                                     timeSpan(1).minutes(),
+                                     timeSpan(30).seconds(),
+                                     timeSpan(2).minutes(),
+                                     timeSpan(5).seconds(),
                                      List.of(localRepository()),
                                      serializerProvider,
                                      Option.empty());
@@ -67,16 +62,11 @@ public record SliceActionConfig(TimeSpan loadingTimeout,
      */
     public static SliceActionConfig withIsolation(SerializerFactoryProvider serializerProvider,
                                                   Path frameworkJarsPath) {
-        return new SliceActionConfig(timeSpan(2)
-                                             .minutes(),
-                                     timeSpan(1)
-                                             .minutes(),
-                                     timeSpan(30)
-                                             .seconds(),
-                                     timeSpan(2)
-                                             .minutes(),
-                                     timeSpan(5)
-                                             .seconds(),
+        return new SliceActionConfig(timeSpan(2).minutes(),
+                                     timeSpan(1).minutes(),
+                                     timeSpan(30).seconds(),
+                                     timeSpan(2).minutes(),
+                                     timeSpan(5).seconds(),
                                      List.of(localRepository()),
                                      serializerProvider,
                                      Option.option(frameworkJarsPath));

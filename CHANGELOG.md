@@ -7,7 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-01-26
+
+### Changed
+- **Dependencies** - Updated pragmatica-lite from 0.10.1 to 0.11.1 (assertj-core XXE vulnerability fix)
+- **E2E Test Consolidation** - Refactored all E2E test classes to share clusters within each test class
+  - Static cluster lifecycle with `@BeforeAll`/`@AfterAll` instead of per-test clusters
+  - `@TestMethodOrder` and `@Order` annotations for deterministic test execution
+  - `@BeforeEach` cleanup methods to undeploy slices and restore nodes between tests
+  - Extended timeouts (120s) for node restore operations in containerized environments
+  - Added `failFast()` checks to detect FAILED slice state early
+  - Enabled previously disabled tests with proper timeout handling
+  - Increased `QUORUM_TIMEOUT` in `AetherCluster` from 60s to 120s
+- **Test Infrastructure Improvements**
+  - Added `getSliceState()` method to `AetherNodeContainer` for proper JSON parsing
+  - Added `@TestMethodOrder` to nested test classes in `SliceInvocationE2ETest`
+  - Fixed timing issues in `RollingUpdateE2ETest` with proper await() polling
+
+### Disabled (Infrastructure Limitation)
+- Tests requiring node restart to rejoin cluster (restarted containers get new identities):
+  - `BootstrapE2ETest`: `rollingRestart_maintainsAvailability`, `multipleNodeRestarts_clusterRemainsFunctional`
+  - `NodeFailureE2ETest`: `nodeRecovery_rejoinsCluster`, `rollingRestart_maintainsQuorum`, `minorityPartition_quorumLost_thenRecovered`
+  - `ChaosE2ETest`: entire class (5 tests)
+
+## [0.8.0] - 2026-01-15
+
 ### Added
+- **SliceRouterFactory Integration** - Local-first HTTP routing for generated slice code
+  - `SliceRouterFactory<T>` - ServiceLoader-discovered factory for creating SliceRouter instances
+  - `RouteMetadataExtractor` - Extracts route definitions from RouteSource for KV-Store publication
+  - Local-first routing: uses local SliceRouter when slice is on same node, falls back to remote SliceInvoker
+  - Bridge pattern supporting both HttpRequestHandlerFactory (legacy) and SliceRouterFactory (new) patterns
 - **MethodHandle API** - Performance optimization for repeated slice invocations
   - New `MethodHandle<R, T>` interface for pre-parsed artifact/method (response type first per convention)
   - `SliceInvokerFacade.methodHandle()` factory method
@@ -18,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Mandatory `requestId` extension for request tracing
   - `application/problem+json` content type for all error responses
   - Covers handler errors, HttpError failures, and 404 not found
+
+### Changed
+- **Route API migration** - Updated to single type parameter Route API (pragmatica-lite 0.9.11)
+  - All forge module routes updated from `Route.<R, T>method()` to `Route.<R>method()`
 
 ## [0.7.4] - 2026-01-13
 

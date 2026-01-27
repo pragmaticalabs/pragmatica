@@ -36,8 +36,7 @@ public interface SliceManifest {
      * @return SliceManifestInfo or error if manifest is missing/invalid
      */
     static Result<SliceManifestInfo> read(URL jarUrl) {
-        return readManifest(jarUrl)
-                           .flatMap(SliceManifest::parseManifest);
+        return readManifest(jarUrl).flatMap(SliceManifest::parseManifest);
     }
 
     /**

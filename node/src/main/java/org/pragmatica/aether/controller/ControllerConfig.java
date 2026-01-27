@@ -44,8 +44,8 @@ public record ControllerConfig(double cpuScaleUpThreshold,
                                                             double cpuScaleDownThreshold,
                                                             double callRateScaleUpThreshold,
                                                             long evaluationIntervalMs) {
-        return validateThreshold(cpuScaleUpThreshold, "cpuScaleUpThreshold")
-                                .flatMap(_ -> validateThreshold(cpuScaleDownThreshold, "cpuScaleDownThreshold"))
+        return validateThreshold(cpuScaleUpThreshold, "cpuScaleUpThreshold").flatMap(_ -> validateThreshold(cpuScaleDownThreshold,
+                                                                                                            "cpuScaleDownThreshold"))
                                 .flatMap(_ -> validatePositive(callRateScaleUpThreshold, "callRateScaleUpThreshold"))
                                 .flatMap(_ -> validatePositive(evaluationIntervalMs, "evaluationIntervalMs"))
                                 .flatMap(_ -> validateThresholdOrder(cpuScaleUpThreshold, cpuScaleDownThreshold))

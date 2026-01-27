@@ -226,8 +226,7 @@ class ArtifactStoreImpl implements ArtifactStore {
 
     @Override
     public Promise<byte[]> resolve(Artifact artifact) {
-        return resolveWithMetadata(artifact)
-                                  .map(ResolvedArtifact::content);
+        return resolveWithMetadata(artifact).map(ResolvedArtifact::content);
     }
 
     @Override

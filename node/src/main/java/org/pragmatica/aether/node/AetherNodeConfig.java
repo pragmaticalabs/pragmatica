@@ -99,9 +99,11 @@ public record AetherNodeConfig(TopologyConfig topology,
                                                     SliceConfig sliceConfig,
                                                     int managementPort,
                                                     DHTConfig artifactRepoConfig) {
-        var topology = new TopologyConfig(self, timeSpan(5)
-                                                        .seconds(), timeSpan(1)
-                                                                            .seconds(), coreNodes);
+        var topology = new TopologyConfig(self,
+                                          coreNodes.size(),
+                                          timeSpan(5).seconds(),
+                                          timeSpan(1).seconds(),
+                                          coreNodes);
         return new AetherNodeConfig(topology,
                                     ProtocolConfig.defaultConfig(),
                                     sliceActionConfig,
@@ -115,9 +117,11 @@ public record AetherNodeConfig(TopologyConfig topology,
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
-        var topology = new TopologyConfig(self, timeSpan(500)
-                                                        .millis(), timeSpan(100)
-                                                                           .millis(), coreNodes);
+        var topology = new TopologyConfig(self,
+                                          coreNodes.size(),
+                                          timeSpan(500).millis(),
+                                          timeSpan(100).millis(),
+                                          coreNodes);
         // Use full replication for tests - simpler, and tests typically have few nodes
         return new AetherNodeConfig(topology,
                                     ProtocolConfig.testConfig(),
@@ -138,6 +142,7 @@ public record AetherNodeConfig(TopologyConfig topology,
         var tlsOption = Option.some(tlsConfig);
         // Update TopologyConfig with TLS for cluster communication
         var newTopology = new TopologyConfig(topology.self(),
+                                             topology.clusterSize(),
                                              topology.reconciliationInterval(),
                                              topology.pingInterval(),
                                              topology.helloTimeout(),

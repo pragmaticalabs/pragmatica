@@ -48,11 +48,11 @@ public record HttpServerSliceConfig(String name,
      */
     public static Result<HttpServerSliceConfig> httpServerSliceConfig(int port) {
         return validatePort(port)
-                           .map(_ -> new HttpServerSliceConfig(DEFAULT_NAME,
-                                                               port,
-                                                               DEFAULT_MAX_CONTENT_LENGTH,
-                                                               DEFAULT_REQUEST_TIMEOUT,
-                                                               DEFAULT_IDLE_TIMEOUT));
+        .map(_ -> new HttpServerSliceConfig(DEFAULT_NAME,
+                                            port,
+                                            DEFAULT_MAX_CONTENT_LENGTH,
+                                            DEFAULT_REQUEST_TIMEOUT,
+                                            DEFAULT_IDLE_TIMEOUT));
     }
 
     /**

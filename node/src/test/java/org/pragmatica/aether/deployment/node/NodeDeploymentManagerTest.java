@@ -140,8 +140,8 @@ class NodeDeploymentManagerTest {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        // Slice must be loaded before it can be activated
-        sliceStore.markAsLoaded(artifact);
+        // Slice must be loaded before it can be activated - with mock slice for methods()
+        sliceStore.markAsLoadedWithSlice(artifact);
 
         manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
         sendValuePut(key, SliceState.ACTIVATE);
@@ -153,6 +153,9 @@ class NodeDeploymentManagerTest {
     void deactivate_state_triggers_deactivation() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
+
+        // Slice must be loaded for deactivation to find it - with mock slice for methods()
+        sliceStore.markAsLoadedWithSlice(artifact);
 
         manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
         sendValuePut(key, SliceState.DEACTIVATE);
@@ -238,14 +241,16 @@ class NodeDeploymentManagerTest {
         manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
         sendValuePut(key, SliceState.LOAD);
 
-        // After successful load, should submit LOADED state to consensus
-        assertThat(clusterNode.appliedCommands).hasSize(1);
-        var command = clusterNode.appliedCommands.getFirst();
-        assertThat(command).isInstanceOf(KVCommand.Put.class);
+        // Now writes LOADING first, then LOADED after success
+        assertThat(clusterNode.appliedCommands).hasSize(2);
 
-        var putCommand = (KVCommand.Put<AetherKey, AetherValue>) command;
-        assertThat(putCommand.key()).isEqualTo(key);
-        assertThat(putCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADED));
+        var loadingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(0);
+        assertThat(loadingCommand.key()).isEqualTo(key);
+        assertThat(loadingCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADING));
+
+        var loadedCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(1);
+        assertThat(loadedCommand.key()).isEqualTo(key);
+        assertThat(loadedCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADED));
     }
 
     @Test
@@ -253,15 +258,27 @@ class NodeDeploymentManagerTest {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
-        // Slice must be loaded before it can be activated
-        sliceStore.markAsLoaded(artifact);
+        // Slice must be loaded before it can be activated - with mock slice that has methods()
+        sliceStore.markAsLoadedWithSlice(artifact);
 
         manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
         sendValuePut(key, SliceState.ACTIVATE);
 
-        assertThat(clusterNode.appliedCommands).hasSize(1);
-        var putCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.getFirst();
-        assertThat(putCommand.value()).isEqualTo(new SliceNodeValue(SliceState.ACTIVE));
+        // Now writes ACTIVATING first, then ACTIVE after success (plus endpoint publish commands)
+        assertThat(clusterNode.appliedCommands).hasSizeGreaterThanOrEqualTo(2);
+
+        var activatingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(0);
+        assertThat(activatingCommand.key()).isEqualTo(key);
+        assertThat(activatingCommand.value()).isEqualTo(new SliceNodeValue(SliceState.ACTIVATING));
+
+        // Find the ACTIVE state command (may be after endpoint commands)
+        var activeCommand = clusterNode.appliedCommands.stream()
+            .filter(cmd -> cmd instanceof KVCommand.Put)
+            .map(cmd -> (KVCommand.Put<AetherKey, AetherValue>) cmd)
+            .filter(cmd -> cmd.value().equals(new SliceNodeValue(SliceState.ACTIVE)))
+            .findFirst()
+            .orElseThrow();
+        assertThat(activeCommand.key()).isEqualTo(key);
     }
 
     @Test
@@ -287,9 +304,14 @@ class NodeDeploymentManagerTest {
         manager.onQuorumStateChange(QuorumStateNotification.ESTABLISHED);
         sendValuePut(key, SliceState.LOAD);
 
-        assertThat(clusterNode.appliedCommands).hasSize(1);
-        var putCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.getFirst();
-        assertThat(putCommand.value()).isEqualTo(new SliceNodeValue(SliceState.FAILED));
+        // Now writes LOADING first, then FAILED after failure
+        assertThat(clusterNode.appliedCommands).hasSize(2);
+
+        var loadingCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(0);
+        assertThat(loadingCommand.value()).isEqualTo(new SliceNodeValue(SliceState.LOADING));
+
+        var failedCommand = (KVCommand.Put<AetherKey, AetherValue>) clusterNode.appliedCommands.get(1);
+        assertThat(failedCommand.value()).isEqualTo(new SliceNodeValue(SliceState.FAILED));
     }
 
     // === ValueRemove Tests ===
@@ -398,7 +420,7 @@ class NodeDeploymentManagerTest {
         public Promise<Unit> unloadSlice(Artifact artifact) {
             unloadCalls.add(artifact);
             loadedSlices.removeIf(ls -> ls.artifact().equals(artifact));
-            return Promise.success(Unit.unit());
+            return Promise.unitPromise();
         }
 
         @Override
@@ -410,12 +432,35 @@ class NodeDeploymentManagerTest {
         void markAsLoaded(Artifact artifact) {
             loadedSlices.add(new TestLoadedSlice(artifact, null));
         }
+
+        // Helper to simulate a pre-loaded slice with a mock slice that has methods()
+        void markAsLoadedWithSlice(Artifact artifact) {
+            loadedSlices.add(new TestLoadedSlice(artifact, new MockSlice()));
+        }
     }
 
     record TestLoadedSlice(Artifact artifact, org.pragmatica.aether.slice.Slice sliceInstance) implements LoadedSlice {
         @Override
         public org.pragmatica.aether.slice.Slice slice() {
             return sliceInstance;
+        }
+    }
+
+    // Mock slice that returns empty methods list for testing
+    static class MockSlice implements org.pragmatica.aether.slice.Slice {
+        @Override
+        public Promise<Unit> start() {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.unitPromise();
+        }
+
+        @Override
+        public List<org.pragmatica.aether.slice.SliceMethod<?, ?>> methods() {
+            return List.of();
         }
     }
 
@@ -434,12 +479,12 @@ class NodeDeploymentManagerTest {
 
         @Override
         public Promise<Unit> start() {
-            return Promise.success(Unit.unit());
+            return Promise.unitPromise();
         }
 
         @Override
         public Promise<Unit> stop() {
-            return Promise.success(Unit.unit());
+            return Promise.unitPromise();
         }
 
         @Override

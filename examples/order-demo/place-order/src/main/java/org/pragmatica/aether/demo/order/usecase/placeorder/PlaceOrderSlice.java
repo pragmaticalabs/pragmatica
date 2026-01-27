@@ -13,11 +13,11 @@ import org.pragmatica.aether.demo.order.inventory.InventoryServiceSlice.StockAva
 import org.pragmatica.aether.demo.order.inventory.InventoryServiceSlice.StockReservation;
 import org.pragmatica.aether.demo.order.pricing.PricingServiceSlice.CalculateTotalRequest;
 import org.pragmatica.aether.demo.order.pricing.PricingServiceSlice.OrderTotal;
+import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceMethod;
-import org.pragmatica.aether.slice.SliceRuntime;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -36,7 +36,9 @@ import java.util.List;
  * 4. Reserve stock for all items (parallel, calls InventoryService)
  * 5. Return order confirmation
  */
-public record PlaceOrderSlice() implements Slice {
+public record PlaceOrderSlice(MethodHandle<StockAvailability, CheckStockRequest> checkStockHandle,
+                              MethodHandle<OrderTotal, CalculateTotalRequest> calculateTotalHandle,
+                              MethodHandle<StockReservation, ReserveStockRequest> reserveStockHandle) implements Slice {
     // === Request ===
     public record PlaceOrderRequest(String customerId, List<OrderItemRequest> items, String discountCode) {
         public record OrderItemRequest(String productId, int quantity) {}
@@ -52,9 +54,9 @@ public record PlaceOrderSlice() implements Slice {
         public static Result<ValidPlaceOrderRequest> validPlaceOrderRequest(PlaceOrderRequest raw) {
             return CustomerId.customerId(raw.customerId())
                              .flatMap(customerId -> validateItems(raw.items())
-                                                                 .map(items -> new ValidPlaceOrderRequest(customerId,
-                                                                                                          items,
-                                                                                                          raw.discountCode())));
+            .map(items -> new ValidPlaceOrderRequest(customerId,
+                                                     items,
+                                                     raw.discountCode())));
         }
 
         private static Result<List<ValidOrderItem>> validateItems(List<PlaceOrderRequest.OrderItemRequest> items) {
@@ -103,18 +105,25 @@ public record PlaceOrderSlice() implements Slice {
     private static final String PRICING = "org.pragmatica-lite.aether.demo:pricing-service:0.1.0";
 
     // === Factory ===
-    public static PlaceOrderSlice placeOrderSlice() {
-        return new PlaceOrderSlice();
-    }
-
-    private Promise<SliceInvokerFacade> invoker() {
-        return SliceRuntime.getSliceInvoker()
-                           .async();
+    public static Result<PlaceOrderSlice> placeOrderSlice(SliceInvokerFacade invoker) {
+        return Result.all(invoker.methodHandle(INVENTORY,
+                                               "checkStock",
+                                               new TypeToken<CheckStockRequest>() {},
+                                               new TypeToken<StockAvailability>() {}),
+                          invoker.methodHandle(PRICING,
+                                               "calculateTotal",
+                                               new TypeToken<CalculateTotalRequest>() {},
+                                               new TypeToken<OrderTotal>() {}),
+                          invoker.methodHandle(INVENTORY,
+                                               "reserveStock",
+                                               new TypeToken<ReserveStockRequest>() {},
+                                               new TypeToken<StockReservation>() {}))
+                     .map(PlaceOrderSlice::new);
     }
 
     // === Slice Implementation ===
     @Override
-    public List<SliceMethod< ?, ?>> methods() {
+    public List<SliceMethod<?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("placeOrder")
                                                    .expect("Invalid method name: placeOrder"),
                                          this::execute,
@@ -141,12 +150,7 @@ public record PlaceOrderSlice() implements Slice {
     }
 
     private Promise<StockAvailability> checkStock(ValidPlaceOrderRequest.ValidOrderItem item) {
-        return invoker()
-                      .flatMap(inv -> inv.invoke(INVENTORY,
-                                                 "checkStock",
-                                                 new CheckStockRequest(item.productId(),
-                                                                       item.quantity()),
-                                                 StockAvailability.class));
+        return checkStockHandle.invoke(new CheckStockRequest(item.productId(), item.quantity()));
     }
 
     private Promise<ValidWithStockCheck> validateStockResults(List<Result<StockAvailability>> results,
@@ -167,16 +171,12 @@ public record PlaceOrderSlice() implements Slice {
                                .map(item -> new CalculateTotalRequest.LineItem(item.productId(),
                                                                                item.quantity()))
                                .toList();
-        return invoker()
-                      .flatMap(inv -> inv.invoke(PRICING,
-                                                 "calculateTotal",
-                                                 new CalculateTotalRequest(lineItems,
-                                                                           context.request()
-                                                                                  .discountCode()),
-                                                 OrderTotal.class))
-                      .map(total -> new ValidWithPrice(context.request(),
-                                                       total))
-                      .mapError(PlaceOrderError.PricingFailed::new);
+        return calculateTotalHandle.invoke(new CalculateTotalRequest(lineItems,
+                                                                     context.request()
+                                                                            .discountCode()))
+                                   .map(total -> new ValidWithPrice(context.request(),
+                                                                    total))
+                                   .mapError(PlaceOrderError.PricingFailed::new);
     }
 
     private Promise<ValidWithReservations> reserveAllStock(ValidWithPrice context) {
@@ -191,13 +191,7 @@ public record PlaceOrderSlice() implements Slice {
     }
 
     private Promise<StockReservation> reserveStock(ValidPlaceOrderRequest.ValidOrderItem item, OrderId orderId) {
-        return invoker()
-                      .flatMap(inv -> inv.invoke(INVENTORY,
-                                                 "reserveStock",
-                                                 new ReserveStockRequest(item.productId(),
-                                                                         item.quantity(),
-                                                                         orderId.value()),
-                                                 StockReservation.class));
+        return reserveStockHandle.invoke(new ReserveStockRequest(item.productId(), item.quantity(), orderId.value()));
     }
 
     private Promise<ValidWithReservations> validateReservationResults(List<Result<StockReservation>> results,

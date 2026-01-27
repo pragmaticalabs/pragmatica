@@ -1,6 +1,7 @@
 package org.pragmatica.aether.slice;
 
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 /**
@@ -46,4 +47,20 @@ public interface MethodHandle<R, T> {
      * @return Method name
      */
     MethodName methodName();
+
+    /**
+     * Materialize this handle by verifying the target endpoint exists.
+     * <p>
+     * Called during slice activation (ACTIVATING phase) to eagerly validate
+     * that all dependencies are resolvable. This ensures no technical failures
+     * occur after the slice reaches ACTIVE state.
+     * <p>
+     * Default implementation returns success (for backwards compatibility).
+     * Implementations that support eager validation should override this.
+     *
+     * @return Success if endpoint exists, failure with cause if not
+     */
+    default Result<Unit> materialize() {
+        return Result.unitResult();
+    }
 }

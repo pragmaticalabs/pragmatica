@@ -1,12 +1,7 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.pragmatica.aether.e2e.containers.AetherCluster;
-
-import java.nio.file.Path;
-import java.time.Duration;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -22,25 +17,7 @@ import static org.awaitility.Awaitility.await;
  *   <li>Shutdown during ongoing operations</li>
  * </ul>
  */
-class GracefulShutdownE2ETest {
-    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether:example-slice:0.7.2";
-    private AetherCluster cluster;
-
-    @BeforeEach
-    void setUp() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
-        cluster.start();
-        cluster.awaitQuorum();
-    }
-
-    @AfterEach
-    void tearDown() {
-        if (cluster != null) {
-            cluster.close();
-        }
-    }
+class GracefulShutdownE2ETest extends AbstractE2ETest {
 
     @Test
     void nodeShutdown_peersDetectDisconnection() {
@@ -54,10 +31,12 @@ class GracefulShutdownE2ETest {
         cluster.killNode("node-3");
 
         // Remaining nodes should detect the disconnection
-        await().atMost(WAIT_TIMEOUT).until(() -> {
-            var health = cluster.nodes().get(0).getHealth();
-            return health.contains("\"connectedPeers\":1");
-        });
+        await().atMost(DEFAULT_TIMEOUT.duration())
+               .pollInterval(POLL_INTERVAL.duration())
+               .until(() -> {
+                   var health = cluster.nodes().get(0).getHealth();
+                   return health.contains("\"connectedPeers\":1");
+               });
 
         // Cluster still has quorum with 2 nodes
         cluster.awaitQuorum();
@@ -68,11 +47,8 @@ class GracefulShutdownE2ETest {
         cluster.awaitLeader();
 
         // Deploy a slice
-        cluster.anyNode().deploy(TEST_ARTIFACT, 2);
-        await().atMost(WAIT_TIMEOUT).until(() -> {
-            var slices = cluster.anyNode().getSlices();
-            return slices.contains("example-slice");
-        });
+        deployAndAssert(TEST_ARTIFACT, 2);
+        awaitSliceVisible("inventory");
 
         // Shutdown one node
         cluster.killNode("node-2");
@@ -87,7 +63,7 @@ class GracefulShutdownE2ETest {
 
         // Slice should still be accessible
         var slices = cluster.anyNode().getSlices();
-        assertThat(slices).contains("example-slice");
+        assertThat(slices).contains("inventory");
     }
 
     @Test
@@ -95,7 +71,7 @@ class GracefulShutdownE2ETest {
         cluster.awaitLeader();
 
         // Start a deployment
-        cluster.anyNode().deploy(TEST_ARTIFACT, 3);
+        deployAndAssert(TEST_ARTIFACT, 3);
 
         // Immediately shutdown a node (deployment may still be in progress)
         cluster.killNode("node-3");
@@ -104,14 +80,16 @@ class GracefulShutdownE2ETest {
         cluster.awaitQuorum();
 
         // Cluster should recover and deployment should eventually complete
-        await().atMost(WAIT_TIMEOUT).until(() -> {
-            try {
-                var slices = cluster.anyNode().getSlices();
-                return slices.contains("example-slice") || !slices.contains("\"error\"");
-            } catch (Exception e) {
-                return false;
-            }
-        });
+        await().atMost(DEFAULT_TIMEOUT.duration())
+               .pollInterval(POLL_INTERVAL.duration())
+               .until(() -> {
+                   try {
+                       var slices = cluster.anyNode().getSlices();
+                       return slices.contains("inventory") || !slices.contains("\"error\"");
+                   } catch (Exception e) {
+                       return false;
+                   }
+               });
 
         // Verify cluster is healthy
         var health = cluster.anyNode().getHealth();
@@ -121,9 +99,9 @@ class GracefulShutdownE2ETest {
     @Test
     void leaderShutdown_newLeaderElected() {
         cluster.awaitLeader();
-        var originalLeader = cluster.leader().orElseThrow();
+        var originalLeader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
 
-        // Shutdown the leader (node-1 is deterministic leader)
+        // Shutdown the leader
         cluster.killNode(originalLeader.nodeId());
 
         // Wait for new quorum and leader
@@ -131,7 +109,7 @@ class GracefulShutdownE2ETest {
         cluster.awaitLeader();
 
         // New leader should be elected
-        var newLeader = cluster.leader().orElseThrow();
+        var newLeader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
         assertThat(newLeader.nodeId()).isNotEqualTo(originalLeader.nodeId());
 
         // Cluster should be functional

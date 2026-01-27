@@ -5,8 +5,7 @@ import org.pragmatica.lang.Option;
 
 public sealed interface KVStoreNotification<K extends StructuredKey> extends StateMachineNotification<KVCommand<K>> {
     default boolean matches(StructuredPattern pattern) {
-        return cause()
-                    .key()
+        return cause().key()
                     .matches(pattern);
     }
 

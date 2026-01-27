@@ -24,6 +24,7 @@ import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarte
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.List;
 import java.util.Map;
@@ -33,6 +34,8 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
  * Cluster-wide orchestration component that manages slice deployments across the cluster.
@@ -122,7 +125,7 @@ public interface ClusterDeploymentManager {
                 var expanded = appBlueprintValue.blueprint();
                 log.debug("Restored app blueprint: {} with {} slices",
                           expanded.id()
-                                  .name(),
+                                  .asString(),
                           expanded.loadOrder()
                                   .size());
                 for (var slice : expanded.loadOrder()) {
@@ -179,7 +182,8 @@ public interface ClusterDeploymentManager {
             private void handleAppBlueprintRemoval(AppBlueprintKey key) {
                 log.info("App blueprint '{}' removed",
                          key.blueprintId()
-                            .name());
+                            .artifact()
+                            .asString());
                 // Remove all blueprints that were part of this app
                 var artifactsToRemove = blueprints.keySet()
                                                   .stream()
@@ -229,7 +233,7 @@ public interface ClusterDeploymentManager {
                 var nodes = activeNodes.get();
                 log.info("App blueprint '{}' deployed with {} slices across {} nodes",
                          expanded.id()
-                                 .name(),
+                                 .asString(),
                          expanded.loadOrder()
                                  .size(),
                          nodes.size());
@@ -255,6 +259,20 @@ public interface ClusterDeploymentManager {
 
             private void trackSliceState(SliceNodeKey sliceKey, SliceState state) {
                 sliceStates.put(sliceKey, state);
+                // When slice reaches LOADED, issue ACTIVATE command
+                if (state == SliceState.LOADED) {
+                    issueActivateCommand(sliceKey);
+                }
+            }
+
+            private void issueActivateCommand(SliceNodeKey sliceKey) {
+                log.info("Issuing ACTIVATE command for {}", sliceKey);
+                var value = new SliceNodeValue(SliceState.ACTIVATE);
+                var command = new KVCommand.Put<AetherKey, AetherValue>(sliceKey, value);
+                cluster.apply(List.of(command))
+                       .onFailure(cause -> log.error("Failed to issue ACTIVATE command for {}: {}",
+                                                     sliceKey,
+                                                     cause.message()));
             }
 
             private void handleNodeRemoval(NodeId removedNode) {
@@ -295,10 +313,17 @@ public interface ClusterDeploymentManager {
             }
 
             private void scaleUp(Artifact artifact, int toAdd, List<SliceNodeKey> existingInstances) {
+                log.info("scaleUp: artifact={}, toAdd={}, activeNodes={}, activeNodeIds={}",
+                         artifact,
+                         toAdd,
+                         activeNodes.get()
+                                    .size(),
+                         activeNodes.get());
                 var nodesWithInstances = existingInstances.stream()
                                                           .map(SliceNodeKey::nodeId)
                                                           .collect(java.util.stream.Collectors.toSet());
                 var allocated = allocateToEmptyNodes(artifact, toAdd, nodesWithInstances);
+                log.info("scaleUp: allocated {} instances to empty nodes, remaining={}", allocated, toAdd - allocated);
                 allocateRoundRobin(artifact, toAdd - allocated);
             }
 
@@ -313,7 +338,13 @@ public interface ClusterDeploymentManager {
 
             private boolean tryAllocate(Artifact artifact, NodeId node) {
                 var sliceKey = new SliceNodeKey(artifact, node);
-                if (!sliceStates.containsKey(sliceKey)) {
+                var alreadyExists = sliceStates.containsKey(sliceKey);
+                log.info("tryAllocate: artifact={}, node={}, sliceKey={}, alreadyExists={}",
+                         artifact,
+                         node,
+                         sliceKey,
+                         alreadyExists);
+                if (!alreadyExists) {
                     issueLoadCommand(sliceKey);
                     return true;
                 }
@@ -353,9 +384,14 @@ public interface ClusterDeploymentManager {
                 var value = new SliceNodeValue(SliceState.LOAD);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(sliceKey, value);
                 cluster.apply(List.of(command))
-                       .onFailure(cause -> log.error("Failed to issue LOAD command for {}: {}",
-                                                     sliceKey,
-                                                     cause.message()));
+                       .onFailure(cause -> {
+                                      log.error("Failed to issue LOAD command for {}: {}",
+                                                sliceKey,
+                                                cause.message());
+                                      // Schedule delayed reconciliation
+                SharedScheduler.schedule(this::reconcile,
+                                         timeSpan(5).seconds());
+                                  });
             }
 
             private void issueUnloadCommand(SliceNodeKey sliceKey) {
@@ -369,8 +405,7 @@ public interface ClusterDeploymentManager {
             }
 
             private void deallocateAllInstances(Artifact artifact) {
-                getCurrentInstances(artifact)
-                                   .forEach(this::issueUnloadCommand);
+                getCurrentInstances(artifact).forEach(this::issueUnloadCommand);
             }
 
             /**

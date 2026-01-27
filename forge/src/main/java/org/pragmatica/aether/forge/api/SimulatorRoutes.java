@@ -72,16 +72,16 @@ public sealed interface SimulatorRoutes {
                                        InventoryState inventoryState,
                                        Consumer<EventLogEntry> eventLogger) {
         return in("/api/simulator")
-                 .serve(entryPointsRoute(loadGenerator),
-                        setRateRoute(loadGenerator, eventLogger),
-                        getInventoryModeRoute(inventoryState),
-                        setInventoryModeRoute(inventoryState, eventLogger),
-                        inventoryMetricsRoute(inventoryState),
-                        placeOrderRoute(configSupplier),
-                        getOrderRoute(configSupplier),
-                        cancelOrderRoute(configSupplier),
-                        checkStockRoute(configSupplier),
-                        getPriceRoute(configSupplier));
+        .serve(entryPointsRoute(loadGenerator),
+               setRateRoute(loadGenerator, eventLogger),
+               getInventoryModeRoute(inventoryState),
+               setInventoryModeRoute(inventoryState, eventLogger),
+               inventoryMetricsRoute(inventoryState),
+               placeOrderRoute(configSupplier),
+               getOrderRoute(configSupplier),
+               cancelOrderRoute(configSupplier),
+               checkStockRoute(configSupplier),
+               getPriceRoute(configSupplier));
     }
 
     // ========== Route Definitions ==========
@@ -197,8 +197,7 @@ public sealed interface SimulatorRoutes {
     }
 
     private static Promise<PlaceOrderResponse> placeOrder(Supplier<SimulatorConfig> configSupplier) {
-        return applySimulation(configSupplier, "place-order")
-                              .map(_ -> buildPlaceOrderResponse());
+        return applySimulation(configSupplier, "place-order").map(_ -> buildPlaceOrderResponse());
     }
 
     private static PlaceOrderResponse buildPlaceOrderResponse() {
@@ -211,8 +210,7 @@ public sealed interface SimulatorRoutes {
 
     private static Promise<OrderStatusResponse> getOrderStatus(Supplier<SimulatorConfig> configSupplier,
                                                                String orderId) {
-        return applySimulation(configSupplier, "get-order-status")
-                              .map(_ -> buildOrderStatusResponse(orderId));
+        return applySimulation(configSupplier, "get-order-status").map(_ -> buildOrderStatusResponse(orderId));
     }
 
     private static OrderStatusResponse buildOrderStatusResponse(String orderId) {
@@ -227,16 +225,12 @@ public sealed interface SimulatorRoutes {
     private static Promise<CancelOrderResponse> cancelOrder(Supplier<SimulatorConfig> configSupplier,
                                                             String orderId) {
         return applySimulation(configSupplier, "cancel-order")
-                              .map(_ -> new CancelOrderResponse(true,
-                                                                orderId,
-                                                                "CANCELLED",
-                                                                "User requested cancellation"));
+        .map(_ -> new CancelOrderResponse(true, orderId, "CANCELLED", "User requested cancellation"));
     }
 
     private static Promise<CheckStockResponse> checkStock(Supplier<SimulatorConfig> configSupplier,
                                                           String productId) {
-        return applySimulation(configSupplier, "inventory-service")
-                              .map(_ -> buildCheckStockResponse(productId));
+        return applySimulation(configSupplier, "inventory-service").map(_ -> buildCheckStockResponse(productId));
     }
 
     private static CheckStockResponse buildCheckStockResponse(String productId) {
@@ -247,8 +241,7 @@ public sealed interface SimulatorRoutes {
 
     private static Promise<GetPriceResponse> getPrice(Supplier<SimulatorConfig> configSupplier,
                                                       String productId) {
-        return applySimulation(configSupplier, "pricing-service")
-                              .map(_ -> buildGetPriceResponse(productId));
+        return applySimulation(configSupplier, "pricing-service").map(_ -> buildGetPriceResponse(productId));
     }
 
     private static GetPriceResponse buildGetPriceResponse(String productId) {

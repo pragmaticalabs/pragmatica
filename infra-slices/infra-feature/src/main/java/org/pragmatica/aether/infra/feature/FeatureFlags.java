@@ -91,7 +91,7 @@ public interface FeatureFlags extends Slice {
     }
 
     @Override
-    default List<SliceMethod< ?, ?>> methods() {
+    default List<SliceMethod<?, ?>> methods() {
         return List.of();
     }
 }

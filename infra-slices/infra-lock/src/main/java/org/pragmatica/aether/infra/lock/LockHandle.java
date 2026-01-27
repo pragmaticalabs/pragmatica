@@ -54,7 +54,6 @@ public interface LockHandle extends AutoCloseable {
      */
     @Override
     default void close() {
-        release()
-               .await();
+        release().await();
     }
 }

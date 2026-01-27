@@ -13,22 +13,23 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
- * Parser for blueprint DSL files using TOML format.
+ * Parser for blueprint DSL files using TOML format (RFC-0005).
  *
  * <p>Blueprints define which slices to deploy and how many instances.
  * Routes are self-registered by slices during activation via RouteRegistry.
  *
  * <p>Example format:
  * <pre>
- * id = "my-app:1.0.0"
+ * id = "org.example:commerce:1.0.0"
  *
- * [slices.user-service]
+ * [[slices]]
  * artifact = "org.example:user-service:1.0.0"
  * instances = 2
  *
- * [slices.order-service]
+ * [[slices]]
  * artifact = "org.example:order-service:1.0.0"
  * instances = 3
  * </pre>
@@ -66,36 +67,42 @@ public interface BlueprintParser {
             return MISSING_ID.result();
         }
         return BlueprintId.blueprintId(idOpt.unwrap())
-                          .flatMap(id -> parseSlices(doc)
-                                                    .flatMap(slices -> Blueprint.blueprint(id, slices)));
+                          .flatMap(id -> parseSlices(doc).flatMap(slices -> Blueprint.blueprint(id, slices)));
     }
 
     private static Result<List<SliceSpec>> parseSlices(TomlDocument doc) {
+        // RFC-0005: Parse [[slices]] array format
+        return doc.getTableArray("slices")
+                  .fold(() -> Result.success(List.of()),
+                        BlueprintParser::parseSliceArray);
+    }
+
+    private static Result<List<SliceSpec>> parseSliceArray(List<Map<String, Object>> sliceEntries) {
         var slices = new ArrayList<SliceSpec>();
-        // Find all sections starting with "slices."
-        for (var sectionName : doc.sectionNames()) {
-            if (sectionName.startsWith("slices.")) {
-                var sliceName = sectionName.substring("slices.".length());
-                var result = parseSliceSection(doc, sectionName, sliceName);
-                if (result.isFailure()) {
-                    return result.map(_ -> null);
-                }
-                slices.add(result.unwrap());
+        var index = 0;
+        for (var entry : sliceEntries) {
+            var result = parseSliceEntry(entry, index);
+            if (result.isFailure()) {
+                return result.map(_ -> null);
             }
+            slices.add(result.unwrap());
+            index++;
         }
         return Result.success(slices);
     }
 
-    private static Result<SliceSpec> parseSliceSection(TomlDocument doc, String section, String sliceName) {
-        var artifactOpt = doc.getString(section, "artifact");
-        if (artifactOpt.isEmpty()) {
-            return MISSING_ARTIFACT.apply(sliceName)
+    private static Result<SliceSpec> parseSliceEntry(Map<String, Object> entry, int index) {
+        var artifactObj = entry.get("artifact");
+        if (artifactObj == null) {
+            return MISSING_ARTIFACT.apply("slices[" + index + "]")
                                    .result();
         }
-        var instanceCount = doc.getInt(section, "instances")
-                               .or(1);
-        return Artifact.artifact(artifactOpt.unwrap())
-                       .mapError(_ -> INVALID_ARTIFACT.apply(artifactOpt.unwrap()))
+        var artifactStr = artifactObj.toString();
+        var instanceCount = entry.get("instances") instanceof Number n
+                            ? n.intValue()
+                            : 1;
+        return Artifact.artifact(artifactStr)
+                       .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
                        .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instanceCount));
     }
 }

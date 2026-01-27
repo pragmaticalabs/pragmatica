@@ -25,7 +25,7 @@ public final class ChaosController {
 
     private final AtomicBoolean enabled = new AtomicBoolean(false);
     private final Map<String, ActiveChaosEvent> activeEvents = new ConcurrentHashMap<>();
-    private final Map<String, ScheduledFuture< ? >> scheduledTasks = new ConcurrentHashMap<>();
+    private final Map<String, ScheduledFuture<?>> scheduledTasks = new ConcurrentHashMap<>();
     private final ScheduledExecutorService scheduler;
     private final Consumer<ChaosEvent> eventExecutor;
 

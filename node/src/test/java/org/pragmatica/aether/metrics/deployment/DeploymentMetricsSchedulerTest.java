@@ -8,13 +8,14 @@ import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.DeploymentMetricsPing;
 import org.pragmatica.consensus.net.ClusterNetwork;
-import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NetworkMessage;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.net.tcp.Server;
 
@@ -42,7 +43,7 @@ class DeploymentMetricsSchedulerTest {
         network = new TestClusterNetwork();
         collector = new TestDeploymentMetricsCollector();
         // Use short interval for tests
-        scheduler = DeploymentMetricsScheduler.deploymentMetricsScheduler(self, network, collector, 50);
+        scheduler = DeploymentMetricsScheduler.deploymentMetricsScheduler(self, network, collector, TimeSpan.timeSpan(50).millis());
     }
 
     @AfterEach
@@ -225,21 +226,30 @@ class DeploymentMetricsSchedulerTest {
         final List<SentMessage> sentMessages = new CopyOnWriteArrayList<>();
 
         @Override
-        public <M extends ProtocolMessage> void send(NodeId target, M message) {
+        public <M extends ProtocolMessage> Unit send(NodeId target, M message) {
             sentMessages.add(new SentMessage(target, message));
+            return Unit.unit();
         }
 
         @Override
-        public <M extends ProtocolMessage> void broadcast(M message) {}
+        public <M extends ProtocolMessage> Unit broadcast(M message) {
+            return Unit.unit();
+        }
 
         @Override
-        public void connect(NetworkManagementOperation.ConnectNode connectNode) {}
+        public void connect(NetworkServiceMessage.ConnectNode connectNode) {}
 
         @Override
-        public void disconnect(NetworkManagementOperation.DisconnectNode disconnectNode) {}
+        public void disconnect(NetworkServiceMessage.DisconnectNode disconnectNode) {}
 
         @Override
-        public void listNodes(NetworkManagementOperation.ListConnectedNodes listConnectedNodes) {}
+        public void listNodes(NetworkServiceMessage.ListConnectedNodes listConnectedNodes) {}
+
+        @Override
+        public void handleSend(NetworkServiceMessage.Send send) {}
+
+        @Override
+        public void handleBroadcast(NetworkServiceMessage.Broadcast broadcast) {}
 
         @Override
         public void handlePing(NetworkMessage.Ping ping) {}

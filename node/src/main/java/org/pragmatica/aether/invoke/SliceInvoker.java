@@ -19,6 +19,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.serialization.Deserializer;
@@ -44,7 +45,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  * <p>Supports two invocation patterns:
  * <ul>
  *   <li>Fire-and-forget: {@link #invoke(Artifact, MethodName, Object)}</li>
- *   <li>Request-response: {@link #invoke(Artifact, MethodName, Object, Class)}</li>
+ *   <li>Request-response: {@link #invoke(Artifact, MethodName, Object, TypeToken)}</li>
  * </ul>
  *
  * <p>Uses the EndpointRegistry to find the target node for a slice,
@@ -52,38 +53,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  */
 public interface SliceInvoker extends SliceInvokerFacade {
     /**
-     * Implementation of SliceInvokerFacade for use by slices via SliceRuntime.
-     * Parses string artifact/method and delegates to typed methods.
-     *
-     * @deprecated Use {@link #methodHandle(String, String, Class, Class)} for better performance.
-     */
-    @Deprecated
-    @Override
-    default <R> Promise<R> invoke(String sliceArtifact,
-                                  String methodName,
-                                  Object request,
-                                  Class<R> responseType) {
-        return Artifact.artifact(sliceArtifact)
-                       .flatMap(artifact -> MethodName.methodName(methodName)
-                                                      .map(method -> new ArtifactMethod(artifact, method)))
-                       .async()
-                       .flatMap(am -> invoke(am.artifact(),
-                                             am.method(),
-                                             request,
-                                             responseType));
-    }
-
-    record ArtifactMethod(Artifact artifact, MethodName method) {}
-
-    /**
      * Implementation of SliceInvokerFacade.methodHandle for creating reusable handles.
      * Parses artifact and method once, returns a handle for repeated invocations.
      */
     @Override
     default <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
                                                            String methodName,
-                                                           Class<T> requestType,
-                                                           Class<R> responseType) {
+                                                           TypeToken<T> requestType,
+                                                           TypeToken<R> responseType) {
         return Artifact.artifact(sliceArtifact)
                        .flatMap(artifact -> MethodName.methodName(methodName)
                                                       .map(method -> createMethodHandle(artifact,
@@ -98,8 +75,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
      */
     default <R, T> MethodHandle<R, T> createMethodHandle(Artifact artifact,
                                                          MethodName method,
-                                                         Class<T> requestType,
-                                                         Class<R> responseType) {
+                                                         TypeToken<T> requestType,
+                                                         TypeToken<R> responseType) {
         return new MethodHandleImpl<>(artifact, method, requestType, responseType, this);
     }
 
@@ -109,8 +86,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
      */
     record MethodHandleImpl<R, T>(Artifact artifact,
                                   MethodName methodName,
-                                  Class<T> requestType,
-                                  Class<R> responseType,
+                                  TypeToken<T> requestType,
+                                  TypeToken<R> responseType,
                                   SliceInvoker invoker) implements MethodHandle<R, T> {
         @Override
         public Promise<R> invoke(T request) {
@@ -126,7 +103,22 @@ public interface SliceInvoker extends SliceInvokerFacade {
         public String artifactCoordinate() {
             return artifact.asString();
         }
+
+        @Override
+        public Result<Unit> materialize() {
+            return invoker.verifyEndpointExists(artifact, methodName);
+        }
     }
+
+    /**
+     * Verify that an endpoint exists for the given artifact and method.
+     * Used during slice activation to eagerly validate dependencies.
+     *
+     * @param artifact Target slice artifact
+     * @param method   Method to verify
+     * @return Success if endpoint exists, failure if not found
+     */
+    Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method);
 
     /**
      * Fire-and-forget invocation - sends request without waiting for response.
@@ -144,11 +136,11 @@ public interface SliceInvoker extends SliceInvokerFacade {
      * @param slice        Target slice artifact
      * @param method       Method to invoke
      * @param request      Request parameter
-     * @param responseType Expected response type
+     * @param responseType Expected response type token
      * @param <R>          Response type
      * @return Promise resolving to response
      */
-    <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, Class<R> responseType);
+    <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
 
     /**
      * Request-response invocation with retry for idempotent operations.
@@ -157,7 +149,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
      * @param slice        Target slice artifact
      * @param method       Method to invoke
      * @param request      Request parameter
-     * @param responseType Expected response type
+     * @param responseType Expected response type token
      * @param maxRetries   Maximum number of retry attempts (0 = no retries)
      * @param <R>          Response type
      * @return Promise resolving to response
@@ -165,7 +157,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
     <R> Promise<R> invokeWithRetry(Artifact slice,
                                    MethodName method,
                                    Object request,
-                                   Class<R> responseType,
+                                   TypeToken<R> responseType,
                                    int maxRetries);
 
     /**
@@ -175,11 +167,11 @@ public interface SliceInvoker extends SliceInvokerFacade {
      * @param slice        Target slice artifact
      * @param method       Method to invoke
      * @param request      Request parameter
-     * @param responseType Expected response type
+     * @param responseType Expected response type token
      * @param <R>          Response type
      * @return Promise resolving to response
      */
-    <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, Class<R> responseType);
+    <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
 
     /**
      * Handle response from remote invocation.
@@ -410,8 +402,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @Override
     public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
-        return selectEndpoint(slice, method)
-                             .flatMap(endpoint -> sendFireAndForget(endpoint, slice, method, request));
+        return selectEndpoint(slice, method).flatMap(endpoint -> sendFireAndForget(endpoint, slice, method, request));
     }
 
     private Promise<Unit> sendFireAndForget(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
@@ -431,12 +422,11 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @Override
     @SuppressWarnings("unchecked")
-    public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, Class<R> responseType) {
+    public <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
         if (stopped) {
             return INVOKER_STOPPED.promise();
         }
-        return selectEndpoint(slice, method)
-                             .flatMap(endpoint -> sendRequestResponse(endpoint, slice, method, request));
+        return selectEndpoint(slice, method).flatMap(endpoint -> sendRequestResponse(endpoint, slice, method, request));
     }
 
     @SuppressWarnings("unchecked")
@@ -444,7 +434,7 @@ class SliceInvokerImpl implements SliceInvoker {
         var payload = serializeRequest(request);
         var correlationId = KSUID.ksuid()
                                  .toString();
-        return Promise.promise(pendingPromise -> setupPendingInvocation((Promise<Object>)(Promise< ? >) pendingPromise,
+        return Promise.promise(pendingPromise -> setupPendingInvocation((Promise<Object>)(Promise<?>) pendingPromise,
                                                                         correlationId,
                                                                         endpoint,
                                                                         slice,
@@ -461,8 +451,7 @@ class SliceInvokerImpl implements SliceInvoker {
         var requestId = InvocationContext.getOrGenerateRequestId();
         var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), requestId);
         pendingInvocations.put(correlationId, pending);
-        pendingPromise.timeout(timeSpan(timeoutMs)
-                                       .millis())
+        pendingPromise.timeout(timeSpan(timeoutMs).millis())
                       .onResult(_ -> pendingInvocations.remove(correlationId));
         var invokeRequest = new InvokeRequest(self, correlationId, requestId, slice, method, payload, true);
         network.send(endpoint.nodeId(), invokeRequest);
@@ -478,7 +467,7 @@ class SliceInvokerImpl implements SliceInvoker {
     public <R> Promise<R> invokeWithRetry(Artifact slice,
                                           MethodName method,
                                           Object request,
-                                          Class<R> responseType,
+                                          TypeToken<R> responseType,
                                           int maxRetries) {
         if (stopped) {
             return INVOKER_STOPPED.promise();
@@ -503,7 +492,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private record FailoverContext<R>(Artifact slice,
                                       MethodName method,
                                       Object request,
-                                      Class<R> responseType,
+                                      TypeToken<R> responseType,
                                       int maxRetries,
                                       String requestId,
                                       java.util.Set<NodeId> failedNodes,
@@ -532,8 +521,8 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private <R> void executeWithFailover(Promise<R> promise, FailoverContext<R> ctx) {
         // Select endpoint excluding failed ones
-        selectEndpointWithFailover(ctx.slice, ctx.method, ctx.failedNodes)
-                                  .onEmpty(() -> handleAllEndpointsFailed(promise, ctx))
+        selectEndpointWithFailover(ctx.slice, ctx.method, ctx.failedNodes).onEmpty(() -> handleAllEndpointsFailed(promise,
+                                                                                                                  ctx))
                                   .onPresent(endpoint -> invokeEndpointWithFailover(promise, ctx, endpoint));
     }
 
@@ -566,8 +555,7 @@ class SliceInvokerImpl implements SliceInvoker {
         var pendingPromise = Promise.<Object>promise();
         var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), ctx.requestId);
         pendingInvocations.put(correlationId, pending);
-        pendingPromise.timeout(timeSpan(timeoutMs)
-                                       .millis())
+        pendingPromise.timeout(timeSpan(timeoutMs).millis())
                       .onResult(_ -> pendingInvocations.remove(correlationId));
         var invokeRequest = new InvokeRequest(self, correlationId, ctx.requestId, ctx.slice, ctx.method, payload, true);
         network.send(endpoint.nodeId(), invokeRequest);
@@ -663,7 +651,7 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @Override
     @SuppressWarnings("unchecked")
-    public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, Class<R> responseType) {
+    public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
         return invocationHandler.getLocalSlice(slice)
                                 .async(SLICE_NOT_FOUND)
                                 .flatMap(bridge -> invokeViaBridge(bridge, method, request));
@@ -744,5 +732,15 @@ class SliceInvokerImpl implements SliceInvoker {
         } finally{
             buf.release();
         }
+    }
+
+    @Override
+    public Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method) {
+        var endpoints = endpointRegistry.findEndpoints(artifact, method);
+        if (endpoints.isEmpty()) {
+            return Causes.cause("No endpoint found for " + artifact.asString() + "/" + method.name())
+                         .result();
+        }
+        return Result.unitResult();
     }
 }

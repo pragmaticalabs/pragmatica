@@ -3,6 +3,8 @@ package org.pragmatica.aether.forge;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.load.LoadConfigLoader;
 import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
+import org.pragmatica.http.server.HttpServer;
+import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -18,14 +20,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-import io.netty.bootstrap.ServerBootstrap;
-import io.netty.channel.*;
-import io.netty.channel.MultiThreadIoEventLoopGroup;
-import io.netty.channel.nio.NioIoHandler;
-import io.netty.channel.socket.SocketChannel;
-import io.netty.channel.socket.nio.NioServerSocketChannel;
-import io.netty.handler.codec.http.*;
-import io.netty.handler.stream.ChunkedWriteHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -67,9 +61,7 @@ public final class ForgeServer {
     private ForgeApiHandler apiHandler;
     private StaticFileHandler staticHandler;
 
-    private EventLoopGroup bossGroup;
-    private EventLoopGroup workerGroup;
-    private Channel serverChannel;
+    private Option<HttpServer> httpServer = Option.empty();
     private ScheduledExecutorService metricsScheduler;
 
     private ForgeServer(StartupConfig startupConfig, ForgeConfig forgeConfig) {
@@ -240,16 +232,11 @@ public final class ForgeServer {
         if (metricsScheduler != null) {
             metricsScheduler.shutdownNow();
         }
-        if (serverChannel != null) {
-            serverChannel.close()
-                         .syncUninterruptibly();
-        }
-        if (workerGroup != null) {
-            workerGroup.shutdownGracefully();
-        }
-        if (bossGroup != null) {
-            bossGroup.shutdownGracefully();
-        }
+        httpServer.onPresent(server -> server.stop()
+                                             .await(TimeSpan.timeSpan(10)
+                                                            .seconds())
+                                             .onFailure(cause -> log.warn("Error stopping HTTP server: {}",
+                                                                          cause.message())));
         if (cluster != null) {
             cluster.stop()
                    .await(TimeSpan.timeSpan(30)
@@ -260,28 +247,25 @@ public final class ForgeServer {
         log.info("Forge server stopped.");
     }
 
-    private void startHttpServer() throws InterruptedException {
-        bossGroup = new MultiThreadIoEventLoopGroup(1, NioIoHandler.newFactory());
-        workerGroup = new MultiThreadIoEventLoopGroup(NioIoHandler.newFactory());
-        var bootstrap = new ServerBootstrap();
-        bootstrap.group(bossGroup, workerGroup)
-                 .channel(NioServerSocketChannel.class)
-                 .childHandler(new ChannelInitializer<SocketChannel>() {
-            @Override
-            protected void initChannel(SocketChannel ch) {
-                                   var pipeline = ch.pipeline();
-                                   pipeline.addLast(new HttpServerCodec());
-                                   pipeline.addLast(new HttpObjectAggregator(MAX_CONTENT_LENGTH));
-                                   pipeline.addLast(new ChunkedWriteHandler());
-                                   pipeline.addLast(new ForgeHttpHandler(apiHandler, staticHandler));
-                               }
-        })
-                 .option(ChannelOption.SO_BACKLOG, 128)
-                 .childOption(ChannelOption.SO_KEEPALIVE, true);
-        serverChannel = bootstrap.bind(forgeConfig.dashboardPort())
-                                 .sync()
-                                 .channel();
-        log.info("HTTP server started on port {}", forgeConfig.dashboardPort());
+    private void startHttpServer() {
+        var config = HttpServerConfig.httpServerConfig("forge-dashboard",
+                                                       forgeConfig.dashboardPort())
+                                     .withMaxContentLength(MAX_CONTENT_LENGTH)
+                                     .withChunkedWrite();
+        var requestHandler = ForgeRequestHandler.forgeRequestHandler(apiHandler, staticHandler);
+        HttpServer.httpServer(config, requestHandler::handle)
+                  .await(TimeSpan.timeSpan(10)
+                                 .seconds())
+                  .onSuccess(server -> {
+                                 httpServer = Option.some(server);
+                                 log.info("HTTP server started on port {}",
+                                          server.port());
+                             })
+                  .onFailure(cause -> {
+                      log.error("Failed to start HTTP server: {}",
+                                cause.message());
+                      System.exit(1);
+                  });
     }
 
     private void openBrowser(String url) {
@@ -296,56 +280,6 @@ public final class ForgeServer {
             }
         } catch (Exception e) {
             log.info("Could not open browser automatically. Please navigate to: {}", url);
-        }
-    }
-
-    /**
-     * Routes requests to API handler or static file handler.
-     */
-    @ChannelHandler.Sharable
-    private static class ForgeHttpHandler extends SimpleChannelInboundHandler<FullHttpRequest> {
-        private final ForgeApiHandler apiHandler;
-        private final StaticFileHandler staticHandler;
-
-        ForgeHttpHandler(ForgeApiHandler apiHandler, StaticFileHandler staticHandler) {
-            this.apiHandler = apiHandler;
-            this.staticHandler = staticHandler;
-        }
-
-        @Override
-        protected void channelRead0(ChannelHandlerContext ctx, FullHttpRequest request) throws Exception {
-            var path = request.uri();
-            // Handle CORS preflight
-            if (request.method() == HttpMethod.OPTIONS) {
-                handleCors(ctx);
-                return;
-            }
-            // Route to appropriate handler
-            if (path.startsWith("/api/")) {
-                apiHandler.channelRead(ctx, request.retain());
-            } else {
-                staticHandler.channelRead(ctx, request.retain());
-            }
-        }
-
-        private void handleCors(ChannelHandlerContext ctx) {
-            var response = new DefaultFullHttpResponse(HttpVersion.HTTP_1_1, HttpResponseStatus.OK);
-            response.headers()
-                    .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*");
-            response.headers()
-                    .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_METHODS, "GET, POST, OPTIONS");
-            response.headers()
-                    .set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type");
-            response.headers()
-                    .set(HttpHeaderNames.CONTENT_LENGTH, 0);
-            ctx.writeAndFlush(response)
-               .addListener(ChannelFutureListener.CLOSE);
-        }
-
-        @Override
-        public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-            log.error("Error in HTTP request handler", cause);
-            ctx.close();
         }
     }
 }

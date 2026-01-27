@@ -119,8 +119,7 @@ public class FrameworkClassLoader extends URLClassLoader {
                 errors.add("JAR not found: " + jarPath);
                 continue;
             }
-            toUrl(jarPath)
-                 .onSuccess(urls::add)
+            toUrl(jarPath).onSuccess(urls::add)
                  .onFailure(cause -> errors.add(cause.message()));
         }
         if (!errors.isEmpty()) {

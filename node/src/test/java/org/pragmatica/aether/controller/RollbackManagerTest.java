@@ -33,8 +33,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class RollbackManagerTest {
-    private static final NodeId SELF = NodeId.nodeId("node-1");
-    private static final NodeId LEADER = NodeId.nodeId("node-1");
+    private static final NodeId SELF = NodeId.nodeId("node-1").unwrap();
+    private static final NodeId LEADER = NodeId.nodeId("node-1").unwrap();
 
     private RollbackConfig config;
     private TestClusterNode clusterNode;
@@ -195,7 +195,7 @@ class RollbackManagerTest {
             artifact,
             MethodName.methodName("doSomething").unwrap(),
             Causes.cause("Test failure"),
-            List.of(NodeId.nodeId("node-2"), NodeId.nodeId("node-3"))
+            List.of(NodeId.nodeId("node-2").unwrap(), NodeId.nodeId("node-3").unwrap())
         );
     }
 

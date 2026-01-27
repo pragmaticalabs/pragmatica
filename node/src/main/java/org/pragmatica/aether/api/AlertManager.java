@@ -99,7 +99,7 @@ public class AlertManager {
     public Promise<Unit> setThreshold(String metric, double warning, double critical) {
         var key = new AetherKey.AlertThresholdKey(metric);
         var value = AetherValue.AlertThresholdValue.alertThresholdValue(metric, warning, critical);
-        var command = (KVCommand<AetherKey>)(KVCommand< ? >) new KVCommand.Put<>(key, value);
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
         return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> {
                                    thresholds.put(metric,
@@ -123,7 +123,7 @@ public class AlertManager {
     @SuppressWarnings("unchecked")
     public Promise<Unit> removeThreshold(String metric) {
         var key = new AetherKey.AlertThresholdKey(metric);
-        var command = (KVCommand<AetherKey>)(KVCommand< ? >) new KVCommand.Remove<>(key);
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
         return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> {
                                    var removed = thresholds.remove(metric);

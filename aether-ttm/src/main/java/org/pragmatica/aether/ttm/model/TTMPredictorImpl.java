@@ -40,8 +40,7 @@ final class TTMPredictorImpl implements TTMPredictor {
         if (!config.enabled()) {
             return Result.success(TTMPredictor.noOp());
         }
-        return checkModelExists(config)
-                               .flatMap(TTMPredictorImpl::loadModel);
+        return checkModelExists(config).flatMap(TTMPredictorImpl::loadModel);
     }
 
     private static Result<TTMConfig> checkModelExists(TTMConfig config) {
@@ -95,8 +94,7 @@ final class TTMPredictorImpl implements TTMPredictor {
              var results = session.run(Map.of("input", tensor))) {
             // Get output tensor
             var outputTensor = (OnnxTensor) results.get(0);
-            return flattenOutput(outputTensor)
-                                .map(output -> extractPredictions(output, features));
+            return flattenOutput(outputTensor).map(output -> extractPredictions(output, features));
         }
     }
 

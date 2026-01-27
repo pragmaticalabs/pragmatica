@@ -65,8 +65,7 @@ public interface InvocationHandler {
      * Default invocation timeout (5 minutes).
      * Long timeout to allow operations that may trigger rebalance/node launch.
      */
-    TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(5)
-                                                  .minutes();
+    TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(5).minutes();
 
     /**
      * Create a new InvocationHandler without metrics.

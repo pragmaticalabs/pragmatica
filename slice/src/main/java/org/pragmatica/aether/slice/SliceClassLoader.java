@@ -41,7 +41,7 @@ public class SliceClassLoader extends URLClassLoader {
     }
 
     @Override
-    protected Class< ?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+    protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
         synchronized (getClassLoadingLock(name)) {
             // Check if already loaded
             var loaded = findLoadedClass(name);
@@ -73,6 +73,18 @@ public class SliceClassLoader extends URLClassLoader {
      */
     private boolean isJdkClass(String name) {
         return name.startsWith(JAVA_PREFIX) || name.startsWith(JAVAX_PREFIX) || name.startsWith(JDK_PREFIX) || name.startsWith(SUN_PREFIX);
+    }
+
+    /**
+     * Add a URL to this classloader's search path.
+     * <p>
+     * Used to add dependency slice JARs before loading the slice class,
+     * ensuring parameter types from dependency slices can be resolved.
+     *
+     * @param url URL to add (typically a dependency slice JAR)
+     */
+    public void addSliceDependencyUrl(URL url) {
+        addURL(url);
     }
 
     @Override

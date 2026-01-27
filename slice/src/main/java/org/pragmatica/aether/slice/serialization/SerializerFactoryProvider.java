@@ -30,5 +30,5 @@ public interface SerializerFactoryProvider {
      *
      * @return A SerializerFactory instance for this slice
      */
-    SerializerFactory createFactory(List<TypeToken< ?>> typeTokens);
+    SerializerFactory createFactory(List<TypeToken<?>> typeTokens);
 }

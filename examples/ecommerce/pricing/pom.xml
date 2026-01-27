@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>ecommerce</artifactId>
-        <version>0.7.5</version>
+        <version>0.8.1</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
@@ -21,18 +21,7 @@
             <artifactId>shared</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>slice-annotations</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>slice-api</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite</groupId>
-            <artifactId>core</artifactId>
-        </dependency>
+        <!-- slice-api, slice-annotations, core inherited from parent with provided scope -->
     </dependencies>
 
     <build>

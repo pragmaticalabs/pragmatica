@@ -224,8 +224,7 @@ public interface PaymentService {
 
             @Override
             public Promise<PaymentResult> processPayment(ProcessPaymentRequest request) {
-                return simulateFraudCheck()
-                                         .flatMap(_ -> validatePaymentAmount(request.amount()))
+                return simulateFraudCheck().flatMap(_ -> validatePaymentAmount(request.amount()))
                                          .flatMap(_ -> simulateAuthorization(request));
             }
 

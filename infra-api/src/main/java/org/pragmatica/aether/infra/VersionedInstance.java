@@ -41,11 +41,8 @@ public record VersionedInstance<T>(String version, T instance) {
      * @return true if this instance is compatible
      */
     public boolean isCompatibleWith(String requested) {
-        return parseVersion(version)
-                           .flatMap(thisV -> parseVersion(requested)
-                                                         .map(reqV -> isCompatible(thisV, reqV)))
-                           .or(() -> stripQualifier(version)
-                                                   .equals(stripQualifier(requested)));
+        return parseVersion(version).flatMap(thisV -> parseVersion(requested).map(reqV -> isCompatible(thisV, reqV)))
+                           .or(() -> stripQualifier(version).equals(stripQualifier(requested)));
     }
 
     private static boolean isCompatible(ParsedVersion thisV, ParsedVersion reqV) {
@@ -59,8 +56,7 @@ public record VersionedInstance<T>(String version, T instance) {
      * @return true if versions match exactly (ignoring qualifier)
      */
     public boolean isExactMatch(String requested) {
-        return stripQualifier(version)
-                             .equals(stripQualifier(requested));
+        return stripQualifier(version).equals(stripQualifier(requested));
     }
 
     /**
@@ -115,11 +111,8 @@ public record VersionedInstance<T>(String version, T instance) {
             return Option.none();
         }
         return parseInteger(parts[0])
-                           .flatMap(major -> parseInteger(parts[1])
-                                                         .flatMap(minor -> parseInteger(parts[2])
-                                                                                       .map(patch -> new ParsedVersion(major,
-                                                                                                                       minor,
-                                                                                                                       patch))));
+        .flatMap(major -> parseInteger(parts[1])
+        .flatMap(minor -> parseInteger(parts[2]).map(patch -> new ParsedVersion(major, minor, patch))));
     }
 
     private static Option<Integer> parseInteger(String value) {

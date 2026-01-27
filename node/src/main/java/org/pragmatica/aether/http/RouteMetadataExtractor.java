@@ -48,7 +48,7 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
                      .toList();
     }
 
-    private HttpRouteDefinition toDefinition(Route< ?> route, String artifactCoord) {
+    private HttpRouteDefinition toDefinition(Route<?> route, String artifactCoord) {
         return httpRouteDefinition(route.method()
                                         .name(),
                                    route.path(),

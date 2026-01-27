@@ -3,7 +3,8 @@ package org.pragmatica.cluster.net;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.consensus.net.NetworkManagementOperation;
+import org.pragmatica.consensus.net.NetworkMessage;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.consensus.topology.TopologyManager;
@@ -17,8 +18,8 @@ import java.net.InetSocketAddress;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.pragmatica.consensus.NodeId.randomNodeId;
-import static org.pragmatica.consensus.net.NodeInfo.nodeInfo;
 import static org.pragmatica.consensus.topology.TcpTopologyManager.tcpTopologyManager;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
@@ -45,23 +46,27 @@ class TcpTopologyManagerIT {
         socketAddress2 = new InetSocketAddress("127.0.0.1", 8082);
         socketAddress3 = new InetSocketAddress("127.0.0.1", 8083);
 
-        nodeInfo1 = nodeInfo(nodeId1, NodeAddress.nodeAddress(socketAddress1));
-        nodeInfo2 = nodeInfo(nodeId2, NodeAddress.nodeAddress(socketAddress2));
+        nodeInfo1 = new NodeInfo(nodeId1, NodeAddress.nodeAddress(socketAddress1).unwrap());
+        nodeInfo2 = new NodeInfo(nodeId2, NodeAddress.nodeAddress(socketAddress2).unwrap());
 
         var config = new TopologyConfig(nodeId1,
+                                        2,
                                         timeSpan(100).hours(),
                                         TimeSpan.timeSpan(10).seconds(),
                                         List.of(nodeInfo1, nodeInfo2));
 
-        var tcpManager = tcpTopologyManager(config, router);
-        topologyManager = tcpManager;
+        tcpTopologyManager(config, router)
+            .onFailure(cause -> fail("Failed to create topology manager: " + cause.message()))
+            .onSuccess(tcpManager -> {
+                topologyManager = tcpManager;
 
-        // Register routes for @MessageReceiver methods
-        router.addRoute(TopologyManagementMessage.AddNode.class, tcpManager::handleAddNodeMessage);
-        router.addRoute(TopologyManagementMessage.RemoveNode.class, tcpManager::handleRemoveNodeMessage);
-        router.addRoute(TopologyManagementMessage.DiscoverNodes.class, tcpManager::handleDiscoverNodesMessage);
-        router.addRoute(TopologyManagementMessage.DiscoveredNodes.class, tcpManager::handleMergeNodesMessage);
-        router.addRoute(NetworkManagementOperation.ConnectedNodesList.class, tcpManager::reconcile);
+                // Register routes for @MessageReceiver methods
+                router.addRoute(TopologyManagementMessage.AddNode.class, tcpManager::handleAddNodeMessage);
+                router.addRoute(TopologyManagementMessage.RemoveNode.class, tcpManager::handleRemoveNodeMessage);
+                router.addRoute(NetworkMessage.DiscoverNodes.class, tcpManager::handleDiscoverNodes);
+                router.addRoute(NetworkMessage.DiscoveredNodes.class, tcpManager::handleDiscoveredNodes);
+                router.addRoute(NetworkServiceMessage.ConnectedNodesList.class, tcpManager::reconcile);
+            });
     }
 
     @Test

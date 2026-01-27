@@ -130,14 +130,10 @@ public interface FulfillmentService {
 
     // === Enums ===
     enum ShippingOption {
-        STANDARD("Standard Shipping", timeSpan(5)
-                                              .days(), BigDecimal.ZERO),
-        EXPRESS("Express Shipping", timeSpan(2)
-                                            .days(), new BigDecimal("9.99")),
-        OVERNIGHT("Overnight Shipping", timeSpan(1)
-                                                .days(), new BigDecimal("24.99")),
-        SAME_DAY("Same Day Delivery", timeSpan(4)
-                                              .hours(), new BigDecimal("49.99"));
+        STANDARD("Standard Shipping", timeSpan(5).days(), BigDecimal.ZERO),
+        EXPRESS("Express Shipping", timeSpan(2).days(), new BigDecimal("9.99")),
+        OVERNIGHT("Overnight Shipping", timeSpan(1).days(), new BigDecimal("24.99")),
+        SAME_DAY("Same Day Delivery", timeSpan(4).hours(), new BigDecimal("49.99"));
         private final String displayName;
         private final TimeSpan estimatedDelivery;
         private final BigDecimal baseCost;

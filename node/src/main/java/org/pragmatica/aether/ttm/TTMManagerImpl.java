@@ -37,7 +37,7 @@ final class TTMManagerImpl implements TTMManager {
                                                                                                       return thread;
                                                                                                   });
 
-    private final AtomicReference<ScheduledFuture< ? >> evaluationTask = new AtomicReference<>();
+    private final AtomicReference<ScheduledFuture<?>> evaluationTask = new AtomicReference<>();
     private final AtomicReference<TTMForecast> currentForecast = new AtomicReference<>();
     private final AtomicReference<TTMState> state = new AtomicReference<>(TTMState.STOPPED);
     private final CopyOnWriteArrayList<Consumer<TTMForecast>> callbacks = new CopyOnWriteArrayList<>();
@@ -135,8 +135,7 @@ final class TTMManagerImpl implements TTMManager {
     }
 
     private void runEvaluation() {
-        evaluateAsync()
-                     .onFailure(this::handleEvaluationError);
+        evaluateAsync().onFailure(this::handleEvaluationError);
     }
 
     private Promise<Unit> evaluateAsync() {

@@ -1,16 +1,17 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.e2e.containers.AetherCluster;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Path;
-import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
  * E2E tests for Management API endpoints.
@@ -22,28 +23,56 @@ import static org.awaitility.Awaitility.await;
  *   <li>Metrics endpoints (/metrics, /metrics/prometheus, /invocation-metrics)</li>
  *   <li>Threshold & Alert endpoints (/thresholds, /alerts)</li>
  *   <li>Controller endpoints (/controller/*)</li>
+ *   <li>Slice status endpoints (/slices/status)</li>
  * </ul>
+ *
+ * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
+ * Tests run in order and each test cleans up previous state before running.
  */
+@TestClassOrder(ClassOrderer.OrderAnnotation.class)
+@Execution(ExecutionMode.SAME_THREAD)
 class ManagementApiE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
-    private AetherCluster cluster;
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
 
-    @BeforeEach
-    void setUp() {
+    // Common timeouts
+    private static final TimeSpan DEFAULT_TIMEOUT = timeSpan(30).seconds();
+    private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(3).minutes();
+    private static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
+    private static final TimeSpan CLEANUP_TIMEOUT = timeSpan(60).seconds();
+
+    private static AetherCluster cluster;
+
+    @BeforeAll
+    static void createCluster() {
         cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
         cluster.start();
         cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
     }
 
-    @AfterEach
-    void tearDown() {
+    @AfterAll
+    static void destroyCluster() {
         if (cluster != null) {
             cluster.close();
         }
     }
 
+    @BeforeEach
+    void cleanupAndPrepare() {
+        cluster.awaitLeader();
+        cluster.awaitAllHealthy();
+        sleep(timeSpan(1).seconds());
+
+        // Undeploy all slices to ensure clean state
+        undeployAllSlices();
+        awaitNoSlices();
+    }
+
+    // ===== Nested Test Classes =====
+
     @Nested
+    @Order(1)
     class StatusEndpoints {
 
         @Test
@@ -70,10 +99,12 @@ class ManagementApiE2ETest {
         @Test
         void nodes_listsAllClusterMembers() {
             // Wait for nodes to exchange metrics
-            await().atMost(WAIT_TIMEOUT).until(() -> {
-                var nodes = cluster.anyNode().getNodes();
-                return nodes.contains("node-1") && nodes.contains("node-2") && nodes.contains("node-3");
-            });
+            await().atMost(DEFAULT_TIMEOUT.duration())
+                   .pollInterval(POLL_INTERVAL.duration())
+                   .until(() -> {
+                       var nodes = cluster.anyNode().getNodes();
+                       return nodes.contains("node-1") && nodes.contains("node-2") && nodes.contains("node-3");
+                   });
 
             var nodes = cluster.anyNode().getNodes();
             assertThat(nodes).contains("node-1");
@@ -88,19 +119,16 @@ class ManagementApiE2ETest {
             assertThat(slices).doesNotContain("\"error\"");
 
             // Deploy a slice and verify it appears
-            cluster.anyNode().deploy("org.pragmatica-lite.aether:example-slice:0.7.2", 1);
-
-            await().atMost(WAIT_TIMEOUT).until(() -> {
-                var response = cluster.anyNode().getSlices();
-                return response.contains("example-slice");
-            });
+            deployAndAssert(TEST_ARTIFACT, 1);
+            awaitSliceActive(TEST_ARTIFACT);
 
             slices = cluster.anyNode().getSlices();
-            assertThat(slices).contains("example-slice");
+            assertThat(slices).contains("inventory");
         }
     }
 
     @Nested
+    @Order(2)
     class MetricsEndpoints {
 
         @Test
@@ -125,12 +153,8 @@ class ManagementApiE2ETest {
         @Test
         void invocationMetrics_tracksCallsPerMethod() {
             // Deploy a slice to generate some invocation data
-            cluster.anyNode().deploy("org.pragmatica-lite.aether:example-slice:0.7.2", 1);
-
-            await().atMost(WAIT_TIMEOUT).until(() -> {
-                var slices = cluster.anyNode().getSlices();
-                return slices.contains("example-slice");
-            });
+            deployAndAssert(TEST_ARTIFACT, 1);
+            awaitSliceActive(TEST_ARTIFACT);
 
             var invocationMetrics = cluster.anyNode().getInvocationMetrics();
             assertThat(invocationMetrics).doesNotContain("\"error\"");
@@ -138,7 +162,7 @@ class ManagementApiE2ETest {
 
         @Test
         void invocationMetrics_filtering_byArtifactAndMethod() {
-            var filtered = cluster.anyNode().getInvocationMetrics("example-slice", null);
+            var filtered = cluster.anyNode().getInvocationMetrics("inventory", null);
             assertThat(filtered).doesNotContain("\"error\"");
 
             var methodFiltered = cluster.anyNode().getInvocationMetrics(null, "process");
@@ -162,6 +186,7 @@ class ManagementApiE2ETest {
     }
 
     @Nested
+    @Order(3)
     class ThresholdAndAlertEndpoints {
 
         @Test
@@ -171,10 +196,12 @@ class ManagementApiE2ETest {
             assertThat(setResponse).doesNotContain("\"error\"");
 
             // Get thresholds and verify
-            await().atMost(WAIT_TIMEOUT).until(() -> {
-                var thresholds = cluster.anyNode().getThresholds();
-                return thresholds.contains("cpu.usage");
-            });
+            await().atMost(DEFAULT_TIMEOUT.duration())
+                   .pollInterval(POLL_INTERVAL.duration())
+                   .until(() -> {
+                       var thresholds = cluster.anyNode().getThresholds();
+                       return thresholds.contains("cpu.usage");
+                   });
 
             var thresholds = cluster.anyNode().getThresholds();
             assertThat(thresholds).contains("cpu.usage");
@@ -185,20 +212,24 @@ class ManagementApiE2ETest {
             // First set a threshold
             cluster.anyNode().setThreshold("test.metric", 0.5, 0.8);
 
-            await().atMost(WAIT_TIMEOUT).until(() -> {
-                var thresholds = cluster.anyNode().getThresholds();
-                return thresholds.contains("test.metric");
-            });
+            await().atMost(DEFAULT_TIMEOUT.duration())
+                   .pollInterval(POLL_INTERVAL.duration())
+                   .until(() -> {
+                       var thresholds = cluster.anyNode().getThresholds();
+                       return thresholds.contains("test.metric");
+                   });
 
             // Now delete it
             var deleteResponse = cluster.anyNode().deleteThreshold("test.metric");
             assertThat(deleteResponse).doesNotContain("\"error\"");
 
             // Verify it's gone
-            await().atMost(WAIT_TIMEOUT).until(() -> {
-                var thresholds = cluster.anyNode().getThresholds();
-                return !thresholds.contains("test.metric");
-            });
+            await().atMost(DEFAULT_TIMEOUT.duration())
+                   .pollInterval(POLL_INTERVAL.duration())
+                   .until(() -> {
+                       var thresholds = cluster.anyNode().getThresholds();
+                       return !thresholds.contains("test.metric");
+                   });
         }
 
         @Test
@@ -225,6 +256,7 @@ class ManagementApiE2ETest {
     }
 
     @Nested
+    @Order(4)
     class ControllerEndpoints {
 
         @Test
@@ -257,20 +289,80 @@ class ManagementApiE2ETest {
     }
 
     @Nested
+    @Order(5)
     class SliceStatusEndpoints {
 
         @Test
         void slicesStatus_returnsDetailedHealth() {
             // Deploy a slice first
-            cluster.anyNode().deploy("org.pragmatica-lite.aether:example-slice:0.7.2", 2);
-
-            await().atMost(WAIT_TIMEOUT).until(() -> {
-                var slices = cluster.anyNode().getSlices();
-                return slices.contains("example-slice");
-            });
+            deployAndAssert(TEST_ARTIFACT, 2);
+            awaitSliceActive(TEST_ARTIFACT);
 
             var slicesStatus = cluster.anyNode().getSlicesStatus();
             assertThat(slicesStatus).doesNotContain("\"error\"");
+        }
+    }
+
+    // ===== Helper Methods =====
+
+    private void undeployAllSlices() {
+        try {
+            var leader = cluster.leader()
+                                .toResult(Causes.cause("No leader"))
+                                .unwrap();
+
+            var slices = leader.getSlices();
+            System.out.println("[DEBUG] Deployed slices: " + slices);
+
+            if (slices.contains(TEST_ARTIFACT)) {
+                var result = leader.undeploy(TEST_ARTIFACT);
+                System.out.println("[DEBUG] Undeploy " + TEST_ARTIFACT + ": " + result);
+            }
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Error undeploying slices: " + e.getMessage());
+        }
+    }
+
+    private void awaitNoSlices() {
+        await().atMost(CLEANUP_TIMEOUT.duration())
+               .pollInterval(POLL_INTERVAL.duration())
+               .ignoreExceptions()
+               .until(() -> {
+                   var slices = cluster.anyNode().getSlices();
+                   System.out.println("[DEBUG] Waiting for no slices, current: " + slices);
+                   return !slices.contains(TEST_ARTIFACT);
+               });
+    }
+
+    private String deployAndAssert(String artifact, int instances) {
+        var response = cluster.anyNode().deploy(artifact, instances);
+        assertThat(response)
+            .describedAs("Deployment of %s should succeed", artifact)
+            .doesNotContain("\"error\"");
+        return response;
+    }
+
+    private void awaitSliceActive(String artifact) {
+        await().atMost(DEPLOY_TIMEOUT.duration())
+               .pollInterval(POLL_INTERVAL.duration())
+               .failFast(() -> {
+                   var state = cluster.anyNode().getSliceState(artifact);
+                   if ("FAILED".equals(state)) {
+                       throw new AssertionError("Slice deployment failed: " + artifact);
+                   }
+               })
+               .until(() -> {
+                   var state = cluster.anyNode().getSliceState(artifact);
+                   System.out.println("[DEBUG] Slice " + artifact + " state: " + state);
+                   return "ACTIVE".equals(state);
+               });
+    }
+
+    private void sleep(TimeSpan duration) {
+        try {
+            Thread.sleep(duration.duration().toMillis());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
         }
     }
 }

@@ -50,13 +50,10 @@ final class InMemoryStreamingService implements StreamingService {
     // ========== Topic Management ==========
     @Override
     public Promise<Unit> createTopic(String topic, int partitions) {
-        return option(topics.putIfAbsent(topic,
-                                         new Topic(topic,
-                                                   partitions,
-                                                   Instant.now())))
-                     .fold(() -> Promise.success(unit()),
-                           existing -> StreamingError.topicAlreadyExists(topic)
-                                                     .promise());
+        return option(topics.putIfAbsent(topic, new Topic(topic, partitions, Instant.now())))
+        .fold(() -> Promise.success(unit()),
+              existing -> StreamingError.topicAlreadyExists(topic)
+                                        .promise());
     }
 
     @Override
@@ -66,8 +63,7 @@ final class InMemoryStreamingService implements StreamingService {
 
     @Override
     public Promise<Boolean> deleteTopic(String topic) {
-        return Promise.success(option(topics.remove(topic))
-                                     .isPresent());
+        return Promise.success(option(topics.remove(topic)).isPresent());
     }
 
     @Override
@@ -80,15 +76,13 @@ final class InMemoryStreamingService implements StreamingService {
 
     @Override
     public Promise<Option<TopicInfo>> getTopic(String topic) {
-        return Promise.success(option(topics.get(topic))
-                                     .map(Topic::toInfo));
+        return Promise.success(option(topics.get(topic)).map(Topic::toInfo));
     }
 
     // ========== Publishing ==========
     @Override
     public Promise<StreamMessage> publish(String topic, Option<String> key, byte[] value) {
-        return validateMessageSize(value)
-                                  .flatMap(v -> getTopicOrFail(topic))
+        return validateMessageSize(value).flatMap(v -> getTopicOrFail(topic))
                                   .map(t -> publishToTopic(t, key, value));
     }
 
@@ -99,8 +93,7 @@ final class InMemoryStreamingService implements StreamingService {
 
     @Override
     public Promise<StreamMessage> publishToPartition(String topic, int partition, Option<String> key, byte[] value) {
-        return validateMessageSize(value)
-                                  .flatMap(v -> getTopicOrFail(topic))
+        return validateMessageSize(value).flatMap(v -> getTopicOrFail(topic))
                                   .flatMap(t -> validatePartition(t, partition))
                                   .map(t -> t.publish(partition, key, value));
     }
@@ -108,8 +101,7 @@ final class InMemoryStreamingService implements StreamingService {
     @Override
     public Promise<List<StreamMessage>> publishBatch(String topic, List<KeyValue> messages) {
         return getTopicOrFail(topic)
-                             .flatMap(t -> validateBatchSize(messages)
-                                                            .map(msgs -> publishBatchToTopic(t, msgs)));
+        .flatMap(t -> validateBatchSize(messages).map(msgs -> publishBatchToTopic(t, msgs)));
     }
 
     private List<StreamMessage> publishBatchToTopic(Topic topic, List<KeyValue> messages) {
@@ -131,8 +123,7 @@ final class InMemoryStreamingService implements StreamingService {
     @Override
     public Promise<Unit> subscribe(String groupId, String topic) {
         return getConsumerGroupOrFail(groupId)
-                                     .flatMap(group -> getTopicOrFail(topic)
-                                                                     .map(t -> subscribeGroupToTopic(group, topic, t)));
+        .flatMap(group -> getTopicOrFail(topic).map(t -> subscribeGroupToTopic(group, topic, t)));
     }
 
     private Unit subscribeGroupToTopic(ConsumerGroup group, String topic, Topic t) {
@@ -142,8 +133,7 @@ final class InMemoryStreamingService implements StreamingService {
 
     @Override
     public Promise<Unit> unsubscribe(String groupId, String topic) {
-        return getConsumerGroupOrFail(groupId)
-                                     .map(group -> unsubscribeGroupFromTopic(group, topic));
+        return getConsumerGroupOrFail(groupId).map(group -> unsubscribeGroupFromTopic(group, topic));
     }
 
     private Unit unsubscribeGroupFromTopic(ConsumerGroup group, String topic) {
@@ -161,21 +151,18 @@ final class InMemoryStreamingService implements StreamingService {
 
     @Override
     public Promise<Option<ConsumerGroupInfo>> getConsumerGroup(String groupId) {
-        return Promise.success(option(consumerGroups.get(groupId))
-                                     .map(ConsumerGroup::toInfo));
+        return Promise.success(option(consumerGroups.get(groupId)).map(ConsumerGroup::toInfo));
     }
 
     @Override
     public Promise<Boolean> deleteConsumerGroup(String groupId) {
-        return Promise.success(option(consumerGroups.remove(groupId))
-                                     .isPresent());
+        return Promise.success(option(consumerGroups.remove(groupId)).isPresent());
     }
 
     // ========== Consuming ==========
     @Override
     public Promise<List<StreamMessage>> poll(String groupId, int maxCount) {
-        return getConsumerGroupOrFail(groupId)
-                                     .map(group -> pollFromGroup(group, maxCount));
+        return getConsumerGroupOrFail(groupId).map(group -> pollFromGroup(group, maxCount));
     }
 
     private List<StreamMessage> pollFromGroup(ConsumerGroup group, int maxCount) {
@@ -190,8 +177,7 @@ final class InMemoryStreamingService implements StreamingService {
 
     private int pollFromTopic(ConsumerGroup group, String topicName, int remaining, List<StreamMessage> results) {
         return option(topics.get(topicName))
-                     .fold(() -> remaining,
-                           topic -> pollPartitions(group, topicName, topic, remaining, results));
+        .fold(() -> remaining, topic -> pollPartitions(group, topicName, topic, remaining, results));
     }
 
     private int pollPartitions(ConsumerGroup group,
@@ -223,8 +209,7 @@ final class InMemoryStreamingService implements StreamingService {
 
     @Override
     public Promise<Unit> commit(String groupId, StreamMessage message) {
-        return getConsumerGroupOrFail(groupId)
-                                     .map(group -> commitMessageOffset(group, message));
+        return getConsumerGroupOrFail(groupId).map(group -> commitMessageOffset(group, message));
     }
 
     private Unit commitMessageOffset(ConsumerGroup group, StreamMessage message) {
@@ -234,8 +219,7 @@ final class InMemoryStreamingService implements StreamingService {
 
     @Override
     public Promise<Unit> commitBatch(String groupId, List<StreamMessage> messages) {
-        return getConsumerGroupOrFail(groupId)
-                                     .map(group -> commitAllOffsets(group, messages));
+        return getConsumerGroupOrFail(groupId).map(group -> commitAllOffsets(group, messages));
     }
 
     private Unit commitAllOffsets(ConsumerGroup group, List<StreamMessage> messages) {
@@ -247,14 +231,10 @@ final class InMemoryStreamingService implements StreamingService {
 
     @Override
     public Promise<Unit> seek(String groupId, String topic, int partition, long offset) {
-        return getConsumerGroupOrFail(groupId)
-                                     .flatMap(group -> getTopicOrFail(topic)
-                                                                     .map(t -> new SeekContext(group, t)))
+        return getConsumerGroupOrFail(groupId).flatMap(group -> getTopicOrFail(topic)
+        .map(t -> new SeekContext(group, t)))
                                      .flatMap(ctx -> validatePartition(ctx.topic, partition)
-                                                                      .map(t -> seekToOffset(ctx.group,
-                                                                                             topic,
-                                                                                             partition,
-                                                                                             offset)));
+        .map(t -> seekToOffset(ctx.group, topic, partition, offset)));
     }
 
     private Unit seekToOffset(ConsumerGroup group, String topic, int partition, long offset) {
@@ -266,8 +246,7 @@ final class InMemoryStreamingService implements StreamingService {
 
     @Override
     public Promise<Unit> seekToBeginning(String groupId, String topic, int partition) {
-        return getTopicOrFail(topic)
-                             .flatMap(t -> validatePartition(t, partition))
+        return getTopicOrFail(topic).flatMap(t -> validatePartition(t, partition))
                              .flatMap(t -> seek(groupId,
                                                 topic,
                                                 partition,
@@ -276,8 +255,7 @@ final class InMemoryStreamingService implements StreamingService {
 
     @Override
     public Promise<Unit> seekToEnd(String groupId, String topic, int partition) {
-        return getTopicOrFail(topic)
-                             .flatMap(t -> validatePartition(t, partition))
+        return getTopicOrFail(topic).flatMap(t -> validatePartition(t, partition))
                              .flatMap(t -> seek(groupId,
                                                 topic,
                                                 partition,
@@ -287,21 +265,18 @@ final class InMemoryStreamingService implements StreamingService {
     // ========== Offset Management ==========
     @Override
     public Promise<Option<Long>> getCommittedOffset(String groupId, String topic, int partition) {
-        return getConsumerGroupOrFail(groupId)
-                                     .map(group -> group.getCommittedOffset(topic, partition));
+        return getConsumerGroupOrFail(groupId).map(group -> group.getCommittedOffset(topic, partition));
     }
 
     @Override
     public Promise<Long> getLatestOffset(String topic, int partition) {
-        return getTopicOrFail(topic)
-                             .flatMap(t -> validatePartition(t, partition))
+        return getTopicOrFail(topic).flatMap(t -> validatePartition(t, partition))
                              .map(t -> t.getLatestOffset(partition));
     }
 
     @Override
     public Promise<Long> getEarliestOffset(String topic, int partition) {
-        return getTopicOrFail(topic)
-                             .flatMap(t -> validatePartition(t, partition))
+        return getTopicOrFail(topic).flatMap(t -> validatePartition(t, partition))
                              .map(t -> t.getEarliestOffset(partition));
     }
 
@@ -316,16 +291,14 @@ final class InMemoryStreamingService implements StreamingService {
     // ========== Internal Helpers ==========
     private Promise<Topic> getTopicOrFail(String topic) {
         return option(topics.get(topic))
-                     .fold(() -> StreamingError.topicNotFound(topic)
-                                               .<Topic> promise(),
-                           Promise::success);
+        .fold(() -> StreamingError.topicNotFound(topic)
+                                  .<Topic> promise(), Promise::success);
     }
 
     private Promise<ConsumerGroup> getConsumerGroupOrFail(String groupId) {
         return option(consumerGroups.get(groupId))
-                     .fold(() -> StreamingError.consumerGroupNotFound(groupId)
-                                               .<ConsumerGroup> promise(),
-                           Promise::success);
+        .fold(() -> StreamingError.consumerGroupNotFound(groupId)
+                                  .<ConsumerGroup> promise(), Promise::success);
     }
 
     private Promise<Topic> validatePartition(Topic topic, int partition) {
@@ -447,8 +420,7 @@ final class InMemoryStreamingService implements StreamingService {
         }
 
         long getCurrentOffset(String topic, int partition) {
-            return option(currentOffsets.get(topic))
-                         .flatMap(m -> option(m.get(partition)))
+            return option(currentOffsets.get(topic)).flatMap(m -> option(m.get(partition)))
                          .fold(() -> 0L,
                                o -> o);
         }
@@ -466,8 +438,7 @@ final class InMemoryStreamingService implements StreamingService {
         }
 
         Option<Long> getCommittedOffset(String topic, int partition) {
-            return option(committedOffsets.get(topic))
-                         .flatMap(m -> option(m.get(partition)));
+            return option(committedOffsets.get(topic)).flatMap(m -> option(m.get(partition)));
         }
 
         ConsumerGroupInfo toInfo() {

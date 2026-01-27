@@ -24,8 +24,7 @@ final class InMemoryFeatureFlags implements FeatureFlags {
 
     @Override
     public Promise<Boolean> isEnabled(String flag, Context context) {
-        return Promise.success(option(flags.get(flag))
-                                     .map(config -> evaluateFlag(config, context))
+        return Promise.success(option(flags.get(flag)).map(config -> evaluateFlag(config, context))
                                      .or(false));
     }
 
@@ -36,8 +35,7 @@ final class InMemoryFeatureFlags implements FeatureFlags {
 
     @Override
     public Promise<Option<String>> getVariant(String flag, Context context) {
-        return Promise.success(option(flags.get(flag))
-                                     .map(config -> evaluateFlag(config, context))
+        return Promise.success(option(flags.get(flag)).map(config -> evaluateFlag(config, context))
                                      .map(enabled -> enabled
                                                      ? "enabled"
                                                      : "disabled"));
@@ -51,8 +49,7 @@ final class InMemoryFeatureFlags implements FeatureFlags {
 
     @Override
     public Promise<Unit> deleteFlag(String flag) {
-        return option(flags.remove(flag))
-                     .map(removed -> Promise.<Unit>success(unit()))
+        return option(flags.remove(flag)).map(removed -> Promise.<Unit>success(unit()))
                      .or(() -> new FeatureFlagError.FlagNotFound(flag).promise());
     }
 

@@ -159,8 +159,7 @@ public sealed interface BackendSimulation {
         public Promise<Unit> apply() {
             var random = ThreadLocalRandom.current();
             if (random.nextDouble() < failureRate) {
-                return selectRandomError(random)
-                                        .promise();
+                return selectRandomError(random).promise();
             }
             return Promise.success(Unit.unit());
         }

@@ -26,71 +26,6 @@ public interface SharedDependencyLoader {
     Logger log = LoggerFactory.getLogger(SharedDependencyLoader.class);
 
     /**
-     * Process API dependencies from [api] section.
-     * <p>
-     * API JARs (with -api classifier) contain typed interfaces used by generated proxies.
-     * They are loaded into SharedLibraryClassLoader for cross-slice type visibility.
-     *
-     * @param dependencies        List of API dependencies from [api] section
-     * @param sharedLibraryLoader The shared library classloader
-     * @param repository          Repository to locate artifacts
-     * @return Promise that completes when all API JARs are loaded
-     */
-    static Promise<Unit> processApiDependencies(List<ArtifactDependency> dependencies,
-                                                SharedLibraryClassLoader sharedLibraryLoader,
-                                                Repository repository) {
-        if (dependencies.isEmpty()) {
-            return Promise.success(unit());
-        }
-        return processApiSequentially(dependencies, sharedLibraryLoader, repository);
-    }
-
-    private static Promise<Unit> processApiSequentially(List<ArtifactDependency> dependencies,
-                                                        SharedLibraryClassLoader sharedLibraryLoader,
-                                                        Repository repository) {
-        if (dependencies.isEmpty()) {
-            return Promise.success(unit());
-        }
-        var dependency = dependencies.getFirst();
-        var remaining = dependencies.subList(1, dependencies.size());
-        return loadApiIntoShared(dependency, sharedLibraryLoader, repository)
-                                .flatMap(_ -> processApiSequentially(remaining, sharedLibraryLoader, repository));
-    }
-
-    private static Promise<Unit> loadApiIntoShared(ArtifactDependency dependency,
-                                                   SharedLibraryClassLoader sharedLibraryLoader,
-                                                   Repository repository) {
-        return sharedLibraryLoader.checkCompatibility(dependency)
-                                  .fold(() -> loadApiArtifact(dependency, sharedLibraryLoader, repository),
-                                        _ -> logApiAlreadyLoaded(dependency));
-    }
-
-    private static Promise<Unit> loadApiArtifact(ArtifactDependency dependency,
-                                                 SharedLibraryClassLoader sharedLibraryLoader,
-                                                 Repository repository) {
-        return toArtifact(dependency)
-                         .async()
-                         .flatMap(repository::locate)
-                         .map(location -> addApiToSharedLoader(dependency,
-                                                               sharedLibraryLoader,
-                                                               location.url()));
-    }
-
-    private static Unit addApiToSharedLoader(ArtifactDependency dependency,
-                                             SharedLibraryClassLoader sharedLibraryLoader,
-                                             URL url) {
-        var version = extractVersion(dependency.versionPattern());
-        sharedLibraryLoader.addArtifact(dependency.groupId(), dependency.artifactId(), version, url);
-        log.debug("Loaded API dependency {} into SharedLibraryClassLoader", dependency.asString());
-        return unit();
-    }
-
-    private static Promise<Unit> logApiAlreadyLoaded(ArtifactDependency dependency) {
-        log.debug("API dependency {} already loaded", dependency.asString());
-        return Promise.success(unit());
-    }
-
-    /**
      * Process infrastructure dependencies from [infra] section.
      * <p>
      * Infrastructure JARs are loaded into SharedLibraryClassLoader like [shared] dependencies.
@@ -119,7 +54,7 @@ public interface SharedDependencyLoader {
         var dependency = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
         return loadInfraIntoShared(dependency, sharedLibraryLoader, repository)
-                                  .flatMap(_ -> processInfraSequentially(remaining, sharedLibraryLoader, repository));
+        .flatMap(_ -> processInfraSequentially(remaining, sharedLibraryLoader, repository));
     }
 
     private static Promise<Unit> loadInfraIntoShared(ArtifactDependency dependency,
@@ -133,8 +68,7 @@ public interface SharedDependencyLoader {
     private static Promise<Unit> loadInfraArtifact(ArtifactDependency dependency,
                                                    SharedLibraryClassLoader sharedLibraryLoader,
                                                    Repository repository) {
-        return toArtifact(dependency)
-                         .async()
+        return toArtifact(dependency).async()
                          .flatMap(repository::locate)
                          .map(location -> addInfraToSharedLoader(dependency,
                                                                  sharedLibraryLoader,
@@ -184,7 +118,7 @@ public interface SharedDependencyLoader {
                                                                      URL sliceJarUrl) {
         var conflictUrls = new ArrayList<URL>();
         return processSequentially(dependencies, sharedLibraryLoader, repository, conflictUrls)
-                                  .map(_ -> createSliceClassLoader(sharedLibraryLoader, sliceJarUrl, conflictUrls));
+        .map(_ -> createSliceClassLoader(sharedLibraryLoader, sliceJarUrl, conflictUrls));
     }
 
     private static SharedDependencyResult createSliceClassLoader(SharedLibraryClassLoader sharedLibraryLoader,
@@ -207,10 +141,7 @@ public interface SharedDependencyLoader {
         var dependency = dependencies.getFirst();
         var remaining = dependencies.subList(1, dependencies.size());
         return processSingleDependency(dependency, sharedLibraryLoader, repository, conflictUrls)
-                                      .flatMap(_ -> processSequentially(remaining,
-                                                                        sharedLibraryLoader,
-                                                                        repository,
-                                                                        conflictUrls));
+        .flatMap(_ -> processSequentially(remaining, sharedLibraryLoader, repository, conflictUrls));
     }
 
     private static Promise<Unit> processSingleDependency(ArtifactDependency dependency,
@@ -254,8 +185,7 @@ public interface SharedDependencyLoader {
     private static Promise<Unit> loadIntoShared(ArtifactDependency dependency,
                                                 SharedLibraryClassLoader sharedLibraryLoader,
                                                 Repository repository) {
-        return toArtifact(dependency)
-                         .async()
+        return toArtifact(dependency).async()
                          .flatMap(repository::locate)
                          .map(location -> addToSharedLoader(dependency,
                                                             sharedLibraryLoader,
@@ -274,8 +204,7 @@ public interface SharedDependencyLoader {
     private static Promise<Unit> loadConflictIntoSlice(ArtifactDependency dependency,
                                                        Repository repository,
                                                        List<URL> conflictUrls) {
-        return toArtifact(dependency)
-                         .async()
+        return toArtifact(dependency).async()
                          .flatMap(repository::locate)
                          .map(location -> addConflictUrl(dependency,
                                                          conflictUrls,
@@ -289,8 +218,7 @@ public interface SharedDependencyLoader {
     }
 
     private static Result<Artifact> toArtifact(ArtifactDependency dependency) {
-        var versionStr = extractVersion(dependency.versionPattern())
-                                       .withQualifier();
+        var versionStr = extractVersion(dependency.versionPattern()).withQualifier();
         return Artifact.artifact(dependency.groupId() + ":" + dependency.artifactId() + ":" + versionStr);
     }
 

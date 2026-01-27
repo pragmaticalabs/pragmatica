@@ -225,7 +225,7 @@ class EndpointRegistryIT {
     @SuppressWarnings("unchecked")
     private void registerDirectEndpoint(Artifact artifact, MethodName method, int instance, String nodeId) {
         var key = new EndpointKey(artifact, method, instance);
-        var value = new EndpointValue(nodeId(nodeId));
+        var value = new EndpointValue(nodeId(nodeId).unwrap());
         var put = (KVCommand.Put<AetherKey, AetherValue>) (KVCommand.Put<?, ?>) new KVCommand.Put<>(key, value);
         registry.onValuePut(new ValuePut<>(put, Option.empty()));
     }

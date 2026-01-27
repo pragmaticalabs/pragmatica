@@ -105,8 +105,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         }
         var repoPath = path.substring(REPOSITORY_PREFIX.length());
         return parsePath(repoPath)
-                        .fold(() -> Promise.success(MavenResponse.badRequest("Cannot parse path: " + path)),
-                              parsed -> handleGetParsed(parsed));
+        .fold(() -> Promise.success(MavenResponse.badRequest("Cannot parse path: " + path)),
+              parsed -> handleGetParsed(parsed));
     }
 
     private Promise<MavenResponse> handleGetParsed(ParsedPath parsed) {
@@ -168,8 +168,8 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         }
         var repoPath = path.substring(REPOSITORY_PREFIX.length());
         return parsePath(repoPath)
-                        .fold(() -> Promise.success(MavenResponse.badRequest("Cannot parse path: " + path)),
-                              parsed -> handlePutParsed(parsed, content));
+        .fold(() -> Promise.success(MavenResponse.badRequest("Cannot parse path: " + path)),
+              parsed -> handlePutParsed(parsed, content));
     }
 
     private Promise<MavenResponse> handlePutParsed(ParsedPath parsed, byte[] content) {
@@ -195,14 +195,12 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
     private Option<ParsedPath> parsePath(String path) {
         // Check for checksum suffix
         if (path.endsWith(".md5")) {
-            return parsePath(path.substring(0,
-                                            path.length() - 4))
-                            .map(inner -> new ParsedPath.ChecksumPath(inner, "MD5"));
+            return parsePath(path.substring(0, path.length() - 4))
+            .map(inner -> new ParsedPath.ChecksumPath(inner, "MD5"));
         }
         if (path.endsWith(".sha1")) {
-            return parsePath(path.substring(0,
-                                            path.length() - 5))
-                            .map(inner -> new ParsedPath.ChecksumPath(inner, "SHA-1"));
+            return parsePath(path.substring(0, path.length() - 5))
+            .map(inner -> new ParsedPath.ChecksumPath(inner, "SHA-1"));
         }
         var parts = path.split("/");
         if (parts.length < 3) return Option.none();
@@ -298,22 +296,22 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         sb.append("<metadata>\n");
         sb.append("  <groupId>")
-          .append(groupId.id())
+          .append(escapeXml(groupId.id()))
           .append("</groupId>\n");
         sb.append("  <artifactId>")
-          .append(artifactId.id())
+          .append(escapeXml(artifactId.id()))
           .append("</artifactId>\n");
         sb.append("  <versioning>\n");
         sb.append("    <latest>")
-          .append(latest.withQualifier())
+          .append(escapeXml(latest.withQualifier()))
           .append("</latest>\n");
         sb.append("    <release>")
-          .append(release.withQualifier())
+          .append(escapeXml(release.withQualifier()))
           .append("</release>\n");
         sb.append("    <versions>\n");
         for (var v : versions) {
             sb.append("      <version>")
-              .append(v.withQualifier())
+              .append(escapeXml(v.withQualifier()))
               .append("</version>\n");
         }
         sb.append("    </versions>\n");
@@ -323,6 +321,15 @@ class MavenProtocolHandlerImpl implements MavenProtocolHandler {
         sb.append("  </versioning>\n");
         sb.append("</metadata>\n");
         return sb.toString();
+    }
+
+    private static String escapeXml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\"", "&quot;")
+                .replace("'", "&apos;");
     }
 
     private String contentTypeFor(String extension) {

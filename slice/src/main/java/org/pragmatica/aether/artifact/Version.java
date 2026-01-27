@@ -15,10 +15,20 @@ import static org.pragmatica.lang.Verify.ensure;
 public record Version(int major, int minor, int patch, String qualifier) {
     public static Result<Version> version(String versionString) {
         var parts = versionString.split("\\.");
-        if (parts.length != 3) {
+        if (parts.length < 3 || parts.length > 4) {
             return FORMAT_ERROR.apply(versionString)
                                .result();
         }
+        // Handle 4-part versions like "4.2.9.Final" (Netty style)
+        // The 4th part becomes the qualifier
+        if (parts.length == 4) {
+            return Result.all(Number.parseInt(parts[0]),
+                              Number.parseInt(parts[1]),
+                              Number.parseInt(parts[2]),
+                              Result.success(Option.option(parts[3])))
+                         .flatMap(Version::version);
+        }
+        // Standard 3-part version with optional dash qualifier
         int dashIndex = parts[2].indexOf('-');
         if (dashIndex > 0 && (dashIndex + 1) == parts[2].length()) {
             // Only dash at the end of the string
@@ -59,5 +69,5 @@ public record Version(int major, int minor, int patch, String qualifier) {
 
     private static final Pattern QUALIFIER_PATTERN = Pattern.compile("^[\\-a-zA-Z0-9-_.]*$");
 
-    private static final Fn1<Cause, String> FORMAT_ERROR = Causes.forOneValue("Invalid version format: {0}, expected {major}.{minor}.{patch}[-{suffix}]");
+    private static final Fn1<Cause, String> FORMAT_ERROR = Causes.forOneValue("Invalid version format: %s, expected {major}.{minor}.{patch}[-{suffix}]");
 }

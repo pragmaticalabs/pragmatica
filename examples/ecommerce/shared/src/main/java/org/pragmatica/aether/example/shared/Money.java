@@ -71,21 +71,18 @@ public record Money(BigDecimal amount, Currency currency) {
     }
 
     public static Result<Money> usd(String amount) {
-        return parseAmount(amount)
-                          .flatMap(Money::usd);
+        return parseAmount(amount).flatMap(Money::usd);
     }
 
     public Result<Money> add(Money other) {
-        return verifySameCurrency(other)
-                                 .map(_ -> new Money(amount.add(other.amount),
-                                                     currency));
+        return verifySameCurrency(other).map(_ -> new Money(amount.add(other.amount), currency));
     }
 
     public Result<Money> subtract(Money other) {
         return verifySameCurrency(other)
-                                 .map(_ -> new Money(amount.subtract(other.amount)
-                                                           .max(BigDecimal.ZERO),
-                                                     currency));
+        .map(_ -> new Money(amount.subtract(other.amount)
+                                  .max(BigDecimal.ZERO),
+                            currency));
     }
 
     public Money multiply(BigDecimal factor) {
@@ -106,8 +103,7 @@ public record Money(BigDecimal amount, Currency currency) {
     }
 
     public Result<Boolean> isGreaterThan(Money other) {
-        return verifySameCurrency(other)
-                                 .map(_ -> amount.compareTo(other.amount) > 0);
+        return verifySameCurrency(other).map(_ -> amount.compareTo(other.amount) > 0);
     }
 
     private Result<Money> verifySameCurrency(Money other) {

@@ -153,7 +153,7 @@ public interface OutboxService extends Slice {
     }
 
     @Override
-    default List<SliceMethod< ?, ?>> methods() {
+    default List<SliceMethod<?, ?>> methods() {
         return List.of();
     }
 }

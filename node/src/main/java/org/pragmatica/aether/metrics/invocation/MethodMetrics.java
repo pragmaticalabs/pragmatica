@@ -58,8 +58,7 @@ public final class MethodMetrics {
             failureCount.incrementAndGet();
         }
         totalDurationNs.addAndGet(durationNs);
-        histogram[bucketFor(durationNs)]
-        .incrementAndGet();
+        histogram[bucketFor(durationNs)].incrementAndGet();
     }
 
     /**

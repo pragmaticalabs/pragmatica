@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>examples</artifactId>
-        <version>0.7.5</version>
+        <version>0.8.1</version>
     </parent>
 
     <artifactId>ecommerce</artifactId>
@@ -25,6 +25,71 @@
         <module>fulfillment</module>
         <module>place-order</module>
     </modules>
+
+    <dependencies>
+        <!-- Framework dependencies - provided at runtime by Aether node -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>slice-api</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>slice-annotations</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>http-routing-adapter</artifactId>
+            <version>${project.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>utility</artifactId>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.pragmatica-lite</groupId>
+                    <artifactId>jbct-maven-plugin</artifactId>
+                    <version>${jbct.version}</version>
+                    <executions>
+                        <execution>
+                            <id>package-slices</id>
+                            <phase>package</phase>
+                            <goals>
+                                <goal>package-slices</goal>
+                                <goal>generate-blueprint</goal>
+                            </goals>
+                        </execution>
+                        <execution>
+                            <id>install-slices</id>
+                            <phase>install</phase>
+                            <goals>
+                                <goal>install-slices</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+        <plugins>
+            <plugin>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
 
     <dependencyManagement>
         <dependencies>

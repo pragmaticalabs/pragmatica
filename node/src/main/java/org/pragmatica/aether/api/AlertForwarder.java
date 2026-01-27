@@ -3,9 +3,11 @@ package org.pragmatica.aether.api;
 import org.pragmatica.aether.config.AlertConfig;
 import org.pragmatica.aether.config.AlertConfig.WebhookConfig;
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.net.URI;
@@ -13,9 +15,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
-import java.util.List;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -34,8 +33,7 @@ public class AlertForwarder {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
 
     private final WebhookConfig config;
-    private final HttpClient httpClient;
-    private final ExecutorService executor;
+    private final Option<HttpClient> httpClient;
     private final boolean enabled;
 
     private AlertForwarder(AlertConfig alertConfig) {
@@ -43,17 +41,14 @@ public class AlertForwarder {
         this.enabled = alertConfig.enabled() && config.enabled();
         if (enabled && !config.urls()
                               .isEmpty()) {
-            this.executor = Executors.newVirtualThreadPerTaskExecutor();
-            this.httpClient = HttpClient.newBuilder()
-                                        .connectTimeout(Duration.ofMillis(config.timeoutMs()))
-                                        .executor(executor)
-                                        .build();
+            this.httpClient = Option.some(HttpClient.newBuilder()
+                                                    .connectTimeout(Duration.ofMillis(config.timeoutMs()))
+                                                    .build());
             log.info("AlertForwarder initialized with {} webhook URLs",
                      config.urls()
                            .size());
         } else {
-            this.executor = null;
-            this.httpClient = null;
+            this.httpClient = Option.none();
             log.info("AlertForwarder disabled");
         }
     }
@@ -69,7 +64,7 @@ public class AlertForwarder {
      * Forward an alert to all configured webhooks.
      */
     public Promise<Unit> forward(AlertEvent event) {
-        if (!enabled || httpClient == null) {
+        if (!enabled || httpClient.isEmpty()) {
             return Promise.success(Unit.unit());
         }
         var payload = toJson(event);
@@ -89,9 +84,7 @@ public class AlertForwarder {
      */
     @MessageReceiver
     public void onSliceFailureAlert(AlertEvent.SliceFailureAlert alert) {
-        forward(alert)
-               .onFailure(cause -> log.error("Failed to forward slice failure alert: {}",
-                                             cause.message()));
+        forward(alert).onFailure(cause -> log.error("Failed to forward slice failure alert: {}", cause.message()));
     }
 
     /**
@@ -99,66 +92,50 @@ public class AlertForwarder {
      */
     @MessageReceiver
     public void onThresholdAlert(AlertEvent.ThresholdAlert alert) {
-        forward(alert)
-               .onFailure(cause -> log.error("Failed to forward threshold alert: {}",
-                                             cause.message()));
+        forward(alert).onFailure(cause -> log.error("Failed to forward threshold alert: {}", cause.message()));
     }
 
     private Promise<Unit> sendToWebhook(String url, String payload) {
-        return sendWithRetry(url, payload, 0);
+        return httpClient.fold(() -> Promise.success(Unit.unit()),
+                               client -> sendWithRetry(client, url, payload, 0));
     }
 
-    private Promise<Unit> sendWithRetry(String url, String payload, int attempt) {
-        return Promise.promise(promise -> doSend(url, payload, attempt, promise));
+    private Promise<Unit> sendWithRetry(HttpClient client, String url, String payload, int attempt) {
+        return doSend(client, url, payload)
+        .flatMap(statusCode -> handleStatusCode(client, url, payload, attempt, statusCode));
     }
 
-    private void doSend(String url, String payload, int attempt, Promise<Unit> promise) {
-        try{
-            var request = HttpRequest.newBuilder()
-                                     .uri(URI.create(url))
-                                     .timeout(Duration.ofMillis(config.timeoutMs()))
-                                     .header("Content-Type", "application/json")
-                                     .POST(HttpRequest.BodyPublishers.ofString(payload))
-                                     .build();
-            httpClient.sendAsync(request,
-                                 HttpResponse.BodyHandlers.ofString())
-                      .thenAccept(response -> handleResponse(url, payload, attempt, promise, response))
-                      .exceptionally(e -> {
-                          handleError(url, payload, attempt, promise, e);
-                          return null;
-                      });
-        } catch (Exception e) {
-            handleError(url, payload, attempt, promise, e);
-        }
+    private Promise<Integer> doSend(HttpClient client, String url, String payload) {
+        var request = HttpRequest.newBuilder()
+                                 .uri(URI.create(url))
+                                 .timeout(Duration.ofMillis(config.timeoutMs()))
+                                 .header("Content-Type", "application/json")
+                                 .POST(HttpRequest.BodyPublishers.ofString(payload))
+                                 .build();
+        return Result.lift(Causes::fromThrowable,
+                           () -> client.send(request,
+                                             HttpResponse.BodyHandlers.ofString()))
+                     .map(HttpResponse::statusCode)
+                     .async();
     }
 
-    private void handleResponse(String url,
-                                String payload,
-                                int attempt,
-                                Promise<Unit> promise,
-                                HttpResponse<String> response) {
-        if (response.statusCode() >= 200 && response.statusCode() < 300) {
+    private Promise<Unit> handleStatusCode(HttpClient client, String url, String payload, int attempt, int statusCode) {
+        if (statusCode >= 200 && statusCode < 300) {
             log.debug("Alert forwarded successfully to {}", url);
-            promise.succeed(Unit.unit());
-        } else {
-            log.warn("Webhook {} returned status {}", url, response.statusCode());
-            retryOrFail(url, payload, attempt, promise, "HTTP " + response.statusCode());
+            return Promise.success(Unit.unit());
         }
+        log.warn("Webhook {} returned status {}", url, statusCode);
+        return retryOrFail(client, url, payload, attempt, "HTTP " + statusCode);
     }
 
-    private void handleError(String url, String payload, int attempt, Promise<Unit> promise, Throwable e) {
-        log.warn("Error sending to webhook {}: {}", url, e.getMessage());
-        retryOrFail(url, payload, attempt, promise, e.getMessage());
-    }
-
-    private void retryOrFail(String url, String payload, int attempt, Promise<Unit> promise, String error) {
+    private Promise<Unit> retryOrFail(HttpClient client, String url, String payload, int attempt, String error) {
         if (attempt < config.retryCount()) {
             log.debug("Retrying webhook {} (attempt {}/{})", url, attempt + 1, config.retryCount());
-            doSend(url, payload, attempt + 1, promise);
-        } else {
-            log.error("Failed to send to webhook {} after {} attempts: {}", url, config.retryCount(), error);
-            promise.fail(AlertForwarderError.WebhookError.webhookError(url, error));
+            return sendWithRetry(client, url, payload, attempt + 1);
         }
+        log.error("Failed to send to webhook {} after {} attempts: {}", url, config.retryCount(), error);
+        return AlertForwarderError.WebhookError.webhookError(url, error)
+                                  .promise();
     }
 
     private String toJson(AlertEvent event) {
@@ -174,76 +151,80 @@ public class AlertForwarder {
           .append(event.severity())
           .append("\",");
         switch (event) {
-            case AlertEvent.SliceFailureAlert sfa -> {
-                sb.append("\"type\":\"SLICE_ALL_INSTANCES_FAILED\",");
-                sb.append("\"artifact\":\"")
-                  .append(sfa.artifact()
-                             .asString())
-                  .append("\",");
-                sb.append("\"method\":\"")
-                  .append(sfa.method()
-                             .name())
-                  .append("\",");
-                sb.append("\"requestId\":\"")
-                  .append(sfa.requestId())
-                  .append("\",");
-                sb.append("\"attemptedNodes\":[");
-                boolean first = true;
-                for (var nodeId : sfa.attemptedNodes()) {
-                    if (!first) sb.append(",");
-                    sb.append("\"")
-                      .append(nodeId.id())
-                      .append("\"");
-                    first = false;
-                }
-                sb.append("],");
-                sb.append("\"lastError\":\"")
-                  .append(escapeJson(sfa.lastError()))
-                  .append("\"");
-            }
-            case AlertEvent.ThresholdAlert ta -> {
-                sb.append("\"type\":\"THRESHOLD_EXCEEDED\",");
-                sb.append("\"metric\":\"")
-                  .append(ta.metric())
-                  .append("\",");
-                sb.append("\"nodeId\":\"")
-                  .append(ta.nodeId()
-                            .id())
-                  .append("\",");
-                sb.append("\"value\":")
-                  .append(ta.value())
-                  .append(",");
-                sb.append("\"threshold\":")
-                  .append(ta.threshold());
-            }
-            case AlertEvent.AlertResolved ar -> {
-                sb.append("\"type\":\"ALERT_RESOLVED\",");
-                sb.append("\"resolvedBy\":\"")
-                  .append(escapeJson(ar.resolvedBy()))
-                  .append("\"");
-            }
+            case AlertEvent.SliceFailureAlert sfa -> appendSliceFailureFields(sb, sfa);
+            case AlertEvent.ThresholdAlert ta -> appendThresholdFields(sb, ta);
+            case AlertEvent.AlertResolved ar -> appendResolvedFields(sb, ar);
         }
         sb.append("}");
         return sb.toString();
     }
 
+    private void appendSliceFailureFields(StringBuilder sb, AlertEvent.SliceFailureAlert sfa) {
+        sb.append("\"type\":\"SLICE_ALL_INSTANCES_FAILED\",");
+        sb.append("\"artifact\":\"")
+          .append(sfa.artifact()
+                     .asString())
+          .append("\",");
+        sb.append("\"method\":\"")
+          .append(sfa.method()
+                     .name())
+          .append("\",");
+        sb.append("\"requestId\":\"")
+          .append(sfa.requestId())
+          .append("\",");
+        sb.append("\"attemptedNodes\":[");
+        var first = true;
+        for (var nodeId : sfa.attemptedNodes()) {
+            if (!first) sb.append(",");
+            sb.append("\"")
+              .append(nodeId.id())
+              .append("\"");
+            first = false;
+        }
+        sb.append("],");
+        sb.append("\"lastError\":\"")
+          .append(escapeJson(sfa.lastError()))
+          .append("\"");
+    }
+
+    private void appendThresholdFields(StringBuilder sb, AlertEvent.ThresholdAlert ta) {
+        sb.append("\"type\":\"THRESHOLD_EXCEEDED\",");
+        sb.append("\"metric\":\"")
+          .append(ta.metric())
+          .append("\",");
+        sb.append("\"nodeId\":\"")
+          .append(ta.nodeId()
+                    .id())
+          .append("\",");
+        sb.append("\"value\":")
+          .append(ta.value())
+          .append(",");
+        sb.append("\"threshold\":")
+          .append(ta.threshold());
+    }
+
+    private void appendResolvedFields(StringBuilder sb, AlertEvent.AlertResolved ar) {
+        sb.append("\"type\":\"ALERT_RESOLVED\",");
+        sb.append("\"resolvedBy\":\"")
+          .append(escapeJson(ar.resolvedBy()))
+          .append("\"");
+    }
+
     private String escapeJson(String s) {
-        if (s == null) return "";
-        return s.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t");
+        return Option.option(s)
+                     .map(str -> str.replace("\\", "\\\\")
+                                    .replace("\"", "\\\"")
+                                    .replace("\n", "\\n")
+                                    .replace("\r", "\\r")
+                                    .replace("\t", "\\t"))
+                     .or("");
     }
 
     /**
      * Shutdown the forwarder.
      */
     public void shutdown() {
-        if (executor != null) {
-            executor.shutdown();
-            log.info("AlertForwarder shutdown");
-        }
+        log.info("AlertForwarder shutdown");
     }
 
     /**

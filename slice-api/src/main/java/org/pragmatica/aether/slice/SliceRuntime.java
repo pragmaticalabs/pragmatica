@@ -11,9 +11,19 @@ import org.pragmatica.lang.Result;
  * <p>
  * Usage in slice:
  * <pre>{@code
- * SliceRuntime.getSliceInvoker()
- *     .async()
- *     .flatMap(invoker -> invoker.invoke(targetSlice, method, request, ResponseType.class));
+ * // Create handle once (e.g., in factory or field initialization)
+ * var handle = SliceRuntime.getSliceInvoker()
+ *     .flatMap(invoker -> invoker.methodHandle(
+ *         "org.example:target-slice:1.0.0",
+ *         "processRequest",
+ *         TypeToken.of(Request.class),
+ *         TypeToken.of(Response.class)))
+ *     .unwrap();
+ *
+ * // Use handle for invocations
+ * handle.invoke(request)
+ *     .onSuccess(response -> ...)
+ *     .onFailure(cause -> ...);
  * }</pre>
  * <p>
  * This approach allows slices to remain records (immutable) while still

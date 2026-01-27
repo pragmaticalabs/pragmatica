@@ -31,8 +31,8 @@ class LeaderManagerTest {
     }
 
     // Use deterministic IDs to ensure predictable ordering (a < b < c)
-    private final NodeId self = NodeId.nodeId("node-b");
-    private final List<NodeId> nodes = List.of(NodeId.nodeId("node-a"), self, NodeId.nodeId("node-c"));
+    private final NodeId self = NodeId.nodeId("node-b").unwrap();
+    private final List<NodeId> nodes = List.of(NodeId.nodeId("node-a").unwrap(), self, NodeId.nodeId("node-c").unwrap());
 
     private final MessageRouter.MutableRouter router = MessageRouter.mutable();
     private final Watcher<LeaderNotification> watcher = new Watcher<>(new ArrayList<>());
@@ -66,7 +66,7 @@ class LeaderManagerTest {
         var expected = simulateClusterStart();
 
         // Use deterministic ID that sorts after existing nodes (a < b < c < d)
-        sendNodeAdded(nodeId("node-d"));
+        sendNodeAdded(nodeId("node-d").unwrap());
         sendNodeRemoved(nodes.getLast());
 
         // When quorum disappears, we should see disappearance of the leader

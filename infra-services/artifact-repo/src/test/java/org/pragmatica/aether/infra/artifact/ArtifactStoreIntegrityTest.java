@@ -158,7 +158,7 @@ class ArtifactStoreIntegrityTest {
 
             @Override
             public Partition partitionFor(byte[] key) {
-                return Partition.partitionUnsafe(Math.abs(new String(key, StandardCharsets.UTF_8).hashCode()) % 1024);
+                return Partition.partition(Math.abs(new String(key, StandardCharsets.UTF_8).hashCode()) % 1024).unwrap();
             }
         };
     }

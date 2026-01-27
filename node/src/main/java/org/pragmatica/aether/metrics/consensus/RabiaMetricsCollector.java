@@ -52,6 +52,9 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
     public void recordVoteRound2(NodeId nodeId, Phase phase, StateValue stateValue) {}
 
     @Override
+    public void recordFastPath(NodeId nodeId, Phase phase, StateValue value) {}
+
+    @Override
     public void recordSyncAttempt(NodeId nodeId, boolean success) {
         if (success) {
             syncSuccessCount.incrementAndGet();

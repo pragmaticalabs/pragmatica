@@ -95,8 +95,7 @@ final class InMemoryRateLimiter implements RateLimiter {
         private RateLimitResult createDeniedResult(RateLimitConfig config, long now) {
             var windowEnd = windowStart + windowNanos;
             var retryNanos = Math.max(0, windowEnd - now);
-            return RateLimitResult.denied(timeSpan(retryNanos)
-                                                  .nanos());
+            return RateLimitResult.denied(timeSpan(retryNanos).nanos());
         }
     }
 }

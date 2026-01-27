@@ -36,9 +36,9 @@ ENV JAVA_OPTS="-Xmx512m -XX:+UseZGC -XX:+ZGenerational"
 # 8080 - Management API (REST, WebSocket dashboard)
 EXPOSE 8090 8080
 
-# Health check using /health endpoint
+# Health check using /api/health endpoint
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/health || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${MANAGEMENT_PORT}/api/health || exit 1
 
 # Switch to non-root user
 USER aether

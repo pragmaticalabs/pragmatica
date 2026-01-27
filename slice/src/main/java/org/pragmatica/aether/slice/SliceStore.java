@@ -15,13 +15,17 @@ public interface SliceStore {
      * @param registry            Registry for tracking loaded slices
      * @param repositories        Repositories to search for slice JARs
      * @param sharedLibraryLoader ClassLoader for shared dependencies across slices
+     * @param invokerFacade       Facade for inter-slice invocation (used by generated factories)
+     * @param config              Configuration for slice lifecycle timeouts
      *
      * @return SliceStore implementation
      */
     static SliceStore sliceStore(SliceRegistry registry,
                                  List<Repository> repositories,
-                                 SharedLibraryClassLoader sharedLibraryLoader) {
-        return SliceStoreImpl.sliceStore(registry, repositories, sharedLibraryLoader);
+                                 SharedLibraryClassLoader sharedLibraryLoader,
+                                 SliceInvokerFacade invokerFacade,
+                                 SliceActionConfig config) {
+        return SliceStoreImpl.sliceStore(registry, repositories, sharedLibraryLoader, invokerFacade, config);
     }
 
     interface LoadedSlice {

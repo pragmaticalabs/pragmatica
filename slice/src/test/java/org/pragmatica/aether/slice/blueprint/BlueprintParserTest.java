@@ -24,24 +24,24 @@ class BlueprintParserTest {
         @Test
         void parse_succeeds_withCompleteValidDsl() {
             var dsl = """
-                    id = "my-app:1.0.0"
+                    id = "org.example:my-app:1.0.0"
 
-                    [slices.user_service]
+                    [[slices]]
                     artifact = "org.example:user-service:1.0.0"
                     instances = 2
 
-                    [slices.order_service]
+                    [[slices]]
                     artifact = "org.example:order-service:1.0.0"
                     instances = 3
 
-                    [slices.payment_service]
+                    [[slices]]
                     artifact = "org.example:payment-service:1.0.0"
                     """;
 
             BlueprintParser.parse(dsl)
                            .onFailureRun(Assertions::fail)
                            .onSuccess(blueprint -> {
-                               assertThat(blueprint.id().asString()).isEqualTo("my-app:1.0.0");
+                               assertThat(blueprint.id().asString()).isEqualTo("org.example:my-app:1.0.0");
                                assertThat(blueprint.slices()).hasSize(3);
 
                                // Find slices by artifact (order is not guaranteed in TOML)
@@ -65,16 +65,16 @@ class BlueprintParserTest {
         @Test
         void parse_succeeds_withMinimalDsl() {
             var dsl = """
-                    id = "minimal:1.0.0"
+                    id = "org.example:minimal:1.0.0"
 
-                    [slices.service]
+                    [[slices]]
                     artifact = "org.example:service:1.0.0"
                     """;
 
             BlueprintParser.parse(dsl)
                            .onFailureRun(Assertions::fail)
                            .onSuccess(blueprint -> {
-                               assertThat(blueprint.id().asString()).isEqualTo("minimal:1.0.0");
+                               assertThat(blueprint.id().asString()).isEqualTo("org.example:minimal:1.0.0");
                                assertThat(blueprint.slices()).hasSize(1);
                            });
         }
@@ -83,15 +83,15 @@ class BlueprintParserTest {
         void parse_succeeds_withCommentsAndBlankLines() {
             var dsl = """
                     # Application blueprint
-                    id = "with-comments:1.0.0"
+                    id = "org.example:with-comments:1.0.0"
 
                     # First service
-                    [slices.service_a]
+                    [[slices]]
                     artifact = "org.example:service-a:1.0.0"
                     instances = 2  # Two instances
 
                     # Second service
-                    [slices.service_b]
+                    [[slices]]
                     artifact = "org.example:service-b:1.0.0"
                     """;
 
@@ -115,13 +115,13 @@ class BlueprintParserTest {
         @Test
         void parse_succeeds_withQualifiedVersions() {
             var dsl = """
-                    id = "qualified:1.0.0"
+                    id = "org.example:qualified:1.0.0"
 
-                    [slices.service]
+                    [[slices]]
                     artifact = "org.example:service:1.0.0-SNAPSHOT"
                     instances = 2
 
-                    [slices.other]
+                    [[slices]]
                     artifact = "org.example:other:2.0.0-alpha1"
                     """;
 
@@ -149,9 +149,9 @@ class BlueprintParserTest {
             var tempFile = Files.createTempFile("blueprint", ".toml");
             try {
                 var dsl = """
-                        id = "from-file:1.0.0"
+                        id = "org.example:from-file:1.0.0"
 
-                        [slices.service]
+                        [[slices]]
                         artifact = "org.example:service:1.0.0"
                         """;
                 Files.writeString(tempFile, dsl);
@@ -159,7 +159,7 @@ class BlueprintParserTest {
                 BlueprintParser.parseFile(tempFile)
                                .onFailureRun(Assertions::fail)
                                .onSuccess(blueprint -> {
-                                   assertThat(blueprint.id().asString()).isEqualTo("from-file:1.0.0");
+                                   assertThat(blueprint.id().asString()).isEqualTo("org.example:from-file:1.0.0");
                                    assertThat(blueprint.slices()).hasSize(1);
                                });
             } finally {
@@ -170,9 +170,9 @@ class BlueprintParserTest {
         @Test
         void parse_ignoresUnknownSections() {
             var dsl = """
-                    id = "with-unknown:1.0.0"
+                    id = "org.example:with-unknown:1.0.0"
 
-                    [slices.service]
+                    [[slices]]
                     artifact = "org.example:service:1.0.0"
 
                     [metadata]
@@ -183,7 +183,7 @@ class BlueprintParserTest {
             BlueprintParser.parse(dsl)
                            .onFailureRun(Assertions::fail)
                            .onSuccess(blueprint -> {
-                               assertThat(blueprint.id().asString()).isEqualTo("with-unknown:1.0.0");
+                               assertThat(blueprint.id().asString()).isEqualTo("org.example:with-unknown:1.0.0");
                                assertThat(blueprint.slices()).hasSize(1);
                                // Metadata section is ignored
                            });
@@ -192,7 +192,7 @@ class BlueprintParserTest {
         @Test
         void parse_fails_withNoSlices() {
             var dsl = """
-                    id = "empty:1.0.0"
+                    id = "org.example:empty:1.0.0"
                     """;
 
             BlueprintParser.parse(dsl)
@@ -207,7 +207,7 @@ class BlueprintParserTest {
         @Test
         void parse_fails_whenMissingId() {
             var dsl = """
-                    [slices.service]
+                    [[slices]]
                     artifact = "org.example:service:1.0.0"
                     """;
 
@@ -223,7 +223,7 @@ class BlueprintParserTest {
             var dsl = """
                     id = "INVALID_ID"
 
-                    [slices.service]
+                    [[slices]]
                     artifact = "org.example:service:1.0.0"
                     """;
 
@@ -237,9 +237,9 @@ class BlueprintParserTest {
         @Test
         void parse_fails_whenMissingArtifact() {
             var dsl = """
-                    id = "test:1.0.0"
+                    id = "org.example:test:1.0.0"
 
-                    [slices.service]
+                    [[slices]]
                     instances = 2
                     """;
 
@@ -253,9 +253,9 @@ class BlueprintParserTest {
         @Test
         void parse_fails_whenInvalidArtifactFormat() {
             var dsl = """
-                    id = "test:1.0.0"
+                    id = "org.example:test:1.0.0"
 
-                    [slices.service]
+                    [[slices]]
                     artifact = "not-a-valid-artifact"
                     """;
 
@@ -269,9 +269,9 @@ class BlueprintParserTest {
         @Test
         void parse_fails_whenInvalidInstanceCount() {
             var dsl = """
-                    id = "test:1.0.0"
+                    id = "org.example:test:1.0.0"
 
-                    [slices.service]
+                    [[slices]]
                     artifact = "org.example:service:1.0.0"
                     instances = -1
                     """;

@@ -35,10 +35,7 @@ public record FlagConfig(boolean defaultValue, Option<Integer> percentage, Map<S
      * @return Result containing configuration or error
      */
     public static Result<FlagConfig> flagConfig(boolean enabled, int percentage) {
-        return ensure(percentage, p -> p >= 0 && p <= 100)
-                     .map(p -> new FlagConfig(enabled,
-                                              some(p),
-                                              Map.of()));
+        return ensure(percentage, p -> p >= 0 && p <= 100).map(p -> new FlagConfig(enabled, some(p), Map.of()));
     }
 
     /**
@@ -62,8 +59,6 @@ public record FlagConfig(boolean defaultValue, Option<Integer> percentage, Map<S
      */
     public static Result<FlagConfig> flagConfig(boolean enabled, int percentage, Map<String, Boolean> overrides) {
         return ensure(percentage, p -> p >= 0 && p <= 100)
-                     .map(p -> new FlagConfig(enabled,
-                                              some(p),
-                                              Map.copyOf(overrides)));
+        .map(p -> new FlagConfig(enabled, some(p), Map.copyOf(overrides)));
     }
 }

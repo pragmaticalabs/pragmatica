@@ -50,13 +50,26 @@ class VersionTest {
                .onSuccessRun(Assertions::fail)
                .onFailure(cause -> assertThat(cause.message()).contains("Invalid version format"));
 
-        Version.version("1.2.3.4")
-               .onSuccessRun(Assertions::fail)
-               .onFailure(cause -> assertThat(cause.message()).contains("Invalid version format"));
-
         Version.version("")
                .onSuccessRun(Assertions::fail)
                .onFailure(cause -> assertThat(cause.message()).contains("Invalid version format"));
+
+        Version.version("1.2.3.4.5")
+               .onSuccessRun(Assertions::fail)
+               .onFailure(cause -> assertThat(cause.message()).contains("Invalid version format"));
+    }
+
+    @Test
+    void version_parsing_accepts_four_part_version() {
+        // Netty-style 4-part versions like "4.2.9.Final"
+        Version.version("1.2.3.4")
+               .onFailureRun(Assertions::fail)
+               .onSuccess(version -> {
+                   assertThat(version.major()).isEqualTo(1);
+                   assertThat(version.minor()).isEqualTo(2);
+                   assertThat(version.patch()).isEqualTo(3);
+                   assertThat(version.qualifier()).isEqualTo("4");
+               });
     }
 
     @Test

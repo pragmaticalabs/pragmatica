@@ -6,11 +6,11 @@ import org.pragmatica.aether.demo.order.domain.OrderRepository.StoredOrder;
 import org.pragmatica.aether.demo.order.domain.OrderStatus;
 import org.pragmatica.aether.demo.order.inventory.InventoryServiceSlice.ReleaseStockRequest;
 import org.pragmatica.aether.demo.order.inventory.InventoryServiceSlice.StockReleased;
+import org.pragmatica.aether.slice.MethodHandle;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceMethod;
-import org.pragmatica.aether.slice.SliceRuntime;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -31,7 +31,7 @@ import java.util.Set;
  * 4. Update order status to CANCELLED
  * 5. Return cancellation confirmation
  */
-public record CancelOrderSlice() implements Slice {
+public record CancelOrderSlice(MethodHandle<StockReleased, ReleaseStockRequest> releaseStockHandle) implements Slice {
     // === Request ===
     public record CancelOrderRequest(String orderId, String reason) {}
 
@@ -81,22 +81,21 @@ public record CancelOrderSlice() implements Slice {
                                                                         OrderStatus.PROCESSING);
 
     // === Factory ===
-    public static CancelOrderSlice cancelOrderSlice() {
-        return new CancelOrderSlice();
+    public static Result<CancelOrderSlice> cancelOrderSlice(SliceInvokerFacade invoker) {
+        return invoker.methodHandle(INVENTORY,
+                                    "releaseStock",
+                                    new TypeToken<ReleaseStockRequest>() {},
+                                    new TypeToken<StockReleased>() {})
+                      .map(CancelOrderSlice::new);
     }
 
     private OrderRepository repository() {
         return OrderRepository.instance();
     }
 
-    private Promise<SliceInvokerFacade> invoker() {
-        return SliceRuntime.getSliceInvoker()
-                           .async();
-    }
-
     // === Slice Implementation ===
     @Override
-    public List<SliceMethod< ?, ?>> methods() {
+    public List<SliceMethod<?, ?>> methods() {
         return List.of(new SliceMethod<>(MethodName.methodName("cancelOrder")
                                                    .expect("Invalid method name: cancelOrder"),
                                          this::execute,
@@ -113,9 +112,8 @@ public record CancelOrderSlice() implements Slice {
     }
 
     private Promise<OrderWithContext> findAndValidateOrder(ValidCancelOrderRequest validRequest) {
-        return repository()
-                         .findById(validRequest.orderId()
-                                               .value())
+        return repository().findById(validRequest.orderId()
+                                                 .value())
                          .toResult(orderNotFound(validRequest))
                          .async()
                          .flatMap(order -> validateCancellable(order, validRequest));
@@ -146,11 +144,7 @@ public record CancelOrderSlice() implements Slice {
     }
 
     private Promise<StockReleased> releaseStock(String reservationId) {
-        return invoker()
-                      .flatMap(inv -> inv.invoke(INVENTORY,
-                                                 "releaseStock",
-                                                 new ReleaseStockRequest(reservationId),
-                                                 StockReleased.class));
+        return releaseStockHandle.invoke(new ReleaseStockRequest(reservationId));
     }
 
     private Promise<OrderWithReleases> validateReleases(List<Result<StockReleased>> results, OrderWithContext context) {
@@ -163,11 +157,10 @@ public record CancelOrderSlice() implements Slice {
     }
 
     private CancelOrderResponse updateAndConfirm(OrderWithReleases context) {
-        repository()
-                  .updateStatus(context.request()
-                                       .orderId()
-                                       .value(),
-                                OrderStatus.CANCELLED);
+        repository().updateStatus(context.request()
+                                         .orderId()
+                                         .value(),
+                                  OrderStatus.CANCELLED);
         return new CancelOrderResponse(context.request()
                                               .orderId(),
                                        OrderStatus.CANCELLED,

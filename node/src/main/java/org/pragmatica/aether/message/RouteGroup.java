@@ -31,7 +31,7 @@ import java.util.function.Consumer;
  * @param name Short descriptive name for this route group (for logging/debugging)
  * @param entries Accumulated route entries
  */
-public record RouteGroup(String name, List<MessageRouter.Entry< ?>> entries) {
+public record RouteGroup(String name, List<MessageRouter.Entry<?>> entries) {
     /**
      * Factory method to create a new route group builder.
      *
@@ -47,7 +47,7 @@ public record RouteGroup(String name, List<MessageRouter.Entry< ?>> entries) {
      */
     public static final class Builder {
         private final String name;
-        private final List<MessageRouter.Entry< ? >> entries = new ArrayList<>();
+        private final List<MessageRouter.Entry<?>> entries = new ArrayList<>();
 
         private Builder(String name) {
             this.name = name;
@@ -92,7 +92,7 @@ public record RouteGroup(String name, List<MessageRouter.Entry< ?>> entries) {
          * @param entry Pre-built route entry
          * @return This builder for chaining
          */
-        public Builder entry(MessageRouter.Entry< ?> entry) {
+        public Builder entry(MessageRouter.Entry<?> entry) {
             entries.add(entry);
             return this;
         }
@@ -123,7 +123,7 @@ public record RouteGroup(String name, List<MessageRouter.Entry< ?>> entries) {
      *
      * @return List of all route entries
      */
-    public List<MessageRouter.Entry< ?>> toList() {
+    public List<MessageRouter.Entry<?>> toList() {
         return entries;
     }
 }

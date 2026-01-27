@@ -202,10 +202,9 @@ public interface PricingService {
             @Override
             public Promise<PriceBreakdown> calculatePrice(CalculatePriceRequest request) {
                 var linePrices = calculateLinePrices(request.items());
-                return calculateSubtotal(linePrices)
-                                        .map(subtotal -> PriceBreakdown.builder()
-                                                                       .linePrices(linePrices)
-                                                                       .subtotal(subtotal))
+                return calculateSubtotal(linePrices).map(subtotal -> PriceBreakdown.builder()
+                                                                                   .linePrices(linePrices)
+                                                                                   .subtotal(subtotal))
                                         .flatMap(PriceBreakdown.Builder::build)
                                         .async();
             }

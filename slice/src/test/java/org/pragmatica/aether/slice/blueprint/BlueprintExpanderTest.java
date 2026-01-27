@@ -21,7 +21,7 @@ class BlueprintExpanderTest {
 
     @BeforeEach
     void setup() {
-        var blueprintId = BlueprintId.blueprintId("test-blueprint:1.0.0").unwrap();
+        var blueprintId = BlueprintId.blueprintId("org.example:test-blueprint:1.0.0").unwrap();
         var sliceA = SliceSpec.sliceSpec(
                 Artifact.artifact("org.example:slice-a:1.0.0").unwrap(),
                 3
@@ -53,7 +53,7 @@ class BlueprintExpanderTest {
 
         @Test
         void expand_succeeds_withMultipleSlicesNoDependencies() {
-            var blueprintId = BlueprintId.blueprintId("multi-slice:1.0.0").unwrap();
+            var blueprintId = BlueprintId.blueprintId("org.example:multi-slice:1.0.0").unwrap();
             var sliceA = SliceSpec.sliceSpec(
                     Artifact.artifact("org.example:slice-a:1.0.0").unwrap(),
                     2
@@ -151,7 +151,7 @@ class BlueprintExpanderTest {
 
         @Test
         void expand_succeeds_withSharedDependency() {
-            var blueprintId = BlueprintId.blueprintId("shared-dep:1.0.0").unwrap();
+            var blueprintId = BlueprintId.blueprintId("org.example:shared-dep:1.0.0").unwrap();
             var sliceA = SliceSpec.sliceSpec(
                     Artifact.artifact("org.example:slice-a:1.0.0").unwrap()
                                             ).unwrap();
@@ -194,7 +194,7 @@ class BlueprintExpanderTest {
 
         @Test
         void expand_preservesExplicitInstanceCounts() {
-            var blueprintId = BlueprintId.blueprintId("explicit-counts:1.0.0").unwrap();
+            var blueprintId = BlueprintId.blueprintId("org.example:explicit-counts:1.0.0").unwrap();
             var sliceA = SliceSpec.sliceSpec(
                     Artifact.artifact("org.example:slice-a:1.0.0").unwrap(),
                     5

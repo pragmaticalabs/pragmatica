@@ -32,24 +32,21 @@ public final class EntryPointMetrics {
      * Record a successful invocation.
      */
     public void recordSuccess(String entryPoint, long latencyNanos) {
-        getOrCreate(entryPoint)
-                   .recordSuccess(latencyNanos);
+        getOrCreate(entryPoint).recordSuccess(latencyNanos);
     }
 
     /**
      * Record a failed invocation.
      */
     public void recordFailure(String entryPoint, long latencyNanos) {
-        getOrCreate(entryPoint)
-                   .recordFailure(latencyNanos);
+        getOrCreate(entryPoint).recordFailure(latencyNanos);
     }
 
     /**
      * Set the current rate for an entry point.
      */
     public void setRate(String entryPoint, int callsPerSecond) {
-        getOrCreate(entryPoint).currentRate
-                   .set(callsPerSecond);
+        getOrCreate(entryPoint).currentRate.set(callsPerSecond);
     }
 
     /**

@@ -123,8 +123,7 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
                                               int instances,
                                               HealthThresholds thresholds,
                                               CleanupPolicy cleanupPolicy) {
-        return requireLeader()
-                            .flatMap(_ -> checkNoActiveUpdate(artifactBase))
+        return requireLeader().flatMap(_ -> checkNoActiveUpdate(artifactBase))
                             .flatMap(_ -> findCurrentVersion(artifactBase))
                             .flatMap(oldVersion -> createAndDeployUpdate(artifactBase,
                                                                          oldVersion,
@@ -135,8 +134,7 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
     }
 
     private Promise<Unit> checkNoActiveUpdate(ArtifactBase artifactBase) {
-        return getActiveUpdate(artifactBase)
-                              .isPresent()
+        return getActiveUpdate(artifactBase).isPresent()
                ? new RollingUpdateError.UpdateAlreadyExists(artifactBase).promise()
                : Promise.success(Unit.unit());
     }
@@ -158,14 +156,12 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
                                                  cleanupPolicy);
         log.info("Starting rolling update {} for {} from {} to {}", updateId, artifactBase, oldVersion, newVersion);
         updates.put(updateId, update);
-        return persistAndTransition(update, RollingUpdateState.DEPLOYING)
-                                   .flatMap(u -> deployNewVersion(u, instances));
+        return persistAndTransition(update, RollingUpdateState.DEPLOYING).flatMap(u -> deployNewVersion(u, instances));
     }
 
     @Override
     public Promise<RollingUpdate> adjustRouting(String updateId, VersionRouting newRouting) {
-        return requireLeader()
-                            .flatMap(_ -> findUpdate(updateId))
+        return requireLeader().flatMap(_ -> findUpdate(updateId))
                             .flatMap(update -> validateRoutingAdjustment(update, newRouting));
     }
 
@@ -190,8 +186,7 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
             return transitionToRouting(withRouting);
         }
         updates.put(update.updateId(), withRouting);
-        return persistRouting(withRouting)
-                             .map(_ -> withRouting);
+        return persistRouting(withRouting).map(_ -> withRouting);
     }
 
     private Promise<RollingUpdate> transitionToRouting(RollingUpdate update) {
@@ -202,14 +197,12 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
 
     private Promise<RollingUpdate> cacheAndPersistRouting(RollingUpdate transitioned) {
         updates.put(transitioned.updateId(), transitioned);
-        return persistRouting(transitioned)
-                             .map(_ -> transitioned);
+        return persistRouting(transitioned).map(_ -> transitioned);
     }
 
     @Override
     public Promise<RollingUpdate> completeUpdate(String updateId) {
-        return requireLeader()
-                            .flatMap(_ -> findUpdate(updateId))
+        return requireLeader().flatMap(_ -> findUpdate(updateId))
                             .flatMap(this::validateAndComplete);
     }
 
@@ -219,14 +212,12 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
             return new RollingUpdateError.InvalidStateTransition(update.state(), RollingUpdateState.COMPLETING).promise();
         }
         log.info("Completing rolling update {}", update.updateId());
-        return persistAndTransition(update, RollingUpdateState.COMPLETING)
-                                   .flatMap(this::cleanupOldVersion);
+        return persistAndTransition(update, RollingUpdateState.COMPLETING).flatMap(this::cleanupOldVersion);
     }
 
     @Override
     public Promise<RollingUpdate> rollback(String updateId) {
-        return requireLeader()
-                            .flatMap(_ -> findUpdate(updateId))
+        return requireLeader().flatMap(_ -> findUpdate(updateId))
                             .flatMap(this::validateAndRollback);
     }
 
@@ -235,8 +226,7 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
             return new RollingUpdateError.InvalidStateTransition(update.state(), RollingUpdateState.ROLLING_BACK).promise();
         }
         log.info("Rolling back update {}", update.updateId());
-        return persistAndTransition(update, RollingUpdateState.ROLLING_BACK)
-                                   .flatMap(this::removeNewVersion);
+        return persistAndTransition(update, RollingUpdateState.ROLLING_BACK).flatMap(this::removeNewVersion);
     }
 
     @Override
@@ -374,7 +364,7 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
                                                                    .name(),
                                                        transitioned.createdAt(),
                                                        System.currentTimeMillis());
-        var command = (KVCommand<AetherKey>)(KVCommand< ? >) new KVCommand.Put<>(key, value);
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
         return clusterNode.<Unit> apply(List.of(command))
                           .timeout(KV_OPERATION_TIMEOUT)
                           .map(_ -> transitioned);
@@ -390,7 +380,7 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
                                                         update.routing()
                                                               .oldWeight(),
                                                         System.currentTimeMillis());
-        var command = (KVCommand<AetherKey>)(KVCommand< ? >) new KVCommand.Put<>(key, value);
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
         return clusterNode.<Unit> apply(List.of(command))
                           .timeout(KV_OPERATION_TIMEOUT)
                           .map(_ -> update);
@@ -402,7 +392,7 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
                                 .withVersion(update.newVersion());
         var key = new AetherKey.BlueprintKey(newArtifact);
         var value = new AetherValue.BlueprintValue(instances);
-        var command = (KVCommand<AetherKey>)(KVCommand< ? >) new KVCommand.Put<>(key, value);
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
         log.info("Deploying {} instances of {}", instances, newArtifact);
         return clusterNode.<Unit> apply(List.of(command))
                           .timeout(KV_OPERATION_TIMEOUT)
@@ -421,8 +411,7 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
         log.info("Manual cleanup policy - old version {} kept for manual removal",
                  update.artifactBase()
                        .withVersion(update.oldVersion()));
-        return removeRoutingKey(update)
-                               .flatMap(_ -> persistAndTransition(update, RollingUpdateState.COMPLETED));
+        return removeRoutingKey(update).flatMap(_ -> persistAndTransition(update, RollingUpdateState.COMPLETED));
     }
 
     private Promise<RollingUpdate> cleanupAutomaticPolicy(RollingUpdate update) {
@@ -431,8 +420,7 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
         var oldArtifact = update.artifactBase()
                                 .withVersion(update.oldVersion());
         log.info("Removing old version {}", oldArtifact);
-        return removeBlueprintKey(oldArtifact)
-                                 .flatMap(_ -> removeRoutingKey(update))
+        return removeBlueprintKey(oldArtifact).flatMap(_ -> removeRoutingKey(update))
                                  .flatMap(_ -> persistAndTransition(update, RollingUpdateState.COMPLETED));
     }
 
@@ -440,15 +428,14 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
         var newArtifact = update.artifactBase()
                                 .withVersion(update.newVersion());
         log.info("Removing new version {} during rollback", newArtifact);
-        return removeBlueprintKey(newArtifact)
-                                 .flatMap(_ -> removeRoutingKey(update))
+        return removeBlueprintKey(newArtifact).flatMap(_ -> removeRoutingKey(update))
                                  .flatMap(_ -> persistAndTransition(update, RollingUpdateState.ROLLED_BACK));
     }
 
     @SuppressWarnings("unchecked")
     private Promise<Unit> removeBlueprintKey(org.pragmatica.aether.artifact.Artifact artifact) {
         var key = new AetherKey.BlueprintKey(artifact);
-        var command = (KVCommand<AetherKey>)(KVCommand< ? >) new KVCommand.Remove<>(key);
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
         return clusterNode.<Unit> apply(List.of(command))
                           .timeout(KV_OPERATION_TIMEOUT)
                           .mapToUnit();
@@ -457,7 +444,7 @@ public final class RollingUpdateManagerImpl implements RollingUpdateManager {
     @SuppressWarnings("unchecked")
     private Promise<Unit> removeRoutingKey(RollingUpdate update) {
         var routingKey = new AetherKey.VersionRoutingKey(update.artifactBase());
-        var routingCmd = (KVCommand<AetherKey>)(KVCommand< ? >) new KVCommand.Remove<>(routingKey);
+        var routingCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(routingKey);
         return clusterNode.<Unit> apply(List.of(routingCmd))
                           .timeout(KV_OPERATION_TIMEOUT)
                           .mapToUnit();
