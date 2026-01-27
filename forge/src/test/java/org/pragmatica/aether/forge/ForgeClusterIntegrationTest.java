@@ -2,7 +2,6 @@ package org.pragmatica.aether.forge;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInfo;
 import org.pragmatica.aether.slice.SliceState;
@@ -80,7 +79,6 @@ class ForgeClusterIntegrationTest {
     }
 
     @Test
-    @Disabled("Requires examples/ecommerce slices installed: mvn install -pl examples/ecommerce")
     void blueprintDeployment_deploysSlices_andReachesActiveState() throws IOException {
         cluster.start()
                .await()
