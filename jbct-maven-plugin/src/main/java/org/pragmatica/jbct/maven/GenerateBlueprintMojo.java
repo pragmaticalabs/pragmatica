@@ -127,8 +127,19 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                 continue;
             }
             var depArtifact = dep.artifact() + ":" + dep.version();
+            // Skip if already in graph (includes local slices and previously resolved deps)
             if (graph.containsKey(depArtifact)) {
                 continue;
+            }
+            // Skip UNRESOLVED local dependencies - they're already in graph with correct version
+            if ("UNRESOLVED".equals(dep.version())) {
+                var artifactWithoutVersion = dep.artifact();
+                var isLocal = graph.keySet()
+                                   .stream()
+                                   .anyMatch(key -> key.startsWith(artifactWithoutVersion + ":"));
+                if (isLocal) {
+                    continue;
+                }
             }
             loadManifestFromDependency(dep.artifact(),
                                        dep.version()).onPresent(depManifest -> {
