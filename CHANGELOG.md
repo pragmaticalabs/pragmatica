@@ -5,6 +5,10 @@
 ### Added
 - Init: groupId validation for `jbct init -g` parameter (validates Java package name format)
 
+### Changed
+- Slice init: added tinylog dependencies (2.7.0) in test scope
+- Slice init: added tinylog.properties configuration file in test resources
+
 ### Fixed
 - RFC-0004 compliance: removed non-standard slice-api.properties generation
 - RFC-0004 compliance: slice manifests now include `slice.interface` property
@@ -20,6 +24,7 @@
 - FactoryClassGenerator: infrastructure deps (CacheService, etc.) now use InfraStore.instance().get()
 - FactoryClassGenerator: only slice dependencies are proxied via SliceInvokerFacade
 - FactoryClassGenerator: reduced flatMap chain depth (e.g., 13→3 for UrlShortener with mixed deps)
+- PackageSlicesMojo: bytecode transformation replaces UNRESOLVED versions with actual versions (strips semver prefix ^/~)
 
 ### Changed
 - Build: bump Aether to 0.8.1

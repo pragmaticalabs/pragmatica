@@ -5,11 +5,18 @@ import org.pragmatica.jbct.slice.SliceManifest;
 import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.lang.classfile.ClassFile;
+import java.lang.classfile.ClassModel;
+import java.lang.classfile.CodeModel;
+import java.lang.classfile.MethodModel;
+import java.lang.classfile.instruction.ConstantInstruction;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
@@ -257,16 +264,19 @@ public class PackageSlicesMojo extends AbstractMojo {
         try{
             var archiver = new JarArchiver();
             archiver.setDestFile(jarFile);
-            // Add impl classes (includes request/response types)
+            // Generate dependency file content
+            var depsContent = generateDependencyFile(manifest, classification);
+            // Build version map from dependency file for bytecode transformation
+            var versionMap = buildVersionMap(depsContent);
+            // Add impl classes (includes request/response types) with bytecode transformation
             for (var className : manifest.allImplClasses()) {
-                addClassFiles(archiver, className);
+                addClassFiles(archiver, className, versionMap);
             }
             // Add application shared code
             addSharedCode(archiver, manifest);
             // Bundle external libs into fat JAR
             bundleExternalLibs(archiver, classification.externalDeps());
-            // Generate and add dependency file
-            var depsContent = generateDependencyFile(manifest, classification);
+            // Add dependency file
             addDependencyFile(archiver, manifest, depsContent);
             var mavenArchiver = new MavenArchiver();
             mavenArchiver.setArchiver(archiver);
@@ -425,14 +435,131 @@ public class PackageSlicesMojo extends AbstractMojo {
         archiver.addFile(tempFile.toFile(), "META-INF/dependencies/" + factoryClassName);
     }
 
-    private void addClassFiles(JarArchiver archiver, String className) {
+    /**
+     * Builds artifact → version mapping from dependency file.
+     * Maps "groupId:artifactId" → "1.0.0" (strips semver range prefix)
+     */
+    private Map<String, String> buildVersionMap(String depsContent) {
+        var map = new HashMap<String, String>();
+        if (depsContent == null || depsContent.isEmpty()) {
+            return map;
+        }
+        var lines = depsContent.split("\n");
+        boolean inSlicesSection = false;
+        for (var line : lines) {
+            var trimmed = line.trim();
+            if (trimmed.equals("[slices]")) {
+                inSlicesSection = true;
+                continue;
+            }
+            if (trimmed.startsWith("[")) {
+                inSlicesSection = false;
+            }
+            if (inSlicesSection && !trimmed.isEmpty() && !trimmed.startsWith("#")) {
+                // Parse: org.example:artifact-name:^1.0.0
+                var parts = trimmed.split(":");
+                if (parts.length == 3) {
+                    var artifact = parts[0] + ":" + parts[1];
+                    var version = stripSemverPrefix(parts[2]);
+                    map.put(artifact, version);
+                }
+            }
+        }
+        return map;
+    }
+
+    /**
+     * Strip semver range prefix (^, ~) to get actual version.
+     * ^1.0.0 → 1.0.0, ~2.1.0 → 2.1.0, 1.0.0 → 1.0.0
+     */
+    private String stripSemverPrefix(String version) {
+        if (version.startsWith("^") || version.startsWith("~")) {
+            return version.substring(1);
+        }
+        return version;
+    }
+
+    /**
+     * Transforms factory .class file to replace UNRESOLVED version strings in constant pool.
+     * Uses JEP 484 Class-File API for bytecode manipulation.
+     */
+    private byte[] transformFactoryBytecode(File classFile, Map<String, String> versionMap)
+    throws IOException {
+        var originalBytes = Files.readAllBytes(classFile.toPath());
+        // Skip transformation if version map is empty
+        if (versionMap.isEmpty()) {
+            return originalBytes;
+        }
+        var cf = ClassFile.of();
+        var classModel = cf.parse(originalBytes);
+        return cf.transformClass(classModel,
+                                 (classBuilder, classElement) -> {
+                                     if (classElement instanceof MethodModel methodModel) {
+                                         classBuilder.transformMethod(methodModel,
+                                                                      (methodBuilder, methodElement) -> {
+                                                                          if (methodElement instanceof CodeModel codeModel) {
+                                                                              methodBuilder.transformCode(codeModel,
+                                                                                                          (codeBuilder, codeElement) -> {
+                                                                                                              // Match LoadConstantInstruction (ldc) loading string constants
+        if (codeElement instanceof ConstantInstruction.LoadConstantInstruction ldc &&
+        ldc.constantValue() instanceof String str) {
+                                                                                                                  // Check if this is an UNRESOLVED artifact string
+        if (str.contains(":UNRESOLVED")) {
+                                                                                                                      // Extract artifact without version: "groupId:artifactId:UNRESOLVED"
+        var lastColonIdx = str.lastIndexOf(":UNRESOLVED");
+                                                                                                                      if (lastColonIdx > 0) {
+                                                                                                                          var artifact = str.substring(0,
+                                                                                                                                                       lastColonIdx);
+                                                                                                                          var version = versionMap.get(artifact);
+                                                                                                                          if (version != null) {
+                                                                                                                              // Replace with resolved version
+        codeBuilder.loadConstant(artifact + ":" + version);
+                                                                                                                              getLog().debug("Transformed: " + str
+                                                                                                                                             + " → " + artifact
+                                                                                                                                             + ":" + version);
+                                                                                                                              return;
+                                                                                                                          }
+                                                                                                                      }
+                                                                                                                  }
+                                                                                                              }
+                                                                                                              // Keep original instruction if no match
+        codeBuilder.with(codeElement);
+                                                                                                          });
+                                                                          } else {
+                                                                              methodBuilder.with(methodElement);
+                                                                          }
+                                                                      });
+                                     } else {
+                                         classBuilder.with(classElement);
+                                     }
+                                 });
+    }
+
+    private void addClassFiles(JarArchiver archiver, String className, Map<String, String> versionMap)
+    throws MojoExecutionException {
         var classesPath = classesDirectory.toPath();
         var paths = SliceManifest.classToPathsWithInner(className, classesPath);
-        for (var relativePath : paths) {
-            var classFile = new File(classesDirectory, relativePath);
-            if (classFile.exists()) {
-                archiver.addFile(classFile, relativePath);
+        try{
+            for (var relativePath : paths) {
+                var classFile = new File(classesDirectory, relativePath);
+                if (classFile.exists()) {
+                    // Transform factory classes with UNRESOLVED versions
+                    if (className.endsWith("Factory") && !versionMap.isEmpty() &&
+                    relativePath.equals(className.replace('.', '/') + ".class")) {
+                        var transformedBytes = transformFactoryBytecode(classFile, versionMap);
+                        // Write transformed bytecode to temp file for archiving
+                        var tempClass = Files.createTempFile("factory-", ".class");
+                        Files.write(tempClass, transformedBytes);
+                        archiver.addFile(tempClass.toFile(), relativePath);
+                        getLog().info("Transformed bytecode: " + className);
+                    } else {
+                        // Add non-factory classes and inner classes as-is
+                        archiver.addFile(classFile, relativePath);
+                    }
+                }
             }
+        } catch (IOException e) {
+            throw new MojoExecutionException("Failed to transform factory bytecode", e);
         }
     }
 

@@ -118,10 +118,12 @@ public final class SliceProjectInitializer {
         try{
             var srcMainJava = projectDir.resolve("src/main/java");
             var srcTestJava = projectDir.resolve("src/test/java");
+            var srcTestResources = projectDir.resolve("src/test/resources");
             var metaInfDeps = projectDir.resolve("src/main/resources/META-INF/dependencies");
             var slicesDir = projectDir.resolve("src/main/resources/slices");
             Files.createDirectories(srcMainJava);
             Files.createDirectories(srcTestJava);
+            Files.createDirectories(srcTestResources);
             Files.createDirectories(metaInfDeps);
             Files.createDirectories(slicesDir);
             var packagePath = basePackage.replace(".", "/");
@@ -138,6 +140,7 @@ public final class SliceProjectInitializer {
         // Fork-Join: Create all independent file groups in parallel
         return Result.allOf(createProjectFiles(),
                             createSourceFiles(),
+                            createTestResources(),
                             createDeployScripts(),
                             createSliceConfigFiles())
                      .flatMap(fileLists -> createDependencyManifest()
@@ -183,6 +186,11 @@ public final class SliceProjectInitializer {
                             createFile("SliceTest.java.template",
                                        srcTestJava.resolve(packagePath)
                                                   .resolve(sliceName + "Test.java")));
+    }
+
+    private Result<List<Path>> createTestResources() {
+        var srcTestResources = projectDir.resolve("src/test/resources");
+        return createFile("tinylog.properties.template", srcTestResources.resolve("tinylog.properties")).map(path -> List.of(path));
     }
 
     private Result<List<Path>> createDeployScripts() {
@@ -253,6 +261,7 @@ public final class SliceProjectInitializer {
             case "CLAUDE.md" -> CLAUDE_MD_TEMPLATE;
             case "Slice.java.template" -> SLICE_INTERFACE_TEMPLATE;
             case "SliceTest.java.template" -> SLICE_TEST_TEMPLATE;
+            case "tinylog.properties.template" -> TINYLOG_PROPERTIES_TEMPLATE;
             case "deploy-forge.sh.template" -> DEPLOY_FORGE_TEMPLATE;
             case "deploy-test.sh.template" -> DEPLOY_TEST_TEMPLATE;
             case "deploy-prod.sh.template" -> DEPLOY_PROD_TEMPLATE;
@@ -377,6 +386,18 @@ public final class SliceProjectInitializer {
                     <groupId>org.assertj</groupId>
                     <artifactId>assertj-core</artifactId>
                     <version>3.26.3</version>
+                    <scope>test</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.tinylog</groupId>
+                    <artifactId>tinylog-api</artifactId>
+                    <version>2.7.0</version>
+                    <scope>test</scope>
+                </dependency>
+                <dependency>
+                    <groupId>org.tinylog</groupId>
+                    <artifactId>tinylog-impl</artifactId>
+                    <version>2.7.0</version>
                     <scope>test</scope>
                 </dependency>
             </dependencies>
@@ -734,6 +755,30 @@ public final class SliceProjectInitializer {
             echo "ERROR: Blueprint generation failed"
             exit 1
         fi
+        """;
+
+    private static final String TINYLOG_PROPERTIES_TEMPLATE = """
+        # Tinylog configuration for test logging
+        # Documentation: https://tinylog.org/v2/configuration/
+
+        # Global logging level (trace, debug, info, warn, error)
+        level = info
+
+        # Writer configuration - output to console with colored output
+        writer        = console
+        writer.format = {date: HH:mm:ss.SSS} [{thread}] {class}.{method}() {level}: {message}
+        writer.stream = out
+
+        # Package-specific logging levels
+        # Uncomment and adjust as needed:
+        # level@{{basePackage}} = debug
+
+        # Show SQL queries (if using JDBC):
+        # level@org.pragmatica.jdbc = debug
+
+        # Reduce noise from libraries:
+        # level@org.apache.http = warn
+        # level@io.netty = warn
         """;
 
     public Path projectDir() {
