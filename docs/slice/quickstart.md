@@ -4,7 +4,7 @@ Create and deploy a slice in 5 minutes.
 
 ## Prerequisites
 
-- Java 21+
+- Java 25+
 - Maven 3.8+
 - JBCT CLI installed (`jbct --version` should work)
 
@@ -16,44 +16,63 @@ cd greeting-service
 ```
 
 This creates a complete slice project with:
-- `@Slice` interface with factory method
-- Implementation class
-- Request/response records
+- `@Slice` interface with nested records and factory method
+- Nested implementation record
+- Request/Response/ValidationError records (all nested)
 - Slice config (`src/main/resources/slices/GreetingService.toml`)
 - Unit test
 - Deploy scripts
 
 ## Step 2: Explore the Generated Code
 
-**GreetingService.java** - The slice interface:
+**GreetingService.java** - The complete slice (single file):
 ```java
 @Slice
 public interface GreetingService {
-    Promise<GreetingResponse> greet(GreetingRequest request);
+    /**
+     * Request record.
+     */
+    record Request(String value) {
+        public static Result<Request> request(String value) {
+            if (value == null || value.isBlank()) {
+                return Result.failure(ValidationError.emptyValue());
+            }
+            return Result.success(new Request(value));
+        }
+    }
+
+    /**
+     * Response record.
+     */
+    record Response(String result) {}
+
+    /**
+     * Validation error.
+     */
+    sealed interface ValidationError extends Cause {
+        record EmptyValue() implements ValidationError {
+            @Override
+            public String message() {
+                return "Value cannot be empty";
+            }
+        }
+
+        static ValidationError emptyValue() {
+            return new EmptyValue();
+        }
+    }
+
+    Promise<Response> process(Request request);
 
     static GreetingService greetingService() {
-        return new GreetingServiceImpl();
-    }
-}
-```
-
-**GreetingRequest.java** - Input record:
-```java
-public record GreetingRequest(String name) {}
-```
-
-**GreetingResponse.java** - Output record:
-```java
-public record GreetingResponse(String message) {}
-```
-
-**GreetingServiceImpl.java** - Implementation:
-```java
-public class GreetingServiceImpl implements GreetingService {
-    @Override
-    public Promise<GreetingResponse> greet(GreetingRequest request) {
-        var message = "Hello, " + request.name() + "!";
-        return Promise.successful(new GreetingResponse(message));
+        record greetingService() implements GreetingService {
+            @Override
+            public Promise<Response> process(Request request) {
+                var response = new Response("Processed: " + request.value());
+                return Promise.success(response);
+            }
+        }
+        return new greetingService();
     }
 }
 ```
