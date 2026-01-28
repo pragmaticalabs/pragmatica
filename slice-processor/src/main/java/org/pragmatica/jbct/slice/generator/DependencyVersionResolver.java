@@ -79,13 +79,17 @@ public class DependencyVersionResolver {
         if (interfacePackage == null || interfacePackage.isEmpty()) {
             return dependency.withResolved("unknown:unknown", "UNRESOLVED");
         }
-        // Check if this is a local dependency (same package as current slice)
-        if (currentSlicePackage != null && interfacePackage.equals(currentSlicePackage)) {
-            // Local dependency - use base artifact + slice name in kebab-case
-            var sliceName = dependency.interfaceSimpleName();
-            var kebabName = toKebabCase(sliceName);
-            var artifact = baseGroupId + ":" + baseArtifactId + "-" + kebabName;
-            return dependency.withResolved(artifact, "UNRESOLVED");
+        // Check if this is a same-module dependency (shares base package)
+        if (baseGroupId != null && baseArtifactId != null) {
+            // Compute base package: groupId + artifactId (with dashes removed)
+            var basePackage = baseGroupId + "." + baseArtifactId.replace("-", "");
+            if (interfacePackage.startsWith(basePackage + ".")) {
+                // Same-module dependency - use base artifact + slice name in kebab-case
+                var sliceName = dependency.interfaceSimpleName();
+                var kebabName = toKebabCase(sliceName);
+                var artifact = baseGroupId + ":" + baseArtifactId + "-" + kebabName;
+                return dependency.withResolved(artifact, "UNRESOLVED");
+            }
         }
         // External dependency - derive from package: org.example.inventory.api -> org.example:inventory
         var pkg = interfacePackage;
