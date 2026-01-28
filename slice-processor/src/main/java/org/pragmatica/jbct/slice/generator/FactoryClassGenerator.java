@@ -126,14 +126,6 @@ public class FactoryClassGenerator {
         out.println("import org.pragmatica.lang.Promise;");
         out.println("import org.pragmatica.lang.Unit;");
         out.println("import org.pragmatica.lang.type.TypeToken;");
-        // Import InfraStore and related types if we have infrastructure dependencies
-        if (allDeps.stream()
-                   .anyMatch(DependencyModel::isInfrastructure)) {
-            out.println("import org.pragmatica.aether.infra.InfraStore;");
-            out.println("import org.pragmatica.aether.infra.VersionedInstance;");
-            out.println("import org.pragmatica.lang.utils.Causes;");
-            out.println("import org.pragmatica.lang.Option;");
-        }
         // Aspect-related imports
         if (model.hasAspects()) {
             out.println("import org.pragmatica.aether.slice.SliceRuntime;");
@@ -701,32 +693,15 @@ public class FactoryClassGenerator {
 
     private String generateInfraStoreCall(DependencyModel infra) {
         var interfaceName = infra.interfaceSimpleName();
-        var artifactId = inferInfraArtifactId(infra);
-        var errorMsg = escapeJavaString(interfaceName + " not available in InfraStore");
-        return "InfraStore.instance()\n"
-               + "                           .flatMap(store -> store.get(\"org.pragmatica.aether.infra:" + artifactId
-               + "\", " + interfaceName + ".class)\n"
-               + "                                                       .stream()\n"
-               + "                                                       .findFirst()\n"
-               + "                                                       .map(vi -> Option.some(vi.instance()))\n"
-               + "                                                       .orElse(Option.none()))\n"
-               + "                           .toResult(Causes.cause(\"" + errorMsg + "\"))\n"
-               + "                           .async()";
+        var factoryMethodName = toFactoryMethodName(interfaceName);
+        return "Promise.success(" + interfaceName + "." + factoryMethodName + "())";
     }
 
-    private String inferInfraArtifactId(DependencyModel infra) {
-        // Extract artifact ID from package name
-        // org.pragmatica.aether.infra.cache.CacheService -> "cache"
-        // org.pragmatica.aether.infra.database.DatabaseService -> "database"
-        var pkg = infra.interfacePackage();
-        var parts = pkg.split("\\.");
-        if (parts.length >= 5 && parts[3].equals("infra")) {
-            return parts[4];
+    private String toFactoryMethodName(String className) {
+        if (className == null || className.isEmpty()) {
+            return className;
         }
-        // Fallback: lowercase interface name without "Service"
-        return infra.interfaceSimpleName()
-                    .replace("Service", "")
-                    .toLowerCase();
+        return Character.toLowerCase(className.charAt(0)) + className.substring(1);
     }
 
     private void generateDependencyInstantiation(PrintWriter out,
