@@ -43,7 +43,7 @@ import org.codehaus.plexus.archiver.jar.JarArchiver;
  defaultPhase = LifecyclePhase.PACKAGE,
  requiresDependencyResolution = ResolutionScope.COMPILE)
 public class PackageSlicesMojo extends AbstractMojo {
-    private static final String SLICE_API_PROPERTIES = "META-INF/slice-api.properties";
+    private static final String SLICE_MANIFEST_DIR = "META-INF/slice/";
 
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
@@ -145,25 +145,49 @@ public class PackageSlicesMojo extends AbstractMojo {
     }
 
     private boolean isSliceDependency(Artifact artifact) {
-        return readSliceManifest(artifact) != null;
+        var file = artifact.getFile();
+        if (file == null || !file.exists() || !file.getName()
+                                                   .endsWith(".jar")) {
+            return false;
+        }
+        try (var jar = new JarFile(file)) {
+            var entries = jar.entries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                if (entry.getName()
+                         .startsWith(SLICE_MANIFEST_DIR) && entry.getName()
+                                                                  .endsWith(".manifest")) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (IOException e) {
+            getLog().debug("Could not read JAR: " + file + " - " + e.getMessage());
+            return false;
+        }
     }
 
-    private java.util.Properties readSliceManifest(Artifact artifact) {
+    private java.util.Properties readFirstSliceManifest(Artifact artifact) {
         var file = artifact.getFile();
         if (file == null || !file.exists() || !file.getName()
                                                    .endsWith(".jar")) {
             return null;
         }
         try (var jar = new JarFile(file)) {
-            var entry = jar.getEntry(SLICE_API_PROPERTIES);
-            if (entry == null) {
-                return null;
+            var entries = jar.entries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                if (entry.getName()
+                         .startsWith(SLICE_MANIFEST_DIR) && entry.getName()
+                                                                  .endsWith(".manifest")) {
+                    var props = new java.util.Properties();
+                    try (var stream = jar.getInputStream(entry)) {
+                        props.load(stream);
+                    }
+                    return props;
+                }
             }
-            var props = new java.util.Properties();
-            try (var stream = jar.getInputStream(entry)) {
-                props.load(stream);
-            }
-            return props;
+            return null;
         } catch (IOException e) {
             getLog().debug("Could not read JAR: " + file + " - " + e.getMessage());
             return null;
@@ -176,12 +200,13 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private ArtifactInfo toSliceArtifactInfo(Artifact artifact) {
         // Read slice artifact from manifest (has correct naming: groupId:artifactId-sliceName)
-        var props = readSliceManifest(artifact);
+        var props = readFirstSliceManifest(artifact);
         if (props != null) {
-            var sliceArtifact = props.getProperty("slice.artifact");
-            if (sliceArtifact != null && sliceArtifact.contains(":")) {
-                var parts = sliceArtifact.split(":");
-                return new ArtifactInfo(parts[0], parts[1], toSemverRange(artifact.getVersion()));
+            var sliceArtifactId = props.getProperty("slice.artifactId");
+            var baseArtifact = props.getProperty("base.artifact");
+            if (sliceArtifactId != null && baseArtifact != null && baseArtifact.contains(":")) {
+                var groupId = baseArtifact.split(":")[0];
+                return new ArtifactInfo(groupId, sliceArtifactId, toSemverRange(artifact.getVersion()));
             }
         }
         // Fallback to Maven artifact

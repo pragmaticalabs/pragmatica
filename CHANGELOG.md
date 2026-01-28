@@ -5,6 +5,15 @@
 ### Added
 - Init: groupId validation for `jbct init -g` parameter (validates Java package name format)
 
+### Fixed
+- RFC-0004 compliance: removed non-standard slice-api.properties generation
+- RFC-0004 compliance: slice manifests now include `slice.interface` property
+- RFC-0004 compliance: renamed `impl.artifactId` to `slice.artifactId` in manifests
+- CollectSliceDepsMojo: now scans META-INF/slice/*.manifest instead of slice-api.properties
+- VerifySliceMojo: validates manifest files instead of slice-api.properties
+- PackageSlicesMojo: reads slice metadata from .manifest files
+- SliceProjectValidator: checks for .manifest files instead of slice-api.properties
+
 ### Changed
 - Build: bump Aether to 0.8.1
 - CI: re-enabled slice-processor-tests module

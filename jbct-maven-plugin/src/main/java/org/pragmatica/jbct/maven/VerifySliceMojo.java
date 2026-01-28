@@ -66,12 +66,12 @@ public class VerifySliceMojo extends AbstractMojo {
 
     private ValidationResult validateSlice() {
         var manifestResult = checkManifestEntries();
-        var propsResult = checkSliceApiProperties();
+        var sliceManifestResult = checkSliceManifests();
         var scopeResult = checkRuntimeDependencyScopes();
         var sliceScopeResult = checkSliceDependencyScopes();
         var errors = new ArrayList<String>();
         var warnings = new ArrayList<String>();
-        Stream.of(manifestResult, propsResult, scopeResult, sliceScopeResult)
+        Stream.of(manifestResult, sliceManifestResult, scopeResult, sliceScopeResult)
               .forEach(partial -> {
                   errors.addAll(partial.errors());
                   warnings.addAll(partial.warnings());
@@ -102,23 +102,29 @@ public class VerifySliceMojo extends AbstractMojo {
         }
     }
 
-    private PartialResult checkSliceApiProperties() {
-        var propsFile = new File(project.getBuild()
-                                        .getOutputDirectory(),
-                                 "META-INF/slice-api.properties");
-        if (!propsFile.exists()) {
-            return PartialResult.error("slice-api.properties not found. " + "Ensure annotation processor is configured.");
+    private PartialResult checkSliceManifests() {
+        var sliceDir = new File(project.getBuild()
+                                       .getOutputDirectory(),
+                                "META-INF/slice");
+        if (!sliceDir.exists() || !sliceDir.isDirectory()) {
+            return PartialResult.error("META-INF/slice/ directory not found. " + "Ensure annotation processor is configured.");
         }
-        try (var input = new FileInputStream(propsFile)) {
-            var props = new Properties();
-            props.load(input);
-            var errors = new ArrayList<String>();
-            checkRequired(props, "slice.artifact", errors);
-            checkRequired(props, "impl.interface", errors);
-            return PartialResult.partialResult(errors, List.of());
-        } catch (IOException e) {
-            return PartialResult.error("Failed to read slice-api.properties: " + e.getMessage());
+        var manifestFiles = sliceDir.listFiles((dir, name) -> name.endsWith(".manifest"));
+        if (manifestFiles == null || manifestFiles.length == 0) {
+            return PartialResult.error("No .manifest files found in META-INF/slice/");
         }
+        var errors = new ArrayList<String>();
+        for (var manifestFile : manifestFiles) {
+            try (var input = new FileInputStream(manifestFile)) {
+                var props = new Properties();
+                props.load(input);
+                checkRequired(props, "slice.interface", errors);
+                checkRequired(props, "slice.artifactId", errors);
+            } catch (IOException e) {
+                errors.add("Failed to read " + manifestFile.getName() + ": " + e.getMessage());
+            }
+        }
+        return PartialResult.partialResult(errors, List.of());
     }
 
     /**
@@ -178,7 +184,16 @@ public class VerifySliceMojo extends AbstractMojo {
 
     private boolean isSliceArtifact(File jarFile) {
         try (var jar = new JarFile(jarFile)) {
-            return jar.getEntry("META-INF/slice-api.properties") != null;
+            var entries = jar.entries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                if (entry.getName()
+                         .startsWith("META-INF/slice/") && entry.getName()
+                                                                  .endsWith(".manifest")) {
+                    return true;
+                }
+            }
+            return false;
         } catch (IOException e) {
             getLog().debug("Could not read JAR: " + jarFile + " - " + e.getMessage());
             return false;
@@ -187,7 +202,7 @@ public class VerifySliceMojo extends AbstractMojo {
 
     private void checkRequired(Properties props, String key, List<String> errors) {
         if (props.getProperty(key) == null) {
-            errors.add("Missing required property '" + key + "' in slice-api.properties");
+            errors.add("Missing required property '" + key + "' in slice manifest");
         }
     }
 

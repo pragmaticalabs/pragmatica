@@ -32,7 +32,7 @@ public final class SliceProjectValidator {
      * @return Validation result
      */
     public ValidationResult validate() {
-        return combinePartialResults(checkPomFile(), checkSliceApiProperties(), checkManifestEntries());
+        return combinePartialResults(checkPomFile(), checkSliceManifests(), checkManifestEntries());
     }
 
     private ValidationResult combinePartialResults(PartialResult... partials) {
@@ -66,32 +66,43 @@ public final class SliceProjectValidator {
         return PartialResult.partialResult(List.of(), warnings);
     }
 
-    private PartialResult checkSliceApiProperties() {
+    private PartialResult checkSliceManifests() {
         var targetDir = projectDir.resolve("target/classes");
         if (!Files.exists(targetDir)) {
             return PartialResult.warning("target/classes not found - run 'mvn compile' first");
         }
-        var propsFile = targetDir.resolve("META-INF/slice-api.properties");
-        if (!Files.exists(propsFile)) {
-            return PartialResult.error("slice-api.properties not found - ensure annotation processor is configured");
+        var sliceDir = targetDir.resolve("META-INF/slice");
+        if (!Files.exists(sliceDir)) {
+            return PartialResult.error("META-INF/slice/ directory not found - ensure annotation processor is configured");
         }
-        return loadProperties(propsFile)
-        .fold(cause -> PartialResult.error("Failed to read slice-api.properties: " + cause.message()),
-              this::checkRequiredProperties);
-    }
-
-    private PartialResult checkRequiredProperties(Properties props) {
-        var errors = new ArrayList<String>();
-        checkRequired(props, "api.artifact", errors);
-        checkRequired(props, "slice.artifact", errors);
-        checkRequired(props, "api.interface", errors);
-        checkRequired(props, "impl.interface", errors);
-        return PartialResult.partialResult(errors, List.of());
+        try (var files = Files.list(sliceDir)) {
+            var manifestFiles = files.filter(p -> p.toString()
+                                                   .endsWith(".manifest"))
+                                     .toList();
+            if (manifestFiles.isEmpty()) {
+                return PartialResult.error("No .manifest files found in META-INF/slice/");
+            }
+            var errors = new ArrayList<String>();
+            for (var manifestFile : manifestFiles) {
+                loadProperties(manifestFile)
+                .fold(cause -> {
+                    errors.add("Failed to read " + manifestFile.getFileName() + ": " + cause.message());
+                    return null;
+                }, props -> {
+                    checkRequired(props, "slice.interface", errors);
+                    checkRequired(props, "slice.artifactId", errors);
+                    return null;
+                });
+            }
+            return PartialResult.partialResult(errors, List.of());
+        } catch (Exception e) {
+            return PartialResult.error("Failed to scan META-INF/slice/: " + e.getMessage());
+        }
     }
 
     private void checkRequired(Properties props, String key, List<String> errors) {
         if (props.getProperty(key) == null) {
-            errors.add("Missing required property '" + key + "' in slice-api.properties");
+            errors.add("Missing required property '" + key + "' in slice manifest");
         }
     }
 

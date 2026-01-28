@@ -1341,7 +1341,7 @@ class SliceProcessorTest {
     }
 
     @Test
-    void should_generate_slice_api_properties_with_correct_artifact_naming() throws Exception {
+    void should_generate_slice_manifest_with_correct_property_names() throws Exception {
         var source = JavaFileObjects.forSourceString("test.OrderService",
                                                      """
             package test;
@@ -1370,20 +1370,20 @@ class SliceProcessorTest {
 
         assertCompilation(compilation).succeeded();
 
-        // Verify slice-api.properties was generated with correct artifact naming
-        var propsFile = compilation.generatedFile(
+        // Verify slice manifest was generated with RFC-0004 compliant properties
+        var manifestFile = compilation.generatedFile(
                 javax.tools.StandardLocation.CLASS_OUTPUT,
                 "",
-                "META-INF/slice-api.properties");
+                "META-INF/slice/OrderService.manifest");
 
-        assertThat(propsFile.isPresent()).isTrue();
+        assertThat(manifestFile.isPresent()).isTrue();
 
-        var propsContent = propsFile.orElseThrow()
-                                    .getCharContent(false)
-                                    .toString();
+        var manifestContent = manifestFile.orElseThrow()
+                                          .getCharContent(false)
+                                          .toString();
 
-        // Slice artifact should use naming convention: {moduleArtifactId}-{sliceName}
-        // e.g., orders-order-service (not just "orders")
-        assertThat(propsContent).contains("slice.artifact=org.example\\:orders-order-service");
+        // Verify RFC-0004 compliant properties
+        assertThat(manifestContent).contains("slice.interface=test.OrderService");
+        assertThat(manifestContent).contains("slice.artifactId=orders-order-service");
     }
 }

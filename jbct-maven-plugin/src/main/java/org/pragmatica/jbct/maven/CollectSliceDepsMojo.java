@@ -18,24 +18,24 @@ import org.apache.maven.project.MavenProject;
  * Scans compile dependencies for slice manifests and writes interface-to-artifact mappings.
  * This allows the annotation processor to resolve slice dependency versions.
  *
- * <p>For each dependency JAR containing META-INF/slice-api.properties, extracts:
+ * <p>For each dependency JAR containing META-INF/slice/*.manifest files, extracts:
  * <ul>
- *   <li>api.interface - the slice API interface fully qualified name</li>
- *   <li>slice.artifact - the slice artifact coordinates (groupId:artifactId)</li>
+ *   <li>slice.interface - the slice interface fully qualified name</li>
+ *   <li>slice.artifactId - the slice artifact ID</li>
  * </ul>
  *
  * <p>Writes mappings to slice-deps.properties in format:
  * <pre>
  * # Key: interface qualified name
  * # Value: groupId:artifactId:version
- * org.example.api.InventoryService=org.example:inventory:1.0.0
+ * org.example.api.InventoryService=org.example:inventory-service:1.0.0
  * </pre>
  */
 @Mojo(name = "collect-slice-deps",
  defaultPhase = LifecyclePhase.GENERATE_SOURCES,
  requiresDependencyResolution = ResolutionScope.COMPILE)
 public class CollectSliceDepsMojo extends AbstractMojo {
-    private static final String MANIFEST_PATH = "META-INF/slice-api.properties";
+    private static final String MANIFEST_DIR = "META-INF/slice/";
 
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     private MavenProject project;
@@ -71,31 +71,37 @@ public class CollectSliceDepsMojo extends AbstractMojo {
 
     private void extractSliceManifest(File jarFile, String version, Properties mappings) throws IOException {
         try (var jar = new JarFile(jarFile)) {
-            var entry = jar.getEntry(MANIFEST_PATH);
-            if (entry == null) {
-                return;
-            }
-            var props = new Properties();
-            try (var stream = jar.getInputStream(entry)) {
-                props.load(stream);
-            }
-            var apiInterface = props.getProperty("api.interface");
-            var implInterface = props.getProperty("impl.interface");
-            var sliceArtifact = props.getProperty("slice.artifact");
-            if (sliceArtifact == null) {
-                getLog().warn("Incomplete slice manifest in " + jarFile.getName() + ": missing slice.artifact");
-                return;
-            }
-            // Value: groupId:artifactId:version
-            var value = sliceArtifact + ":" + version;
-            // Map both API and impl interfaces to support both usage patterns
-            if (apiInterface != null) {
-                mappings.setProperty(apiInterface, value);
-                getLog().debug("Found slice API: " + apiInterface + " -> " + value);
-            }
-            if (implInterface != null) {
-                mappings.setProperty(implInterface, value);
-                getLog().debug("Found slice impl: " + implInterface + " -> " + value);
+            var entries = jar.entries();
+            while (entries.hasMoreElements()) {
+                var entry = entries.nextElement();
+                var entryName = entry.getName();
+                if (!entryName.startsWith(MANIFEST_DIR) || !entryName.endsWith(".manifest")) {
+                    continue;
+                }
+                var props = new Properties();
+                try (var stream = jar.getInputStream(entry)) {
+                    props.load(stream);
+                }
+                var sliceInterface = props.getProperty("slice.interface");
+                var sliceArtifactId = props.getProperty("slice.artifactId");
+                if (sliceInterface == null || sliceArtifactId == null) {
+                    getLog().warn("Incomplete slice manifest in " + jarFile.getName() + " (" + entryName
+                                  + "): missing slice.interface or slice.artifactId");
+                    continue;
+                }
+                // Extract groupId from base.artifact (groupId:baseArtifactId)
+                var baseArtifact = props.getProperty("base.artifact");
+                String groupId;
+                if (baseArtifact != null && baseArtifact.contains(":")) {
+                    groupId = baseArtifact.split(":")[0];
+                } else {
+                    getLog().warn("Missing or invalid base.artifact in " + jarFile.getName() + " (" + entryName + ")");
+                    continue;
+                }
+                // Value: groupId:artifactId:version
+                var value = groupId + ":" + sliceArtifactId + ":" + version;
+                mappings.setProperty(sliceInterface, value);
+                getLog().debug("Found slice: " + sliceInterface + " -> " + value);
             }
         }
     }

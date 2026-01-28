@@ -89,10 +89,9 @@ public class SliceProcessor extends AbstractProcessor {
 
     private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
         Result.all(generateFactory(interfaceElement, sliceModel),
-                   generateManifest(interfaceElement, sliceModel),
                    generateSliceManifest(interfaceElement, sliceModel),
                    generateRoutes(interfaceElement, sliceModel))
-              .map((_, _, _, _) -> Unit.unit())
+              .map((_, _, _) -> Unit.unit())
               .onFailure(cause -> error(interfaceElement,
                                         cause.message()));
     }
@@ -101,12 +100,6 @@ public class SliceProcessor extends AbstractProcessor {
         return factoryGenerator.generate(sliceModel)
                                .onSuccess(_ -> note(interfaceElement,
                                                     "Generated factory: " + sliceModel.simpleName() + "Factory"));
-    }
-
-    private Result<Unit> generateManifest(TypeElement interfaceElement, SliceModel sliceModel) {
-        return manifestGenerator.generate(sliceModel)
-                                .onSuccess(_ -> note(interfaceElement,
-                                                     "Generated manifest: META-INF/slice-api.properties"));
     }
 
     private Result<Unit> generateSliceManifest(TypeElement interfaceElement, SliceModel sliceModel) {
