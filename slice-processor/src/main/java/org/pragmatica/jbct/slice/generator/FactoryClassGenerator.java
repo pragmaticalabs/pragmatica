@@ -126,6 +126,14 @@ public class FactoryClassGenerator {
         out.println("import org.pragmatica.lang.Promise;");
         out.println("import org.pragmatica.lang.Unit;");
         out.println("import org.pragmatica.lang.type.TypeToken;");
+        // Import InfraStore and related types if we have infrastructure dependencies
+        if (allDeps.stream()
+                   .anyMatch(DependencyModel::isInfrastructure)) {
+            out.println("import org.pragmatica.aether.infra.InfraStore;");
+            out.println("import org.pragmatica.aether.infra.VersionedInstance;");
+            out.println("import org.pragmatica.lang.utils.Causes;");
+            out.println("import org.pragmatica.lang.Option;");
+        }
         // Aspect-related imports
         if (model.hasAspects()) {
             out.println("import org.pragmatica.aether.slice.SliceRuntime;");
@@ -154,10 +162,17 @@ public class FactoryClassGenerator {
                                       Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
+        // Split dependencies
+        var infraDeps = allDeps.stream()
+                               .filter(DependencyModel::isInfrastructure)
+                               .toList();
+        var sliceDeps = allDeps.stream()
+                               .filter(d -> !d.isInfrastructure())
+                               .toList();
         out.println("    public static Promise<" + sliceName + "> " + methodName + "(Aspect<" + sliceName + "> aspect,");
         out.println("                                              SliceInvokerFacade invoker) {");
-        // Generate local proxy records for all dependencies
-        for (var dep : allDeps) {
+        // Generate local proxy records ONLY for slice dependencies
+        for (var dep : sliceDeps) {
             generateLocalProxyRecord(out, dep, proxyMethodsCache);
             out.println();
         }
@@ -168,8 +183,9 @@ public class FactoryClassGenerator {
         }
         // Build the creation chain
         if (model.hasAspects()) {
-            generateAspectCreateChain(out, model, allDeps, proxyMethodsCache);
-        } else if (allDeps.isEmpty()) {
+            generateAspectCreateChain(out, model, infraDeps, sliceDeps, proxyMethodsCache);
+        } else if (infraDeps.isEmpty() && sliceDeps.isEmpty()) {
+            // No dependencies at all
             var factoryArgs = model.dependencies()
                                    .stream()
                                    .map(DependencyModel::parameterName)
@@ -179,7 +195,7 @@ public class FactoryClassGenerator {
                         + ");");
             out.println("        return Promise.success(aspect.apply(instance));");
         } else {
-            generateFlatMapChain(out, model, allDeps, proxyMethodsCache);
+            generateMixedDependencyChain(out, model, infraDeps, sliceDeps, proxyMethodsCache);
         }
         out.println("    }");
     }
@@ -217,7 +233,8 @@ public class FactoryClassGenerator {
 
     private void generateAspectCreateChain(PrintWriter out,
                                            SliceModel model,
-                                           List<DependencyModel> allDeps,
+                                           List<DependencyModel> infraDeps,
+                                           List<DependencyModel> sliceDeps,
                                            Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var sliceName = model.simpleName();
         var wrapperName = sliceName + "Wrapper";
@@ -249,27 +266,41 @@ public class FactoryClassGenerator {
             out.println("                                                          .async()");
             out.println("                                                          .flatMap(cfg -> factory.create(Cache.class, cfg).async()))");
         }
-        // Handle all dependencies
-        if (!allDeps.isEmpty()) {
+        // Handle infra dependencies first
+        if (!infraDeps.isEmpty()) {
+            for (var infra : infraDeps) {
+                out.println("                           .flatMap(" + (cacheVarNames.isEmpty()
+                                                                      ? "factory"
+                                                                      : cacheVarNames.getLast()) + " -> " + generateInfraStoreCall(infra)
+                            + ")");
+            }
+        }
+        // Handle slice dependencies
+        if (!sliceDeps.isEmpty()) {
             var allHandles = new ArrayList<HandleInfo>();
-            for (var dep : allDeps) {
+            for (var dep : sliceDeps) {
                 var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
                 for (var proxyMethod : methods) {
                     allHandles.add(new HandleInfo(dep, proxyMethod));
                 }
             }
+            var prevVar = infraDeps.isEmpty()
+                          ? (cacheVarNames.isEmpty()
+                             ? "factory"
+                             : cacheVarNames.getLast())
+                          : infraDeps.getLast()
+                                     .parameterName();
             for (var handle : allHandles) {
-                out.println("                           .flatMap(" + (cacheVarNames.isEmpty()
-                                                                      ? "factory"
-                                                                      : cacheVarNames.getLast()) + " -> " + generateMethodHandleCall(handle)
+                out.println("                           .flatMap(" + prevVar + " -> " + generateMethodHandleCall(handle)
                             + ")");
+                prevVar = handle.varName();
             }
         }
         // Final map to create wrapper
-        var lastVar = determineLastVariableName(allDeps, cacheVarNames, proxyMethodsCache);
+        var lastVar = determineLastVariableName(infraDeps, sliceDeps, cacheVarNames, proxyMethodsCache);
         out.println("                           .map(" + lastVar + " -> {");
-        // Instantiate dependency proxies
-        for (var dep : allDeps) {
+        // Instantiate slice dependency proxies only
+        for (var dep : sliceDeps) {
             var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
             var handleArgs = methods.stream()
                                     .map(m -> dep.parameterName() + "_" + m.name)
@@ -572,16 +603,22 @@ public class FactoryClassGenerator {
      * Determines the variable name to use in the final .map() lambda.
      * Handles empty collections safely to avoid NoSuchElementException.
      */
-    private String determineLastVariableName(List<DependencyModel> allDeps,
+    private String determineLastVariableName(List<DependencyModel> infraDeps,
+                                             List<DependencyModel> sliceDeps,
                                              List<String> cacheVarNames,
                                              Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
-        // Try deps first
-        if (!allDeps.isEmpty()) {
-            var lastDep = allDeps.getLast();
+        // Try slice deps first
+        if (!sliceDeps.isEmpty()) {
+            var lastDep = sliceDeps.getLast();
             var methods = proxyMethodsCache.get(lastDep.interfaceQualifiedName());
             if (methods != null && !methods.isEmpty()) {
-                return methods.getLast().name + "Handle";
+                return lastDep.parameterName() + "_" + methods.getLast().name;
             }
+        }
+        // Try infra deps
+        if (!infraDeps.isEmpty()) {
+            return infraDeps.getLast()
+                            .parameterName();
         }
         // Fall back to cache var names
         if (!cacheVarNames.isEmpty()) {
@@ -589,5 +626,132 @@ public class FactoryClassGenerator {
         }
         // Default to factory
         return "factory";
+    }
+
+    private void generateMixedDependencyChain(PrintWriter out,
+                                              SliceModel model,
+                                              List<DependencyModel> infraDeps,
+                                              List<DependencyModel> sliceDeps,
+                                              Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
+        var sliceName = model.simpleName();
+        // Start with InfraStore chain
+        if (!infraDeps.isEmpty()) {
+            var firstInfra = infraDeps.getFirst();
+            out.println("        return " + generateInfraStoreCall(firstInfra));
+            // Chain remaining infra deps
+            var indent = "            ";
+            for (int i = 1; i < infraDeps.size(); i++) {
+                var infra = infraDeps.get(i);
+                var prevInfra = infraDeps.get(i - 1);
+                out.println(indent + ".flatMap(" + prevInfra.parameterName() + " -> " + generateInfraStoreCall(infra)
+                            + ")");
+                indent += "    ";
+            }
+            // Chain slice dependency proxies if any
+            if (!sliceDeps.isEmpty()) {
+                var lastInfra = infraDeps.getLast();
+                var allSliceHandles = new ArrayList<HandleInfo>();
+                for (var dep : sliceDeps) {
+                    var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
+                    for (var method : methods) {
+                        allSliceHandles.add(new HandleInfo(dep, method));
+                    }
+                }
+                // First handle uses lastInfra as parameter
+                var firstHandle = allSliceHandles.getFirst();
+                out.println(indent + ".flatMap(" + lastInfra.parameterName() + " -> " + generateMethodHandleCall(firstHandle));
+                indent += "    ";
+                // Remaining handles use previous handle's varName
+                for (int i = 1; i < allSliceHandles.size(); i++) {
+                    var handle = allSliceHandles.get(i);
+                    var prevHandle = allSliceHandles.get(i - 1);
+                    out.println(indent + ".flatMap(" + prevHandle.varName() + " -> " + generateMethodHandleCall(handle));
+                    indent += "    ";
+                }
+                // Final map with all dependencies
+                var lastHandle = allSliceHandles.getLast();
+                out.println(indent + ".map(" + lastHandle.varName() + " -> {");
+                generateDependencyInstantiation(out, indent, sliceDeps, proxyMethodsCache);
+                generateFactoryCall(out, indent, model);
+                out.println(indent + "})");
+                // Close all flatMaps
+                for (int i = 0; i < infraDeps.size() - 1 + allSliceHandles.size(); i++) {
+                    indent = indent.substring(4);
+                    out.println(indent + ")");
+                }
+                out.println(indent.substring(4) + ";");
+            } else {
+                // Only infra deps, no slice deps
+                var lastInfra = infraDeps.getLast();
+                out.println(indent + ".map(" + lastInfra.parameterName() + " -> {");
+                generateFactoryCall(out, indent, model);
+                out.println(indent + "})");
+                // Close all flatMaps
+                for (int i = 0; i < infraDeps.size() - 1; i++) {
+                    indent = indent.substring(4);
+                    out.println(indent + ")");
+                }
+                out.println(indent.substring(4) + ";");
+            }
+        } else {
+            // Only slice deps (existing flatMap logic)
+            generateFlatMapChain(out, model, sliceDeps, proxyMethodsCache);
+        }
+    }
+
+    private String generateInfraStoreCall(DependencyModel infra) {
+        var interfaceName = infra.interfaceSimpleName();
+        var artifactId = inferInfraArtifactId(infra);
+        var errorMsg = escapeJavaString(interfaceName + " not available in InfraStore");
+        return "InfraStore.instance()\n"
+               + "                           .flatMap(store -> store.get(\"org.pragmatica.aether.infra:" + artifactId
+               + "\", " + interfaceName + ".class)\n"
+               + "                                                       .stream()\n"
+               + "                                                       .findFirst()\n"
+               + "                                                       .map(vi -> Option.some(vi.instance()))\n"
+               + "                                                       .orElse(Option.none()))\n"
+               + "                           .toResult(Causes.cause(\"" + errorMsg + "\"))\n"
+               + "                           .async()";
+    }
+
+    private String inferInfraArtifactId(DependencyModel infra) {
+        // Extract artifact ID from package name
+        // org.pragmatica.aether.infra.cache.CacheService -> "cache"
+        // org.pragmatica.aether.infra.database.DatabaseService -> "database"
+        var pkg = infra.interfacePackage();
+        var parts = pkg.split("\\.");
+        if (parts.length >= 5 && parts[3].equals("infra")) {
+            return parts[4];
+        }
+        // Fallback: lowercase interface name without "Service"
+        return infra.interfaceSimpleName()
+                    .replace("Service", "")
+                    .toLowerCase();
+    }
+
+    private void generateDependencyInstantiation(PrintWriter out,
+                                                 String indent,
+                                                 List<DependencyModel> sliceDeps,
+                                                 Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
+        for (var dep : sliceDeps) {
+            var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
+            var handleArgs = methods.stream()
+                                    .map(m -> dep.parameterName() + "_" + m.name)
+                                    .toList();
+            out.println(indent + "    var " + dep.parameterName() + " = new " + dep.localRecordName() + "(" + String.join(", ",
+                                                                                                                          handleArgs)
+                        + ");");
+        }
+    }
+
+    private void generateFactoryCall(PrintWriter out, String indent, SliceModel model) {
+        var sliceName = model.simpleName();
+        var factoryArgs = model.dependencies()
+                               .stream()
+                               .map(DependencyModel::parameterName)
+                               .toList();
+        out.println(indent + "    return aspect.apply(" + sliceName + "." + model.factoryMethodName() + "(" + String.join(", ",
+                                                                                                                          factoryArgs)
+                    + "));");
     }
 }

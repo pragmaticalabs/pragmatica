@@ -65,6 +65,19 @@ public record DependencyModel(String parameterName,
     }
 
     /**
+     * Checks if this dependency is an infrastructure dependency.
+     * Infrastructure dependencies:
+     * - Live under org.pragmatica.aether.infra.* package
+     * - Are accessed via InfraStore (singleton instances)
+     * - NOT proxied via SliceInvokerFacade
+     *
+     * Examples: CacheService, DatabaseService, MetricsService
+     */
+    public boolean isInfrastructure() {
+        return interfaceQualifiedName.startsWith("org.pragmatica.aether.infra.");
+    }
+
+    /**
      * Get lowercase name for local proxy record (JBCT naming convention).
      * Handles acronyms properly: "HTTPService" -> "httpService"
      */

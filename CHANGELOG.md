@@ -9,10 +9,14 @@
 - RFC-0004 compliance: removed non-standard slice-api.properties generation
 - RFC-0004 compliance: slice manifests now include `slice.interface` property
 - RFC-0004 compliance: renamed `impl.artifactId` to `slice.artifactId` in manifests
+- RFC-0007 compliance: infrastructure dependencies now accessed via InfraStore instead of being proxied
 - CollectSliceDepsMojo: now scans META-INF/slice/*.manifest instead of slice-api.properties
 - VerifySliceMojo: validates manifest files instead of slice-api.properties
 - PackageSlicesMojo: reads slice metadata from .manifest files
 - SliceProjectValidator: checks for .manifest files instead of slice-api.properties
+- FactoryClassGenerator: infrastructure deps (CacheService, etc.) now use InfraStore.instance().get()
+- FactoryClassGenerator: only slice dependencies are proxied via SliceInvokerFacade
+- FactoryClassGenerator: reduced flatMap chain depth (e.g., 13→3 for UrlShortener with mixed deps)
 
 ### Changed
 - Build: bump Aether to 0.8.1
