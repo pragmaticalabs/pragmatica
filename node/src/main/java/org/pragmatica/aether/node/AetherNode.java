@@ -685,15 +685,17 @@ public interface AetherNode {
                                                                     RollbackManager rollbackManager,
                                                                     ArtifactMetricsCollector artifactMetricsCollector) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
-        // KVStore notifications to deployment managers
+        // KVStore notifications - ORDER MATTERS!
+        // EndpointRegistry MUST process before ClusterDeploymentManager so endpoints
+        // are available when ClusterDeploymentManager triggers dependent slice activation.
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, nodeDeploymentManager::onValuePut));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, clusterDeploymentManager::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, endpointRegistry::onValuePut));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, clusterDeploymentManager::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
                                               nodeDeploymentManager::onValueRemove));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, endpointRegistry::onValueRemove));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
                                               clusterDeploymentManager::onValueRemove));
-        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, endpointRegistry::onValueRemove));
         // HTTP route registry for application HTTP routing
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, httpRouteRegistry::onValuePut));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, httpRouteRegistry::onValueRemove));
