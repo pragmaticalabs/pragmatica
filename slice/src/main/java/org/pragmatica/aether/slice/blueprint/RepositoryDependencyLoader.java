@@ -3,16 +3,15 @@ package org.pragmatica.aether.slice.blueprint;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceManifest;
+import org.pragmatica.aether.slice.dependency.ArtifactDependency;
 import org.pragmatica.aether.slice.dependency.ArtifactMapper;
-import org.pragmatica.aether.slice.dependency.DependencyDescriptor;
-import org.pragmatica.aether.slice.dependency.SliceDependencies;
+import org.pragmatica.aether.slice.dependency.DependencyFile;
 import org.pragmatica.aether.slice.repository.Location;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import java.net.URL;
-import java.util.List;
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -46,18 +45,18 @@ public interface RepositoryDependencyLoader {
 
     private static Result<Set<Artifact>> loadDependencies(SliceManifest.SliceManifestInfo manifest, URL jarUrl) {
         var classLoader = new SliceClassLoader(new URL[]{jarUrl}, RepositoryDependencyLoader.class.getClassLoader());
-        return SliceDependencies.load(manifest.sliceClassName(),
-                                      classLoader)
-                                .flatMap(RepositoryDependencyLoader::convertToArtifacts);
+        return DependencyFile.load(manifest.sliceClassName(),
+                                   classLoader)
+                             .flatMap(RepositoryDependencyLoader::convertToArtifacts);
     }
 
-    private static Result<Set<Artifact>> convertToArtifacts(List<DependencyDescriptor> descriptors) {
-        return Result.allOf(toArtifacts(descriptors))
+    private static Result<Set<Artifact>> convertToArtifacts(DependencyFile dependencyFile) {
+        return Result.allOf(toArtifacts(dependencyFile.slices()))
                      .map(Set::copyOf);
     }
 
-    private static Stream<Result<Artifact>> toArtifacts(List<DependencyDescriptor> descriptors) {
-        return descriptors.stream()
-                          .map(ArtifactMapper::toArtifact);
+    private static Stream<Result<Artifact>> toArtifacts(java.util.List<ArtifactDependency> dependencies) {
+        return dependencies.stream()
+                           .map(ArtifactMapper::toArtifact);
     }
 }

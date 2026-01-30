@@ -66,6 +66,19 @@ public interface ArtifactMapper {
     }
 
     /**
+     * Convert an ArtifactDependency to Artifact.
+     * Uses the lower bound of the version pattern as the concrete version.
+     *
+     * @param dependency the artifact dependency
+     *
+     * @return artifact or error
+     */
+    static Result<Artifact> toArtifact(ArtifactDependency dependency) {
+        var version = extractVersion(dependency.versionPattern());
+        return Artifact.artifact(dependency.groupId() + ":" + dependency.artifactId() + ":" + version);
+    }
+
+    /**
      * Convert artifact coordinates to a fully qualified class name.
      *
      * @param artifact the artifact
