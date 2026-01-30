@@ -88,6 +88,20 @@
 
     <build>
         <plugins>
+            <!-- Configure surefire to run integration tests sequentially to avoid port conflicts -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.5.1</version>
+                <configuration>
+                    <!-- Run tests sequentially to avoid port binding conflicts -->
+                    <forkCount>1</forkCount>
+                    <reuseForks>false</reuseForks>
+                    <!-- Increase timeout for integration tests -->
+                    <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
+                    <argLine>--enable-native-access=ALL-UNNAMED</argLine>
+                </configuration>
+            </plugin>
             <!-- Prepare test artifacts with correct manifests for rolling update tests -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
