@@ -15,6 +15,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.cluster.metrics.MetricsMessage;
 import org.pragmatica.cluster.node.rabia.CustomClasses;
+import org.pragmatica.lang.Option;
 
 import java.util.function.Consumer;
 
@@ -27,6 +28,8 @@ public interface AetherCustomClasses {
     static void configure(Consumer<Class<?>> consumer) {
         // Include base Rabia classes
         CustomClasses.configure(consumer);
+        // Option types (needed for SliceTargetValue.owningBlueprint)
+        concreteSubtypes(Option.class).forEach(consumer);
         // Aether key/value types
         concreteSubtypes(AetherKey.class).forEach(consumer);
         concreteSubtypes(AetherValue.class).forEach(consumer);
