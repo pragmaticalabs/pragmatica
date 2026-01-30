@@ -14,102 +14,195 @@ Cross-cutting concern aspects for [Aether](https://github.com/siy/aether) distri
 
 ## Overview
 
-Provides aspect factories for common cross-cutting concerns: circuit breaker, retry, logging, metrics, and transactions.
+Provides aspect factories for common cross-cutting concerns: logging, retry, circuit breaker, metrics, and transactions.
+
+All configuration factories return `Result<Config>` following JBCT patterns - validation happens at creation time.
 
 ### Available Aspects
 
 | Aspect | Description |
 |--------|-------------|
+| Logging | Entry/exit logging with duration, args, and result |
+| Retry | Automatic retry with configurable backoff strategies |
 | Circuit Breaker | Prevents cascading failures with open/closed/half-open states |
-| Retry | Automatic retry with configurable backoff |
-| Logging | Request/response logging with configurable levels |
-| Metrics | Execution timing and counting |
-| Transaction | Transaction boundary management |
+| Metrics | Execution timing via Micrometer |
+| Transaction | Transaction boundary management with propagation |
 
-### Circuit Breaker
+## Logging
 
-```java
-var factory = CircuitBreakerFactory.circuitBreakerFactory();
-
-var config = CircuitBreakerConfig.circuitBreakerConfig()
-    .failureThreshold(5)           // Open after 5 failures
-    .successThreshold(3)           // Close after 3 successes in half-open
-    .openDuration(Duration.ofSeconds(30))
-    .build();
-
-var aspect = factory.<MyService>create(config);
-var wrapped = aspect.apply(myService);
-```
-
-### Retry
-
-```java
-var factory = RetryAspectFactory.retryAspectFactory();
-
-var config = RetryConfig.retryConfig()
-    .maxAttempts(3)
-    .initialDelay(Duration.ofMillis(100))
-    .maxDelay(Duration.ofSeconds(5))
-    .multiplier(2.0)
-    .build();
-
-var aspect = factory.<MyService>create(config);
-```
-
-### Logging
+Logs method entry (`->`), exit (`<-`), and errors (`x`) with configurable detail level.
 
 ```java
 var factory = LoggingAspectFactory.loggingAspectFactory();
 
-var config = LogConfig.logConfig()
-    .level(LogLevel.INFO)
-    .logRequest(true)
-    .logResponse(true)
-    .logDuration(true)
-    .build();
+// Default: INFO level, logs args, result, and duration
+var config = LogConfig.logConfig("OrderService").unwrap();
 
-var aspect = factory.<MyService>create(config);
+// Custom level
+var debugConfig = LogConfig.logConfig("OrderService", LogLevel.DEBUG).unwrap();
+
+// Fine-tune what to log
+var minimalConfig = LogConfig.logConfig("OrderService").unwrap()
+    .withLogArgs(false)
+    .withLogResult(false)
+    .withLogDuration(true);
+
+var aspect = factory.<OrderService>create(config);
+var wrapped = aspect.apply(orderService);
+
+// Output:
+// -> OrderService.placeOrder args=[Order{id=123}]
+// <- OrderService.placeOrder result=Success (42.15ms)
 ```
 
-### Metrics
+## Retry
+
+Automatic retry with exponential or fixed backoff using pragmatica-lite `Retry`.
 
 ```java
-var factory = MetricsAspectFactory.metricsAspectFactory();
+var factory = RetryAspectFactory.retryAspectFactory();
 
-var config = MetricsConfig.metricsConfig()
-    .prefix("my_service")
-    .recordDuration(true)
-    .recordCount(true)
-    .build();
+// Exponential backoff (default): 100ms initial, 2x factor, 10s max
+var config = RetryConfig.retryConfig(3).unwrap();
 
-var aspect = factory.<MyService>create(config);
+// Fixed interval
+var fixedConfig = RetryConfig.retryConfig(3, timeSpan(500).millis()).unwrap();
+
+// Custom backoff strategy
+var customConfig = RetryConfig.retryConfig(
+    5,
+    BackoffStrategy.exponential()
+        .initialDelay(timeSpan(200).millis())
+        .maxDelay(timeSpan(30).seconds())
+        .factor(1.5)
+        .withJitter(0.1)
+).unwrap();
+
+var aspect = factory.<PaymentGateway>create(config);
+var wrapped = aspect.apply(paymentGateway);
 ```
 
-### Transaction
+## Circuit Breaker
+
+Prevents cascading failures using pragmatica-lite `CircuitBreaker`.
+
+```java
+var factory = CircuitBreakerFactory.circuitBreakerFactory();
+
+// Default: 5 failures, 30s reset, 3 test attempts
+var config = CircuitBreakerConfig.circuitBreakerConfig().unwrap();
+
+// Custom failure threshold
+var sensitiveConfig = CircuitBreakerConfig.circuitBreakerConfig(3).unwrap();
+
+// Fully customized
+var customConfig = CircuitBreakerConfig.circuitBreakerConfig(
+    5,                        // failures before opening
+    timeSpan(60).seconds(),   // reset timeout
+    2                         // test attempts in half-open
+).unwrap();
+
+var aspect = factory.<ExternalService>create(config);
+var wrapped = aspect.apply(externalService);
+```
+
+**States:**
+- **Closed**: Normal operation, counting failures
+- **Open**: Failing fast, rejecting calls
+- **Half-Open**: Testing with limited requests
+
+## Metrics
+
+Records timing and success/failure counts via Micrometer.
+
+```java
+var factory = MetricsAspectFactory.metricsAspectFactory(meterRegistry);
+
+// Default: records timing and counts
+var config = MetricsConfig.metricsConfig("order_service").unwrap();
+
+// With tags
+var taggedConfig = MetricsConfig.metricsConfig("order_service").unwrap()
+    .withTags("env", "prod", "region", "us-east");
+
+// Selective recording
+var timingOnly = MetricsConfig.metricsConfig("order_service", true, false).unwrap();
+
+var aspect = factory.<OrderService>create(config);
+var wrapped = aspect.apply(orderService);
+
+// Metrics recorded:
+// order_service.placeOrder.success (timer)
+// order_service.placeOrder.failure (timer)
+```
+
+## Transaction
+
+Manages transaction boundaries with Spring-like propagation semantics.
 
 ```java
 var factory = TransactionAspectFactory.transactionAspectFactory();
 
-var config = TransactionConfig.transactionConfig()
-    .propagation(TransactionPropagation.REQUIRED)
-    .isolation(IsolationLevel.READ_COMMITTED)
-    .timeout(Duration.ofSeconds(30))
-    .build();
+// Default: REQUIRED propagation, DEFAULT isolation
+var config = TransactionConfig.transactionConfig().unwrap();
 
-var aspect = factory.<MyService>create(config);
+// Custom propagation
+var newTxConfig = TransactionConfig.transactionConfig(TransactionPropagation.REQUIRES_NEW).unwrap();
+
+// Full configuration
+var fullConfig = TransactionConfig.transactionConfig(
+    TransactionPropagation.REQUIRED,
+    IsolationLevel.READ_COMMITTED
+).unwrap()
+    .withTimeout(timeSpan(30).seconds())
+    .asReadOnly();
+
+var aspect = factory.<UserRepository>create(config);
+var wrapped = aspect.apply(userRepository);
 ```
 
-### Composing Aspects
+**Propagation options:**
+- `REQUIRED` - Join existing or create new (default)
+- `REQUIRES_NEW` - Always create new, suspend existing
+- `SUPPORTS` - Use existing if present, otherwise non-transactional
+- `MANDATORY` - Require existing, fail if none
+- `NOT_SUPPORTED` - Suspend existing, run non-transactional
+- `NEVER` - Fail if transaction exists
+- `NESTED` - Create savepoint within existing
 
-Aspects can be composed for layered behavior:
+## Composing Aspects
+
+Aspects compose naturally - apply in desired order:
 
 ```java
-var circuitBreaker = CircuitBreakerFactory.circuitBreakerFactory().create();
-var retry = RetryAspectFactory.retryAspectFactory().create();
-var logging = LoggingAspectFactory.loggingAspectFactory().create();
+var logging = LoggingAspectFactory.loggingAspectFactory()
+    .<PaymentService>create(LogConfig.logConfig("PaymentService").unwrap());
 
-// Apply in order: logging -> retry -> circuit breaker -> target
-var wrapped = logging.apply(retry.apply(circuitBreaker.apply(target)));
+var retry = RetryAspectFactory.retryAspectFactory()
+    .<PaymentService>create(RetryConfig.retryConfig(3).unwrap());
+
+var circuitBreaker = CircuitBreakerFactory.circuitBreakerFactory()
+    .<PaymentService>create(CircuitBreakerConfig.circuitBreakerConfig().unwrap());
+
+// Order: logging -> retry -> circuit breaker -> target
+// Logging sees all attempts, retry wraps circuit breaker
+var wrapped = logging.apply(
+    retry.apply(
+        circuitBreaker.apply(paymentService)
+    )
+);
+```
+
+## Global Enable/Disable
+
+Each factory supports runtime enable/disable:
+
+```java
+var factory = LoggingAspectFactory.loggingAspectFactory();
+
+factory.setEnabled(false);  // Disable all logging aspects
+factory.isEnabled();        // Check status
+factory.setEnabled(true);   // Re-enable
 ```
 
 ## License
