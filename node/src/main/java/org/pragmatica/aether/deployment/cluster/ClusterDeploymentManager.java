@@ -272,21 +272,18 @@ public interface ClusterDeploymentManager {
             }
 
             /**
-             * Build dependency map from ExpandedBlueprint's topologically sorted load order.
-             * Each slice depends on all slices that appear before it in the load order.
+             * Build dependency map from ExpandedBlueprint's ResolvedSlice dependencies.
+             * Each slice has its actual dependencies from the blueprint expansion.
              */
             private void buildDependencyMap(ExpandedBlueprint expanded) {
-                var loadOrder = expanded.loadOrder();
-                var seen = new HashSet<Artifact>();
-                for (var slice : loadOrder) {
+                for (var slice : expanded.loadOrder()) {
                     var artifact = slice.artifact();
-                    sliceDependencies.put(artifact, Set.copyOf(seen));
-                    seen.add(artifact);
-                    log.debug("Slice {} has {} dependencies: {}",
-                              artifact,
-                              sliceDependencies.get(artifact)
-                                               .size(),
-                              sliceDependencies.get(artifact));
+                    var dependencies = slice.dependencies();
+                    sliceDependencies.put(artifact, dependencies);
+                    log.info("buildDependencyMap: Slice {} has {} dependencies: {}",
+                             artifact,
+                             dependencies.size(),
+                             dependencies);
                 }
             }
 
