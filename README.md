@@ -193,7 +193,7 @@ aetherx/
 ├── forge/               # Local cluster simulator & dashboard
 ├── cli/                 # Command-line tools
 └── examples/
-    └── order-demo/      # Complete demo (5 slices)
+    └── ecommerce/       # E-commerce demo (PlaceOrder, Payment, Inventory, etc.)
 ```
 
 ## Requirements

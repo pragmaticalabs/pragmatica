@@ -2,19 +2,19 @@
 #
 # Aether Real Cluster Demo
 #
-# Starts a 5-node cluster with order-demo slices deployed.
+# Starts a 5-node cluster with ecommerce slices deployed.
 #
 # Usage:
 #   ./demo-cluster.sh start   - Start 5-node cluster
 #   ./demo-cluster.sh stop    - Stop all nodes
 #   ./demo-cluster.sh status  - Check cluster status
-#   ./demo-cluster.sh deploy  - Deploy order-demo blueprint
+#   ./demo-cluster.sh deploy  - Deploy ecommerce blueprint
 #   ./demo-cluster.sh logs    - Tail node logs
 #   ./demo-cluster.sh clean   - Stop and clean up
 #
 # Requirements:
 #   - Maven build completed (mvn package -DskipTests)
-#   - order-demo installed (cd examples/order-demo && mvn install)
+#   - ecommerce installed (cd examples/ecommerce && mvn install)
 
 set -e
 
@@ -25,7 +25,7 @@ PID_DIR="$PROJECT_DIR/.pids"
 
 NODE_JAR="$PROJECT_DIR/node/target/aether-node.jar"
 CLI_JAR="$PROJECT_DIR/cli/target/aether.jar"
-BLUEPRINT="$PROJECT_DIR/examples/order-demo/demo-order.blueprint"
+BLUEPRINT="$PROJECT_DIR/examples/ecommerce/place-order/target/blueprint.toml"
 
 # Cluster configuration (5 nodes)
 PEERS="node-1:localhost:8091,node-2:localhost:8092,node-3:localhost:8093,node-4:localhost:8094,node-5:localhost:8095"
@@ -51,11 +51,10 @@ ensure_built() {
     fi
 }
 
-ensure_order_demo() {
-    local demo_jar="$HOME/.m2/repository/org/pragmatica-lite/aether/demo/inventory-service/0.1.0/inventory-service-0.1.0.jar"
-    if [ ! -f "$demo_jar" ]; then
-        log_info "Installing order-demo to local repository..."
-        mvn -f "$PROJECT_DIR/examples/order-demo/pom.xml" install -DskipTests -q
+ensure_ecommerce() {
+    if [ ! -f "$BLUEPRINT" ]; then
+        log_info "Installing ecommerce example to local repository..."
+        mvn -f "$PROJECT_DIR/examples/ecommerce/pom.xml" install -DskipTests -q
     fi
 }
 
@@ -81,7 +80,7 @@ start_node() {
 
 start_cluster() {
     ensure_built
-    ensure_order_demo
+    ensure_ecommerce
 
     log_info "Starting 5-node Aether cluster..."
 
@@ -105,7 +104,7 @@ start_cluster() {
         echo "  - Node 4: http://localhost:8084"
         echo "  - Node 5: http://localhost:8085"
         echo ""
-        log_info "To deploy order-demo: ./demo-cluster.sh deploy"
+        log_info "To deploy ecommerce: ./demo-cluster.sh deploy"
         log_info "To check status: ./demo-cluster.sh status"
     else
         log_warn "Cluster may still be forming. Check logs with: ./demo-cluster.sh logs"
@@ -157,10 +156,11 @@ deploy_demo() {
 
     if [ ! -f "$BLUEPRINT" ]; then
         log_error "Blueprint not found: $BLUEPRINT"
+        log_error "Run: cd examples/ecommerce && mvn install"
         exit 1
     fi
 
-    log_info "Deploying order-demo blueprint..."
+    log_info "Deploying ecommerce blueprint..."
     java -jar "$CLI_JAR" --connect localhost:8081 blueprint apply "$BLUEPRINT"
 
     log_info "Waiting for deployment..."
@@ -214,7 +214,7 @@ case "${1:-help}" in
         echo "  start   - Start 5-node cluster"
         echo "  stop    - Stop all nodes"
         echo "  status  - Check cluster status"
-        echo "  deploy  - Deploy order-demo blueprint"
+        echo "  deploy  - Deploy ecommerce blueprint"
         echo "  logs    - Tail node logs"
         echo "  clean   - Stop and clean up"
         ;;

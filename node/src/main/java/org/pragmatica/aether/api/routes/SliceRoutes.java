@@ -3,6 +3,7 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
@@ -10,28 +11,29 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
-import org.pragmatica.http.HttpMethod;
-import org.pragmatica.http.HttpStatus;
-import org.pragmatica.http.server.RequestContext;
-import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.http.routing.Route;
+import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Supplier;
-import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
-import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.aether.api.ManagementApiResponses.*;
 
 /**
  * Routes for slice management: deploy, undeploy, scale, blueprint.
  */
-public final class SliceRoutes implements RouteHandler {
-    private static final Pattern ARTIFACT_PATTERN = Pattern.compile("\"artifact\"\\s*:\\s*\"([^\"]+)\"");
-    private static final Pattern INSTANCES_PATTERN = Pattern.compile("\"instances\"\\s*:\\s*(\\d+)");
+public final class SliceRoutes implements RouteSource {
+    private static final Cause MISSING_ARTIFACT = Causes.cause("Missing 'artifact' field");
+    private static final Cause MISSING_ARTIFACT_OR_INSTANCES = Causes.cause("Missing 'artifact' or 'instances' field");
 
     private final Supplier<AetherNode> nodeSupplier;
 
@@ -43,254 +45,208 @@ public final class SliceRoutes implements RouteHandler {
         return new SliceRoutes(nodeSupplier);
     }
 
+    // Request DTOs - nullable types required for JSON deserialization
+    record DeployRequest(String artifact, Integer instances) {}
+
+    record ScaleRequest(String artifact, Integer instances) {}
+
+    record UndeployRequest(String artifact) {}
+
     @Override
-    public boolean handle(RequestContext ctx, ResponseWriter response) {
-        var path = ctx.path();
-        var method = ctx.method();
-        // GET endpoints
-        if (method == HttpMethod.GET) {
-            return switch (path) {
-                case "/api/slices" -> {
-                    response.ok(buildSlicesResponse());
-                    yield true;
-                }
-                case "/api/slices/status" -> {
-                    response.ok(buildSlicesStatusResponse());
-                    yield true;
-                }
-                case "/api/routes" -> {
-                    response.ok(buildRoutesResponse());
-                    yield true;
-                }
-                default -> false;
-            };
-        }
-        // POST endpoints
-        if (method == HttpMethod.POST) {
-            var body = ctx.bodyAsString();
-            return switch (path) {
-                case "/api/deploy" -> {
-                    handleDeploy(response, body);
-                    yield true;
-                }
-                case "/api/scale" -> {
-                    handleScale(response, body);
-                    yield true;
-                }
-                case "/api/undeploy" -> {
-                    handleUndeploy(response, body);
-                    yield true;
-                }
-                case "/api/blueprint" -> {
-                    handleBlueprint(response, body);
-                    yield true;
-                }
-                default -> false;
-            };
-        }
-        return false;
+    public Stream<Route<?>> routes() {
+        return Stream.of(Route.<SlicesResponse> get("/api/slices")
+                              .toJson(this::buildSlicesResponse),
+                         Route.<SlicesStatusResponse> get("/api/slices/status")
+                              .toJson(this::buildSlicesStatusResponse),
+                         Route.<RoutesResponse> get("/api/routes")
+                              .toJson(this::buildRoutesResponse),
+                         Route.<DeployResponse> post("/api/deploy")
+                              .withBody(DeployRequest.class)
+                              .toJson(this::handleDeploy),
+                         Route.<DeployResponse> post("/api/scale")
+                              .withBody(ScaleRequest.class)
+                              .toJson(this::handleScale),
+                         Route.<UndeployResponse> post("/api/undeploy")
+                              .withBody(UndeployRequest.class)
+                              .toJson(this::handleUndeploy),
+                         Route.<BlueprintResponse> post("/api/blueprint")
+                              .to(ctx -> handleBlueprint(ctx.bodyAsString()))
+                              .asJson());
     }
 
-    private void handleDeploy(ResponseWriter response, String body) {
-        var artifactMatch = ARTIFACT_PATTERN.matcher(body);
-        var instancesMatch = INSTANCES_PATTERN.matcher(body);
-        if (!artifactMatch.find()) {
-            response.badRequest("Missing 'artifact' field");
-            return;
-        }
-        int instances = instancesMatch.find()
-                        ? Integer.parseInt(instancesMatch.group(1))
-                        : 1;
-        var artifactStr = artifactMatch.group(1);
-        Artifact.artifact(artifactStr)
-                .async()
-                .flatMap(artifact -> applyDeployCommand(artifact, instances))
-                .onSuccess(_ -> response.ok("{\"status\":\"deployed\",\"artifact\":\"" + artifactStr
-                                            + "\",\"instances\":" + instances + "}"))
-                .onFailure(cause -> response.error(isBadRequest(cause)
-                                                   ? HttpStatus.BAD_REQUEST
-                                                   : HttpStatus.INTERNAL_SERVER_ERROR,
-                                                   cause.message()));
+    private record DeployParams(String artifact, int instances) {}
+
+    private record ScaleParams(String artifact, int instances) {}
+
+    private record UndeployParams(String artifact) {}
+
+    private Result<DeployParams> validateDeployRequest(DeployRequest request) {
+        return Option.option(request.artifact())
+                     .toResult(MISSING_ARTIFACT)
+                     .map(artifact -> new DeployParams(artifact,
+                                                       Option.option(request.instances())
+                                                             .or(1)));
     }
 
-    private void handleScale(ResponseWriter response, String body) {
-        var artifactMatch = ARTIFACT_PATTERN.matcher(body);
-        var instancesMatch = INSTANCES_PATTERN.matcher(body);
-        if (!artifactMatch.find() || !instancesMatch.find()) {
-            response.badRequest("Missing 'artifact' or 'instances' field");
-            return;
-        }
-        var artifactStr = artifactMatch.group(1);
-        var instances = Integer.parseInt(instancesMatch.group(1));
-        Artifact.artifact(artifactStr)
-                .async()
-                .flatMap(artifact -> applyDeployCommand(artifact, instances))
-                .onSuccess(_ -> response.ok("{\"status\":\"scaled\",\"artifact\":\"" + artifactStr
-                                            + "\",\"instances\":" + instances + "}"))
-                .onFailure(cause -> response.error(isBadRequest(cause)
-                                                   ? HttpStatus.BAD_REQUEST
-                                                   : HttpStatus.INTERNAL_SERVER_ERROR,
-                                                   cause.message()));
+    private Result<ScaleParams> validateScaleRequest(ScaleRequest request) {
+        return Result.all(Option.option(request.artifact())
+                                .toResult(MISSING_ARTIFACT_OR_INSTANCES),
+                          Option.option(request.instances())
+                                .toResult(MISSING_ARTIFACT_OR_INSTANCES))
+                     .map(ScaleParams::new);
     }
 
-    private void handleUndeploy(ResponseWriter response, String body) {
-        var artifactMatch = ARTIFACT_PATTERN.matcher(body);
-        if (!artifactMatch.find()) {
-            response.badRequest("Missing 'artifact' field");
-            return;
-        }
-        var artifactStr = artifactMatch.group(1);
-        Artifact.artifact(artifactStr)
-                .async()
-                .flatMap(this::applyUndeployCommand)
-                .onSuccess(_ -> response.ok("{\"status\":\"undeployed\",\"artifact\":\"" + artifactStr + "\"}"))
-                .onFailure(cause -> response.error(isBadRequest(cause)
-                                                   ? HttpStatus.BAD_REQUEST
-                                                   : HttpStatus.INTERNAL_SERVER_ERROR,
-                                                   cause.message()));
+    private Result<UndeployParams> validateUndeployRequest(UndeployRequest request) {
+        return Option.option(request.artifact())
+                     .toResult(MISSING_ARTIFACT)
+                     .map(UndeployParams::new);
     }
 
-    private void handleBlueprint(ResponseWriter response, String body) {
-        BlueprintParser.parse(body)
-                       .async()
-                       .flatMap(blueprint -> applyBlueprintCommands(response, blueprint))
-                       .onFailure(cause -> response.error(isBadRequest(cause)
-                                                          ? HttpStatus.BAD_REQUEST
-                                                          : HttpStatus.INTERNAL_SERVER_ERROR,
-                                                          cause.message()));
+    private Promise<DeployResponse> handleDeploy(DeployRequest request) {
+        return validateDeployRequest(request).async()
+                                    .flatMap(params -> Artifact.artifact(params.artifact())
+                                                               .async()
+                                                               .flatMap(artifact -> applyDeployCommand(artifact,
+                                                                                                       params.instances())
+        .map(_ -> new DeployResponse("deployed",
+                                     artifact.asString(),
+                                     params.instances()))));
     }
 
-    private Promise<Unit> applyDeployCommand(Artifact artifact, int instances) {
+    private Promise<DeployResponse> handleScale(ScaleRequest request) {
+        return validateScaleRequest(request).async()
+                                   .flatMap(params -> Artifact.artifact(params.artifact())
+                                                              .async()
+                                                              .flatMap(artifact -> applyDeployCommand(artifact,
+                                                                                                      params.instances())
+        .map(_ -> new DeployResponse("scaled",
+                                     artifact.asString(),
+                                     params.instances()))));
+    }
+
+    private Promise<UndeployResponse> handleUndeploy(UndeployRequest request) {
+        return validateUndeployRequest(request).async()
+                                      .flatMap(params -> Artifact.artifact(params.artifact())
+                                                                 .async()
+                                                                 .flatMap(artifact -> applyUndeployCommand(artifact)
+        .map(_ -> new UndeployResponse("undeployed",
+                                       artifact.asString()))));
+    }
+
+    private Promise<BlueprintResponse> handleBlueprint(String body) {
+        return BlueprintParser.parse(body)
+                              .async()
+                              .flatMap(this::applyBlueprintCommands);
+    }
+
+    private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances) {
         var node = nodeSupplier.get();
-        AetherKey key = new AetherKey.BlueprintKey(artifact);
-        AetherValue value = new AetherValue.BlueprintValue(instances);
+        AetherKey key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
+        AetherValue value = AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), instances);
         KVCommand<AetherKey> command = new KVCommand.Put<>(key, value);
-        return node.apply(List.of(command))
-                   .mapToUnit();
+        return node.apply(List.of(command));
     }
 
-    private Promise<Unit> applyUndeployCommand(Artifact artifact) {
+    private Promise<List<Long>> applyUndeployCommand(Artifact artifact) {
         var node = nodeSupplier.get();
-        AetherKey key = new AetherKey.BlueprintKey(artifact);
+        AetherKey key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
         KVCommand<AetherKey> command = new KVCommand.Remove<>(key);
-        return node.apply(List.of(command))
-                   .mapToUnit();
+        return node.apply(List.of(command));
     }
 
-    private Promise<Unit> applyBlueprintCommands(ResponseWriter response,
-                                                 org.pragmatica.aether.slice.blueprint.Blueprint blueprint) {
+    private Promise<BlueprintResponse> applyBlueprintCommands(Blueprint blueprint) {
         var node = nodeSupplier.get();
         var commands = blueprint.slices()
                                 .stream()
                                 .map(spec -> {
-                                         AetherKey key = new AetherKey.BlueprintKey(spec.artifact());
-                                         AetherValue value = new AetherValue.BlueprintValue(spec.instances());
+                                         AetherKey key = AetherKey.SliceTargetKey.sliceTargetKey(spec.artifact()
+                                                                                                     .base());
+                                         AetherValue value = AetherValue.SliceTargetValue.sliceTargetValue(spec.artifact()
+                                                                                                               .version(),
+                                                                                                           spec.instances());
                                          return (KVCommand<AetherKey>) new KVCommand.Put<>(key, value);
                                      })
                                 .toList();
         if (commands.isEmpty()) {
-            response.ok("{\"status\":\"applied\",\"blueprint\":\"" + blueprint.id()
-                                                                             .asString() + "\",\"slices\":0}");
-            return Promise.success(unit());
+            return Promise.success(new BlueprintResponse("applied",
+                                                         blueprint.id()
+                                                                  .asString(),
+                                                         0));
         }
         return node.apply(commands)
-                   .mapToUnit()
-                   .onSuccess(_ -> response.ok("{\"status\":\"applied\",\"blueprint\":\"" + blueprint.id()
-                                                                                                     .asString()
-                                               + "\",\"slices\":" + commands.size() + "}"));
+                   .map(_ -> new BlueprintResponse("applied",
+                                                   blueprint.id()
+                                                            .asString(),
+                                                   commands.size()));
     }
 
-    private String buildSlicesResponse() {
+    private SlicesResponse buildSlicesResponse() {
         var node = nodeSupplier.get();
         var slices = node.sliceStore()
-                         .loaded();
-        var sb = new StringBuilder();
-        sb.append("{\"slices\":[");
-        boolean first = true;
-        for (var slice : slices) {
-            if (!first) sb.append(",");
-            sb.append("\"")
-              .append(slice.artifact()
-                           .asString())
-              .append("\"");
-            first = false;
-        }
-        sb.append("]}");
-        return sb.toString();
+                         .loaded()
+                         .stream()
+                         .map(slice -> slice.artifact()
+                                            .asString())
+                         .toList();
+        return new SlicesResponse(slices);
     }
 
-    private String buildRoutesResponse() {
+    private RoutesResponse buildRoutesResponse() {
         var node = nodeSupplier.get();
         var routes = node.httpRouteRegistry()
-                         .allRoutes();
-        var sb = new StringBuilder();
-        sb.append("{\"routes\":[");
-        boolean first = true;
-        for (var route : routes) {
-            if (!first) sb.append(",");
-            sb.append("{\"method\":\"")
-              .append(route.httpMethod())
-              .append("\",\"path\":\"")
-              .append(route.pathPrefix())
-              .append("\",\"artifact\":\"")
-              .append(route.artifact())
-              .append("\",\"sliceMethod\":\"")
-              .append(route.sliceMethod())
-              .append("\"}");
-            first = false;
-        }
-        sb.append("]}");
-        return sb.toString();
+                         .allRoutes()
+                         .stream()
+                         .map(route -> new RouteInfo(route.httpMethod(),
+                                                     route.pathPrefix(),
+                                                     route.artifact(),
+                                                     route.sliceMethod()))
+                         .toList();
+        return new RoutesResponse(routes);
     }
 
-    private String buildSlicesStatusResponse() {
+    private SlicesStatusResponse buildSlicesStatusResponse() {
         var node = nodeSupplier.get();
         Map<Artifact, List<SliceInstance>> slicesByArtifact = new HashMap<>();
         node.kvStore()
             .snapshot()
             .forEach((key, value) -> collectSliceInstance(slicesByArtifact, key, value));
-        var sb = new StringBuilder();
-        sb.append("{\"slices\":[");
-        boolean first = true;
-        for (var entry : slicesByArtifact.entrySet()) {
-            if (!first) sb.append(",");
-            first = false;
-            var artifact = entry.getKey();
-            var instances = entry.getValue();
-            var aggregateState = instances.stream()
-                                          .map(SliceInstance::state)
-                                          .filter(s -> s == SliceState.ACTIVE)
-                                          .findAny()
-                                          .orElse(instances.isEmpty()
-                                                  ? SliceState.FAILED
-                                                  : instances.getFirst()
-                                                             .state());
-            sb.append("{\"artifact\":\"")
-              .append(artifact.asString())
-              .append("\",\"state\":\"")
-              .append(aggregateState.name())
-              .append("\",\"instances\":[");
-            boolean firstInstance = true;
-            for (var instance : instances) {
-                if (!firstInstance) sb.append(",");
-                firstInstance = false;
-                var health = instance.state() == SliceState.ACTIVE
-                             ? "HEALTHY"
-                             : "UNHEALTHY";
-                sb.append("{\"nodeId\":\"")
-                  .append(instance.nodeId()
-                                  .id())
-                  .append("\",\"state\":\"")
-                  .append(instance.state()
-                                  .name())
-                  .append("\",\"health\":\"")
-                  .append(health)
-                  .append("\"}");
-            }
-            sb.append("]}");
-        }
-        sb.append("]}");
-        return sb.toString();
+        var slices = slicesByArtifact.entrySet()
+                                     .stream()
+                                     .map(this::toSliceStatus)
+                                     .toList();
+        return new SlicesStatusResponse(slices);
+    }
+
+    private SliceStatus toSliceStatus(Map.Entry<Artifact, List<SliceInstance>> entry) {
+        var artifact = entry.getKey();
+        var instances = entry.getValue();
+        var aggregateState = computeAggregateState(instances);
+        var instanceInfos = instances.stream()
+                                     .map(this::toSliceInstanceInfo)
+                                     .toList();
+        return new SliceStatus(artifact.asString(), aggregateState.name(), instanceInfos);
+    }
+
+    private SliceState computeAggregateState(List<SliceInstance> instances) {
+        return Option.from(instances.stream()
+                                    .map(SliceInstance::state)
+                                    .filter(s -> s == SliceState.ACTIVE)
+                                    .findAny())
+                     .or(instances.isEmpty()
+                         ? SliceState.FAILED
+                         : instances.getFirst()
+                                    .state());
+    }
+
+    private SliceInstanceInfo toSliceInstanceInfo(SliceInstance instance) {
+        var health = instance.state() == SliceState.ACTIVE
+                     ? "HEALTHY"
+                     : "UNHEALTHY";
+        return new SliceInstanceInfo(instance.nodeId()
+                                             .id(),
+                                     instance.state()
+                                             .name(),
+                                     health);
     }
 
     private void collectSliceInstance(Map<Artifact, List<SliceInstance>> map, AetherKey key, AetherValue value) {
@@ -303,10 +259,4 @@ public final class SliceRoutes implements RouteHandler {
     }
 
     private record SliceInstance(NodeId nodeId, SliceState state) {}
-
-    private static boolean isBadRequest(org.pragmatica.lang.Cause cause) {
-        return cause.message()
-                    .contains("Invalid") || cause.message()
-                                                 .contains("Missing");
-    }
 }

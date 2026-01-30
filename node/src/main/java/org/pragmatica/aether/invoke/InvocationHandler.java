@@ -7,6 +7,7 @@ import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.io.TimeSpan;
@@ -166,6 +167,8 @@ class InvocationHandlerImpl implements InvocationHandler {
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
+        // Record invocation start for active invocation tracking
+        metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
         // SliceBridge uses byte[] directly - no ByteBuf conversion needed
         bridge.invoke(request.method()
                              .name(),
@@ -186,19 +189,26 @@ class InvocationHandlerImpl implements InvocationHandler {
                   durationNs / 1_000_000,
                   request.targetSlice(),
                   request.method());
-        metricsCollector.onPresent(mc -> mc.recordSuccess(request.targetSlice(),
-                                                          request.method(),
-                                                          durationNs,
-                                                          requestBytes,
-                                                          responseBytes));
+        metricsCollector.onPresent(mc -> recordSuccessMetrics(mc, request, durationNs, requestBytes, responseBytes));
         InvocationContext.clear();
     }
 
+    private void recordSuccessMetrics(InvocationMetricsCollector mc,
+                                      InvokeRequest request,
+                                      long durationNs,
+                                      int requestBytes,
+                                      int responseBytes) {
+        mc.recordComplete(request.targetSlice(), request.method());
+        mc.recordSuccess(request.targetSlice(), request.method(), durationNs, requestBytes, responseBytes);
+    }
+
     private void handleInvocationFailure(InvokeRequest request,
-                                         org.pragmatica.lang.Cause cause,
+                                         Cause cause,
                                          long startTime,
                                          int requestBytes) {
         var durationNs = System.nanoTime() - startTime;
+        var errorType = cause.getClass()
+                             .getSimpleName();
         log.error("[requestId={}] Invocation failed [{}]: {}",
                   request.requestId(),
                   request.correlationId(),
@@ -206,13 +216,17 @@ class InvocationHandlerImpl implements InvocationHandler {
         if (request.expectResponse()) {
             sendErrorResponse(request, cause.message());
         }
-        metricsCollector.onPresent(mc -> mc.recordFailure(request.targetSlice(),
-                                                          request.method(),
-                                                          durationNs,
-                                                          requestBytes,
-                                                          cause.getClass()
-                                                               .getSimpleName()));
+        metricsCollector.onPresent(mc -> recordFailureMetrics(mc, request, durationNs, requestBytes, errorType));
         InvocationContext.clear();
+    }
+
+    private void recordFailureMetrics(InvocationMetricsCollector mc,
+                                      InvokeRequest request,
+                                      long durationNs,
+                                      int requestBytes,
+                                      String errorType) {
+        mc.recordComplete(request.targetSlice(), request.method());
+        mc.recordFailure(request.targetSlice(), request.method(), durationNs, requestBytes, errorType);
     }
 
     private void sendSuccessResponse(InvokeRequest request, byte[] payload) {

@@ -412,11 +412,13 @@ class SliceInvokerImpl implements SliceInvoker {
         var requestId = InvocationContext.getOrGenerateRequestId();
         var invokeRequest = new InvokeRequest(self, correlationId, requestId, slice, method, payload, false);
         network.send(endpoint.nodeId(), invokeRequest);
-        log.debug("[requestId={}] Sent fire-and-forget invocation to {}: {}.{}",
-                  requestId,
-                  endpoint.nodeId(),
-                  slice,
-                  method);
+        if (log.isDebugEnabled()) {
+            log.debug("[requestId={}] Sent fire-and-forget invocation to {}: {}.{}",
+                      requestId,
+                      endpoint.nodeId(),
+                      slice,
+                      method);
+        }
         return Promise.success(unit());
     }
 
@@ -455,12 +457,14 @@ class SliceInvokerImpl implements SliceInvoker {
                       .onResult(_ -> pendingInvocations.remove(correlationId));
         var invokeRequest = new InvokeRequest(self, correlationId, requestId, slice, method, payload, true);
         network.send(endpoint.nodeId(), invokeRequest);
-        log.debug("[requestId={}] Sent request-response invocation to {}: {}.{} [{}]",
-                  requestId,
-                  endpoint.nodeId(),
-                  slice,
-                  method,
-                  correlationId);
+        if (log.isDebugEnabled()) {
+            log.debug("[requestId={}] Sent request-response invocation to {}: {}.{} [{}]",
+                      requestId,
+                      endpoint.nodeId(),
+                      slice,
+                      method,
+                      correlationId);
+        }
     }
 
     @Override
@@ -559,13 +563,15 @@ class SliceInvokerImpl implements SliceInvoker {
                       .onResult(_ -> pendingInvocations.remove(correlationId));
         var invokeRequest = new InvokeRequest(self, correlationId, ctx.requestId, ctx.slice, ctx.method, payload, true);
         network.send(endpoint.nodeId(), invokeRequest);
-        log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
-                  ctx.requestId,
-                  endpoint.nodeId(),
-                  ctx.slice,
-                  ctx.method,
-                  correlationId,
-                  ctx.attemptCount() + 1);
+        if (log.isDebugEnabled()) {
+            log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
+                      ctx.requestId,
+                      endpoint.nodeId(),
+                      ctx.slice,
+                      ctx.method,
+                      correlationId,
+                      ctx.attemptCount() + 1);
+        }
         pendingPromise.onSuccess(result -> promise.succeed((R) result))
                       .onFailure(cause -> handleFailoverFailure(promise,
                                                                 ctx,
@@ -586,13 +592,15 @@ class SliceInvokerImpl implements SliceInvoker {
         }
         // Schedule retry with different endpoint
         var delayMs = BASE_RETRY_DELAY_MS * (1L<< (newCtx.attemptCount() - 1));
-        log.debug("[requestId={}] Endpoint {} failed, scheduling failover retry in {}ms: {}.{} - {}",
-                  ctx.requestId,
-                  failedNode,
-                  delayMs,
-                  ctx.slice,
-                  ctx.method,
-                  cause.message());
+        if (log.isDebugEnabled()) {
+            log.debug("[requestId={}] Endpoint {} failed, scheduling failover retry in {}ms: {}.{} - {}",
+                      ctx.requestId,
+                      failedNode,
+                      delayMs,
+                      ctx.slice,
+                      ctx.method,
+                      cause.message());
+        }
         scheduler.schedule(() -> executeWithFailover(promise, newCtx), delayMs, TimeUnit.MILLISECONDS);
     }
 
@@ -640,13 +648,15 @@ class SliceInvokerImpl implements SliceInvoker {
 
     private void publishFailureEvent(SliceFailureEvent event) {
         log.warn("SliceFailureEvent: {}", event);
-        failureListener.onPresent(listener -> {
-                                      try{
-                                          listener.onSliceFailure(event);
-                                      } catch (Exception e) {
-                                          log.error("Error notifying failure listener: {}", e.getMessage());
-                                      }
-                                  });
+        failureListener.onPresent(listener -> safeNotifyFailureListener(listener, event));
+    }
+
+    private void safeNotifyFailureListener(SliceFailureListener listener, SliceFailureEvent event) {
+        try{
+            listener.onSliceFailure(event);
+        } catch (Exception e) {
+            log.error("Error notifying failure listener: {}", e.getMessage());
+        }
     }
 
     @Override
@@ -682,7 +692,9 @@ class SliceInvokerImpl implements SliceInvoker {
             try{
                 var result = deserializer.read(buf);
                 promise.resolve(Result.success(result));
-                log.debug("[requestId={}] Completed invocation [{}]", requestId, response.correlationId());
+                if (log.isDebugEnabled()) {
+                    log.debug("[requestId={}] Completed invocation [{}]", requestId, response.correlationId());
+                }
             } catch (Exception e) {
                 promise.resolve(Causes.fromThrowable(e)
                                       .result());
@@ -696,7 +708,9 @@ class SliceInvokerImpl implements SliceInvoker {
         } else {
             var errorMessage = new String(response.payload());
             promise.resolve(new SliceInvokerError.InvocationError(errorMessage).result());
-            log.debug("[requestId={}] Invocation failed [{}]: {}", requestId, response.correlationId(), errorMessage);
+            if (log.isDebugEnabled()) {
+                log.debug("[requestId={}] Invocation failed [{}]: {}", requestId, response.correlationId(), errorMessage);
+            }
         }
     }
 
@@ -713,7 +727,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                 ArtifactBase artifactBase,
                                                                 MethodName method,
                                                                 RollingUpdate update) {
-        log.debug("Using weighted routing for {} during rolling update {}", slice, update.updateId());
+        if (log.isDebugEnabled()) {
+            log.debug("Using weighted routing for {} during rolling update {}", slice, update.updateId());
+        }
         return endpointRegistry.selectEndpointWithRouting(artifactBase,
                                                           method,
                                                           update.routing(),

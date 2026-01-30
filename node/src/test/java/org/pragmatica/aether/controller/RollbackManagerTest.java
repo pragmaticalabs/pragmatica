@@ -8,10 +8,10 @@ import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -69,8 +69,8 @@ class RollbackManagerTest {
             var v1 = Artifact.artifact("org.example:test:1.0.0").unwrap();
             var v2 = Artifact.artifact("org.example:test:2.0.0").unwrap();
 
-            simulateBlueprintChange(v1);
-            simulateBlueprintChange(v2);
+            simulateSliceTargetChange(v1);
+            simulateSliceTargetChange(v2);
 
             assertThat(clusterNode.appliedCommands).isEmpty();
         }
@@ -81,8 +81,8 @@ class RollbackManagerTest {
             var v1 = Artifact.artifact("org.example:test:1.0.0").unwrap();
             var v2 = Artifact.artifact("org.example:test:2.0.0").unwrap();
 
-            simulateBlueprintChange(v1);
-            simulateBlueprintChange(v2);
+            simulateSliceTargetChange(v1);
+            simulateSliceTargetChange(v2);
 
             assertThat(clusterNode.appliedCommands).hasSize(1);
             var command = clusterNode.appliedCommands.getFirst();
@@ -104,7 +104,7 @@ class RollbackManagerTest {
         void noPreviousVersion_doesNotRollback() {
             var artifact = Artifact.artifact("org.example:test:1.0.0").unwrap();
 
-            simulateBlueprintChange(artifact);
+            simulateSliceTargetChange(artifact);
             rollbackManager.onAllInstancesFailed(createFailureEvent(artifact));
 
             assertThat(clusterNode.appliedCommands).isEmpty();
@@ -115,8 +115,8 @@ class RollbackManagerTest {
             var v1 = Artifact.artifact("org.example:test:1.0.0").unwrap();
             var v2 = Artifact.artifact("org.example:test:2.0.0").unwrap();
 
-            simulateBlueprintChange(v1);
-            simulateBlueprintChange(v2);
+            simulateSliceTargetChange(v1);
+            simulateSliceTargetChange(v2);
             clusterNode.appliedCommands.clear();
 
             rollbackManager.onAllInstancesFailed(createFailureEvent(v2));
@@ -126,9 +126,11 @@ class RollbackManagerTest {
             assertThat(command).isInstanceOf(KVCommand.Put.class);
             @SuppressWarnings("unchecked")
             var put = (KVCommand.Put<AetherKey, AetherValue>) command;
-            assertThat(put.key()).isInstanceOf(BlueprintKey.class);
-            var blueprintKey = (BlueprintKey) put.key();
-            assertThat(blueprintKey.artifact().version().withQualifier()).isEqualTo("1.0.0");
+            assertThat(put.key()).isInstanceOf(SliceTargetKey.class);
+            var sliceTargetKey = (SliceTargetKey) put.key();
+            assertThat(sliceTargetKey.artifactBase()).isEqualTo(v1.base());
+            var sliceTargetValue = (SliceTargetValue) put.value();
+            assertThat(sliceTargetValue.currentVersion().withQualifier()).isEqualTo("1.0.0");
         }
     }
 
@@ -144,8 +146,8 @@ class RollbackManagerTest {
             var v1 = Artifact.artifact("org.example:test:1.0.0").unwrap();
             var v2 = Artifact.artifact("org.example:test:2.0.0").unwrap();
 
-            simulateBlueprintChange(v1);
-            simulateBlueprintChange(v2);
+            simulateSliceTargetChange(v1);
+            simulateSliceTargetChange(v2);
             clusterNode.appliedCommands.clear();
 
             rollbackManager.onAllInstancesFailed(createFailureEvent(v2));
@@ -167,8 +169,8 @@ class RollbackManagerTest {
             var v1 = Artifact.artifact("org.example:test:1.0.0").unwrap();
             var v2 = Artifact.artifact("org.example:test:2.0.0").unwrap();
 
-            simulateBlueprintChange(v1);
-            simulateBlueprintChange(v2);
+            simulateSliceTargetChange(v1);
+            simulateSliceTargetChange(v2);
             clusterNode.appliedCommands.clear();
 
             rollbackManager.onAllInstancesFailed(createFailureEvent(v2));
@@ -181,9 +183,9 @@ class RollbackManagerTest {
     }
 
     // Helper methods
-    private void simulateBlueprintChange(Artifact artifact) {
-        var key = new BlueprintKey(artifact);
-        var value = new BlueprintValue(1);
+    private void simulateSliceTargetChange(Artifact artifact) {
+        var key = SliceTargetKey.sliceTargetKey(artifact.base());
+        var value = SliceTargetValue.sliceTargetValue(artifact.version(), 1);
         var put = new KVCommand.Put<AetherKey, AetherValue>(key, value);
         var notification = new ValuePut<>(put, Option.none());
         rollbackManager.onValuePut(notification);

@@ -47,12 +47,13 @@ public final class ForgeRouter {
                                             long startTime,
                                             Consumer<EventLogEntry> eventLogger) {
         return RequestRouter.with(StatusRoutes.statusRoutes(cluster, loadGenerator, metrics, events, startTime),
-                                  ChaosRoutes.chaosRoutes(cluster, chaosController, eventLogger),
+                                  ChaosRoutes.chaosRoutes(cluster, chaosController, events, inventoryState, eventLogger),
                                   LoadRoutes.loadRoutes(loadGenerator, loadRunner),
                                   SimulatorRoutes.simulatorRoutes(loadGenerator,
                                                                   configSupplier,
                                                                   inventoryState,
                                                                   eventLogger),
-                                  DeploymentRoutes.deploymentRoutes(cluster, eventLogger));
+                                  DeploymentRoutes.deploymentRoutes(cluster, eventLogger),
+                                  PanelRoutes.panelRoutes());
     }
 }

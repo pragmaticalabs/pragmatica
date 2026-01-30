@@ -329,6 +329,7 @@ class ManagementApiIT {
                 Option.empty(),
                 org.pragmatica.aether.config.TTMConfig.disabled(),
                 org.pragmatica.aether.config.RollbackConfig.defaults(),
-                org.pragmatica.aether.config.AppHttpConfig.disabled());
+                org.pragmatica.aether.config.AppHttpConfig.disabled(),
+                org.pragmatica.aether.controller.ControllerConfig.defaults());
     }
 }

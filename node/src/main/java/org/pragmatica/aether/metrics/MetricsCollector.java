@@ -11,6 +11,7 @@ import org.pragmatica.utility.RingBuffer;
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 import java.lang.management.OperatingSystemMXBean;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.DoubleAdder;
@@ -126,7 +127,8 @@ class MetricsCollectorImpl implements MetricsCollector {
 
     @Override
     public Map<String, Double> collectLocal() {
-        var metrics = new ConcurrentHashMap<String, Double>();
+        // Local variable accessed only by current thread - no need for ConcurrentHashMap
+        var metrics = new HashMap<String, Double>();
         // CPU usage (system load average normalized by processors)
         double systemLoad = osMxBean.getSystemLoadAverage();
         if (systemLoad >= 0) {
@@ -159,7 +161,7 @@ class MetricsCollectorImpl implements MetricsCollector {
     @Override
     public void recordCall(MethodName method, long durationMs) {
         callStats.computeIfAbsent(method,
-                                  _ -> new CallStats())
+                                  _ -> CallStats.callStats())
                  .record(durationMs);
     }
 
@@ -231,9 +233,10 @@ class MetricsCollectorImpl implements MetricsCollector {
     /**
      * Mutable call statistics for a method.
      */
-    private static class CallStats {
-        final LongAdder count = new LongAdder();
-        final DoubleAdder totalDuration = new DoubleAdder();
+    private record CallStats(LongAdder count, DoubleAdder totalDuration) {
+        static CallStats callStats() {
+            return new CallStats(new LongAdder(), new DoubleAdder());
+        }
 
         void record(long durationMs) {
             count.increment();

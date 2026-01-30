@@ -125,17 +125,6 @@ public final class ForgeApiHandler {
         var path = request.path();
         log.debug("API request: {} {}", request.method(), path);
         try{
-            // Handle panel endpoints separately (return HTML)
-            if (isPanelRequest(path)) {
-                handlePanelRequest(response, path);
-                return;
-            }
-            // Handle reset metrics (not in router)
-            if (path.equals("/api/chaos/reset-metrics") && request.method() == org.pragmatica.http.HttpMethod.POST) {
-                handleResetMetrics(response);
-                return;
-            }
-            // Route API requests via RequestRouter
             var method = convertMethod(request.method());
             router.findRoute(method, path)
                   .onEmpty(() -> sendNotFound(response, path))
@@ -144,19 +133,6 @@ public final class ForgeApiHandler {
             log.error("Error handling API request: {}", e.getMessage(), e);
             sendError(response, HttpStatus.INTERNAL_SERVER_ERROR, e.getMessage());
         }
-    }
-
-    private boolean isPanelRequest(String path) {
-        return path.equals("/api/panel/chaos") || path.equals("/api/panel/load");
-    }
-
-    private void handlePanelRequest(ResponseWriter response, String path) {
-        var html = switch (path) {
-            case "/api/panel/chaos" -> chaosPanelHtml();
-            case "/api/panel/load" -> loadPanelHtml();
-            default -> "";
-        };
-        sendHtml(response, html);
     }
 
     private void handleRoute(RequestContext request, ResponseWriter response, Route<?> route, String path) {
@@ -276,18 +252,6 @@ public final class ForgeApiHandler {
         response.write(status, json.getBytes(StandardCharsets.UTF_8), CommonContentType.APPLICATION_JSON);
     }
 
-    private void sendHtml(ResponseWriter response, String html) {
-        response.write(HttpStatus.OK, html.getBytes(StandardCharsets.UTF_8), CommonContentType.TEXT_HTML);
-    }
-
-    private void handleResetMetrics(ResponseWriter response) {
-        events.clear();
-        inventoryState.reset();
-        addEvent("RESET", "Metrics and events reset");
-        var json = "{\"success\":true}";
-        response.write(HttpStatus.OK, json.getBytes(StandardCharsets.UTF_8), CommonContentType.APPLICATION_JSON);
-    }
-
     public void addEvent(String type, String message) {
         var event = new ForgeEvent(Instant.now()
                                           .toString(),
@@ -307,145 +271,5 @@ public final class ForgeApiHandler {
                   .replace("\n", "\\n")
                   .replace("\r", "\\r")
                   .replace("\t", "\\t");
-    }
-
-    // ========== Panel HTML ==========
-    private String chaosPanelHtml() {
-        return """
-            <!-- Chaos Control Panel -->
-            <div class="panel control-panel">
-                <h2>Chaos Controls</h2>
-                <div class="control-section">
-                    <div class="control-group">
-                        <span class="control-label">Node Chaos</span>
-                        <div class="control-buttons">
-                            <button id="btn-kill-node" class="btn btn-danger btn-small">Kill Node</button>
-                            <button id="btn-kill-leader" class="btn btn-warning btn-small">Kill Leader</button>
-                            <button id="btn-rolling-restart" class="btn btn-secondary btn-small">Rolling Restart</button>
-                            <button id="btn-add-node" class="btn btn-primary btn-small">Add Node</button>
-                        </div>
-                    </div>
-                    <div class="control-group">
-                        <span class="control-label">Load Control</span>
-                        <div class="control-buttons">
-                            <button id="btn-load-1k" class="btn btn-secondary btn-small">1K</button>
-                            <button id="btn-load-5k" class="btn btn-secondary btn-small">5K</button>
-                            <button id="btn-load-10k" class="btn btn-secondary btn-small">10K</button>
-                            <button id="btn-load-25k" class="btn btn-secondary btn-small">25K</button>
-                            <button id="btn-load-50k" class="btn btn-secondary btn-small">50K</button>
-                            <button id="btn-load-100k" class="btn btn-secondary btn-small">100K</button>
-                            <button id="btn-ramp" class="btn btn-primary btn-small">Ramp</button>
-                        </div>
-                    </div>
-                    <div class="control-group">
-                        <span class="control-label">Rate Slider</span>
-                        <div class="slider-container">
-                            <input type="range" id="load-slider" min="0" max="100000" value="0" step="1000">
-                            <span id="load-value" class="slider-value">0</span>
-                        </div>
-                    </div>
-                    <div class="control-group">
-                        <span class="control-label">Load Generator</span>
-                        <div class="control-buttons">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="load-generator-toggle" checked>
-                                <span>Enabled</span>
-                            </label>
-                            <input type="number" id="rate-multiplier" value="1.0" min="0.1" max="10" step="0.1" class="multiplier-input">
-                            <button id="btn-apply-multiplier" class="btn btn-secondary btn-small">Apply</button>
-                        </div>
-                    </div>
-                    <div class="control-group">
-                        <button id="btn-reset" class="btn btn-secondary btn-small">Reset Metrics</button>
-                    </div>
-                </div>
-            </div>
-            """;
-    }
-
-    private String loadPanelHtml() {
-        return """
-            <!-- Load Testing Panel -->
-            <div class="panel-section">
-                <h3>Configuration</h3>
-                <div class="config-upload">
-                    <textarea id="loadConfigText" placeholder="Paste TOML config here..." rows="10"></textarea>
-                    <button onclick="uploadLoadConfig()">Upload Config</button>
-                </div>
-                <div id="loadConfigStatus"></div>
-            </div>
-            <div class="panel-section">
-                <h3>Controls</h3>
-                <div class="load-controls">
-                    <button onclick="loadAction('start')" class="btn-primary">Start</button>
-                    <button onclick="loadAction('pause')" class="btn-warning">Pause</button>
-                    <button onclick="loadAction('resume')" class="btn-success">Resume</button>
-                    <button onclick="loadAction('stop')" class="btn-danger">Stop</button>
-                </div>
-                <div class="load-state">
-                    State: <span id="loadState">IDLE</span>
-                </div>
-            </div>
-            <div class="panel-section">
-                <h3>Per-Target Metrics</h3>
-                <table class="metrics-table">
-                    <thead>
-                        <tr>
-                            <th>Target</th>
-                            <th>Rate (actual/target)</th>
-                            <th>Requests</th>
-                            <th>Success Rate</th>
-                            <th>Avg Latency</th>
-                        </tr>
-                    </thead>
-                    <tbody id="loadTargetMetrics">
-                    </tbody>
-                </table>
-            </div>
-            <script>
-            function uploadLoadConfig() {
-                const text = document.getElementById('loadConfigText').value;
-                fetch('/api/load/config', { method: 'POST', body: text })
-                    .then(r => r.json())
-                    .then(data => {
-                        if (data.error) {
-                            document.getElementById('loadConfigStatus').innerHTML =
-                                '<span class="error">' + data.error + '</span>';
-                        } else {
-                            document.getElementById('loadConfigStatus').innerHTML =
-                                '<span class="success">Loaded ' + data.targetCount + ' targets</span>';
-                        }
-                    });
-            }
-            function loadAction(action) {
-                fetch('/api/load/' + action, { method: 'POST' })
-                    .then(r => r.json())
-                    .then(data => {
-                        if (data.state) {
-                            document.getElementById('loadState').textContent = data.state;
-                        }
-                    });
-            }
-            function updateLoadMetrics() {
-                fetch('/api/load/status')
-                    .then(r => r.json())
-                    .then(data => {
-                        document.getElementById('loadState').textContent = data.state;
-                        const tbody = document.getElementById('loadTargetMetrics');
-                        tbody.innerHTML = data.targets.map(t =>
-                            '<tr>' +
-                            '<td>' + t.name + '</td>' +
-                            '<td>' + t.actualRate + '/' + t.targetRate + '</td>' +
-                            '<td>' + t.requests + '</td>' +
-                            '<td>' + t.successRate.toFixed(1) + '%</td>' +
-                            '<td>' + t.avgLatencyMs.toFixed(1) + 'ms</td>' +
-                            '</tr>'
-                        ).join('');
-                    });
-            }
-            setInterval(updateLoadMetrics, 1000);
-            updateLoadMetrics();
-            </script>
-            """;
     }
 }

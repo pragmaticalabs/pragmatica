@@ -8,7 +8,6 @@ import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
 import org.pragmatica.aether.controller.RollbackManager;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
-import org.pragmatica.aether.deployment.cluster.BlueprintServiceImpl;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
@@ -41,7 +40,6 @@ import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.ttm.TTMState;
 import org.pragmatica.aether.update.RollingUpdateManager;
-import org.pragmatica.aether.update.RollingUpdateManagerImpl;
 import org.pragmatica.aether.slice.DeferredSliceInvokerFacade;
 import org.pragmatica.aether.slice.FrameworkClassLoader;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
@@ -71,6 +69,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
@@ -488,15 +487,13 @@ public interface AetherNode {
         // Create base decision tree controller
         var controller = DecisionTreeController.decisionTreeController();
         // Create blueprint service using composite repository from configuration
-        var blueprintService = BlueprintServiceImpl.blueprintService(clusterNode,
-                                                                     kvStore,
-                                                                     compositeRepository(repositories));
+        var blueprintService = BlueprintService.blueprintService(clusterNode, kvStore, compositeRepository(repositories));
         // Create Maven protocol handler from artifact store (DHT created in createNode)
         var mavenProtocolHandler = MavenProtocolHandler.mavenProtocolHandler(artifactStore);
         // Create invocation metrics collector
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
         // Create rolling update manager
-        var rollingUpdateManager = RollingUpdateManagerImpl.rollingUpdateManager(clusterNode, kvStore, invocationMetrics);
+        var rollingUpdateManager = RollingUpdateManager.rollingUpdateManager(clusterNode, kvStore, invocationMetrics);
         // Create alert manager with KV-Store persistence
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
         // Create minute aggregator for TTM and metrics collection
@@ -525,7 +522,16 @@ public interface AetherNode {
         ClusterController effectiveController = ttmManager.isEnabled()
                                                 ? AdaptiveDecisionTree.adaptiveDecisionTree(controller, ttmManager)
                                                 : controller;
-        var controlLoop = ControlLoop.controlLoop(config.self(), effectiveController, metricsCollector, clusterNode);
+        var controlLoop = ControlLoop.controlLoop(config.self(),
+                                                  effectiveController,
+                                                  metricsCollector,
+                                                  invocationMetrics,
+                                                  clusterNode,
+                                                  TimeSpan.timeSpan(config.controllerConfig()
+                                                                          .scalingConfig()
+                                                                          .evaluationIntervalMs())
+                                                          .millis(),
+                                                  config.controllerConfig());
         // Create rollback manager for automatic version rollback on persistent failures
         var rollbackManager = config.rollback()
                                     .enabled()
@@ -675,7 +681,7 @@ public interface AetherNode {
                                                                     AlertManager alertManager,
                                                                     TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
-                                                                    RollingUpdateManagerImpl rollingUpdateManager,
+                                                                    RollingUpdateManager rollingUpdateManager,
                                                                     RollbackManager rollbackManager,
                                                                     ArtifactMetricsCollector artifactMetricsCollector) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();

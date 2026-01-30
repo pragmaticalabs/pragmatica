@@ -16,6 +16,5 @@
 
     <modules>
         <module>ecommerce</module>
-        <module>order-demo</module>
     </modules>
 </project>

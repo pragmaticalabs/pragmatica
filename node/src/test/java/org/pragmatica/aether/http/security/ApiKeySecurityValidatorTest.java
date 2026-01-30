@@ -18,7 +18,7 @@ class ApiKeySecurityValidatorTest {
     private static final Set<String> VALID_KEYS = Set.of(VALID_KEY, "another-valid-key");
 
     @Test
-    void publicRoute_allowsAnonymousAccess() {
+    void validate_allowsAnonymousAccess_forPublicRoute() {
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of());
 
@@ -31,7 +31,7 @@ class ApiKeySecurityValidatorTest {
     }
 
     @Test
-    void apiKeyRequired_succeedsWithValidKey() {
+    void validate_succeeds_forValidApiKey() {
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
@@ -45,7 +45,7 @@ class ApiKeySecurityValidatorTest {
     }
 
     @Test
-    void apiKeyRequired_failsWithInvalidKey() {
+    void validate_fails_forInvalidApiKey() {
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("X-API-Key", List.of(INVALID_KEY)));
 
@@ -58,7 +58,7 @@ class ApiKeySecurityValidatorTest {
     }
 
     @Test
-    void apiKeyRequired_failsWithMissingKey() {
+    void validate_fails_forMissingApiKey() {
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of());
 
@@ -71,7 +71,7 @@ class ApiKeySecurityValidatorTest {
     }
 
     @Test
-    void apiKeyRequired_caseInsensitiveHeaderLookup() {
+    void validate_succeeds_forCaseInsensitiveHeader() {
         var validator = SecurityValidator.apiKeyValidator(VALID_KEYS);
         var request = createRequest(Map.of("x-api-key", List.of(VALID_KEY)));
 
@@ -83,7 +83,7 @@ class ApiKeySecurityValidatorTest {
     }
 
     @Test
-    void noOpValidator_alwaysReturnsAnonymous() {
+    void validate_returnsAnonymous_forNoOpValidator() {
         var validator = SecurityValidator.noOpValidator();
         var request = createRequest(Map.of());
 

@@ -1,9 +1,11 @@
 package org.pragmatica.aether.deployment.node;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceBridgeImpl;
 import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
@@ -24,7 +26,6 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -40,6 +41,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -296,12 +298,12 @@ public interface NodeDeploymentManager {
 
             private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = Causes.forOneValue("Slice not loaded for registration: {}");
 
-            private Unit registerSliceBridge(Artifact artifact, org.pragmatica.aether.slice.Slice slice) {
+            private Unit registerSliceBridge(Artifact artifact, Slice slice) {
                 var serializerProvider = resolveSerializerProvider();
                 var typeTokens = slice.methods()
                                       .stream()
-                                      .flatMap(m -> java.util.stream.Stream.of(m.parameterType(),
-                                                                               m.returnType()))
+                                      .flatMap(m -> Stream.of(m.parameterType(),
+                                                              m.returnType()))
                                       .collect(Collectors.toList());
                 var serializerFactory = serializerProvider.createFactory(typeTokens);
                 var sliceBridge = SliceBridgeImpl.sliceBridge(artifact, slice, serializerFactory);
@@ -311,10 +313,8 @@ public interface NodeDeploymentManager {
             }
 
             private SerializerFactoryProvider resolveSerializerProvider() {
-                var provider = configuration.serializerProvider();
-                return provider != null
-                       ? provider
-                       : FurySerializerFactoryProvider.furySerializerFactoryProvider();
+                return Option.option(configuration.serializerProvider())
+                             .or(() -> FurySerializerFactoryProvider.furySerializerFactoryProvider());
             }
 
             private void unregisterSliceFromInvocation(SliceNodeKey sliceKey) {
@@ -330,7 +330,7 @@ public interface NodeDeploymentManager {
                                       .or(Promise.unitPromise());
             }
 
-            private Promise<Unit> publishEndpointsForSlice(Artifact artifact, org.pragmatica.aether.slice.Slice slice) {
+            private Promise<Unit> publishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
                 int instanceNumber = Math.abs(self.id()
                                                   .hashCode());
@@ -352,7 +352,7 @@ public interface NodeDeploymentManager {
                                                             cause.message()));
             }
 
-            private KVCommand<AetherKey> createEndpointPutCommand(org.pragmatica.aether.artifact.Artifact artifact,
+            private KVCommand<AetherKey> createEndpointPutCommand(Artifact artifact,
                                                                   MethodName methodName,
                                                                   int instanceNumber) {
                 var key = new EndpointKey(artifact, methodName, instanceNumber);
@@ -406,8 +406,7 @@ public interface NodeDeploymentManager {
                                       .or(Promise.unitPromise());
             }
 
-            private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact,
-                                                             org.pragmatica.aether.slice.Slice slice) {
+            private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
                 int instanceNumber = Math.abs(self.id()
                                                   .hashCode());
@@ -429,7 +428,7 @@ public interface NodeDeploymentManager {
                                                             cause.message()));
             }
 
-            private KVCommand<AetherKey> createEndpointRemoveCommand(org.pragmatica.aether.artifact.Artifact artifact,
+            private KVCommand<AetherKey> createEndpointRemoveCommand(Artifact artifact,
                                                                      MethodName methodName,
                                                                      int instanceNumber) {
                 var key = new EndpointKey(artifact, methodName, instanceNumber);
@@ -479,26 +478,26 @@ public interface NodeDeploymentManager {
                           failureState,
                           operation.isResolved());
                 configuration.timeoutFor(currentState)
-                             .onSuccess(timeout -> {
-                                            log.debug("Got timeout {} for {}, setting up callbacks",
-                                                      timeout,
-                                                      sliceKey.artifact());
-                                            operation.timeout(timeout)
-                                                     .onSuccess(_ -> {
-                                                                    log.info("Operation succeeded for {}, transitioning to {}",
-                                                                             sliceKey.artifact(),
-                                                                             successState);
-                                                                    transitionTo(sliceKey, successState);
-                                                                })
-                                                     .onFailure(cause -> {
-                                                                    log.warn("Operation failed for {}: {}, transitioning to {}",
-                                                                             sliceKey.artifact(),
-                                                                             cause.message(),
-                                                                             failureState);
-                                                                    transitionTo(sliceKey, failureState);
-                                                                });
+                             .async()
+                             .flatMap(timeout -> {
+                                          log.debug("Got timeout {} for {}, setting up callbacks",
+                                                    timeout,
+                                                    sliceKey.artifact());
+                                          return operation.timeout(timeout);
+                                      })
+                             .onSuccess(_ -> {
+                                            log.info("Operation succeeded for {}, transitioning to {}",
+                                                     sliceKey.artifact(),
+                                                     successState);
+                                            transitionTo(sliceKey, successState);
                                         })
-                             .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
+                             .onFailure(cause -> {
+                                            log.warn("Operation failed for {}: {}, transitioning to {}",
+                                                     sliceKey.artifact(),
+                                                     cause.message(),
+                                                     failureState);
+                                            transitionTo(sliceKey, failureState);
+                                        });
             }
 
             private Promise<Unit> transitionTo(SliceNodeKey sliceKey, SliceState newState) {

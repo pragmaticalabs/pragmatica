@@ -5,11 +5,11 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.ClusterNode;
@@ -55,8 +55,8 @@ class ClusterDeploymentManagerTest {
     void manager_starts_in_dormant_state() {
         var artifact = createTestArtifact();
 
-        // Send blueprint before becoming leader - should be ignored
-        sendBlueprintPut(artifact, 3);
+        // Send slice target before becoming leader - should be ignored
+        sendSliceTargetPut(artifact, 3);
 
         assertThat(clusterNode.appliedCommands).isEmpty();
     }
@@ -67,7 +67,7 @@ class ClusterDeploymentManagerTest {
         addTopology(self, node2, node3);
 
         var artifact = createTestArtifact();
-        sendBlueprintPut(artifact, 3);
+        sendSliceTargetPut(artifact, 3);
 
         // Should issue LOAD commands
         assertThat(clusterNode.appliedCommands).hasSize(3);
@@ -81,54 +81,54 @@ class ClusterDeploymentManagerTest {
         loseLeadership();
 
         var artifact = createTestArtifact();
-        sendBlueprintPut(artifact, 3);
+        sendSliceTargetPut(artifact, 3);
 
         // Should be ignored in dormant state
         assertThat(clusterNode.appliedCommands).isEmpty();
     }
 
-    // === Blueprint Handling Tests ===
+    // === Slice Target Handling Tests ===
 
     @Test
-    void blueprint_put_triggers_allocation() {
+    void sliceTarget_put_triggers_allocation() {
         becomeLeader();
         addTopology(self, node2, node3);
 
         var artifact = createTestArtifact();
-        sendBlueprintPut(artifact, 3);
+        sendSliceTargetPut(artifact, 3);
 
         assertThat(clusterNode.appliedCommands).hasSize(3);
         assertAllCommandsAreLoadFor(artifact);
     }
 
     @Test
-    void blueprint_with_zero_instances_triggers_no_allocation() {
+    void sliceTarget_with_zero_instances_triggers_no_allocation() {
         becomeLeader();
         addTopology(self, node2, node3);
 
         var artifact = createTestArtifact();
-        sendBlueprintPut(artifact, 0);
+        sendSliceTargetPut(artifact, 0);
 
         assertThat(clusterNode.appliedCommands).isEmpty();
     }
 
     @Test
-    void blueprint_removal_triggers_deallocation() {
+    void sliceTarget_removal_triggers_deallocation() {
         becomeLeader();
         addTopology(self, node2, node3);
 
         var artifact = createTestArtifact();
 
         // First allocate
-        sendBlueprintPut(artifact, 2);
+        sendSliceTargetPut(artifact, 2);
         // Simulate slices are tracked
         trackSliceState(artifact, self, SliceState.ACTIVE);
         trackSliceState(artifact, node2, SliceState.ACTIVE);
 
         clusterNode.appliedCommands.clear();
 
-        // Then remove blueprint
-        sendBlueprintRemove(artifact);
+        // Then remove slice target
+        sendSliceTargetRemove(artifact);
 
         assertThat(clusterNode.appliedCommands).hasSize(2);
         assertAllCommandsAreUnloadFor(artifact);
@@ -142,7 +142,7 @@ class ClusterDeploymentManagerTest {
         addTopology(self, node2, node3);
 
         var artifact = createTestArtifact();
-        sendBlueprintPut(artifact, 3);
+        sendSliceTargetPut(artifact, 3);
 
         var allocatedNodes = clusterNode.appliedCommands.stream()
                                                         .map(cmd -> ((KVCommand.Put<AetherKey, AetherValue>) cmd).key())
@@ -159,7 +159,7 @@ class ClusterDeploymentManagerTest {
         addTopology(self, node2);
 
         var artifact = createTestArtifact();
-        sendBlueprintPut(artifact, 4);
+        sendSliceTargetPut(artifact, 4);
 
         // With 2 nodes and 4 instances, each node gets 2
         assertThat(clusterNode.appliedCommands).hasSize(4);
@@ -174,7 +174,7 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         var artifact = createTestArtifact();
-        emptyTopologyManager.onValuePut(blueprintPut(artifact, 3));
+        emptyTopologyManager.onValuePut(sliceTargetPut(artifact, 3));
 
         assertThat(clusterNode.appliedCommands).isEmpty();
     }
@@ -189,13 +189,13 @@ class ClusterDeploymentManagerTest {
         var artifact = createTestArtifact();
 
         // Initial allocation
-        sendBlueprintPut(artifact, 1);
+        sendSliceTargetPut(artifact, 1);
         trackSliceState(artifact, self, SliceState.ACTIVE);
 
         clusterNode.appliedCommands.clear();
 
         // Scale up
-        sendBlueprintPut(artifact, 3);
+        sendSliceTargetPut(artifact, 3);
 
         // Should add 2 more instances
         assertThat(clusterNode.appliedCommands).hasSize(2);
@@ -209,7 +209,7 @@ class ClusterDeploymentManagerTest {
         var artifact = createTestArtifact();
 
         // Initial allocation
-        sendBlueprintPut(artifact, 3);
+        sendSliceTargetPut(artifact, 3);
         trackSliceState(artifact, self, SliceState.ACTIVE);
         trackSliceState(artifact, node2, SliceState.ACTIVE);
         trackSliceState(artifact, node3, SliceState.ACTIVE);
@@ -217,7 +217,7 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         // Scale down
-        sendBlueprintPut(artifact, 1);
+        sendSliceTargetPut(artifact, 1);
 
         // Should issue 2 UNLOAD commands
         assertThat(clusterNode.appliedCommands).hasSize(2);
@@ -232,7 +232,7 @@ class ClusterDeploymentManagerTest {
         addTopology(self, node2);
 
         var artifact = createTestArtifact();
-        sendBlueprintPut(artifact, 3);
+        sendSliceTargetPut(artifact, 3);
         trackSliceState(artifact, self, SliceState.ACTIVE);
         trackSliceState(artifact, node2, SliceState.ACTIVE);
 
@@ -251,7 +251,7 @@ class ClusterDeploymentManagerTest {
         addTopology(self, node2, node3);
 
         var artifact = createTestArtifact();
-        sendBlueprintPut(artifact, 3);
+        sendSliceTargetPut(artifact, 3);
         trackSliceState(artifact, self, SliceState.ACTIVE);
         trackSliceState(artifact, node2, SliceState.ACTIVE);
         trackSliceState(artifact, node3, SliceState.ACTIVE);
@@ -259,7 +259,7 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         // Remove node3 - this removes slice state for node3 and triggers reconciliation
-        // With 2 remaining nodes and blueprint wanting 3, we need 1 more on one of the remaining nodes
+        // With 2 remaining nodes and slice target wanting 3, we need 1 more on one of the remaining nodes
         manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node3, List.of(self, node2)));
 
         // After removing node3's state (1 instance), we have 2 tracked, want 3
@@ -278,7 +278,7 @@ class ClusterDeploymentManagerTest {
         var artifact = createTestArtifact();
 
         // Initial allocation
-        sendBlueprintPut(artifact, 2);
+        sendSliceTargetPut(artifact, 2);
 
         // Simulate slice becoming active
         trackSliceState(artifact, self, SliceState.ACTIVE);
@@ -286,8 +286,8 @@ class ClusterDeploymentManagerTest {
 
         clusterNode.appliedCommands.clear();
 
-        // Update blueprint with same count - no change needed
-        sendBlueprintPut(artifact, 2);
+        // Update slice target with same count - no change needed
+        sendSliceTargetPut(artifact, 2);
 
         assertThat(clusterNode.appliedCommands).isEmpty();
     }
@@ -300,7 +300,7 @@ class ClusterDeploymentManagerTest {
         var artifact = createTestArtifact();
 
         // Allocate and track
-        sendBlueprintPut(artifact, 2);
+        sendSliceTargetPut(artifact, 2);
         trackSliceState(artifact, self, SliceState.ACTIVE);
         trackSliceState(artifact, node2, SliceState.ACTIVE);
 
@@ -309,7 +309,7 @@ class ClusterDeploymentManagerTest {
         // Remove slice state (simulating unload completion)
         sendSliceStateRemove(artifact, self);
 
-        // Blueprint still wants 2, but now only 1 tracked
+        // Slice target still wants 2, but now only 1 tracked
         // Next reconciliation would add 1 more
     }
 
@@ -332,19 +332,19 @@ class ClusterDeploymentManagerTest {
         manager.onTopologyChange(TopologyChangeNotification.nodeAdded(nodes[nodes.length - 1], topology));
     }
 
-    private void sendBlueprintPut(Artifact artifact, int instanceCount) {
-        manager.onValuePut(blueprintPut(artifact, instanceCount));
+    private void sendSliceTargetPut(Artifact artifact, int instanceCount) {
+        manager.onValuePut(sliceTargetPut(artifact, instanceCount));
     }
 
-    private ValuePut<AetherKey, AetherValue> blueprintPut(Artifact artifact, int instanceCount) {
-        var key = new BlueprintKey(artifact);
-        var value = new BlueprintValue(instanceCount);
+    private ValuePut<AetherKey, AetherValue> sliceTargetPut(Artifact artifact, int instanceCount) {
+        var key = SliceTargetKey.sliceTargetKey(artifact.base());
+        var value = SliceTargetValue.sliceTargetValue(artifact.version(), instanceCount);
         var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
         return new ValuePut<>(command, Option.none());
     }
 
-    private void sendBlueprintRemove(Artifact artifact) {
-        var key = new BlueprintKey(artifact);
+    private void sendSliceTargetRemove(Artifact artifact) {
+        var key = SliceTargetKey.sliceTargetKey(artifact.base());
         var command = new KVCommand.Remove<AetherKey>(key);
         var notification = new ValueRemove<AetherKey, AetherValue>(command, Option.none());
         manager.onValueRemove(notification);

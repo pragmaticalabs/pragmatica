@@ -8,6 +8,7 @@ import org.pragmatica.aether.forge.simulator.ChaosController.ChaosStatus;
 import org.pragmatica.aether.forge.simulator.ChaosEvent;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.aether.forge.api.SimulatorRoutes.InventoryState;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Promise;
@@ -16,6 +17,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.time.Duration;
+import java.util.Deque;
 import java.util.List;
 import java.util.function.Consumer;
 
@@ -39,11 +41,15 @@ public final class ChaosRoutes {
      *
      * @param cluster         the ForgeCluster for node management operations
      * @param chaosController the ChaosController for chaos injection
+     * @param events          the event log deque
+     * @param inventoryState  state for inventory simulation
      * @param eventLogger     callback to log events for the dashboard
      * @return RouteSource containing all chaos-related routes
      */
     public static RouteSource chaosRoutes(ForgeCluster cluster,
                                           ChaosController chaosController,
+                                          Deque<ForgeApiResponses.ForgeEvent> events,
+                                          InventoryState inventoryState,
                                           Consumer<EventLogEntry> eventLogger) {
         return in("/api/chaos")
         .serve(statusRoute(chaosController),
@@ -52,7 +58,8 @@ public final class ChaosRoutes {
                stopRoute(chaosController, eventLogger),
                stopAllRoute(chaosController, eventLogger),
                addNodeRoute(cluster, eventLogger),
-               killNodeRoute(cluster, eventLogger));
+               killNodeRoute(cluster, eventLogger),
+               resetMetricsRoute(events, inventoryState, eventLogger));
     }
 
     // ========== Route Definitions ==========
@@ -101,6 +108,13 @@ public final class ChaosRoutes {
                     .withPath(aString())
                     .to(nodeId -> killNode(cluster, eventLogger, nodeId))
                     .asJson();
+    }
+
+    private static Route<SuccessResponse> resetMetricsRoute(Deque<ForgeApiResponses.ForgeEvent> events,
+                                                            InventoryState inventoryState,
+                                                            Consumer<EventLogEntry> eventLogger) {
+        return Route.<SuccessResponse> post("/reset-metrics")
+                    .toJson(_ -> resetMetrics(events, inventoryState, eventLogger));
     }
 
     // ========== Request Records ==========
@@ -284,5 +298,14 @@ public final class ChaosRoutes {
                                                                              ? ", new leader: " + newLeader
                                                                              : "")));
         return new NodeActionResponse(true, newLeader);
+    }
+
+    private static Promise<SuccessResponse> resetMetrics(Deque<ForgeApiResponses.ForgeEvent> events,
+                                                         InventoryState inventoryState,
+                                                         Consumer<EventLogEntry> eventLogger) {
+        events.clear();
+        inventoryState.reset();
+        eventLogger.accept(new EventLogEntry("RESET", "Metrics and events reset"));
+        return Promise.success(SuccessResponse.OK);
     }
 }

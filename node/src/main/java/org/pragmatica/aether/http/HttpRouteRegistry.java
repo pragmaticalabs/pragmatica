@@ -96,11 +96,12 @@ public interface HttpRouteRegistry {
                                                   securityPolicy);
                     var ref = routesByMethod.computeIfAbsent(httpRouteKey.httpMethod(),
                                                              _ -> new AtomicReference<>(new TreeMap<>()));
-                    // Copy-on-write: copy current map, add entry, swap
-                    var current = ref.get();
-                    var updated = new TreeMap<>(current);
-                    updated.put(httpRouteKey.pathPrefix(), routeInfo);
-                    ref.set(updated);
+                    // Atomic copy-on-write: copy current map, add entry, swap
+                    ref.updateAndGet(current -> {
+                                         var updated = new TreeMap<>(current);
+                                         updated.put(httpRouteKey.pathPrefix(), routeInfo);
+                                         return updated;
+                                     });
                     log.debug("Registered HTTP route: {} {} -> {}:{} [{}]",
                               httpRouteKey.httpMethod(),
                               httpRouteKey.pathPrefix(),
@@ -117,12 +118,16 @@ public interface HttpRouteRegistry {
                 if (key instanceof HttpRouteKey httpRouteKey) {
                     Option.option(routesByMethod.get(httpRouteKey.httpMethod()))
                           .onPresent(ref -> {
-                                         // Copy-on-write: copy current map, remove entry, swap
-                    var current = ref.get();
-                                         if (current.containsKey(httpRouteKey.pathPrefix())) {
-                                             var updated = new TreeMap<>(current);
-                                             updated.remove(httpRouteKey.pathPrefix());
-                                             ref.set(updated);
+                                         // Atomic copy-on-write: copy current map, remove entry, swap
+                    var removed = ref.getAndUpdate(current -> {
+                                                       if (current.containsKey(httpRouteKey.pathPrefix())) {
+                                                           var updated = new TreeMap<>(current);
+                                                           updated.remove(httpRouteKey.pathPrefix());
+                                                           return updated;
+                                                       }
+                                                       return current;
+                                                   });
+                                         if (removed.containsKey(httpRouteKey.pathPrefix())) {
                                              log.debug("Unregistered HTTP route: {} {}",
                                                        httpRouteKey.httpMethod(),
                                                        httpRouteKey.pathPrefix());

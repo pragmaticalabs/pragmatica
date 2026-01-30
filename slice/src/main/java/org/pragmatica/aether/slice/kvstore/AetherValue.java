@@ -1,26 +1,67 @@
 package org.pragmatica.aether.slice.kvstore;
 
-import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 
 /// Value type stored in the consensus KVStore
 public sealed interface AetherValue {
-    /// Blueprints contain information about the exact number of nodes which need to be deployed (deprecated).
-    @Deprecated
-    record BlueprintValue(long instanceCount) implements AetherValue {}
+    /// Slice target stores runtime scaling configuration for a slice.
+    /// This is the "desired state" for how many instances should run and which version.
+    ///
+    /// @param currentVersion the version currently deployed/being deployed
+    /// @param targetInstances desired number of instances to run
+    /// @param owningBlueprint if this slice is part of an app blueprint, the blueprint ID; None for standalone
+    /// @param updatedAt timestamp of last update
+    record SliceTargetValue(Version currentVersion,
+                            int targetInstances,
+                            Option<BlueprintId> owningBlueprint,
+                            long updatedAt) implements AetherValue {
+        /// Creates a new slice target value with current timestamp.
+        public static SliceTargetValue sliceTargetValue(Version version, int instances, Option<BlueprintId> owner) {
+            return new SliceTargetValue(version, instances, owner, System.currentTimeMillis());
+        }
+
+        /// Creates a standalone slice target (not part of any app blueprint).
+        public static SliceTargetValue sliceTargetValue(Version version, int instances) {
+            return new SliceTargetValue(version, instances, Option.none(), System.currentTimeMillis());
+        }
+
+        /// Returns a new value with updated instance count.
+        public SliceTargetValue withInstances(int newCount) {
+            return new SliceTargetValue(currentVersion, newCount, owningBlueprint, System.currentTimeMillis());
+        }
+
+        /// Returns a new value with updated version.
+        public SliceTargetValue withVersion(Version newVersion) {
+            return new SliceTargetValue(newVersion, targetInstances, owningBlueprint, System.currentTimeMillis());
+        }
+    }
 
     /// Application blueprint contains the expanded blueprint with full dependency resolution
-    record AppBlueprintValue(ExpandedBlueprint blueprint) implements AetherValue {}
+    record AppBlueprintValue(ExpandedBlueprint blueprint) implements AetherValue {
+        public static AppBlueprintValue appBlueprintValue(ExpandedBlueprint blueprint) {
+            return new AppBlueprintValue(blueprint);
+        }
+    }
 
     /// Deployment Vector (NodeId/Artifact) contains the current state of the loaded slice
-    record SliceNodeValue(SliceState state) implements AetherValue {}
+    record SliceNodeValue(SliceState state) implements AetherValue {
+        public static SliceNodeValue sliceNodeValue(SliceState state) {
+            return new SliceNodeValue(state);
+        }
+    }
 
     /// Endpoint locator points to node where endpoint is available
-    record EndpointValue(NodeId nodeId) implements AetherValue {}
+    record EndpointValue(NodeId nodeId) implements AetherValue {
+        public static EndpointValue endpointValue(NodeId nodeId) {
+            return new EndpointValue(nodeId);
+        }
+    }
 
     /// Version routing configuration for rolling updates.
     /// Stores traffic distribution between old and new versions.
@@ -90,7 +131,37 @@ public sealed interface AetherValue {
                               boolean requireManualApproval,
                               String cleanupPolicy,
                               long createdAt,
-                              long updatedAt) implements AetherValue {}
+                              long updatedAt) implements AetherValue {
+        public static RollingUpdateValue rollingUpdateValue(String updateId,
+                                                            ArtifactBase artifactBase,
+                                                            Version oldVersion,
+                                                            Version newVersion,
+                                                            String state,
+                                                            int newWeight,
+                                                            int oldWeight,
+                                                            int newInstances,
+                                                            double maxErrorRate,
+                                                            long maxLatencyMs,
+                                                            boolean requireManualApproval,
+                                                            String cleanupPolicy,
+                                                            long createdAt,
+                                                            long updatedAt) {
+            return new RollingUpdateValue(updateId,
+                                          artifactBase,
+                                          oldVersion,
+                                          newVersion,
+                                          state,
+                                          newWeight,
+                                          oldWeight,
+                                          newInstances,
+                                          maxErrorRate,
+                                          maxLatencyMs,
+                                          requireManualApproval,
+                                          cleanupPolicy,
+                                          createdAt,
+                                          updatedAt);
+        }
+    }
 
     /// Previous version tracking for rollback support.
     /// Stores the previous version of an artifact before a deployment update.

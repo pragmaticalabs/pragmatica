@@ -80,38 +80,38 @@ public final class LoadGenerator {
         // POST /api/orders - place order
         var placeOrderConfig = config.entryPointConfig("placeOrder");
         generators.put("placeOrder",
-                       new EntryPointGenerator("placeOrder",
-                                               placeOrderConfig.buildGenerator("placeOrder"),
-                                               "POST",
-                                               "/api/orders"));
+                       EntryPointGenerator.entryPointGenerator("placeOrder",
+                                                               placeOrderConfig.buildGenerator("placeOrder"),
+                                                               "POST",
+                                                               "/api/orders"));
         // GET /api/orders/{id} - get order status
         var getOrderConfig = config.entryPointConfig("getOrderStatus");
         generators.put("getOrderStatus",
-                       new EntryPointGenerator("getOrderStatus",
-                                               getOrderConfig.buildGenerator("getOrderStatus"),
-                                               "GET",
-                                               "/api/orders/{id}"));
+                       EntryPointGenerator.entryPointGenerator("getOrderStatus",
+                                                               getOrderConfig.buildGenerator("getOrderStatus"),
+                                                               "GET",
+                                                               "/api/orders/{id}"));
         // DELETE /api/orders/{id} - cancel order
         var cancelConfig = config.entryPointConfig("cancelOrder");
         generators.put("cancelOrder",
-                       new EntryPointGenerator("cancelOrder",
-                                               cancelConfig.buildGenerator("cancelOrder"),
-                                               "DELETE",
-                                               "/api/orders/{id}"));
+                       EntryPointGenerator.entryPointGenerator("cancelOrder",
+                                                               cancelConfig.buildGenerator("cancelOrder"),
+                                                               "DELETE",
+                                                               "/api/orders/{id}"));
         // GET /api/inventory/{productId} - check stock
         var checkStockConfig = config.entryPointConfig("checkStock");
         generators.put("checkStock",
-                       new EntryPointGenerator("checkStock",
-                                               checkStockConfig.buildGenerator("checkStock"),
-                                               "GET",
-                                               "/api/inventory/{id}"));
+                       EntryPointGenerator.entryPointGenerator("checkStock",
+                                                               checkStockConfig.buildGenerator("checkStock"),
+                                                               "GET",
+                                                               "/api/inventory/{id}"));
         // GET /api/pricing/{productId} - get price
         var getPriceConfig = config.entryPointConfig("getPrice");
         generators.put("getPrice",
-                       new EntryPointGenerator("getPrice",
-                                               getPriceConfig.buildGenerator("getPrice"),
-                                               "GET",
-                                               "/api/pricing/{id}"));
+                       EntryPointGenerator.entryPointGenerator("getPrice",
+                                                               getPriceConfig.buildGenerator("getPrice"),
+                                                               "GET",
+                                                               "/api/pricing/{id}"));
     }
 
     /**
@@ -215,7 +215,7 @@ public final class LoadGenerator {
      */
     public int currentRate() {
         return Option.option(generators.get("placeOrder"))
-                     .map(EntryPointGenerator::currentRate)
+                     .map(EntryPointGenerator::getCurrentRate)
                      .or(0);
     }
 
@@ -224,7 +224,7 @@ public final class LoadGenerator {
      */
     public int currentRate(String entryPoint) {
         return Option.option(generators.get(entryPoint))
-                     .map(EntryPointGenerator::currentRate)
+                     .map(EntryPointGenerator::getCurrentRate)
                      .or(0);
     }
 
@@ -233,7 +233,7 @@ public final class LoadGenerator {
      */
     public int targetRate() {
         return Option.option(generators.get("placeOrder"))
-                     .map(EntryPointGenerator::targetRate)
+                     .map(EntryPointGenerator::getTargetRate)
                      .or(0);
     }
 
@@ -261,7 +261,7 @@ public final class LoadGenerator {
     private void generateLoad(EntryPointGenerator generator) {
         while (running.get()) {
             try{
-                var rate = generator.currentRate();
+                var rate = generator.getCurrentRate();
                 if (rate <= 0) {
                     Thread.sleep(100);
                     continue;
@@ -321,7 +321,7 @@ public final class LoadGenerator {
 
     private void syncRatesToMetrics() {
         for (var generator : generators.values()) {
-            entryPointMetrics.setRate(generator.name, generator.currentRate());
+            entryPointMetrics.setRate(generator.name, generator.getCurrentRate());
         }
     }
 
@@ -333,20 +333,30 @@ public final class LoadGenerator {
     /**
      * Generator for a single entry point with independent rate control.
      */
-    private static final class EntryPointGenerator {
-        final String name;
-        final String method;
-        final String pathPattern;
-        volatile DataGenerator dataGenerator;
+    private record EntryPointGenerator(String name,
+                                       AtomicReference<DataGenerator> dataGeneratorRef,
+                                       String method,
+                                       String pathPattern,
+                                       AtomicInteger currentRate,
+                                       AtomicInteger targetRate) {
+        static EntryPointGenerator entryPointGenerator(String name,
+                                                       DataGenerator dataGenerator,
+                                                       String method,
+                                                       String pathPattern) {
+            return new EntryPointGenerator(name,
+                                           new AtomicReference<>(dataGenerator),
+                                           method,
+                                           pathPattern,
+                                           new AtomicInteger(0),
+                                           new AtomicInteger(0));
+        }
 
-        final AtomicInteger currentRate = new AtomicInteger(0);
-        final AtomicInteger targetRate = new AtomicInteger(0);
+        DataGenerator dataGenerator() {
+            return dataGeneratorRef.get();
+        }
 
-        EntryPointGenerator(String name, DataGenerator dataGenerator, String method, String pathPattern) {
-            this.name = name;
-            this.dataGenerator = dataGenerator;
-            this.method = method;
-            this.pathPattern = pathPattern;
+        void setDataGenerator(DataGenerator dataGenerator) {
+            dataGeneratorRef.set(dataGenerator);
         }
 
         /**
@@ -354,7 +364,7 @@ public final class LoadGenerator {
          */
         RequestData generateRequest() {
             var random = ThreadLocalRandom.current();
-            var data = dataGenerator.generate(random);
+            var data = dataGenerator().generate(random);
             return switch (data) {
                 case DataGenerator.OrderRequestGenerator.OrderRequestData order ->
                 new RequestData("/api/orders", order.toJson());
@@ -382,11 +392,11 @@ public final class LoadGenerator {
             targetRate.set(target);
         }
 
-        int currentRate() {
+        int getCurrentRate() {
             return currentRate.get();
         }
 
-        int targetRate() {
+        int getTargetRate() {
             return targetRate.get();
         }
 

@@ -1,0 +1,7 @@
+[format]
+maxLineLength = 120
+indentSize = 4
+
+[lint]
+failOnWarning = false
+businessPackages = ["org.pragmatica.aether.example.urlshortener.**"]

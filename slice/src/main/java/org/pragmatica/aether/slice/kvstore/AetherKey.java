@@ -18,23 +18,25 @@ public sealed interface AetherKey extends StructuredKey {
     /// String representation of the key
     String asString();
 
-    /// Blueprint-key format (deprecated - use AppBlueprintKey):
+    /// Slice target key format:
     /// ```
-    /// blueprint/{groupId}:{artifactId}:{version}
+    /// slice-target/{groupId}:{artifactId}
     /// ```
-    @Deprecated
-    record BlueprintKey(Artifact artifact) implements AetherKey {
+    /// Stores runtime scaling targets for slices (instance count, current version, owning blueprint).
+    record SliceTargetKey(ArtifactBase artifactBase) implements AetherKey {
+        private static final String PREFIX = "slice-target/";
+
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
-                case AetherKeyPattern.BlueprintPattern blueprintPattern -> blueprintPattern.matches(this);
+                case AetherKeyPattern.SliceTargetPattern sliceTargetPattern -> sliceTargetPattern.matches(this);
                 default -> false;
             };
         }
 
         @Override
         public String asString() {
-            return "blueprint/" + artifact.asString();
+            return PREFIX + artifactBase.asString();
         }
 
         @Override
@@ -42,15 +44,18 @@ public sealed interface AetherKey extends StructuredKey {
             return asString();
         }
 
-        public static Result<BlueprintKey> blueprintKey(String key) {
-            if (!key.startsWith("blueprint/")) {
-                return BLUEPRINT_KEY_FORMAT_ERROR.apply(key)
-                                                 .result();
+        public static SliceTargetKey sliceTargetKey(ArtifactBase artifactBase) {
+            return new SliceTargetKey(artifactBase);
+        }
+
+        public static Result<SliceTargetKey> sliceTargetKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return SLICE_TARGET_KEY_FORMAT_ERROR.apply(key)
+                                                    .result();
             }
-            var artifactPart = key.substring(10);
-            // Remove "blueprint/"
-            return Artifact.artifact(artifactPart)
-                           .map(BlueprintKey::new);
+            var artifactBasePart = key.substring(PREFIX.length());
+            return ArtifactBase.artifactBase(artifactBasePart)
+                               .map(SliceTargetKey::new);
         }
     }
 
@@ -59,6 +64,8 @@ public sealed interface AetherKey extends StructuredKey {
     /// app-blueprint/{name}:{version}
     /// ```
     record AppBlueprintKey(BlueprintId blueprintId) implements AetherKey {
+        private static final String PREFIX = "app-blueprint/";
+
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
@@ -69,7 +76,7 @@ public sealed interface AetherKey extends StructuredKey {
 
         @Override
         public String asString() {
-            return "app-blueprint/" + blueprintId.asString();
+            return PREFIX + blueprintId.asString();
         }
 
         @Override
@@ -78,12 +85,11 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         public static Result<AppBlueprintKey> appBlueprintKey(String key) {
-            if (!key.startsWith("app-blueprint/")) {
+            if (!key.startsWith(PREFIX)) {
                 return APP_BLUEPRINT_KEY_FORMAT_ERROR.apply(key)
                                                      .result();
             }
-            var blueprintIdPart = key.substring(14);
-            // Remove "app-blueprint/"
+            var blueprintIdPart = key.substring(PREFIX.length());
             return BlueprintId.blueprintId(blueprintIdPart)
                               .map(AppBlueprintKey::new);
         }
@@ -145,6 +151,8 @@ public sealed interface AetherKey extends StructuredKey {
     /// endpoints/{groupId}:{artifactId}:{version}/{methodName}:{instanceNumber}
     /// ```
     record EndpointKey(Artifact artifact, MethodName methodName, int instanceNumber) implements AetherKey {
+        private static final String PREFIX = "endpoints/";
+
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
@@ -155,7 +163,7 @@ public sealed interface AetherKey extends StructuredKey {
 
         @Override
         public String asString() {
-            return "endpoints/" + artifact.asString() + "/" + methodName.name() + ":" + instanceNumber;
+            return PREFIX + artifact.asString() + "/" + methodName.name() + ":" + instanceNumber;
         }
 
         @Override
@@ -164,12 +172,11 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         public static Result<EndpointKey> endpointKey(String key) {
-            if (!key.startsWith("endpoints/")) {
+            if (!key.startsWith(PREFIX)) {
                 return ENDPOINT_KEY_FORMAT_ERROR.apply(key)
                                                 .result();
             }
-            var content = key.substring(10);
-            // Remove "endpoints/"
+            var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
             if (slashIndex == - 1) {
                 return ENDPOINT_KEY_FORMAT_ERROR.apply(key)
@@ -197,6 +204,8 @@ public sealed interface AetherKey extends StructuredKey {
     /// ```
     /// Stores routing configuration between old and new versions during rolling updates.
     record VersionRoutingKey(ArtifactBase artifactBase) implements AetherKey {
+        private static final String PREFIX = "version-routing/";
+
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
@@ -207,7 +216,7 @@ public sealed interface AetherKey extends StructuredKey {
 
         @Override
         public String asString() {
-            return "version-routing/" + artifactBase.asString();
+            return PREFIX + artifactBase.asString();
         }
 
         @Override
@@ -220,12 +229,11 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         public static Result<VersionRoutingKey> versionRoutingKey(String key) {
-            if (!key.startsWith("version-routing/")) {
+            if (!key.startsWith(PREFIX)) {
                 return VERSION_ROUTING_KEY_FORMAT_ERROR.apply(key)
                                                        .result();
             }
-            var artifactBasePart = key.substring(16);
-            // Remove "version-routing/"
+            var artifactBasePart = key.substring(PREFIX.length());
             return ArtifactBase.artifactBase(artifactBasePart)
                                .map(VersionRoutingKey::new);
         }
@@ -237,6 +245,8 @@ public sealed interface AetherKey extends StructuredKey {
     /// ```
     /// Stores rolling update state for tracking update progress.
     record RollingUpdateKey(String updateId) implements AetherKey {
+        private static final String PREFIX = "rolling-update/";
+
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
@@ -247,7 +257,7 @@ public sealed interface AetherKey extends StructuredKey {
 
         @Override
         public String asString() {
-            return "rolling-update/" + updateId;
+            return PREFIX + updateId;
         }
 
         @Override
@@ -256,12 +266,11 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         public static Result<RollingUpdateKey> rollingUpdateKey(String key) {
-            if (!key.startsWith("rolling-update/")) {
+            if (!key.startsWith(PREFIX)) {
                 return ROLLING_UPDATE_KEY_FORMAT_ERROR.apply(key)
                                                       .result();
             }
-            var updateId = key.substring(15);
-            // Remove "rolling-update/"
+            var updateId = key.substring(PREFIX.length());
             if (updateId.isEmpty()) {
                 return ROLLING_UPDATE_KEY_FORMAT_ERROR.apply(key)
                                                       .result();
@@ -277,6 +286,8 @@ public sealed interface AetherKey extends StructuredKey {
     /// Stores the previous version of an artifact before a deployment update.
     /// Used for automatic rollback support.
     record PreviousVersionKey(ArtifactBase artifactBase) implements AetherKey {
+        private static final String PREFIX = "previous-version/";
+
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
@@ -287,7 +298,7 @@ public sealed interface AetherKey extends StructuredKey {
 
         @Override
         public String asString() {
-            return "previous-version/" + artifactBase.asString();
+            return PREFIX + artifactBase.asString();
         }
 
         @Override
@@ -300,12 +311,11 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         public static Result<PreviousVersionKey> previousVersionKey(String key) {
-            if (!key.startsWith("previous-version/")) {
+            if (!key.startsWith(PREFIX)) {
                 return PREVIOUS_VERSION_KEY_FORMAT_ERROR.apply(key)
                                                         .result();
             }
-            var artifactBasePart = key.substring(17);
-            // Remove "previous-version/"
+            var artifactBasePart = key.substring(PREFIX.length());
             return ArtifactBase.artifactBase(artifactBasePart)
                                .map(PreviousVersionKey::new);
         }
@@ -317,6 +327,8 @@ public sealed interface AetherKey extends StructuredKey {
     /// ```
     /// Maps HTTP method + path prefix to artifact + slice method for cluster-wide HTTP routing.
     record HttpRouteKey(String httpMethod, String pathPrefix) implements AetherKey {
+        private static final String PREFIX = "http-routes/";
+
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
@@ -327,7 +339,7 @@ public sealed interface AetherKey extends StructuredKey {
 
         @Override
         public String asString() {
-            return "http-routes/" + httpMethod + ":" + pathPrefix;
+            return PREFIX + httpMethod + ":" + pathPrefix;
         }
 
         @Override
@@ -340,12 +352,11 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         public static Result<HttpRouteKey> httpRouteKey(String key) {
-            if (!key.startsWith("http-routes/")) {
+            if (!key.startsWith(PREFIX)) {
                 return HTTP_ROUTE_KEY_FORMAT_ERROR.apply(key)
                                                   .result();
             }
-            var content = key.substring(12);
-            // Remove "http-routes/"
+            var content = key.substring(PREFIX.length());
             var colonIndex = content.indexOf(':');
             if (colonIndex == - 1) {
                 return HTTP_ROUTE_KEY_FORMAT_ERROR.apply(key)
@@ -381,6 +392,8 @@ public sealed interface AetherKey extends StructuredKey {
     /// ```
     /// Stores alert threshold configuration for metrics.
     record AlertThresholdKey(String metricName) implements AetherKey {
+        private static final String PREFIX = "alert-threshold/";
+
         @Override
         public boolean matches(StructuredPattern pattern) {
             return switch (pattern) {
@@ -391,7 +404,7 @@ public sealed interface AetherKey extends StructuredKey {
 
         @Override
         public String asString() {
-            return "alert-threshold/" + metricName;
+            return PREFIX + metricName;
         }
 
         @Override
@@ -400,12 +413,11 @@ public sealed interface AetherKey extends StructuredKey {
         }
 
         public static Result<AlertThresholdKey> alertThresholdKey(String key) {
-            if (!key.startsWith("alert-threshold/")) {
+            if (!key.startsWith(PREFIX)) {
                 return ALERT_THRESHOLD_KEY_FORMAT_ERROR.apply(key)
                                                        .result();
             }
-            var metricName = key.substring(16);
-            // Remove "alert-threshold/"
+            var metricName = key.substring(PREFIX.length());
             if (metricName.isEmpty()) {
                 return ALERT_THRESHOLD_KEY_FORMAT_ERROR.apply(key)
                                                        .result();
@@ -414,7 +426,7 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
-    Fn1<Cause, String> BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid blueprint key format: %s");
+    Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
     Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");
     Fn1<Cause, String> ENDPOINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid endpoint key format: %s");
@@ -426,9 +438,9 @@ public sealed interface AetherKey extends StructuredKey {
 
     /// Aether KV-Store structured patterns for key matching
     sealed interface AetherKeyPattern extends StructuredPattern {
-        /// Pattern for blueprint keys: blueprint/*
-        record BlueprintPattern() implements AetherKeyPattern {
-            public boolean matches(BlueprintKey key) {
+        /// Pattern for slice-target keys: slice-target/*
+        record SliceTargetPattern() implements AetherKeyPattern {
+            public boolean matches(SliceTargetKey key) {
                 return true;
             }
         }

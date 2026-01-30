@@ -68,19 +68,36 @@ Release 0.8.0 focuses on **slice lifecycle robustness** with eager dependency va
 
 ## Future Work
 
+### HIGH PRIORITY - E2E Validation
+
+1. **End-to-End Slice Invocation Tests (URL Shortener Demo)**
+   - Tests that invoke slice methods via HTTP
+   - Verify full request/response cycle
+   - Multiple slices with inter-slice calls
+   - Infra service integration (CacheService)
+   - Cross-node invocation validation
+   - Validates jbct-cli tooling end-to-end
+
 ### HIGH PRIORITY - Cluster Operations
 
-1. **Topology in KV Store**
+2. **Request ID Propagation (Distributed Tracing)**
+   - Current gap: HTTP requestId doesn't bridge to InvocationContext for local slice calls
+   - Need: Reliable async context propagation that works across thread boundaries
+   - Consider: Context-aware Promise or explicit context parameter passing
+   - Should cover: HTTP entry → local slice → inter-slice calls (local & remote)
+   - Goal: Full request correlation across all hops without thread-local limitations
+
+3. **Topology in KV Store**
    - Leader maintains cluster topology in consensus KV store
    - Best-effort updates on membership changes
    - Enables external observability without direct node queries
 
-2. **Dynamic Configuration via KV Store**
+4. **Dynamic Configuration via KV Store**
    - Expose most configuration in consensus KV store
    - Nodes automatically pick up configuration changes
    - No restart required for config updates
 
-3. **Dependency Lifecycle Management**
+5. **Dependency Lifecycle Management**
    - Handle dependency removal while dependent slice is ACTIVE
    - Options when dependency becomes unavailable:
      - **Cascade deactivation** - Automatically deactivate dependent slices
@@ -92,13 +109,13 @@ Release 0.8.0 focuses on **slice lifecycle robustness** with eager dependency va
 
 ### MEDIUM PRIORITY - Infrastructure Services
 
-4. **Mini-Kafka (Message Streaming)**
+6. **Mini-Kafka (Message Streaming)**
    - Ordered message streaming with partitions (differs from pub/sub)
    - In-memory storage (initial implementation)
    - Consumer group coordination
    - Retention policies
 
-5. **Distributed Saga Orchestration**
+7. **Distributed Saga Orchestration**
    - Long-running transaction orchestration (saga pattern)
    - Durable state transitions with compensation on failure
    - Differs from local state machine - coordinates across multiple slices
@@ -107,19 +124,25 @@ Release 0.8.0 focuses on **slice lifecycle robustness** with eager dependency va
 
 ### LOWER PRIORITY - Security & Operations
 
-6. **TLS Certificate Management**
+8. **TLS Certificate Management**
    - Certificate provisioning and rotation
    - Mutual TLS between nodes
    - Integration with external CA or self-signed
 
-7. **End-to-End Slice Invocation Tests**
-   - Tests that invoke slice methods via HTTP
-   - Verify full request/response cycle
-   - Cross-node invocation validation
+9. **External Secrets Management Integration**
+   - HashiCorp Vault integration
+   - AWS Secrets Manager / Azure Key Vault support
+   - Current: in-memory `infra-secrets` implementation exists
+
+10. **Canary & Blue-Green Deployment Strategies**
+    - Current: Rolling updates with weighted routing exist
+    - Add explicit canary deployment with automatic rollback on error threshold
+    - Add blue-green deployment with instant switchover
+    - A/B testing support with traffic splitting by criteria
 
 ### FUTURE - AI Integration
 
-8. **LLM Integration (Layer 3)**
+11. **LLM Integration (Layer 3)**
    - Claude/GPT API integration
    - Complex reasoning workflows
    - Multi-cloud decision support

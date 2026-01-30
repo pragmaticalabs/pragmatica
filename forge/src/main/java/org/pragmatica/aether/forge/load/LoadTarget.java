@@ -143,30 +143,54 @@ public record LoadTarget(Option<String> name,
                               body);
     }
 
+    private static final Pattern HTTP_METHOD_PREFIX = Pattern.compile("^(GET|POST|PUT|DELETE|PATCH)\\s+");
+
+    /**
+     * Returns true if target is an HTTP path (starts with / or HTTP method).
+     */
+    public boolean isHttpPath() {
+        return target.startsWith("/") || HTTP_METHOD_PREFIX.matcher(target)
+                                                           .find();
+    }
+
+    /**
+     * Extracts the HTTP method from target if present.
+     */
+    public Option<String> httpMethod() {
+        var matcher = HTTP_METHOD_PREFIX.matcher(target);
+        return matcher.find()
+               ? some(matcher.group(1))
+               : none();
+    }
+
+    /**
+     * Extracts the path from target, stripping HTTP method prefix if present.
+     */
+    public String httpPath() {
+        return HTTP_METHOD_PREFIX.matcher(target)
+                                 .replaceFirst("");
+    }
+
     /**
      * Derives a name from target, using path up to first variable or method name.
      */
     private static String deriveNameFromTarget(String target) {
-        if (target.startsWith("/")) {
+        // Strip HTTP method prefix if present
+        var path = HTTP_METHOD_PREFIX.matcher(target)
+                                     .replaceFirst("");
+        if (path.startsWith("/")) {
             // HTTP path: use path up to first {
-            var bracketIdx = target.indexOf('{');
-            var path = bracketIdx > 0
-                       ? target.substring(0, bracketIdx)
-                       : target;
+            var bracketIdx = path.indexOf('{');
+            var effectivePath = bracketIdx > 0
+                                ? path.substring(0, bracketIdx)
+                                : path;
             // Remove leading slash and trailing slash
-            path = path.replaceAll("^/|/$", "");
-            return path.replace('/', '-');
+            effectivePath = effectivePath.replaceAll("^/|/$", "");
+            return effectivePath.replace('/', '-');
         } else {
             // SliceName.method format
-            return target;
+            return path;
         }
-    }
-
-    /**
-     * Returns true if target is an HTTP path (starts with /).
-     */
-    public boolean isHttpPath() {
-        return target.startsWith("/");
     }
 
     /**

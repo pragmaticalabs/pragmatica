@@ -71,7 +71,7 @@ public final class ConfigurableLoadRunner {
     private final Map<String, TargetRunner> activeRunners = new ConcurrentHashMap<>();
     private final List<Thread> runnerThreads = new CopyOnWriteArrayList<>();
 
-    private ScheduledExecutorService scheduler;
+    private final AtomicReference<ScheduledExecutorService> scheduler = new AtomicReference<>();
 
     private ConfigurableLoadRunner(int port, ForgeMetrics metrics, EntryPointMetrics entryPointMetrics) {
         this.port = port;
@@ -133,7 +133,8 @@ public final class ConfigurableLoadRunner {
                  currentConfig.get()
                               .targets()
                               .size());
-        scheduler = Executors.newScheduledThreadPool(2);
+        var newScheduler = Executors.newScheduledThreadPool(2);
+        scheduler.set(newScheduler);
         // Create and start runners for each target
         var runnerResults = currentConfig.get()
                                          .targets()
@@ -151,17 +152,21 @@ public final class ConfigurableLoadRunner {
                                     entries.forEach(entry -> startRunner(entry.getValue(),
                                                                          entry.getKey()));
                                     // Rate sync scheduler - delayed start to ensure runners are initialized
-        scheduler.schedule(() -> scheduler.scheduleAtFixedRate(this::syncMetrics, 0, 100, TimeUnit.MILLISECONDS),
-                           200,
-                           TimeUnit.MILLISECONDS);
+        var sched = scheduler.get();
+                                    sched.schedule(() -> sched.scheduleAtFixedRate(this::syncMetrics,
+                                                                                   0,
+                                                                                   100,
+                                                                                   TimeUnit.MILLISECONDS),
+                                                   200,
+                                                   TimeUnit.MILLISECONDS);
                                 })
                      .map(_ -> State.RUNNING);
     }
 
     private void cleanupScheduler() {
-        if (scheduler != null) {
-            scheduler.shutdownNow();
-            scheduler = null;
+        var sched = scheduler.getAndSet(null);
+        if (sched != null) {
+            sched.shutdownNow();
         }
     }
 
@@ -235,7 +240,7 @@ public final class ConfigurableLoadRunner {
     public Option<TargetMetrics> targetMetrics(String targetName) {
         var runner = activeRunners.get(targetName);
         return runner != null
-               ? some(runner.metrics())
+               ? some(runner.getTargetMetrics())
                : none();
     }
 
@@ -244,7 +249,7 @@ public final class ConfigurableLoadRunner {
      */
     public Map<String, TargetMetrics> allTargetMetrics() {
         var result = new HashMap<String, TargetMetrics>();
-        activeRunners.forEach((name, runner) -> result.put(name, runner.metrics()));
+        activeRunners.forEach((name, runner) -> result.put(name, runner.getTargetMetrics()));
         return result;
     }
 
@@ -257,15 +262,24 @@ public final class ConfigurableLoadRunner {
 
     private Result<TargetRunner> createRunner(LoadTarget target) {
         return compilePathProcessors(target.pathVars())
-        .flatMap(pathProcessors -> compileBodyProcessor(target.body())
-        .map(bodyProcessor -> new TargetRunner(target,
-                                               pathProcessors,
-                                               bodyProcessor,
-                                               port,
-                                               httpClient,
-                                               metrics,
-                                               entryPointMetrics,
-                                               () -> state.get())));
+        .flatMap(pathProcessors -> compilePathTemplateProcessor(target.httpPath())
+        .flatMap(pathTemplateProcessor -> compileBodyProcessor(target.body())
+        .map(bodyProcessor -> TargetRunner.targetRunner(target,
+                                                        pathProcessors,
+                                                        pathTemplateProcessor,
+                                                        bodyProcessor,
+                                                        port,
+                                                        httpClient,
+                                                        metrics,
+                                                        entryPointMetrics,
+                                                        () -> state.get()))));
+    }
+
+    private Result<Option<TemplateProcessor>> compilePathTemplateProcessor(String httpPath) {
+        return httpPath.contains("${")
+               ? TemplateProcessor.compile(httpPath)
+                                  .map(Option::some)
+               : Result.success(Option.none());
     }
 
     private Result<Map<String, TemplateProcessor>> compilePathProcessors(Map<String, String> pathVars) {
@@ -303,7 +317,7 @@ public final class ConfigurableLoadRunner {
 
     private void syncRunnerMetrics(String name, TargetRunner runner) {
         entryPointMetrics.setRate(name,
-                                  runner.metrics()
+                                  runner.getTargetMetrics()
                                         .targetRate());
     }
 
@@ -328,50 +342,62 @@ public final class ConfigurableLoadRunner {
     /**
      * Runner for a single target.
      */
-    private static final class TargetRunner {
-        private final LoadTarget target;
-        private final String name;
-        private final Map<String, TemplateProcessor> pathProcessors;
-        private final Option<TemplateProcessor> bodyProcessor;
-        private final int port;
-        private final HttpClient httpClient;
-        private final ForgeMetrics metrics;
-        private final EntryPointMetrics entryPointMetrics;
-        private final java.util.function.Supplier<State> stateSupplier;
+    private record TargetRunner(LoadTarget target,
+                                String name,
+                                Map<String, TemplateProcessor> pathProcessors,
+                                Option<TemplateProcessor> pathTemplateProcessor,
+                                Option<TemplateProcessor> bodyProcessor,
+                                int port,
+                                HttpClient httpClient,
+                                ForgeMetrics metrics,
+                                EntryPointMetrics entryPointMetrics,
+                                java.util.function.Supplier<State> stateSupplier,
+                                AtomicBoolean running,
+                                AtomicBoolean paused,
+                                AtomicLong totalRequests,
+                                AtomicLong successCount,
+                                AtomicLong failureCount,
+                                AtomicLong totalLatencyNanos,
+                                AtomicReference<Instant> startTimeRef,
+                                AtomicInteger actualRate) {
+        private static final java.util.regex.Pattern HTTP_METHOD_PREFIX = java.util.regex.Pattern.compile("^(GET|POST|PUT|DELETE|PATCH)\\s+");
 
-        private final AtomicBoolean running = new AtomicBoolean(true);
-        private final AtomicBoolean paused = new AtomicBoolean(false);
-
-        // Metrics
-        private final AtomicLong totalRequests = new AtomicLong(0);
-        private final AtomicLong successCount = new AtomicLong(0);
-        private final AtomicLong failureCount = new AtomicLong(0);
-        private final AtomicLong totalLatencyNanos = new AtomicLong(0);
-        private volatile Instant startTime;
-        private final AtomicInteger actualRate = new AtomicInteger(0);
-
-        TargetRunner(LoadTarget target,
-                     Map<String, TemplateProcessor> pathProcessors,
-                     Option<TemplateProcessor> bodyProcessor,
-                     int port,
-                     HttpClient httpClient,
-                     ForgeMetrics metrics,
-                     EntryPointMetrics entryPointMetrics,
-                     java.util.function.Supplier<State> stateSupplier) {
-            this.target = target;
-            this.name = target.name()
-                              .or(deriveNameFromTarget(target.target()));
-            this.pathProcessors = pathProcessors;
-            this.bodyProcessor = bodyProcessor;
-            this.port = port;
-            this.httpClient = httpClient;
-            this.metrics = metrics;
-            this.entryPointMetrics = entryPointMetrics;
-            this.stateSupplier = stateSupplier;
+        static TargetRunner targetRunner(LoadTarget target,
+                                         Map<String, TemplateProcessor> pathProcessors,
+                                         Option<TemplateProcessor> pathTemplateProcessor,
+                                         Option<TemplateProcessor> bodyProcessor,
+                                         int port,
+                                         HttpClient httpClient,
+                                         ForgeMetrics metrics,
+                                         EntryPointMetrics entryPointMetrics,
+                                         java.util.function.Supplier<State> stateSupplier) {
+            return new TargetRunner(target,
+                                    target.name()
+                                          .or(deriveNameFromTarget(target.target())),
+                                    pathProcessors,
+                                    pathTemplateProcessor,
+                                    bodyProcessor,
+                                    port,
+                                    httpClient,
+                                    metrics,
+                                    entryPointMetrics,
+                                    stateSupplier,
+                                    new AtomicBoolean(true),
+                                    new AtomicBoolean(false),
+                                    new AtomicLong(0),
+                                    new AtomicLong(0),
+                                    new AtomicLong(0),
+                                    new AtomicLong(0),
+                                    new AtomicReference<>(),
+                                    new AtomicInteger(0));
         }
 
-        String name() {
-            return name;
+        Instant startTime() {
+            return startTimeRef.get();
+        }
+
+        void setStartTime(Instant time) {
+            startTimeRef.set(time);
         }
 
         void stop() {
@@ -387,7 +413,7 @@ public final class ConfigurableLoadRunner {
         }
 
         void run() {
-            startTime = Instant.now();
+            setStartTime(Instant.now());
             var rps = target.rate()
                             .requestsPerSecond();
             var intervalMicros = rps > 0
@@ -401,36 +427,9 @@ public final class ConfigurableLoadRunner {
                              .or(""));
             while (running.get()) {
                 try{
-                    // Check if paused
-                    while (paused.get() && running.get()) {
-                        Thread.sleep(100);
-                    }
-                    if (!running.get()) break;
-                    // Check duration limit
-                    if (duration.isPresent() && !duration.unwrap()
-                                                         .isZero()) {
-                        var elapsed = Duration.between(startTime, Instant.now());
-                        if (elapsed.compareTo(duration.unwrap()) >= 0) {
-                            log.info("Target '{}' completed (duration limit reached)", name);
-                            break;
-                        }
-                    }
-                    var requestStart = System.nanoTime();
-                    sendRequest();
-                    var requests = totalRequests.incrementAndGet();
-                    // Calculate actual rate
-                    var elapsedMs = Duration.between(startTime,
-                                                     Instant.now())
-                                            .toMillis();
-                    if (elapsedMs > 0) {
-                        actualRate.set((int)(requests * 1000 / elapsedMs));
-                    }
-                    // Sleep for remaining interval
-                    var elapsedMicros = (System.nanoTime() - requestStart) / 1000;
-                    var sleepMicros = intervalMicros - elapsedMicros;
-                    if (sleepMicros > 0) {
-                        Thread.sleep(sleepMicros / 1000, (int)((sleepMicros % 1000) * 1000));
-                    }
+                    if (!waitIfPaused()) break;
+                    if (checkDurationLimit(duration)) break;
+                    executeRequest(intervalMicros);
                 } catch (InterruptedException e) {
                     Thread.currentThread()
                           .interrupt();
@@ -446,12 +445,57 @@ public final class ConfigurableLoadRunner {
                      failureCount.get());
         }
 
+        private boolean waitIfPaused() throws InterruptedException {
+            while (paused.get() && running.get()) {
+                Thread.sleep(100);
+            }
+            return running.get();
+        }
+
+        private boolean checkDurationLimit(Option<Duration> duration) {
+            if (duration.isPresent() && !duration.unwrap()
+                                                 .isZero()) {
+                var elapsed = Duration.between(startTime(), Instant.now());
+                if (elapsed.compareTo(duration.unwrap()) >= 0) {
+                    log.info("Target '{}' completed (duration limit reached)", name);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private void executeRequest(long intervalMicros) throws InterruptedException {
+            var requestStart = System.nanoTime();
+            sendRequest();
+            var requests = totalRequests.incrementAndGet();
+            updateActualRate(requests);
+            sleepForRemainingInterval(requestStart, intervalMicros);
+        }
+
+        private void updateActualRate(long requests) {
+            var elapsedMs = Duration.between(startTime(),
+                                             Instant.now())
+                                    .toMillis();
+            if (elapsedMs > 0) {
+                actualRate.set((int)(requests * 1000 / elapsedMs));
+            }
+        }
+
+        private void sleepForRemainingInterval(long requestStart, long intervalMicros) throws InterruptedException {
+            var elapsedMicros = (System.nanoTime() - requestStart) / 1000;
+            var sleepMicros = intervalMicros - elapsedMicros;
+            if (sleepMicros > 0) {
+                Thread.sleep(sleepMicros / 1000, (int)((sleepMicros % 1000) * 1000));
+            }
+        }
+
         private void sendRequest() {
             var requestStartTime = System.nanoTime();
             var path = buildPath();
             var body = buildBody();
             var method = target.isHttpPath()
-                         ? inferMethod(target.target(), body)
+                         ? target.httpMethod()
+                                 .or(() -> inferMethod(path, body))
                          : "POST";
             var uri = URI.create("http://localhost:" + port + path);
             var requestBuilder = HttpRequest.newBuilder()
@@ -501,8 +545,13 @@ public final class ConfigurableLoadRunner {
         }
 
         private String buildPath() {
-            var path = target.target();
-            if (!target.isHttpPath()) {
+            String path;
+            if (target.isHttpPath()) {
+                // Extract path portion, stripping HTTP method prefix if present
+                // Process inline ${pattern} templates first
+                path = pathTemplateProcessor.map(TemplateProcessor::process)
+                                            .or(target.httpPath());
+            } else {
                 // SliceName.method -> /api/invoke/SliceName/method
                 var parts = target.target()
                                   .split("\\.", 2);
@@ -512,7 +561,7 @@ public final class ConfigurableLoadRunner {
                     path = "/api/invoke/" + target.target();
                 }
             }
-            // Replace path variables
+            // Replace path variables ({keyName} placeholders from pathVars)
             for (var entry : pathProcessors.entrySet()) {
                 path = path.replace("{" + entry.getKey() + "}",
                                     entry.getValue()
@@ -537,14 +586,15 @@ public final class ConfigurableLoadRunner {
             return "GET";
         }
 
-        TargetMetrics metrics() {
+        TargetMetrics getTargetMetrics() {
             Option<Duration> remaining = none();
             if (target.duration()
                       .isPresent() && !target.duration()
                                              .unwrap()
                                              .isZero()) {
-                var elapsed = Duration.between(startTime != null
-                                               ? startTime
+                var st = startTime();
+                var elapsed = Duration.between(st != null
+                                               ? st
                                                : Instant.now(), Instant.now());
                 var rem = target.duration()
                                 .unwrap()
@@ -568,9 +618,12 @@ public final class ConfigurableLoadRunner {
         }
 
         private static String deriveNameFromTarget(String target) {
-            if (target.startsWith("/")) {
+            // Strip HTTP method prefix if present
+            var path = HTTP_METHOD_PREFIX.matcher(target)
+                                         .replaceFirst("");
+            if (path.startsWith("/")) {
                 // HTTP path: /api/orders/{id} -> orders
-                var segments = target.split("/");
+                var segments = path.split("/");
                 for (int i = segments.length - 1; i >= 0; i--) {
                     var seg = segments[i];
                     if (!seg.isEmpty() && !seg.startsWith("{")) {
@@ -580,10 +633,10 @@ public final class ConfigurableLoadRunner {
                 return "target";
             } else {
                 // SliceName.method -> method
-                var dotIdx = target.lastIndexOf('.');
+                var dotIdx = path.lastIndexOf('.');
                 return dotIdx >= 0
-                       ? target.substring(dotIdx + 1)
-                       : target;
+                       ? path.substring(dotIdx + 1)
+                       : path;
             }
         }
     }

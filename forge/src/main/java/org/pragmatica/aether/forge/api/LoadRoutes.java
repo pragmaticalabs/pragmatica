@@ -61,8 +61,9 @@ public sealed interface LoadRoutes {
 
     private static Route<LoadConfigUploadResponse> postConfigRoute(ConfigurableLoadRunner runner) {
         return Route.<LoadConfigUploadResponse> post("/config")
-                    .withBody(TypeToken.of(String.class))
-                    .toJson(toml -> uploadConfig(runner, toml));
+                    .to(ctx -> uploadConfig(runner,
+                                            ctx.bodyAsString()))
+                    .asJson();
     }
 
     private static Route<LoadRunnerStatusResponse> getStatusRoute(ConfigurableLoadRunner runner) {

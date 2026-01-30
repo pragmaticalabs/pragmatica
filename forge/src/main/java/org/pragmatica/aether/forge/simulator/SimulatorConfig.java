@@ -223,13 +223,7 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
      */
     public static SimulatorConfig defaultConfig() {
         var entryPoints = new HashMap<String, EntryPointConfig>();
-        entryPoints.put("placeOrder",
-                        new EntryPointConfig(500,
-                                             true,
-                                             List.of("PROD-ABC123", "PROD-DEF456", "PROD-GHI789"),
-                                             List.of(),
-                                             1,
-                                             5));
+        entryPoints.put("placeOrder", EntryPointConfig.withRate(0));
         entryPoints.put("getOrderStatus", EntryPointConfig.withRate(0));
         entryPoints.put("cancelOrder", EntryPointConfig.withRate(0));
         entryPoints.put("checkStock", EntryPointConfig.withRate(0));
@@ -237,7 +231,7 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         var slices = new HashMap<String, SliceConfig>();
         slices.put("inventory-service", SliceConfig.defaultConfig());
         slices.put("pricing-service", SliceConfig.defaultConfig());
-        return new SimulatorConfig(entryPoints, slices, true, 1.0);
+        return new SimulatorConfig(entryPoints, slices, false, 1.0);
     }
 
     /**

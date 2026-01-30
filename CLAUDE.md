@@ -25,7 +25,7 @@ Do NOT write code directly - delegate to `jbct-coder` agent.
 | `aether-config/` | Configuration types |
 | `forge/` | Simulator CLI with dashboard for load/chaos testing |
 | `cli/` | Command-line interface |
-| `examples/` | Example slices (`ecommerce/`, `order-demo/`) |
+| `examples/` | Example slices (`ecommerce/`) |
 | `infra-slices/` | Infrastructure slices (cache, pubsub, rate limiter, etc.) |
 
 ## Core Concepts

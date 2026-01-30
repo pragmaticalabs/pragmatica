@@ -20,7 +20,7 @@ public final class EntryPointMetrics {
     private static final long[] BUCKET_BOUNDARIES_MS = {1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000};
 
     private final Map<String, EntryPointStats> stats = new ConcurrentHashMap<>();
-    private volatile long lastSnapshotTime = System.currentTimeMillis();
+    private final AtomicLong lastSnapshotTime = new AtomicLong(System.currentTimeMillis());
 
     private EntryPointMetrics() {}
 
@@ -54,8 +54,8 @@ public final class EntryPointMetrics {
      */
     public List<EntryPointSnapshot> snapshotAndReset() {
         var now = System.currentTimeMillis();
-        var elapsedMs = now - lastSnapshotTime;
-        lastSnapshotTime = now;
+        var previousTime = lastSnapshotTime.getAndSet(now);
+        var elapsedMs = now - previousTime;
         var result = new ArrayList<EntryPointSnapshot>();
         stats.forEach((name, stat) -> result.add(stat.snapshotAndReset(name, elapsedMs)));
         return result;
@@ -66,7 +66,7 @@ public final class EntryPointMetrics {
      */
     public List<EntryPointSnapshot> snapshot() {
         var now = System.currentTimeMillis();
-        var elapsedMs = now - lastSnapshotTime;
+        var elapsedMs = now - lastSnapshotTime.get();
         var result = new ArrayList<EntryPointSnapshot>();
         stats.forEach((name, stat) -> result.add(stat.snapshot(name, elapsedMs)));
         return result;
@@ -78,34 +78,37 @@ public final class EntryPointMetrics {
     public void reset() {
         stats.values()
              .forEach(EntryPointStats::reset);
-        lastSnapshotTime = System.currentTimeMillis();
+        lastSnapshotTime.set(System.currentTimeMillis());
     }
 
     private EntryPointStats getOrCreate(String entryPoint) {
-        return stats.computeIfAbsent(entryPoint, _ -> new EntryPointStats());
+        return stats.computeIfAbsent(entryPoint, _ -> EntryPointStats.entryPointStats());
     }
 
     /**
      * Per-entry-point statistics.
      */
-    private static final class EntryPointStats {
-        final AtomicLong totalCount = new AtomicLong();
-        final AtomicLong successCount = new AtomicLong();
-        final AtomicLong failureCount = new AtomicLong();
-        final AtomicLong totalLatencyNanos = new AtomicLong();
-        final AtomicInteger currentRate = new AtomicInteger();
-
-        // Window counters (for rate calculation)
-        final AtomicLong windowCount = new AtomicLong();
-        final AtomicLong windowLatencyNanos = new AtomicLong();
-
-        // Histogram buckets
-        final AtomicLong[] histogram = new AtomicLong[BUCKET_BOUNDARIES_MS.length + 1];
-
-        EntryPointStats() {
-            for (int i = 0; i < histogram.length; i++) {
-                histogram[i] = new AtomicLong();
+    private record EntryPointStats(AtomicLong totalCount,
+                                   AtomicLong successCount,
+                                   AtomicLong failureCount,
+                                   AtomicLong totalLatencyNanos,
+                                   AtomicInteger currentRate,
+                                   AtomicLong windowCount,
+                                   AtomicLong windowLatencyNanos,
+                                   AtomicLong[] histogram) {
+        static EntryPointStats entryPointStats() {
+            var hist = new AtomicLong[BUCKET_BOUNDARIES_MS.length + 1];
+            for (int i = 0; i < hist.length; i++) {
+                hist[i] = new AtomicLong();
             }
+            return new EntryPointStats(new AtomicLong(),
+                                       new AtomicLong(),
+                                       new AtomicLong(),
+                                       new AtomicLong(),
+                                       new AtomicInteger(),
+                                       new AtomicLong(),
+                                       new AtomicLong(),
+                                       hist);
         }
 
         void recordSuccess(long latencyNanos) {

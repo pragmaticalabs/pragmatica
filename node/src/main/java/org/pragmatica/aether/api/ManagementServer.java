@@ -3,6 +3,8 @@ package org.pragmatica.aether.api;
 import org.pragmatica.aether.api.routes.AlertRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
 import org.pragmatica.aether.api.routes.DashboardRoutes;
+import org.pragmatica.aether.api.routes.ManagementRouter;
+import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
 import org.pragmatica.aether.api.routes.MetricsRoutes;
 import org.pragmatica.aether.api.routes.RepositoryRoutes;
 import org.pragmatica.aether.api.routes.RollingUpdateRoutes;
@@ -71,8 +73,11 @@ class ManagementServerImpl implements ManagementServer {
     private final Option<TlsConfig> tls;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
 
-    // Route handlers
-    private final List<RouteHandler> routes;
+    // Route-based router (new pattern)
+    private final ManagementRouter router;
+
+    // Legacy route handlers (old pattern - to be migrated)
+    private final List<RouteHandler> legacyRoutes;
 
     ManagementServerImpl(int port,
                          Supplier<AetherNode> nodeSupplier,
@@ -84,15 +89,17 @@ class ManagementServerImpl implements ManagementServer {
         this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager);
         this.observability = ObservabilityRegistry.prometheus();
         this.tls = tls;
-        // Initialize route handlers
-        this.routes = List.of(StatusRoutes.statusRoutes(nodeSupplier),
-                              SliceRoutes.sliceRoutes(nodeSupplier),
-                              MetricsRoutes.metricsRoutes(nodeSupplier, observability),
-                              AlertRoutes.alertRoutes(alertManager),
-                              RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier),
-                              RepositoryRoutes.repositoryRoutes(nodeSupplier),
-                              ControllerRoutes.controllerRoutes(nodeSupplier),
-                              DashboardRoutes.dashboardRoutes());
+        // Route-based router for migrated routes
+        this.router = ManagementRouter.managementRouter(StatusRoutes.statusRoutes(nodeSupplier),
+                                                        AlertRoutes.alertRoutes(alertManager),
+                                                        ControllerRoutes.controllerRoutes(nodeSupplier),
+                                                        SliceRoutes.sliceRoutes(nodeSupplier),
+                                                        MetricsRoutes.metricsRoutes(nodeSupplier, observability),
+                                                        RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier),
+                                                        RepositoryRoutes.repositoryRoutes(nodeSupplier),
+                                                        DashboardRoutes.dashboardRoutes());
+        // Legacy routes using RouteHandler for dynamic content types
+        this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier));
     }
 
     @Override
@@ -106,17 +113,8 @@ class ManagementServerImpl implements ManagementServer {
         var finalConfig = tls.map(config::withTls)
                              .or(config);
         return HttpServer.httpServer(finalConfig, this::handleRequest)
-                         .map(server -> {
-                                  serverRef.set(server);
-                                  metricsPublisher.start();
-                                  var protocol = tls.isPresent()
-                                                 ? "HTTPS"
-                                                 : "HTTP";
-                                  log.info("{} management server started on port {} (dashboard at /dashboard)",
-                                           protocol,
-                                           port);
-                                  return unit();
-                              })
+                         .withSuccess(this::onServerStarted)
+                         .mapToUnit()
                          .onFailure(cause -> log.error("Failed to start management server on port {}: {}",
                                                        port,
                                                        cause.message()));
@@ -134,12 +132,25 @@ class ManagementServerImpl implements ManagementServer {
         return Promise.success(unit());
     }
 
+    private void onServerStarted(HttpServer server) {
+        serverRef.set(server);
+        metricsPublisher.start();
+        var protocol = tls.isPresent()
+                       ? "HTTPS"
+                       : "HTTP";
+        log.info("{} management server started on port {} (dashboard at /dashboard)", protocol, port);
+    }
+
     private void handleRequest(RequestContext ctx, ResponseWriter response) {
         var path = ctx.path();
         var method = ctx.method();
         log.debug("Received {} {}", method, path);
-        // Try each route handler
-        for (var handler : routes) {
+        // Try route-based routing first
+        if (router.handle(ctx, response)) {
+            return;
+        }
+        // Fall back to legacy route handlers
+        for (var handler : legacyRoutes) {
             if (handler.handle(ctx, response)) {
                 return;
             }

@@ -143,7 +143,7 @@ public sealed interface DeploymentRoutes {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
                              .flatMap(port -> proxyPost(http,
                                                         port,
-                                                        "/deploy",
+                                                        "/api/deploy",
                                                         buildDeployJson(request)))
                              .map(body -> {
                                       eventLogger.accept(new EventLogEntry("DEPLOY",
@@ -163,7 +163,7 @@ public sealed interface DeploymentRoutes {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
                              .flatMap(port -> proxyPost(http,
                                                         port,
-                                                        "/undeploy",
+                                                        "/api/undeploy",
                                                         "{\"artifact\":\"" + escapeJson(request.artifact()) + "\"}"))
                              .map(body -> {
                                       eventLogger.accept(new EventLogEntry("UNDEPLOY",
@@ -177,7 +177,7 @@ public sealed interface DeploymentRoutes {
                                                          Consumer<EventLogEntry> eventLogger,
                                                          String blueprintJson) {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
-                             .flatMap(port -> proxyPost(http, port, "/blueprint", blueprintJson))
+                             .flatMap(port -> proxyPost(http, port, "/api/blueprint", blueprintJson))
                              .map(body -> {
                                       eventLogger.accept(new EventLogEntry("BLUEPRINT", "Applied blueprint"));
                                       return new ProxyResponse(true, body);
@@ -191,7 +191,7 @@ public sealed interface DeploymentRoutes {
     private static Promise<ClusterMetricsResponse> proxyClusterMetrics(ForgeCluster cluster,
                                                                        JdkHttpOperations http) {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
-                             .flatMap(port -> proxyGet(http, port, "/metrics"))
+                             .flatMap(port -> proxyGet(http, port, "/api/metrics"))
                              .map(ClusterMetricsResponse::new);
     }
 

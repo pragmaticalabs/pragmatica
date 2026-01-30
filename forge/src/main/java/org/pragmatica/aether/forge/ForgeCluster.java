@@ -1,5 +1,6 @@
 package org.pragmatica.aether.forge;
 
+import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.slice.SliceActionConfig;
@@ -37,8 +38,8 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 public final class ForgeCluster {
     private static final Logger log = LoggerFactory.getLogger(ForgeCluster.class);
 
-    private static final int DEFAULT_BASE_PORT = 5050;
-    private static final int DEFAULT_BASE_MGMT_PORT = 5150;
+    private static final int DEFAULT_BASE_PORT = 6000;
+    private static final int DEFAULT_BASE_MGMT_PORT = 6100;
     private static final TimeSpan NODE_TIMEOUT = TimeSpan.timeSpan(10)
                                                         .seconds();
 
@@ -239,11 +240,13 @@ public final class ForgeCluster {
      */
     public Promise<Unit> killNode(String nodeIdStr, boolean graceful) {
         return Option.option(nodes.get(nodeIdStr))
-                     .fold(() -> {
-                               log.warn("Node {} not found", nodeIdStr);
-                               return Promise.success(Unit.unit());
-                           },
+                     .fold(() -> nodeNotFound(nodeIdStr),
                            node -> killNodeInternal(nodeIdStr, node, graceful));
+    }
+
+    private Promise<Unit> nodeNotFound(String nodeIdStr) {
+        log.warn("Node {} not found", nodeIdStr);
+        return Promise.success(Unit.unit());
     }
 
     private Promise<Unit> killNodeInternal(String nodeIdStr, AetherNode node, boolean graceful) {
@@ -340,6 +343,7 @@ public final class ForgeCluster {
                                           timeSpan(500).millis(),
                                           timeSpan(100).millis(),
                                           coreNodes);
+        // Use forgeDefaults() for controller config - disables CPU-based scaling in simulation
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
                                           SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider()),
@@ -349,7 +353,8 @@ public final class ForgeCluster {
                                           Option.empty(),
                                           org.pragmatica.aether.config.TTMConfig.disabled(),
                                           RollbackConfig.defaults(),
-                                          AppHttpConfig.disabled());
+                                          AppHttpConfig.disabled(),
+                                          ControllerConfig.forgeDefaults());
         return AetherNode.aetherNode(config)
                          .unwrap();
     }

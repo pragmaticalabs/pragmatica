@@ -8,6 +8,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import java.time.Instant;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -55,8 +56,9 @@ final class InMemorySecretsManager implements SecretsManager {
 
     private Promise<SecretMetadata> createNewSecret(String name, SecretValue value, Map<String, String> tags) {
         var metadata = SecretMetadata.secretMetadata(name, tags);
-        var entry = new SecretEntry(metadata, new ConcurrentHashMap<>());
-        entry.versions.put(1, value);
+        var entry = SecretEntry.secretEntry(metadata);
+        entry.versions()
+             .put(1, value);
         return option(secrets.putIfAbsent(name, entry))
         .fold(() -> Promise.success(metadata),
               existing -> SecretsError.secretAlreadyExists(name)
@@ -65,7 +67,9 @@ final class InMemorySecretsManager implements SecretsManager {
 
     @Override
     public Promise<SecretValue> getSecret(String name) {
-        return getSecretEntryOrFail(name).map(entry -> entry.versions.get(entry.metadata.version()));
+        return getSecretEntryOrFail(name).map(entry -> entry.versions()
+                                                            .get(entry.metadata()
+                                                                      .version()));
     }
 
     @Override
@@ -74,7 +78,8 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private Promise<SecretValue> getVersionOrFail(SecretEntry entry, String name, int version) {
-        return option(entry.versions.get(version))
+        return option(entry.versions()
+                           .get(version))
         .fold(() -> SecretsError.versionNotFound(name, version)
                                 .<SecretValue> promise(), Promise::success);
     }
@@ -85,9 +90,12 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private SecretMetadata updateSecretEntry(SecretEntry entry, SecretValue value) {
-        var newMetadata = entry.metadata.withNewVersion();
-        entry.metadata = newMetadata;
-        entry.versions.put(newMetadata.version(), value);
+        var newMetadata = entry.metadata()
+                               .withNewVersion();
+        entry.setMetadata(newMetadata);
+        entry.versions()
+             .put(newMetadata.version(),
+                  value);
         pruneOldVersions(entry);
         return newMetadata;
     }
@@ -99,7 +107,8 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private void clearAllVersions(SecretEntry entry) {
-        entry.versions.values()
+        entry.versions()
+             .values()
              .forEach(SecretValue::clear);
     }
 
@@ -111,7 +120,7 @@ final class InMemorySecretsManager implements SecretsManager {
     // ========== Metadata Operations ==========
     @Override
     public Promise<Option<SecretMetadata>> getMetadata(String name) {
-        return Promise.success(option(secrets.get(name)).map(entry -> entry.metadata));
+        return Promise.success(option(secrets.get(name)).map(SecretEntry::metadata));
     }
 
     @Override
@@ -141,7 +150,8 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private boolean matchesTag(SecretEntry entry, String tagKey, String tagValue) {
-        return tagValue.equals(entry.metadata.tags()
+        return tagValue.equals(entry.metadata()
+                                    .tags()
                                     .get(tagKey));
     }
 
@@ -151,19 +161,21 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private SecretMetadata updateEntryTags(SecretEntry entry, Map<String, String> tags) {
-        var newMetadata = entry.metadata.withTags(tags);
-        entry.metadata = newMetadata;
+        var newMetadata = entry.metadata()
+                               .withTags(tags);
+        entry.setMetadata(newMetadata);
         return newMetadata;
     }
 
     // ========== Version Management ==========
     @Override
     public Promise<List<Integer>> listVersions(String name) {
-        return getSecretEntryOrFail(name).map(entry -> listEntryVersions(entry));
+        return getSecretEntryOrFail(name).map(this::listEntryVersions);
     }
 
     private List<Integer> listEntryVersions(SecretEntry entry) {
-        return entry.versions.keySet()
+        return entry.versions()
+                    .keySet()
                     .stream()
                     .sorted(Comparator.reverseOrder())
                     .toList();
@@ -175,10 +187,12 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private boolean deleteEntryVersion(SecretEntry entry, int version) {
-        if (entry.versions.size() <= 1) {
+        if (entry.versions()
+                 .size() <= 1) {
             return false;
         }
-        return option(entry.versions.remove(version)).onPresent(SecretValue::clear)
+        return option(entry.versions()
+                           .remove(version)).onPresent(SecretValue::clear)
                      .isPresent();
     }
 
@@ -189,9 +203,12 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private SecretMetadata rotateSecretEntry(SecretEntry entry, SecretValue newValue) {
-        var newMetadata = entry.metadata.withRotation();
-        entry.metadata = newMetadata;
-        entry.versions.put(newMetadata.version(), newValue);
+        var newMetadata = entry.metadata()
+                               .withRotation();
+        entry.setMetadata(newMetadata);
+        entry.versions()
+             .put(newMetadata.version(),
+                  newValue);
         pruneOldVersions(entry);
         return newMetadata;
     }
@@ -223,7 +240,8 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private void pruneOldVersions(SecretEntry entry) {
-        while (entry.versions.size() > config.maxVersions()) {
+        while (entry.versions()
+                    .size() > config.maxVersions()) {
             var removed = findAndRemoveOldestVersion(entry);
             if (!removed) {
                 break;
@@ -232,27 +250,35 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private boolean findAndRemoveOldestVersion(SecretEntry entry) {
-        return entry.versions.keySet()
+        return entry.versions()
+                    .keySet()
                     .stream()
                     .min(Integer::compareTo)
-                    .filter(oldest -> oldest < entry.metadata.version())
+                    .filter(oldest -> oldest < entry.metadata()
+                                                    .version())
                     .map(oldest -> removeVersion(entry, oldest))
                     .isPresent();
     }
 
     private boolean removeVersion(SecretEntry entry, int version) {
-        option(entry.versions.remove(version)).onPresent(SecretValue::clear);
+        option(entry.versions()
+                    .remove(version)).onPresent(SecretValue::clear);
         return true;
     }
 
     // ========== Internal Classes ==========
-    private static final class SecretEntry {
-        private volatile SecretMetadata metadata;
-        private final ConcurrentHashMap<Integer, SecretValue> versions;
+    private record SecretEntry(AtomicReference<SecretMetadata> metadataRef,
+                               ConcurrentHashMap<Integer, SecretValue> versions) {
+        static SecretEntry secretEntry(SecretMetadata metadata) {
+            return new SecretEntry(new AtomicReference<>(metadata), new ConcurrentHashMap<>());
+        }
 
-        SecretEntry(SecretMetadata metadata, ConcurrentHashMap<Integer, SecretValue> versions) {
-            this.metadata = metadata;
-            this.versions = versions;
+        SecretMetadata metadata() {
+            return metadataRef.get();
+        }
+
+        void setMetadata(SecretMetadata metadata) {
+            metadataRef.set(metadata);
         }
     }
 }

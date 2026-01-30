@@ -46,7 +46,7 @@ final class InMemoryBlobStorageService implements BlobStorageService {
     // ========== Bucket Operations ==========
     @Override
     public Promise<Unit> createBucket(String bucketName) {
-        var bucket = new Bucket(bucketName);
+        var bucket = Bucket.bucket(bucketName);
         return option(buckets.putIfAbsent(bucketName, bucket))
         .fold(() -> Promise.success(unit()),
               existing -> BlobStorageError.bucketAlreadyExists(bucketName)
@@ -167,12 +167,9 @@ final class InMemoryBlobStorageService implements BlobStorageService {
     }
 
     // ========== Internal Classes ==========
-    private static final class Bucket {
-        private final String name;
-        private final ConcurrentHashMap<String, StoredBlob> blobs = new ConcurrentHashMap<>();
-
-        Bucket(String name) {
-            this.name = name;
+    private record Bucket(String name, ConcurrentHashMap<String, StoredBlob> blobs) {
+        static Bucket bucket(String name) {
+            return new Bucket(name, new ConcurrentHashMap<>());
         }
 
         BlobMetadata put(String key, byte[] data, String contentType, Map<String, String> customMetadata) {
