@@ -3,26 +3,27 @@
 Each test class has a dedicated port range to avoid conflicts when running tests in parallel.
 Tests use per-method port offsets to avoid TIME_WAIT issues between sequential test methods.
 
-**IMPORTANT**: Port ranges must NOT overlap. Each test class needs: `BASE_PORT + MAX_OFFSET + (NODES - 1)` ports.
+**IMPORTANT**: Port ranges must NOT overlap. Each test class has a 500-port gap to ensure no conflicts,
+even with large per-method offsets (e.g., ManagementApiTest has offsets up to 380).
 
 ## Port Allocation Table
 
-| Test Class                    | Base Port | Base Mgmt Port | Max Offset | Max Cluster Port | Max Mgmt Port | Nodes |
-|-------------------------------|-----------|----------------|------------|------------------|---------------|-------|
-| ForgeClusterIntegrationTest   | 5770      | 5870           | 15         | 5787             | 5887          | 3     |
-| ClusterFormationTest          | 5020      | 5120           | 20         | 5042             | 5142          | 3     |
-| SliceDeploymentTest           | 5050      | 5150           | 30         | 5082             | 5182          | 3     |
-| SliceInvocationTest           | 5090      | 5190           | 45         | 5137             | 5237          | 3     |
-| MetricsTest                   | 5140      | 5240           | 0          | 5142             | 5242          | 3 (shared) |
-| NodeFailureTest               | 5150      | 5250           | 60         | 5214             | 5314          | 5     |
-| BootstrapTest                 | 5220      | 5320           | 40         | 5262             | 5362          | 3     |
-| RollingUpdateTest             | 5270      | 5370           | 60         | 5334             | 5434          | 5     |
-| ChaosTest                     | 5340      | 5440           | 50         | 5394             | 5494          | 5     |
-| ManagementApiTest             | 5400      | 5500           | 95         | 5497             | 5597          | 3     |
-| ControllerTest                | 5500      | 5600           | 35         | 5537             | 5637          | 3     |
-| NetworkPartitionTest          | 5540      | 5640           | 40         | 5582             | 5682          | 3     |
-| TtmTest                       | 5590      | 5690           | 35         | 5627             | 5727          | 3     |
-| GracefulShutdownTest          | 5630      | 5730           | 30         | 5662             | 5762          | 3     |
+| Test Class                    | Base Port | Base Mgmt Port | Max Offset | Notes |
+|-------------------------------|-----------|----------------|------------|-------|
+| ClusterFormationTest          | 5000      | 5100           | 80         | 3 nodes |
+| SliceDeploymentTest           | 5500      | 5600           | 120        | 3 nodes |
+| SliceInvocationTest           | 6000      | 6100           | 180        | 3 nodes |
+| MetricsTest                   | 6500      | 6600           | 0          | 3 nodes (shared cluster) |
+| NodeFailureTest               | 7000      | 7100           | 120        | 5 nodes |
+| BootstrapTest                 | 7500      | 7600           | 80         | 3 nodes |
+| RollingUpdateTest             | 8000      | 8100           | 120        | 5 nodes |
+| ChaosTest                     | 8500      | 8600           | 100        | 5 nodes |
+| ManagementApiTest             | 9000      | 9100           | 380        | 3 nodes |
+| ControllerTest                | 9500      | 9600           | 35         | 3 nodes |
+| NetworkPartitionTest          | 10000     | 10100          | 80         | 3 nodes |
+| TtmTest                       | 10500     | 10600          | 35         | 3 nodes |
+| GracefulShutdownTest          | 11000     | 11100          | 60         | 3 nodes |
+| ForgeClusterIntegrationTest   | 11500     | 11600          | 15         | 3 nodes |
 
 ## Per-Method Offset Pattern
 
@@ -49,7 +50,7 @@ private int getPortOffset(TestInfo testInfo) {
 ## Notes
 
 - **MetricsTest** uses `@BeforeAll`/`@AfterAll` (shared cluster) so no per-method offset needed
-- **Port spacing**: Use 5-port increments (enough for 5-node clusters)
+- **Port spacing**: 500-port gaps between test classes ensure no overlap even with max offsets
 - **Sequential execution**: All tests have `@Execution(ExecutionMode.SAME_THREAD)`
 - **Management port offset**: BASE_MGMT_PORT = BASE_PORT + 100
 
@@ -57,11 +58,11 @@ private int getPortOffset(TestInfo testInfo) {
 
 When adding a new test class:
 1. Calculate required range: `MAX_OFFSET + (NODES - 1)`
-2. Find a base port with sufficient gap from neighbors
+2. Use the next available 500-port boundary (e.g., 12000, 12500, etc.)
 3. Add an entry to this table
 4. Implement the `getPortOffset()` pattern
 5. Use `@Execution(ExecutionMode.SAME_THREAD)` annotation
 
 ## Reserved Ranges
 
-- 5790+ / 5890+: Reserved for future tests
+- 12000+ / 12100+: Reserved for future tests

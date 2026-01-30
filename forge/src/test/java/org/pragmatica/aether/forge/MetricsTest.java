@@ -34,8 +34,8 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MetricsTest {
-    private static final int BASE_PORT = 5140;
-    private static final int BASE_MGMT_PORT = 5240;
+    private static final int BASE_PORT = 6500;
+    private static final int BASE_MGMT_PORT = 6600;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration METRICS_INTERVAL = Duration.ofSeconds(2);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
@@ -65,7 +65,7 @@ class MetricsTest {
 
         // Stabilization time for consensus
         try {
-            Thread.sleep(3000);
+            Thread.sleep(5000);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }

@@ -39,8 +39,8 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
  */
 @Execution(ExecutionMode.SAME_THREAD)
 class ChaosTest {
-    private static final int BASE_PORT = 5340;
-    private static final int BASE_MGMT_PORT = 5440;
+    private static final int BASE_PORT = 9500;
+    private static final int BASE_MGMT_PORT = 9600;
     private static final Duration CHAOS_DURATION = Duration.ofSeconds(30);
     private static final Duration RECOVERY_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
@@ -88,7 +88,7 @@ class ChaosTest {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(1000);
+            Thread.sleep(3000);
         }
     }
 

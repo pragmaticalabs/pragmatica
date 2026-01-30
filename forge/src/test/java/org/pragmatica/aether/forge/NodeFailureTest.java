@@ -32,8 +32,8 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
  */
 @Execution(ExecutionMode.SAME_THREAD)
 class NodeFailureTest {
-    private static final int BASE_PORT = 5150;
-    private static final int BASE_MGMT_PORT = 5250;
+    private static final int BASE_PORT = 7050;
+    private static final int BASE_MGMT_PORT = 7150;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
@@ -76,7 +76,7 @@ class NodeFailureTest {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(1000);
+            Thread.sleep(3000);
         }
     }
 

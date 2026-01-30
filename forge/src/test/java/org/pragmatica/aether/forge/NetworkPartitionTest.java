@@ -35,8 +35,8 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
  */
 @Execution(ExecutionMode.SAME_THREAD)
 class NetworkPartitionTest {
-    private static final int BASE_PORT = 5540;
-    private static final int BASE_MGMT_PORT = 5640;
+    private static final int BASE_PORT = 11000;
+    private static final int BASE_MGMT_PORT = 11100;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
@@ -78,7 +78,7 @@ class NetworkPartitionTest {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(1000);
+            Thread.sleep(3000);
         }
     }
 

@@ -37,8 +37,8 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
  */
 @Execution(ExecutionMode.SAME_THREAD)
 class ControllerTest {
-    private static final int BASE_PORT = 5500;
-    private static final int BASE_MGMT_PORT = 5600;
+    private static final int BASE_PORT = 10500;
+    private static final int BASE_MGMT_PORT = 10600;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
@@ -87,7 +87,7 @@ class ControllerTest {
             cluster.stop()
                    .await();
             // Allow time for ports to be released before next test
-            Thread.sleep(2000);
+            Thread.sleep(3000);
         }
     }
 

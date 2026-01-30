@@ -36,8 +36,8 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
  */
 @Execution(ExecutionMode.SAME_THREAD)
 class TtmTest {
-    private static final int BASE_PORT = 5590;
-    private static final int BASE_MGMT_PORT = 5690;
+    private static final int BASE_PORT = 11500;
+    private static final int BASE_MGMT_PORT = 11600;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
 
@@ -81,7 +81,7 @@ class TtmTest {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(2000);
+            Thread.sleep(3000);
         }
     }
 

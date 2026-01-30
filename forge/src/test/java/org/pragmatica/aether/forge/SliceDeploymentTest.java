@@ -35,8 +35,8 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
  */
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceDeploymentTest {
-    private static final int BASE_PORT = 5050;
-    private static final int BASE_MGMT_PORT = 5150;
+    private static final int BASE_PORT = 5500;
+    private static final int BASE_MGMT_PORT = 5600;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration DEPLOY_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
@@ -69,7 +69,7 @@ class SliceDeploymentTest {
 
         // Stabilization time for consensus
         try {
-            Thread.sleep(3000);
+            Thread.sleep(5000);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
@@ -92,7 +92,7 @@ class SliceDeploymentTest {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(1000);
+            Thread.sleep(3000);
         }
     }
 
