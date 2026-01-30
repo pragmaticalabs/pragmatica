@@ -3,8 +3,6 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.blueprint.Blueprint;
-import org.pragmatica.aether.slice.blueprint.BlueprintParser;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -134,9 +132,14 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private Promise<BlueprintResponse> handleBlueprint(String body) {
-        return BlueprintParser.parse(body)
-                              .async()
-                              .flatMap(this::applyBlueprintCommands);
+        return nodeSupplier.get()
+                           .blueprintService()
+                           .publish(body)
+                           .map(expanded -> new BlueprintResponse("applied",
+                                                                  expanded.id()
+                                                                          .asString(),
+                                                                  expanded.loadOrder()
+                                                                          .size()));
     }
 
     private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances) {
@@ -152,32 +155,6 @@ public final class SliceRoutes implements RouteSource {
         AetherKey key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
         KVCommand<AetherKey> command = new KVCommand.Remove<>(key);
         return node.apply(List.of(command));
-    }
-
-    private Promise<BlueprintResponse> applyBlueprintCommands(Blueprint blueprint) {
-        var node = nodeSupplier.get();
-        var commands = blueprint.slices()
-                                .stream()
-                                .map(spec -> {
-                                         AetherKey key = AetherKey.SliceTargetKey.sliceTargetKey(spec.artifact()
-                                                                                                     .base());
-                                         AetherValue value = AetherValue.SliceTargetValue.sliceTargetValue(spec.artifact()
-                                                                                                               .version(),
-                                                                                                           spec.instances());
-                                         return (KVCommand<AetherKey>) new KVCommand.Put<>(key, value);
-                                     })
-                                .toList();
-        if (commands.isEmpty()) {
-            return Promise.success(new BlueprintResponse("applied",
-                                                         blueprint.id()
-                                                                  .asString(),
-                                                         0));
-        }
-        return node.apply(commands)
-                   .map(_ -> new BlueprintResponse("applied",
-                                                   blueprint.id()
-                                                            .asString(),
-                                                   commands.size()));
     }
 
     private SlicesResponse buildSlicesResponse() {
