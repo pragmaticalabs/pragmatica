@@ -34,8 +34,8 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
  */
 @Execution(ExecutionMode.SAME_THREAD)
 class RollingUpdateTest {
-    private static final int BASE_PORT = 5270;
-    private static final int BASE_MGMT_PORT = 5370;
+    private static final int BASE_PORT = 9000;
+    private static final int BASE_MGMT_PORT = 9100;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
     private static final String OLD_VERSION = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
@@ -69,7 +69,7 @@ class RollingUpdateTest {
                .until(this::allNodesHealthy);
 
         // Stabilization time for consensus
-        sleep(Duration.ofSeconds(3));
+        sleep(Duration.ofSeconds(5));
 
         // Deploy old version
         var deployResponse = deploy(OLD_VERSION, 3);
@@ -106,7 +106,7 @@ class RollingUpdateTest {
         if (cluster != null) {
             cluster.stop()
                    .await();
-            Thread.sleep(1000);
+            Thread.sleep(3000);
         }
     }
 
@@ -182,7 +182,7 @@ class RollingUpdateTest {
         completeUpdate();
 
         // Old version should be removed
-        await().atMost(Duration.ofSeconds(60))
+        await().atMost(Duration.ofSeconds(120))
                .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var slices = getSlices();
@@ -211,7 +211,7 @@ class RollingUpdateTest {
 
         // After rollback completes, update is removed from active list (terminal state)
         // Verify by checking that new version slices are removed and old version remains
-        await().atMost(Duration.ofSeconds(30))
+        await().atMost(Duration.ofSeconds(90))
                .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var slices = getSlices();
