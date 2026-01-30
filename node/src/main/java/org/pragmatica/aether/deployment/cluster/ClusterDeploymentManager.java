@@ -1,6 +1,8 @@
 package org.pragmatica.aether.deployment.cluster;
 
 import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.artifact.ArtifactBase;
+import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
@@ -110,6 +112,7 @@ public interface ClusterDeploymentManager {
                       Map<Artifact, Blueprint> blueprints,
                       Map<SliceNodeKey, SliceState> sliceStates,
                       Map<Artifact, Set<Artifact>> sliceDependencies,
+                      Set<ArtifactBase> activeRoutings,
                       AtomicReference<List<NodeId>> activeNodes) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
@@ -134,6 +137,7 @@ public interface ClusterDeploymentManager {
                     restoreSliceTarget(sliceTargetKey, sliceTargetValue);
                     case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue sliceNodeValue ->
                     restoreSliceState(sliceNodeKey, sliceNodeValue);
+                    case AetherKey.VersionRoutingKey routingKey -> activeRoutings.add(routingKey.artifactBase());
                     default -> {}
                 }
             }
@@ -182,6 +186,10 @@ public interface ClusterDeploymentManager {
                     handleSliceTargetChange(sliceTargetKey, sliceTargetValue);
                     case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue sliceNodeValue ->
                     trackSliceState(sliceNodeKey, sliceNodeValue.state());
+                    case AetherKey.VersionRoutingKey routingKey -> {
+                        log.debug("Rolling update started for {}", routingKey.artifactBase());
+                        activeRoutings.add(routingKey.artifactBase());
+                    }
                     default -> {}
                 }
             }
@@ -194,6 +202,7 @@ public interface ClusterDeploymentManager {
                     case SliceTargetKey sliceTargetKey -> handleSliceTargetRemoval(sliceTargetKey);
                     case AppBlueprintKey appKey -> handleAppBlueprintRemoval(appKey);
                     case SliceNodeKey sliceNodeKey -> sliceStates.remove(sliceNodeKey);
+                    case AetherKey.VersionRoutingKey routingKey -> handleRoutingRemoval(routingKey);
                     default -> {}
                 }
             }
@@ -240,12 +249,26 @@ public interface ClusterDeploymentManager {
             }
 
             private void handleSliceTargetChange(SliceTargetKey key, SliceTargetValue value) {
-                var artifact = key.artifactBase()
-                                  .withVersion(value.currentVersion());
+                var artifactBase = key.artifactBase();
+                var newVersion = value.currentVersion();
+                var newArtifact = artifactBase.withVersion(newVersion);
                 var desiredInstances = value.targetInstances();
-                log.info("Slice target changed for {}: {} instances", artifact, desiredInstances);
-                blueprints.put(artifact, new Blueprint(artifact, desiredInstances));
-                allocateInstances(artifact, desiredInstances);
+                // Only remove old versions if NOT in a rolling update (no active routing)
+                if (!activeRoutings.contains(artifactBase)) {
+                    var oldVersions = blueprints.keySet()
+                                                .stream()
+                                                .filter(a -> artifactBase.matches(a) && !a.version()
+                                                                                          .equals(newVersion))
+                                                .toList();
+                    for (var oldArtifact : oldVersions) {
+                        log.info("Removing old version {} (new version: {})", oldArtifact, newArtifact);
+                        blueprints.remove(oldArtifact);
+                        deallocateAllInstances(oldArtifact);
+                    }
+                }
+                log.info("Slice target changed for {}: {} instances", newArtifact, desiredInstances);
+                blueprints.put(newArtifact, new Blueprint(newArtifact, desiredInstances));
+                allocateInstances(newArtifact, desiredInstances);
             }
 
             private void handleAppBlueprintChange(AppBlueprintKey key, AppBlueprintValue value) {
@@ -298,6 +321,32 @@ public interface ClusterDeploymentManager {
                     log.info("Slice target removed for {}", artifact);
                     blueprints.remove(artifact);
                     deallocateAllInstances(artifact);
+                }
+            }
+
+            private void handleRoutingRemoval(AetherKey.VersionRoutingKey routingKey) {
+                var artifactBase = routingKey.artifactBase();
+                activeRoutings.remove(artifactBase);
+                log.info("Rolling update completed for {}, cleaning up old versions", artifactBase);
+                // Get current target version from KVStore
+                var targetKey = AetherKey.SliceTargetKey.sliceTargetKey(artifactBase);
+                kvStore.get(targetKey)
+                       .filter(v -> v instanceof AetherValue.SliceTargetValue)
+                       .map(v -> (AetherValue.SliceTargetValue) v)
+                       .onPresent(targetValue -> removeNonTargetVersions(artifactBase,
+                                                                         targetValue.currentVersion()));
+            }
+
+            private void removeNonTargetVersions(ArtifactBase artifactBase, Version currentVersion) {
+                var oldVersions = blueprints.keySet()
+                                            .stream()
+                                            .filter(a -> artifactBase.matches(a) && !a.version()
+                                                                                      .equals(currentVersion))
+                                            .toList();
+                for (var oldArtifact : oldVersions) {
+                    log.info("Removing old version {} after rolling update completion", oldArtifact);
+                    blueprints.remove(oldArtifact);
+                    deallocateAllInstances(oldArtifact);
                 }
             }
 
@@ -607,6 +656,7 @@ public interface ClusterDeploymentManager {
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
+                                                                        ConcurrentHashMap.newKeySet(),
                                                                         activeNodes);
                     state.set(activeState);
                     // Rebuild state from KVStore and reconcile
