@@ -1,6 +1,10 @@
 package org.pragmatica.cluster.node.rabia;
 
 import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.cluster.state.kvstore.StructuredKey;
 import org.pragmatica.consensus.Command;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.StateMachine;
@@ -44,6 +48,7 @@ import org.pragmatica.consensus.topology.TopologyManagementMessage.AddNode;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.RemoveNode;
 import org.pragmatica.consensus.topology.TopologyManagementMessage.SetClusterSize;
 import org.pragmatica.consensus.topology.TopologyManager;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Tuple.Tuple2;
@@ -88,6 +93,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     /**
      * Creates a RabiaNode without metrics collection.
+     * Uses local leader election (backward compatible).
      */
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
@@ -100,11 +106,13 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                          serializer,
                          deserializer,
                          ConsensusMetrics.noop(),
-                         List.of());
+                         List.of(),
+                         false);
     }
 
     /**
      * Creates a RabiaNode with metrics collection.
+     * Uses local leader election (backward compatible).
      */
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
@@ -112,23 +120,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               Serializer serializer,
                                                               Deserializer deserializer,
                                                               ConsensusMetrics metrics) {
-        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer, metrics, List.of());
+        return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer, metrics, List.of(), false);
     }
 
     /**
      * Creates a RabiaNode with metrics collection and custom network handlers.
-     * <p>
-     * The node collects its route entries which should be combined with other routes
-     * when building the final ImmutableRouter. Use {@link #routeEntries()} to retrieve them.
-     *
-     * @param config             Node configuration
-     * @param delegateRouter     DelegateRouter for message routing (caller must wire after collecting all routes)
-     * @param stateMachine       State machine for consensus
-     * @param serializer         Message serializer
-     * @param deserializer       Message deserializer
-     * @param metrics            Consensus metrics collector
-     * @param additionalHandlers Additional Netty handlers (e.g., NetworkMetricsHandler)
-     * @return Result containing RabiaNode instance, or failure if topology manager creation fails
+     * Uses local leader election (backward compatible).
      */
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
@@ -137,6 +134,51 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                               Deserializer deserializer,
                                                               ConsensusMetrics metrics,
                                                               List<ChannelHandler> additionalHandlers) {
+        return rabiaNode(config,
+                         delegateRouter,
+                         stateMachine,
+                         serializer,
+                         deserializer,
+                         metrics,
+                         additionalHandlers,
+                         false);
+    }
+
+    /**
+     * Creates a RabiaNode with metrics collection, custom network handlers, and consensus-based leader election.
+     * <p>
+     * When {@code useConsensusLeaderElection} is true:
+     * <ul>
+     *   <li>Leader proposals are submitted through consensus (KVStore with LeaderKey)</li>
+     *   <li>LeaderChange notifications are sent asynchronously after commit</li>
+     *   <li>All nodes agree on leader through consensus protocol</li>
+     * </ul>
+     * <p>
+     * When {@code useConsensusLeaderElection} is false (default):
+     * <ul>
+     *   <li>Leader is computed locally on view change</li>
+     *   <li>LeaderChange notifications are sent immediately (synchronously)</li>
+     *   <li>Backward compatible with existing behavior</li>
+     * </ul>
+     *
+     * @param config                     Node configuration
+     * @param delegateRouter             DelegateRouter for message routing (caller must wire after collecting all routes)
+     * @param stateMachine               State machine for consensus
+     * @param serializer                 Message serializer
+     * @param deserializer               Message deserializer
+     * @param metrics                    Consensus metrics collector
+     * @param additionalHandlers         Additional Netty handlers (e.g., NetworkMetricsHandler)
+     * @param useConsensusLeaderElection Whether to use consensus-based leader election
+     * @return Result containing RabiaNode instance, or failure if topology manager creation fails
+     */
+    static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
+                                                              DelegateRouter delegateRouter,
+                                                              StateMachine<C> stateMachine,
+                                                              Serializer serializer,
+                                                              Deserializer deserializer,
+                                                              ConsensusMetrics metrics,
+                                                              List<ChannelHandler> additionalHandlers,
+                                                              boolean useConsensusLeaderElection) {
         // Create components with delegate router (routes configured after construction)
         return TcpTopologyManager.tcpTopologyManager(config.topology(),
                                                      delegateRouter)
@@ -147,9 +189,11 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                       deserializer,
                                                                       metrics,
                                                                       additionalHandlers,
-                                                                      topologyManager));
+                                                                      topologyManager,
+                                                                      useConsensusLeaderElection));
     }
 
+    @SuppressWarnings("unchecked")
     private static <C extends Command> RabiaNode<C> assembleNode(NodeConfig config,
                                                                  DelegateRouter delegateRouter,
                                                                  StateMachine<C> stateMachine,
@@ -157,16 +201,35 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                                                  Deserializer deserializer,
                                                                  ConsensusMetrics metrics,
                                                                  List<ChannelHandler> additionalHandlers,
-                                                                 TcpTopologyManager topologyManager) {
-        var leaderManager = LeaderManager.leaderManager(config.topology()
-                                                              .self(),
-                                                        delegateRouter);
+                                                                 TcpTopologyManager topologyManager,
+                                                                 boolean useConsensusLeaderElection) {
         var network = new NettyClusterNetwork(topologyManager,
                                               serializer,
                                               deserializer,
                                               delegateRouter,
                                               additionalHandlers);
         var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol(), metrics);
+        // Create leader manager - for consensus mode, we wire the proposal handler
+        LeaderManager leaderManager;
+        if (useConsensusLeaderElection) {
+            // Consensus-based leader election: submit proposals through consensus
+            LeaderManager.LeaderProposalHandler proposalHandler = (candidate, viewSequence) -> {
+                var key = LeaderKey.INSTANCE;
+                var value = LeaderValue.leaderValue(candidate, viewSequence);
+                var command = new KVCommand.Put<>(key, value);
+                return consensus.apply(List.of((C) command))
+                                .mapToUnit();
+            };
+            leaderManager = LeaderManager.leaderManager(config.topology()
+                                                              .self(),
+                                                        delegateRouter,
+                                                        proposalHandler);
+        } else {
+            // Local election mode: backward compatible
+            leaderManager = LeaderManager.leaderManager(config.topology()
+                                                              .self(),
+                                                        delegateRouter);
+        }
         // Collect sealed hierarchy entries
         var topologyMgmtRoutes = SealedBuilder.from(TopologyManagementMessage.class)
                                               .route(route(AddNode.class, topologyManager::handleAddNodeMessage),

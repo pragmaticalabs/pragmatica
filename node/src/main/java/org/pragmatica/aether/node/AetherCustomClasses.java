@@ -13,6 +13,8 @@ import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.invoke.InvocationMessage;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.cluster.metrics.MetricsMessage;
 import org.pragmatica.cluster.node.rabia.CustomClasses;
 import org.pragmatica.lang.Option;
@@ -51,5 +53,9 @@ public interface AetherCustomClasses {
         concreteSubtypes(MetricsMessage.class).forEach(consumer);
         // Invocation types
         concreteSubtypes(InvocationMessage.class).forEach(consumer);
+        // Leader election types (for consensus-based leader election)
+        consumer.accept(LeaderKey.class);
+        consumer.accept(LeaderKey.LeaderKeyPattern.class);
+        consumer.accept(LeaderValue.class);
     }
 }

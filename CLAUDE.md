@@ -239,6 +239,37 @@ cause.promise()             // Cause → Promise<T>
 result.unwrap()             // Result<T> → T (throws on failure)
 ```
 
+## Message Patterns
+
+### Sync vs Async Routing
+
+```java
+// Sync: handler completes before caller continues
+router.route(message);
+
+// Async: decoupled execution, prevents blocking
+router.routeAsync(() -> message);
+```
+
+**When to use async:**
+- Reaction messages (Handler A triggers Handler B)
+- Non-critical notifications
+- Avoiding deep call stacks
+
+**When to use sync:**
+- Critical coordination (quorum disappearance)
+- Order-dependent sequences
+- Handler result needed immediately
+
+### Leader Election Modes
+
+| Mode | Notification | Use Case |
+|------|-------------|----------|
+| Local | Immediate (sync) | Low latency, race OK |
+| Consensus | After commit (async) | Strong consistency |
+
+See [docs/contributors/consensus.md](docs/contributors/consensus.md) for details.
+
 ## Documentation
 
 | Topic | Location |

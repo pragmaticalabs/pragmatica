@@ -436,6 +436,45 @@ See [metrics-and-control.md](metrics-control.md) for message definitions:
 3. SLM integration (Layer 2) - planned
 4. LLM integration (Layer 3) - planned
 
+## Message Patterns
+
+### Synchronous vs Asynchronous Notifications
+
+The cluster uses two patterns for message routing:
+
+**Synchronous (`router.route()`):**
+- Used when handler needs to complete before caller continues
+- Used for critical coordination (e.g., quorum disappearance)
+- Blocks the calling thread until all handlers complete
+
+**Asynchronous (`router.routeAsync()`):**
+- Used to prevent pipeline blocking and deep call stacks
+- Handler execution is decoupled from caller
+- Used for reaction messages where order doesn't matter
+
+**Example - Leader Election:**
+```
+Local mode:   view change → immediate notification (sync)
+Consensus:    view change → proposal → commit → notification (async)
+```
+
+### Reaction Messages
+
+When a handler needs to trigger additional messages:
+
+```java
+// DO: Use routeAsync for reaction messages
+router.routeAsync(() -> new ReactionMessage(...));
+
+// DON'T: Block the handler pipeline
+router.route(new ReactionMessage(...));  // Blocks caller
+```
+
+**Why async for reactions:**
+- Prevents deep call stacks (Handler A → B → C → ...)
+- Avoids hidden coupling between handlers
+- Keeps handlers fast and predictable
+
 ## Implementation Notes
 
 ### Consensus Integration
@@ -443,7 +482,7 @@ See [metrics-and-control.md](metrics-control.md) for message definitions:
 - Uses local cluster module (Rabia consensus protocol)
 - MessageRouter pattern for component communication
 - KV-Store operations for all persistent state
-- LeaderManager for deterministic leadership
+- LeaderManager for deterministic leadership (local or consensus-based)
 
 ### Error Handling
 

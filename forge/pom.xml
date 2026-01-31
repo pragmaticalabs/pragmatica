@@ -88,19 +88,44 @@
 
     <build>
         <plugins>
-            <!-- Configure surefire to run integration tests sequentially to avoid port conflicts -->
+            <!-- Unit tests only (load tests) -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.1</version>
                 <configuration>
-                    <!-- Run tests sequentially to avoid port binding conflicts -->
+                    <includes>
+                        <include>**/load/*Test.java</include>
+                        <include>**/load/pattern/*Test.java</include>
+                    </includes>
+                </configuration>
+            </plugin>
+            <!-- Integration tests (everything except load tests) -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.5.1</version>
+                <configuration>
+                    <includes>
+                        <include>**/*Test.java</include>
+                    </includes>
+                    <excludes>
+                        <exclude>**/load/*Test.java</exclude>
+                        <exclude>**/load/pattern/*Test.java</exclude>
+                    </excludes>
                     <forkCount>1</forkCount>
                     <reuseForks>false</reuseForks>
-                    <!-- Increase timeout for integration tests -->
                     <forkedProcessTimeoutInSeconds>600</forkedProcessTimeoutInSeconds>
                     <argLine>--enable-native-access=ALL-UNNAMED</argLine>
                 </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
             <!-- Prepare test artifacts with correct manifests for rolling update tests -->
             <plugin>

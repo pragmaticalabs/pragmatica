@@ -186,16 +186,14 @@ public interface RollingUpdateManager {
         record rollingUpdateManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                     KVStore<AetherKey, AetherValue> kvStore,
                                     InvocationMetricsCollector metricsCollector,
-                                    Map<String, RollingUpdate> updates,
-                                    java.util.concurrent.atomic.AtomicBoolean isLeader) implements RollingUpdateManager {
+                                    Map<String, RollingUpdate> updates) implements RollingUpdateManager {
             private static final Logger log = LoggerFactory.getLogger(RollingUpdateManager.class);
             private static final TimeSpan KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
                                                                         .seconds();
 
             @Override
             public void onLeaderChange(LeaderChange leaderChange) {
-                isLeader.set(leaderChange.localNodeIsLeader());
-                if (isLeader.get()) {
+                if (leaderChange.localNodeIsLeader()) {
                     log.info("Rolling update manager active (leader)");
                     restoreState();
                 } else {
@@ -235,7 +233,9 @@ public interface RollingUpdateManager {
             }
 
             private Promise<Unit> requireLeader() {
-                if (!isLeader.get()) {
+                // Query LeaderManager directly to avoid race condition with callback-based state
+                if (!clusterNode.leaderManager()
+                                .isLeader()) {
                     return RollingUpdateError.NotLeader.INSTANCE.promise();
                 }
                 return Promise.success(Unit.unit());
@@ -488,11 +488,24 @@ public interface RollingUpdateManager {
             @SuppressWarnings("unchecked")
             private Promise<RollingUpdate> deployNewVersion(RollingUpdate update, int instances) {
                 var artifactBase = update.artifactBase();
-                var key = AetherKey.SliceTargetKey.sliceTargetKey(artifactBase);
-                var value = AetherValue.SliceTargetValue.sliceTargetValue(update.newVersion(), instances);
-                var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
+                // Build routing command
+                var routingKey = new AetherKey.VersionRoutingKey(update.artifactBase());
+                var routingValue = new AetherValue.VersionRoutingValue(update.oldVersion(),
+                                                                       update.newVersion(),
+                                                                       update.routing()
+                                                                             .newWeight(),
+                                                                       update.routing()
+                                                                             .oldWeight(),
+                                                                       System.currentTimeMillis());
+                var routingCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(routingKey, routingValue);
+                // Build target command
+                var targetKey = AetherKey.SliceTargetKey.sliceTargetKey(artifactBase);
+                var targetValue = AetherValue.SliceTargetValue.sliceTargetValue(update.newVersion(), instances);
+                var targetCmd = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(targetKey, targetValue);
                 log.info("Deploying {} instances of {} (version {})", instances, artifactBase, update.newVersion());
-                return clusterNode.<Unit> apply(List.of(command))
+                // Send routing AND target in single batch to ensure atomic processing
+                // Routing must be applied before target so old version is preserved
+                return clusterNode.<Unit> apply(List.of(routingCmd, targetCmd))
                                   .timeout(KV_OPERATION_TIMEOUT)
                                   .flatMap(_ -> persistAndTransition(update, RollingUpdateState.DEPLOYED));
             }
@@ -555,11 +568,7 @@ public interface RollingUpdateManager {
                                   .mapToUnit();
             }
         }
-        return new rollingUpdateManager(clusterNode,
-                                        kvStore,
-                                        metricsCollector,
-                                        new ConcurrentHashMap<>(),
-                                        new java.util.concurrent.atomic.AtomicBoolean(false));
+        return new rollingUpdateManager(clusterNode, kvStore, metricsCollector, new ConcurrentHashMap<>());
     }
 
     /**

@@ -48,6 +48,9 @@ import org.pragmatica.aether.slice.SliceStore;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.cluster.state.kvstore.LeaderValue;
+import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
@@ -581,7 +584,8 @@ public interface AetherNode {
                                                 rabiaMetricsCollector,
                                                 rollingUpdateManager,
                                                 rollbackManager,
-                                                artifactMetricsCollector);
+                                                artifactMetricsCollector,
+                                                clusterNode.leaderManager());
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
         // Create the node first (without management server reference)
@@ -683,7 +687,8 @@ public interface AetherNode {
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
                                                                     RollingUpdateManager rollingUpdateManager,
                                                                     RollbackManager rollbackManager,
-                                                                    ArtifactMetricsCollector artifactMetricsCollector) {
+                                                                    ArtifactMetricsCollector artifactMetricsCollector,
+                                                                    LeaderManager leaderManager) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         // KVStore notifications - ORDER MATTERS!
         // EndpointRegistry MUST process before ClusterDeploymentManager so endpoints
@@ -774,7 +779,25 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
         // KVStore local operations
         entries.add(MessageRouter.Entry.route(KVStoreLocalIO.Request.Find.class, kvStore::find));
+        // Leader election commit listener - notifies LeaderManager when leader is committed through consensus
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                              notification -> handleLeaderCommit(notification, leaderManager)));
         return entries;
+    }
+
+    /**
+     * Handle leader election commits from KV-Store.
+     * When a LeaderKey is committed, notify the LeaderManager.
+     */
+    @SuppressWarnings("unchecked")
+    private static void handleLeaderCommit(KVStoreNotification.ValuePut<?, ?> notification,
+                                           LeaderManager leaderManager) {
+        if (notification.cause()
+                        .key() instanceof LeaderKey) {
+            var value = (LeaderValue) notification.cause()
+                                                 .value();
+            leaderManager.onLeaderCommitted(value.leader(), value.viewSequence());
+        }
     }
 
     /**
