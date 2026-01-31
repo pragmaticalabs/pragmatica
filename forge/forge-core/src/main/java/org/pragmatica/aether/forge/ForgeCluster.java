@@ -25,8 +25,10 @@ import org.pragmatica.lang.utils.SharedScheduler;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Queue;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -64,6 +66,8 @@ public final class ForgeCluster {
     private final Map<String, AetherNode> nodes = new ConcurrentHashMap<>();
     private final Map<String, NodeInfo> nodeInfos = new ConcurrentHashMap<>();
     private final AtomicInteger nodeCounter = new AtomicInteger(0);
+    private final Queue<Integer> availableSlots = new ConcurrentLinkedQueue<>();
+    private final Map<String, Integer> slotsByNodeId = new ConcurrentHashMap<>();
     private final int initialClusterSize;
     private final int basePort;
     private final int baseMgmtPort;
@@ -186,14 +190,22 @@ public final class ForgeCluster {
                  initialClusterSize,
                  basePort,
                  basePort + initialClusterSize - 1);
+        // Initialize slot pool (2x target size for headroom)
+        int poolSize = 2 * targetClusterSize;
+        availableSlots.clear();
+        for (int i = 0; i < poolSize; i++) {
+            availableSlots.offer(i);
+        }
         // Create node infos for initial cluster
         var initialNodes = new ArrayList<NodeInfo>();
         for (int i = 1; i <= initialClusterSize; i++) {
+            var slot = availableSlots.poll();
             var nodeId = nodeId(nodeIdPrefix + "-" + i).unwrap();
-            var port = basePort + i - 1;
+            var port = basePort + slot;
             var info = new NodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
             initialNodes.add(info);
             nodeInfos.put(nodeId.id(), info);
+            slotsByNodeId.put(nodeId.id(), slot);
         }
         nodeCounter.set(initialClusterSize);
         // Create and start all nodes, tracking results individually
@@ -202,9 +214,10 @@ public final class ForgeCluster {
             var nodeInfo = initialNodes.get(i);
             var nodeIdStr = nodeInfo.id()
                                     .id();
-            var port = basePort + i;
-            var mgmtPort = baseMgmtPort + i;
-            var appHttpPort = baseAppHttpPort + i;
+            var slot = slotsByNodeId.get(nodeIdStr);
+            var port = basePort + slot;
+            var mgmtPort = baseMgmtPort + slot;
+            var appHttpPort = baseAppHttpPort + slot;
             var node = createNode(nodeInfo.id(), port, mgmtPort, appHttpPort, initialNodes);
             nodes.put(nodeIdStr, node);
             // Wrap start() to capture success/failure with node context
@@ -258,11 +271,13 @@ public final class ForgeCluster {
                                     .toList();
         return Promise.allOf(stopPromises)
                       .map(_ -> {
-                          nodes.clear();
-                          nodeInfos.clear();
-                          nodeCounter.set(0);
-                          return Unit.unit();
-                      })
+                               nodes.clear();
+                               nodeInfos.clear();
+                               slotsByNodeId.clear();
+                               availableSlots.clear();
+                               nodeCounter.set(0);
+                               return Unit.unit();
+                           })
                       .flatMap(_ -> failed.getFirst()
                                           .failure()
                                           .promise());
@@ -286,6 +301,8 @@ public final class ForgeCluster {
     private void clearClusterState(Unit unit) {
         nodes.clear();
         nodeInfos.clear();
+        slotsByNodeId.clear();
+        availableSlots.clear();
         log.info("Forge cluster stopped");
     }
 
@@ -294,16 +311,23 @@ public final class ForgeCluster {
      * Returns the new node's ID.
      */
     public Promise<NodeId> addNode() {
+        var slot = availableSlots.poll();
+        if (slot == null) {
+            // Wrap around - reuse slot 0 (shouldn't happen with 2x buffer)
+            log.warn("Slot pool exhausted, this shouldn't happen");
+            slot = 0;
+        }
         var nodeNum = nodeCounter.incrementAndGet();
         var nodeId = nodeId(nodeIdPrefix + "-" + nodeNum).unwrap();
-        var port = basePort + nodeNum - 1;
+        var port = basePort + slot;
+        var mgmtPort = baseMgmtPort + slot;
+        var appHttpPort = baseAppHttpPort + slot;
         var info = new NodeInfo(nodeId, nodeAddress("localhost", port).unwrap());
         log.info("Adding new node {} on port {}", nodeId.id(), port);
         nodeInfos.put(nodeId.id(), info);
+        slotsByNodeId.put(nodeId.id(), slot);
         // Get current topology including the new node
         var allNodes = new ArrayList<>(nodeInfos.values());
-        var mgmtPort = baseMgmtPort + nodeNum - 1;
-        var appHttpPort = baseAppHttpPort + nodeNum - 1;
         var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes);
         nodes.put(nodeId.id(), node);
         return node.start()
@@ -349,10 +373,15 @@ public final class ForgeCluster {
                    .timeout(timeout)
                    .recover(_ -> Unit.unit())
                    .map(_ -> {
-                       nodes.remove(nodeIdStr);
-                       nodeInfos.remove(nodeIdStr);
-                       return Unit.unit();
-                   })
+                            nodes.remove(nodeIdStr);
+                            nodeInfos.remove(nodeIdStr);
+                            // Release slot back to pool
+        var slot = slotsByNodeId.remove(nodeIdStr);
+                            if (slot != null) {
+                                availableSlots.offer(slot);
+                            }
+                            return Unit.unit();
+                        })
                    .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr))
                    .onSuccess(_ -> triggerAutoHeal());
     }
