@@ -226,6 +226,7 @@ public interface ClusterDeploymentManager {
 
             @Override
             public void onTopologyChange(TopologyChangeNotification topologyChange) {
+                log.info("Received topology change: {}", topologyChange);
                 switch (topologyChange) {
                     case NodeAdded(_, List<NodeId> topology) -> {
                         updateTopology(topology);
