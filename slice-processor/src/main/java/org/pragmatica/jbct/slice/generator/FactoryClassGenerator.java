@@ -260,11 +260,15 @@ public class FactoryClassGenerator {
         }
         // Handle infra dependencies first
         if (!infraDeps.isEmpty()) {
-            for (var infra : infraDeps) {
-                out.println("                           .flatMap(" + (cacheVarNames.isEmpty()
-                                                                      ? "factory"
-                                                                      : cacheVarNames.getLast()) + " -> " + generateInfraStoreCall(infra)
+            var infraPrevVar = cacheVarNames.isEmpty()
+                               ? "factory"
+                               : cacheVarNames.getLast();
+            for (int i = 0; i < infraDeps.size(); i++) {
+                var infra = infraDeps.get(i);
+                var infraVarName = infra.parameterName();
+                out.println("                           .flatMap(" + infraPrevVar + " -> " + generateInfraStoreCall(infra)
                             + ")");
+                infraPrevVar = infraVarName;
             }
         }
         // Handle slice dependencies
@@ -276,16 +280,20 @@ public class FactoryClassGenerator {
                     allHandles.add(new HandleInfo(dep, proxyMethod));
                 }
             }
-            var prevVar = infraDeps.isEmpty()
-                          ? (cacheVarNames.isEmpty()
-                             ? "factory"
-                             : cacheVarNames.getLast())
-                          : infraDeps.getLast()
-                                     .parameterName();
+            // Determine previous variable: last infra dep, or last cache var, or factory
+            String slicePrevVar;
+            if (!infraDeps.isEmpty()) {
+                slicePrevVar = infraDeps.getLast()
+                                        .parameterName();
+            } else if (!cacheVarNames.isEmpty()) {
+                slicePrevVar = cacheVarNames.getLast();
+            } else {
+                slicePrevVar = "factory";
+            }
             for (var handle : allHandles) {
-                out.println("                           .flatMap(" + prevVar + " -> " + generateMethodHandleCall(handle)
+                out.println("                           .flatMap(" + slicePrevVar + " -> " + generateMethodHandleCall(handle)
                             + ")");
-                prevVar = handle.varName();
+                slicePrevVar = handle.varName();
             }
         }
         // Final map to create wrapper
@@ -706,10 +714,7 @@ public class FactoryClassGenerator {
     }
 
     private String toFactoryMethodName(String className) {
-        if (className == null || className.isEmpty()) {
-            return className;
-        }
-        return Character.toLowerCase(className.charAt(0)) + className.substring(1);
+        return lowercaseFirst(className);
     }
 
     private void generateDependencyInstantiation(PrintWriter out,

@@ -41,7 +41,7 @@ public record SliceConfig(BlueprintConfig blueprint) {
 
     private static SliceConfig fromTomlDocument(org.pragmatica.config.toml.TomlDocument toml) {
         var instances = toml.getInt("blueprint", "instances")
-                            .or(() -> 3);
+                            .or(3);
         var blueprint = BlueprintConfig.blueprintConfig(instances);
         return new SliceConfig(blueprint);
     }

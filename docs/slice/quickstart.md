@@ -6,7 +6,7 @@ Create and deploy a slice in 5 minutes.
 
 - Java 25+
 - Maven 3.8+
-- JBCT CLI installed (`jbct --version` should work)
+- JBCT CLI 0.6.0+ installed (`jbct --version` should work)
 
 ## Step 1: Create Project
 

@@ -131,13 +131,15 @@ public class GenerateBlueprintMojo extends AbstractMojo {
             if (graph.containsKey(depArtifact)) {
                 continue;
             }
-            // Skip UNRESOLVED local dependencies - they're already in graph with correct version
+            // Handle UNRESOLVED local dependencies - find matching resolved key in graph
             if ("UNRESOLVED".equals(dep.version())) {
                 var artifactWithoutVersion = dep.artifact();
-                var isLocal = graph.keySet()
-                                   .stream()
-                                   .anyMatch(key -> key.startsWith(artifactWithoutVersion + ":"));
-                if (isLocal) {
+                var resolvedKey = graph.keySet()
+                                       .stream()
+                                       .filter(key -> key.startsWith(artifactWithoutVersion + ":"))
+                                       .findFirst();
+                if (resolvedKey.isPresent()) {
+                    // Dependency already in graph with resolved version, skip adding duplicate
                     continue;
                 }
             }

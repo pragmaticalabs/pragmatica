@@ -27,6 +27,7 @@ import org.apache.maven.project.MavenProject;
  * <ul>
  *   <li>slice.interface - the slice interface fully qualified name</li>
  *   <li>slice.artifactId - the slice artifact ID</li>
+ *   <li>base.artifact - the groupId:baseArtifactId for dependency resolution</li>
  * </ul>
  *
  * <p>Writes mappings to slice-deps.properties in format:
@@ -99,7 +100,13 @@ public class CollectSliceDepsMojo extends AbstractMojo {
                 var baseArtifact = props.getProperty("base.artifact");
                 String groupId;
                 if (baseArtifact != null && baseArtifact.contains(":")) {
-                    groupId = baseArtifact.split(":") [0];
+                    var parts = baseArtifact.split(":");
+                    if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()) {
+                        getLog().warn("Invalid base.artifact format in " + jarFile.getName() + " (" + entryName
+                                      + "): expected 'groupId:artifactId', got '" + baseArtifact + "'");
+                        continue;
+                    }
+                    groupId = parts[0];
                 } else {
                     getLog().warn("Missing or invalid base.artifact in " + jarFile.getName() + " (" + entryName + ")");
                     continue;
@@ -127,12 +134,18 @@ public class CollectSliceDepsMojo extends AbstractMojo {
     }
 
     private void validateHttpRoutingDependency() throws MojoExecutionException {
-        // Scan for routes.toml files in src/main/resources
-        var resourcesDir = new File(project.getBasedir(), "src/main/resources");
-        if (!resourcesDir.exists()) {
+        // Scan for routes.toml files in configured resource directories
+        var resourceDirs = project.getResources()
+                                  .stream()
+                                  .map(resource -> new File(resource.getDirectory()))
+                                  .filter(File::exists)
+                                  .toList();
+        if (resourceDirs.isEmpty()) {
             return;
         }
-        var routesTomlFiles = findRoutesTomlFiles(resourcesDir.toPath());
+        var routesTomlFiles = resourceDirs.stream()
+                                          .flatMap(dir -> findRoutesTomlFiles(dir.toPath()).stream())
+                                          .toList();
         if (routesTomlFiles.isEmpty()) {
             return;
         }
@@ -143,9 +156,16 @@ public class CollectSliceDepsMojo extends AbstractMojo {
         "http-routing-adapter".equals(artifact.getArtifactId()));
         if (!hasRoutingAdapter) {
             var sliceNames = routesTomlFiles.stream()
-                                            .map(path -> resourcesDir.toPath()
-                                                                     .relativize(path)
-                                                                     .toString())
+                                            .map(path -> {
+                                                     for (var dir : resourceDirs) {
+                                                         if (path.startsWith(dir.toPath())) {
+                                                             return dir.toPath()
+                                                                       .relativize(path)
+                                                                       .toString();
+                                                         }
+                                                     }
+                                                     return path.toString();
+                                                 })
                                             .toList();
             var message = String.format("""
                                         HTTP routing configured but dependency missing.
@@ -173,7 +193,7 @@ public class CollectSliceDepsMojo extends AbstractMojo {
                                      .equals("routes.toml"))
                  .forEach(routesTomlFiles::add);
         } catch (IOException e) {
-            getLog().debug("Error scanning resources directory: " + e.getMessage());
+            getLog().warn("Error scanning resources directory: " + e.getMessage());
         }
         return routesTomlFiles;
     }

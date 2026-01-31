@@ -9,6 +9,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import javax.annotation.processing.Filer;
 import javax.annotation.processing.Messager;
+import javax.lang.model.util.Elements;
 import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
 import java.io.IOException;
@@ -134,10 +135,12 @@ public class RouteSourceGenerator {
 
     private final Filer filer;
     private final Messager messager;
+    private final Elements elements;
 
-    public RouteSourceGenerator(Filer filer, Messager messager) {
+    public RouteSourceGenerator(Filer filer, Messager messager, Elements elements) {
         this.filer = filer;
         this.messager = messager;
+        this.elements = elements;
     }
 
     /**

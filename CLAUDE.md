@@ -106,14 +106,14 @@ overall_score = Σ(category_score[i] × weight[i])
 
 ### Scoring Categories
 
-| Category | Weight | Rules Included |
-|----------|--------|----------------|
-| Return Types | 25% | JBCT-RET-01, JBCT-RET-02, JBCT-RET-03, JBCT-NEST-02, JBCT-RES-01 |
-| Null Safety | 20% | JBCT-NULL-01, JBCT-NULL-02 |
-| Exception Hygiene | 20% | JBCT-EXC-01, JBCT-EXC-02, JBCT-NAME-02 |
-| Pattern Purity | 15% | JBCT-PAT-01, JBCT-NEST-01, JBCT-CHAIN-01, JBCT-IMPORT-01, JBCT-FQN-01, JBCT-DOMAIN-01, JBCT-LOOP-01, JBCT-LOG-01, JBCT-LOG-02 |
-| Factory Methods | 10% | JBCT-VO-01, JBCT-VO-02, JBCT-VO-03, JBCT-VO-04, JBCT-ERR-01, JBCT-NAME-01, JBCT-PARSE-01 |
-| Lambda Compliance | 10% | JBCT-LAM-01, JBCT-LAM-02, JBCT-LAM-03, JBCT-LAM-04, JBCT-STATIC-01 |
+| Category           | Weight | Rules Included |
+|--------------------|--------|----------------|
+| Return Types       | 25%    | JBCT-RET-01, JBCT-RET-02, JBCT-RET-03, JBCT-NEST-02, JBCT-RES-01 |
+| Null Safety        | 20%    | JBCT-NULL-01, JBCT-NULL-02 |
+| Exception Hygiene  | 20%    | JBCT-EXC-01, JBCT-EXC-02, JBCT-NAME-02 |
+| Pattern Purity     | 15%    | JBCT-PAT-01, JBCT-NEST-01, JBCT-CHAIN-01, JBCT-IMPORT-01, JBCT-FQN-01, JBCT-DOMAIN-01, JBCT-LOOP-01, JBCT-LOG-01, JBCT-LOG-02 |
+| Factory Methods    | 10%    | JBCT-VO-01, JBCT-VO-02, JBCT-VO-03, JBCT-VO-04, JBCT-ERR-01, JBCT-NAME-01, JBCT-PARSE-01 |
+| Lambda Compliance  | 10%    | JBCT-LAM-01, JBCT-LAM-02, JBCT-LAM-03, JBCT-LAM-04, JBCT-STATIC-01 |
 
 ### Output Formats
 

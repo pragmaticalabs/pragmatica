@@ -23,7 +23,7 @@ This document describes the automatic generation of HTTP route handling code fro
 **Existing projects**: If adding routing to an existing slice project, add the dependency above.
 
 **Compile-time validation**: If `routes.toml` exists but the dependency is missing, compilation fails with:
-```
+```text
 ERROR: HTTP routing configured but dependency missing.
 Add to pom.xml:
 <dependency>

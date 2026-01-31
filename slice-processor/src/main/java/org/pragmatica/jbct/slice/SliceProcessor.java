@@ -58,7 +58,7 @@ public class SliceProcessor extends AbstractProcessor {
         this.factoryGenerator = new FactoryClassGenerator(filer, elements, types, versionResolver);
         this.manifestGenerator = new ManifestGenerator(filer, versionResolver, options);
         this.errorDiscovery = new ErrorTypeDiscovery(processingEnv);
-        this.routeGenerator = new RouteSourceGenerator(filer, processingEnv.getMessager());
+        this.routeGenerator = new RouteSourceGenerator(filer, processingEnv.getMessager(), elements);
     }
 
     @Override
@@ -128,10 +128,10 @@ public class SliceProcessor extends AbstractProcessor {
     }
 
     private void generateArtifacts(TypeElement interfaceElement, SliceModel sliceModel) {
-        generateFactory(interfaceElement, sliceModel)
-            .flatMap(_ -> generateRoutes(interfaceElement, sliceModel))
-            .flatMap(routesClassOpt -> generateSliceManifest(interfaceElement, sliceModel, routesClassOpt))
-            .onFailure(cause -> error(interfaceElement, cause.message()));
+        generateFactory(interfaceElement, sliceModel).flatMap(_ -> generateRoutes(interfaceElement, sliceModel))
+                       .flatMap(routesClassOpt -> generateSliceManifest(interfaceElement, sliceModel, routesClassOpt))
+                       .onFailure(cause -> error(interfaceElement,
+                                                 cause.message()));
     }
 
     private Result<Unit> generateFactory(TypeElement interfaceElement, SliceModel sliceModel) {
@@ -152,9 +152,8 @@ public class SliceProcessor extends AbstractProcessor {
     private Result<Option<String>> generateRoutes(TypeElement interfaceElement, SliceModel sliceModel) {
         var packageName = sliceModel.packageName();
         return loadRouteConfig(packageName)
-            .flatMap(configOpt -> configOpt.fold(
-                () -> Result.success(Option.<String>none()),
-                config -> generateRoutesFromConfig(interfaceElement, sliceModel, config)));
+        .flatMap(configOpt -> configOpt.fold(() -> Result.success(Option.<String>none()),
+                                             config -> generateRoutesFromConfig(interfaceElement, sliceModel, config)));
     }
 
     private Result<Option<RouteConfig>> loadRouteConfig(String packageName) {
@@ -181,7 +180,8 @@ public class SliceProcessor extends AbstractProcessor {
                                                             SliceModel sliceModel,
                                                             RouteConfig config) {
         var packageName = sliceModel.packageName();
-        return errorDiscovery.discover(packageName, config.errors())
+        return errorDiscovery.discover(packageName,
+                                       config.errors())
                              .flatMap(errorMappings -> routeGenerator.generate(sliceModel, config, errorMappings))
                              .onSuccess(qualifiedNameOpt -> {
                                             qualifiedNameOpt.onPresent(routeServiceEntries::add);

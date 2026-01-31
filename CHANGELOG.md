@@ -8,6 +8,20 @@
 ### Changed
 - Slice init: added tinylog dependencies (2.7.0) in test scope
 - Slice init: added tinylog.properties configuration file in test resources
+- Build: Bump Aether to 0.8.1
+- CI: Re-enabled slice-processor-tests module
+- Slice init: Java version 21 to 25
+- Slice init: updated default versions (Pragmatica Lite 0.11.1, Aether 0.8.1, JBCT 0.6.0)
+- Slice init: implementation pattern changed to record-based (nested record in interface)
+- Slice init: removed Config dependency from template (factory now parameterless)
+- Slice init: added annotation processor configuration to maven-compiler-plugin
+- Slice init: added compilerArgs with `-Aslice.groupId` and `-Aslice.artifactId`
+- Slice init: removed separate *Impl.java, SampleRequest.java, SampleResponse.java files
+- Slice init: Request/Response/Error records now nested in @Slice interface
+- Slice init: removed "Sample" prefix from Request/Response records
+- Slice init: inner implementation record uses lowercased slice name, not "Impl"
+- Init: version resolution uses running binary version as minimum (overrides GitHub API if newer)
+- Init: version comparison uses Result-based `Number.parseInt()` from pragmatica-lite
 
 ### Fixed
 - RFC-0004 compliance: removed non-standard slice-api.properties generation
@@ -23,31 +37,13 @@
 - PackageSlicesMojo: fixed JAR overwriting bug (multiple slices now create separate JARs)
 - FactoryClassGenerator: infrastructure deps (CacheService, etc.) now use InfraStore.instance().get()
 - FactoryClassGenerator: only slice dependencies are proxied via SliceInvokerFacade
-- FactoryClassGenerator: reduced flatMap chain depth (e.g., 13→3 for UrlShortener with mixed deps)
+- FactoryClassGenerator: reduced flatMap chain depth (e.g., 13 to 3 for UrlShortener with mixed deps)
 - PackageSlicesMojo: bytecode transformation replaces UNRESOLVED versions with actual versions (strips semver prefix ^/~)
-
-### Changed
-- Build: bump Aether to 0.8.1
-- CI: re-enabled slice-processor-tests module
-- Slice init: Java version 21 → 25
-- Slice init: updated default versions (Pragmatica Lite 0.11.1, Aether 0.8.1, JBCT 0.6.0)
-- Slice init: implementation pattern changed to record-based (nested record in interface)
-- Slice init: removed Config dependency from template (factory now parameterless)
-- Slice init: added annotation processor configuration to maven-compiler-plugin
-- Slice init: added compilerArgs with `-Aslice.groupId` and `-Aslice.artifactId`
-- Slice init: removed separate *Impl.java, SampleRequest.java, SampleResponse.java files
-- Slice init: Request/Response/Error records now nested in @Slice interface
-- Slice init: removed "Sample" prefix from Request/Response records
-- Slice init: inner implementation record uses lowercased slice name, not "Impl"
-- Init: version resolution uses running binary version as minimum (overrides GitHub API if newer)
-- Init: version comparison uses Result-based `Number.parseInt()` from pragmatica-lite
-
-### Fixed
 - Slice init: `ValidationError` now extends `Cause` (required for `Result.failure`)
 - Slice init: added missing `Cause` import to template
 - Slice init: `Promise.success()` instead of `Promise.successful()`
 - Slice init: implemented `message()` method in `ValidationError.EmptyValue`
-- Slice init: test template now uses `.unwrap()` instead of `.getOrThrow()`
+- Slice init: test template now uses monadic composition instead of `.unwrap()`
 
 ## [0.5.0] - 2026-01-20
 

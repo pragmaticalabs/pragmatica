@@ -614,6 +614,7 @@ public final class SliceProjectInitializer {
     private static final String SLICE_TEST_TEMPLATE = """
         package {{basePackage}};
 
+        import org.junit.jupiter.api.Assertions;
         import org.junit.jupiter.api.Test;
 
         import static org.assertj.core.api.Assertions.assertThat;
@@ -624,13 +625,12 @@ public final class SliceProjectInitializer {
 
             @Test
             void should_process_request() {
-                var request = {{sliceName}}.Request.request("test")
-                                                   .unwrap();
-
-                var response = slice.process(request).await();
-
-                assertThat(response.isSuccess()).isTrue();
-                response.onSuccess(r -> assertThat(r.result()).isEqualTo("Processed: test"));
+                {{sliceName}}.Request.request("test")
+                    .onFailure(Assertions::fail)
+                    .onSuccess(request -> slice.process(request)
+                        .await()
+                        .onFailure(Assertions::fail)
+                        .onSuccess(r -> assertThat(r.result()).isEqualTo("Processed: test")));
             }
         }
         """;
