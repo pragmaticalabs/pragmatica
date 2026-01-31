@@ -117,23 +117,6 @@
                 </div>
 
                 <div class="control-group">
-                    <h3>Load</h3>
-                    <div class="load-control">
-                        <input type="range" id="load-slider" min="100" max="100000" value="1000" step="100">
-                        <span id="load-value">1K</span>
-                    </div>
-                    <div class="button-row">
-                        <button id="btn-load-1k" class="btn btn-primary btn-small">1K</button>
-                        <button id="btn-load-5k" class="btn btn-primary btn-small">5K</button>
-                        <button id="btn-load-10k" class="btn btn-primary btn-small">10K</button>
-                        <button id="btn-load-25k" class="btn btn-primary btn-small">25K</button>
-                        <button id="btn-load-50k" class="btn btn-primary btn-small">50K</button>
-                        <button id="btn-load-100k" class="btn btn-primary btn-small">100K</button>
-                        <button id="btn-ramp" class="btn btn-info btn-small">Ramp</button>
-                    </div>
-                </div>
-
-                <div class="control-group">
                     <h3>Config</h3>
                     <div class="config-row">
                         <label class="toggle-label">
@@ -146,7 +129,6 @@
                             <input type="number" id="rate-multiplier" min="0.1" max="10" step="0.1" value="1.0">
                             <button id="btn-apply-multiplier" class="btn btn-small btn-secondary">Apply</button>
                         </div>
-                        <button id="btn-reset" class="btn btn-secondary btn-small">Reset</button>
                     </div>
                 </div>
             </div>
@@ -183,6 +165,19 @@
                             <button id="btn-load-pause" class="btn btn-warning">Pause</button>
                             <button id="btn-load-resume" class="btn btn-info">Resume</button>
                             <button id="btn-load-stop" class="btn btn-danger">Stop</button>
+                        </div>
+                        <div class="rate-buttons">
+                            <span class="rate-label">Rate:</span>
+                            <button class="btn btn-primary btn-small" data-rate="100">100</button>
+                            <button class="btn btn-primary btn-small" data-rate="200">200</button>
+                            <button class="btn btn-primary btn-small" data-rate="500">500</button>
+                            <button class="btn btn-primary btn-small" data-rate="1000">1K</button>
+                            <button class="btn btn-primary btn-small" data-rate="2000">2K</button>
+                            <button class="btn btn-primary btn-small" data-rate="5000">5K</button>
+                            <button class="btn btn-primary btn-small" data-rate="10000">10K</button>
+                        </div>
+                        <div class="config-row">
+                            <button id="btn-reset" class="btn btn-secondary btn-small">Reset Metrics</button>
                         </div>
                     </div>
                 </div>

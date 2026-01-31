@@ -200,4 +200,13 @@ public record LoadTarget(Option<String> name,
         return duration.map(Duration::isZero)
                        .or(true);
     }
+
+    /**
+     * Creates a new LoadTarget with the rate scaled by the given multiplier.
+     */
+    public LoadTarget withScaledRate(double multiplier) {
+        var newRate = new Rate((int) Math.max(1, rate.requestsPerSecond() * multiplier),
+                               Rate.TimeUnit.SECOND);
+        return new LoadTarget(name, target, newRate, duration, pathVars, body);
+    }
 }

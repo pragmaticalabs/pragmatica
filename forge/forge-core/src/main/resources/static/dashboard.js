@@ -142,24 +142,6 @@ function initControls() {
     document.getElementById('btn-rolling-restart').addEventListener('click', toggleRollingRestart);
     document.getElementById('btn-add-node').addEventListener('click', () => apiPost('/api/chaos/add-node'));
 
-    document.getElementById('btn-load-1k').addEventListener('click', () => setLoad(1000));
-    document.getElementById('btn-load-5k').addEventListener('click', () => setLoad(5000));
-    document.getElementById('btn-load-10k').addEventListener('click', () => setLoad(10000));
-    document.getElementById('btn-load-25k').addEventListener('click', () => setLoad(25000));
-    document.getElementById('btn-load-50k').addEventListener('click', () => setLoad(50000));
-    document.getElementById('btn-load-100k').addEventListener('click', () => setLoad(100000));
-    document.getElementById('btn-ramp').addEventListener('click', rampToNextStep);
-
-    const slider = document.getElementById('load-slider');
-    slider.addEventListener('input', () => document.getElementById('load-value').textContent = formatLoadRate(slider.value));
-    slider.addEventListener('change', () => setLoad(parseInt(slider.value)));
-
-    document.getElementById('btn-reset').addEventListener('click', async () => {
-        await apiPost('/api/chaos/reset-metrics');
-        successHistory = [];
-        throughputHistory = [];
-    });
-
     document.getElementById('load-generator-toggle').addEventListener('change', e =>
         apiPost('/api/simulator/config/enabled', { enabled: e.target.checked }));
 
@@ -206,18 +188,6 @@ function hideNodeModal() {
 
 async function killNode(nodeId) { await apiPost(`/api/chaos/kill/${nodeId}`); }
 
-async function setLoad(rate) {
-    await apiPost(`/api/load/set/${rate}`);
-    document.getElementById('load-slider').value = rate;
-    document.getElementById('load-value').textContent = formatLoadRate(rate);
-}
-
-function formatLoadRate(rate) {
-    return rate >= 1000 ? `${(rate / 1000).toFixed(rate % 1000 === 0 ? 0 : 1)}K` : `${rate}`;
-}
-
-const LOAD_STEPS = [1000, 5000, 10000, 25000, 50000, 100000];
-
 async function toggleRollingRestart() {
     if (rollingRestartActive) {
         await apiPost('/api/chaos/stop-rolling-restart');
@@ -241,13 +211,6 @@ function updateRollingRestartButton(active) {
         btn.textContent = active ? 'Stop Rolling Restart' : 'Rolling Restart';
         btn.classList.toggle('btn-active', active);
     }
-}
-
-async function rampToNextStep() {
-    const status = await fetchStatus();
-    if (!status) return;
-    const nextStep = LOAD_STEPS.find(step => step > status.load.currentRate) || LOAD_STEPS[LOAD_STEPS.length - 1];
-    if (nextStep > status.load.currentRate) await apiPost('/api/load/ramp', { targetRate: nextStep, durationMs: 10000 });
 }
 
 // ===============================
@@ -367,7 +330,6 @@ async function poll() {
     nodes = status.cluster.nodes;
     updateMetricsDisplay(status.metrics);
     updateCharts(status.metrics);
-    updateLoadDisplay(status.load);
 
     document.getElementById('uptime').textContent = formatUptime(status.uptimeSeconds);
     document.getElementById('node-count').textContent = status.cluster.nodeCount;
@@ -400,14 +362,6 @@ function updateMetricsDisplay(metrics) {
     successEl.style.color = color;
 
     document.getElementById('avg-latency').textContent = `${metrics.avgLatencyMs.toFixed(1)}ms`;
-}
-
-function updateLoadDisplay(load) {
-    const slider = document.getElementById('load-slider');
-    if (document.activeElement !== slider) {
-        slider.value = load.currentRate;
-        document.getElementById('load-value').textContent = formatLoadRate(load.currentRate);
-    }
 }
 
 function escapeHtml(text) {
@@ -841,6 +795,29 @@ function initLoadTestingControls() {
         stopBtn.addEventListener('click', () => loadAction('stop'));
         stopBtn._initialized = true;
     }
+
+    // Rate buttons
+    document.querySelectorAll('.rate-buttons button[data-rate]').forEach(btn => {
+        if (!btn._initialized) {
+            btn.addEventListener('click', () => setTotalRate(parseInt(btn.dataset.rate)));
+            btn._initialized = true;
+        }
+    });
+
+    // Reset button (moved from overview)
+    const resetBtn = document.getElementById('btn-reset');
+    if (resetBtn && !resetBtn._initialized) {
+        resetBtn.addEventListener('click', async () => {
+            await apiPost('/api/chaos/reset-metrics');
+            successHistory = [];
+            throughputHistory = [];
+        });
+        resetBtn._initialized = true;
+    }
+}
+
+async function setTotalRate(rate) {
+    await apiPost(`/api/load/rate/${rate}`);
 }
 
 function startLoadTestingPolling() {

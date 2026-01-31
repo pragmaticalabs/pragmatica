@@ -67,6 +67,7 @@ public final class ConfigurableLoadRunner {
 
     private final AtomicReference<State> state = new AtomicReference<>(State.IDLE);
     private final AtomicReference<LoadConfig> currentConfig = new AtomicReference<>(LoadConfig.empty());
+    private final AtomicReference<Double> rateMultiplier = new AtomicReference<>(1.0);
 
     private final Map<String, TargetRunner> activeRunners = new ConcurrentHashMap<>();
     private final List<Thread> runnerThreads = new CopyOnWriteArrayList<>();
@@ -218,6 +219,41 @@ public final class ConfigurableLoadRunner {
             activeRunners.values()
                          .forEach(TargetRunner::resume);
         }
+    }
+
+    /**
+     * Set the total target rate by calculating and applying a multiplier.
+     * If running, stops and restarts with new rates.
+     */
+    public void setTotalRate(int targetTotalRate) {
+        var config = currentConfig.get();
+        var currentTotal = config.totalRequestsPerSecond();
+        if (currentTotal <= 0) {
+            log.warn("Cannot set rate - no targets configured");
+            return;
+        }
+        var multiplier = (double) targetTotalRate / currentTotal;
+        rateMultiplier.set(multiplier);
+        log.info("Set rate multiplier to {} (target: {} req/s)", multiplier, targetTotalRate);
+        // If running, restart with new rates
+        if (state.get() == State.RUNNING || state.get() == State.PAUSED) {
+            stop();
+            // Reload config with multiplied rates
+            var newConfig = config.withMultiplier(multiplier);
+            setConfig(newConfig);
+            start();
+        } else {
+            // Just update config for next start
+            var newConfig = config.withMultiplier(multiplier);
+            setConfig(newConfig);
+        }
+    }
+
+    /**
+     * Get current rate multiplier.
+     */
+    public double rateMultiplier() {
+        return rateMultiplier.get();
     }
 
     /**

@@ -49,4 +49,14 @@ public record LoadConfig(List<LoadTarget> targets) {
                                       .requestsPerSecond())
                       .sum();
     }
+
+    /**
+     * Creates a new LoadConfig with all target rates scaled by the given multiplier.
+     */
+    public LoadConfig withMultiplier(double multiplier) {
+        var scaledTargets = targets.stream()
+                                   .map(t -> t.withScaledRate(multiplier))
+                                   .toList();
+        return new LoadConfig(scaledTargets);
+    }
 }

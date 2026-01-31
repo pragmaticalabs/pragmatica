@@ -50,7 +50,8 @@ public sealed interface LoadRoutes {
                pauseRoute(loadRunner),
                resumeRoute(loadRunner),
                rampRoute(loadGenerator),
-               setRateRoute(loadGenerator));
+               setRateRoute(loadGenerator),
+               setTotalRateRoute(loadRunner));
     }
 
     // ========== Route Definitions ==========
@@ -186,6 +187,16 @@ public sealed interface LoadRoutes {
     private static Promise<RateSetResponse> setRate(LoadGenerator loadGenerator, int rate) {
         loadGenerator.setRate(rate);
         return Promise.success(new RateSetResponse(true, rate));
+    }
+
+    private static Route<RateSetResponse> setTotalRateRoute(ConfigurableLoadRunner loadRunner) {
+        return Route.<RateSetResponse> post("/rate")
+                    .withPath(aInteger())
+                    .to(rate -> {
+                        loadRunner.setTotalRate(rate);
+                        return Promise.success(new RateSetResponse(true, rate));
+                    })
+                    .asJson();
     }
 
     record unused() implements LoadRoutes {}
