@@ -87,7 +87,15 @@ public interface HttpRouteRegistry {
                                   .key();
                 var value = valuePut.cause()
                                     .value();
+                log.debug("HttpRouteRegistry.onValuePut received: keyType={}, valueType={}",
+                          key.getClass()
+                             .getSimpleName(),
+                          value.getClass()
+                               .getSimpleName());
                 if (key instanceof HttpRouteKey httpRouteKey && value instanceof HttpRouteValue httpRouteValue) {
+                    log.info("HttpRouteRegistry: Processing HttpRouteKey {} {}",
+                             httpRouteKey.httpMethod(),
+                             httpRouteKey.pathPrefix());
                     var securityPolicy = RouteSecurityPolicy.fromString(httpRouteValue.securityPolicy());
                     var routeInfo = new RouteInfo(httpRouteKey.httpMethod(),
                                                   httpRouteKey.pathPrefix(),
@@ -102,12 +110,12 @@ public interface HttpRouteRegistry {
                                          updated.put(httpRouteKey.pathPrefix(), routeInfo);
                                          return updated;
                                      });
-                    log.debug("Registered HTTP route: {} {} -> {}:{} [{}]",
-                              httpRouteKey.httpMethod(),
-                              httpRouteKey.pathPrefix(),
-                              httpRouteValue.artifact(),
-                              httpRouteValue.sliceMethod(),
-                              securityPolicy.asString());
+                    log.info("HttpRouteRegistry: Registered route {} {} -> {}:{} [{}]",
+                             httpRouteKey.httpMethod(),
+                             httpRouteKey.pathPrefix(),
+                             httpRouteValue.artifact(),
+                             httpRouteValue.sliceMethod(),
+                             securityPolicy.asString());
                 }
             }
 

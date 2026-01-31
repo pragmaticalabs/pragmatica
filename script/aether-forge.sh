@@ -25,11 +25,11 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-JAR_FILE="$PROJECT_DIR/forge/target/aether-forge.jar"
+JAR_FILE="$PROJECT_DIR/forge/forge-core/target/aether-forge.jar"
 
 if [ ! -f "$JAR_FILE" ]; then
     echo "Forge JAR not found. Building..."
-    mvn -f "$PROJECT_DIR/pom.xml" package -pl forge -am -DskipTests -q
+    mvn -f "$PROJECT_DIR/pom.xml" package -pl forge/forge-core -am -DskipTests -q
 fi
 
 exec java -jar "$JAR_FILE" "$@"

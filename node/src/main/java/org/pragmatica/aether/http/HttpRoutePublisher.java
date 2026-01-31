@@ -103,16 +103,20 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
 
     @Override
     public Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade) {
+        log.info("publishRoutes(3-arg) called for artifact={}, classLoader={}",
+                 artifact,
+                 classLoader.getClass()
+                            .getName());
         // Discover HttpRequestHandlerFactory via ServiceLoader
         var factories = ServiceLoader.load(HttpRequestHandlerFactory.class, classLoader);
         var iterator = factories.iterator();
         if (!iterator.hasNext()) {
-            log.debug("No HttpRequestHandlerFactory found for slice {}", artifact);
+            log.info("ServiceLoader: No HttpRequestHandlerFactory found for slice {}", artifact);
             return Promise.unitPromise();
         }
         // Use first factory found
         var factory = iterator.next();
-        log.info("Found HttpRequestHandlerFactory for slice {}: {}",
+        log.info("ServiceLoader: Found HttpRequestHandlerFactory for slice {}: {}",
                  artifact,
                  factory.getClass()
                         .getName());
@@ -121,8 +125,9 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         handlers.put(artifact, handler);
         // Get routes
         var routes = handler.routes();
+        log.info("Route extraction: {} routes found for slice {}", routes.size(), artifact);
         if (routes.isEmpty()) {
-            log.debug("No HTTP routes defined for slice {}", artifact);
+            log.info("No HTTP routes defined for slice {}, skipping publication", artifact);
             return Promise.unitPromise();
         }
         // Create KV commands for route publication
@@ -132,12 +137,13 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         // Store published routes for unpublishing later
         publishedRoutes.put(artifact, routes);
         // Submit to cluster
+        log.info("Calling cluster.apply() with {} commands for slice {}", commands.size(), artifact);
         return cluster.apply(commands)
                       .mapToUnit()
-                      .onSuccess(_ -> log.info("Published {} HTTP routes for slice {}",
+                      .onSuccess(_ -> log.info("cluster.apply() SUCCESS: Published {} HTTP routes for slice {}",
                                                routes.size(),
                                                artifact))
-                      .onFailure(cause -> log.error("Failed to publish HTTP routes for {}: {}",
+                      .onFailure(cause -> log.error("cluster.apply() FAILED for {}: {}",
                                                     artifact,
                                                     cause.message()));
     }
@@ -148,14 +154,32 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                                        ClassLoader classLoader,
                                        Object sliceInstance,
                                        SliceInvokerFacade invokerFacade) {
+        log.info("publishRoutes(4-arg) called for artifact={}, sliceInstance={}, classLoader={}",
+                 artifact,
+                 sliceInstance.getClass()
+                              .getName(),
+                 classLoader.getClass()
+                            .getName());
         // Try SliceRouterFactory first (new pattern)
         var routerFactories = ServiceLoader.load(SliceRouterFactory.class, classLoader);
+        int factoryCount = 0;
         for (var factory : routerFactories) {
+            factoryCount++;
+            log.info("ServiceLoader: Checking SliceRouterFactory {} for slice type match with {}",
+                     factory.getClass()
+                            .getName(),
+                     sliceInstance.getClass()
+                                  .getName());
             if (factory.sliceType()
                        .isInstance(sliceInstance)) {
+                log.info("ServiceLoader: SliceRouterFactory {} matches slice instance",
+                         factory.getClass()
+                                .getName());
                 return publishViaSliceRouterFactory(artifact, factory, sliceInstance);
             }
         }
+        log.info("ServiceLoader: {} SliceRouterFactory(s) found, none matched. Falling back to HttpRequestHandlerFactory",
+                 factoryCount);
         // Fall back to existing HttpRequestHandlerFactory pattern
         return publishRoutes(artifact, classLoader, invokerFacade);
     }
@@ -164,7 +188,7 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private Promise<Unit> publishViaSliceRouterFactory(Artifact artifact,
                                                        SliceRouterFactory<?> factory,
                                                        Object sliceInstance) {
-        log.info("Found SliceRouterFactory for slice {}: {}",
+        log.info("publishViaSliceRouterFactory: artifact={}, factory={}",
                  artifact,
                  factory.getClass()
                         .getName());
@@ -174,20 +198,24 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         // Extract routes - factory implements RouteSource
         if (factory instanceof RouteSource routeSource) {
             var routes = routeMetadataExtractor.extract(routeSource, artifact.asString());
+            log.info("Route extraction: {} routes found for slice {} via SliceRouterFactory", routes.size(), artifact);
             if (routes.isEmpty()) {
-                log.debug("No HTTP routes defined for slice {}", artifact);
+                log.info("No HTTP routes defined for slice {}, skipping publication", artifact);
                 return Promise.unitPromise();
             }
             publishedRoutes.put(artifact, routes);
             var commands = routes.stream()
                                  .map(this::createRoutePutCommand)
                                  .toList();
+            log.info("Calling cluster.apply() with {} commands for slice {} via SliceRouterFactory",
+                     commands.size(),
+                     artifact);
             return cluster.apply(commands)
                           .mapToUnit()
-                          .onSuccess(_ -> log.info("Published {} HTTP routes for slice {} via SliceRouterFactory",
+                          .onSuccess(_ -> log.info("cluster.apply() SUCCESS: Published {} HTTP routes for slice {} via SliceRouterFactory",
                                                    routes.size(),
                                                    artifact))
-                          .onFailure(cause -> log.error("Failed to publish HTTP routes for {}: {}",
+                          .onFailure(cause -> log.error("cluster.apply() FAILED for {} via SliceRouterFactory: {}",
                                                         artifact,
                                                         cause.message()));
         }

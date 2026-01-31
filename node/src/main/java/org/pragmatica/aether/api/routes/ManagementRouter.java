@@ -144,6 +144,11 @@ public final class ManagementRouter {
         }
 
         @Override
+        public String requestPath() {
+            return serverCtx.path();
+        }
+
+        @Override
         public String requestId() {
             return serverCtx.requestId();
         }

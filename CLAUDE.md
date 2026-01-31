@@ -189,6 +189,34 @@ mvn verify -pl forge/forge-tests        # Integration tests (90 tests)
 
 **Important:** Run `mvn install -DskipTests` before testing forge. Forge tests depend on locally installed artifacts.
 
+## Scripts
+
+Convenience scripts in `script/` directory (auto-build if JAR missing):
+
+| Script | Purpose |
+|--------|---------|
+| `./script/aether.sh` | CLI for cluster management (status, deploy, scale, blueprint) |
+| `./script/aether-node.sh` | Start a cluster node |
+| `./script/aether-forge.sh` | Start Forge simulator with dashboard |
+| `./script/demo-cluster.sh` | Multi-node cluster demo (start/stop/deploy/logs) |
+
+### Quick Examples
+
+```bash
+# Start Forge with blueprint and load testing
+./script/aether-forge.sh --blueprint examples/url-shortener/target/blueprint.toml \
+  --load-config examples/url-shortener/load-config.toml --auto-start
+
+# Start 5-node real cluster
+./script/demo-cluster.sh start
+./script/demo-cluster.sh deploy
+./script/demo-cluster.sh status
+
+# CLI operations
+./script/aether.sh status
+./script/aether.sh --connect localhost:8081 slices
+```
+
 ## Parallel Releases with Circular Dependencies
 
 When releasing projects with circular dependencies (e.g., aether ↔ jbct-cli), use this approach:

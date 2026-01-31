@@ -38,6 +38,7 @@ import org.pragmatica.messaging.MessageRouter;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
@@ -272,20 +273,39 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {
                 var artifact = sliceKey.artifact();
-                return httpRoutePublisher.flatMap(publisher -> sliceInvokerFacade.flatMap(invoker -> findLoadedSlice(artifact)
-                .map(ls -> {
-                         var classLoader = ls.slice()
-                                             .getClass()
-                                             .getClassLoader();
-                         return publisher.publishRoutes(artifact,
+                log.info("publishHttpRoutes called for {} - httpRoutePublisher.isPresent={}, sliceInvokerFacade.isPresent={}",
+                         artifact,
+                         httpRoutePublisher.isPresent(),
+                         sliceInvokerFacade.isPresent());
+                if (httpRoutePublisher.isEmpty()) {
+                    log.warn("Cannot publish HTTP routes for {}: httpRoutePublisher is not configured", artifact);
+                    return Promise.unitPromise();
+                }
+                if (sliceInvokerFacade.isEmpty()) {
+                    log.warn("Cannot publish HTTP routes for {}: sliceInvokerFacade is not configured", artifact);
+                    return Promise.unitPromise();
+                }
+                var loadedSlice = findLoadedSlice(artifact);
+                if (loadedSlice.isEmpty()) {
+                    log.warn("Cannot publish HTTP routes for {}: slice not found in SliceStore", artifact);
+                    return Promise.unitPromise();
+                }
+                var ls = loadedSlice.unwrap();
+                var classLoader = ls.slice()
+                                    .getClass()
+                                    .getClassLoader();
+                log.info("Publishing HTTP routes for {} using classLoader={}",
+                         artifact,
+                         classLoader.getClass()
+                                    .getName());
+                return httpRoutePublisher.unwrap()
+                                         .publishRoutes(artifact,
                                                         classLoader,
                                                         ls.slice(),
-                                                        invoker)
+                                                        sliceInvokerFacade.unwrap())
                                          .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}",
                                                                       artifact,
                                                                       cause.message()));
-                     })))
-                                         .or(Promise.unitPromise());
             }
 
             private Promise<Unit> registerSliceForInvocation(SliceNodeKey sliceKey) {
@@ -603,6 +623,7 @@ public interface NodeDeploymentManager {
                                  SliceActionConfig configuration,
                                  MessageRouter router,
                                  AtomicReference<NodeDeploymentState> state,
+                                 AtomicLong activationEpoch,
                                  Option<HttpRoutePublisher> httpRoutePublisher,
                                  Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
@@ -624,28 +645,41 @@ public interface NodeDeploymentManager {
                 log.info("Node {} received QuorumStateNotification: {}", self().id(), quorumStateNotification);
                 switch (quorumStateNotification) {
                     case ESTABLISHED -> {
+                        // Increment epoch FIRST to invalidate any in-flight DISAPPEARED handlers
+                        var epoch = activationEpoch().incrementAndGet();
+                        log.debug("Node {} activation epoch incremented to {}", self().id(), epoch);
                         // Only activate if currently dormant (idempotent)
                         if (state().get() instanceof NodeDeploymentState.DormantNodeDeploymentState) {
-                            state()
-                            .set(new NodeDeploymentState.ActiveNodeDeploymentState(self(),
-                                                                                   sliceStore(),
-                                                                                   configuration(),
-                                                                                   cluster(),
-                                                                                   kvStore(),
-                                                                                   invocationHandler(),
-                                                                                   router(),
-                                                                                   new ConcurrentHashMap<>(),
-                                                                                   httpRoutePublisher(),
-                                                                                   sliceInvokerFacade()));
+                            state().set(new NodeDeploymentState.ActiveNodeDeploymentState(self(),
+                                                                                          sliceStore(),
+                                                                                          configuration(),
+                                                                                          cluster(),
+                                                                                          kvStore(),
+                                                                                          invocationHandler(),
+                                                                                          router(),
+                                                                                          new ConcurrentHashMap<>(),
+                                                                                          httpRoutePublisher(),
+                                                                                          sliceInvokerFacade()));
                             log.info("Node {} NodeDeploymentManager activated", self().id());
                         }
                     }
                     case DISAPPEARED -> {
+                        // Capture epoch BEFORE any cleanup
+                        var epochBeforeCleanup = activationEpoch().get();
                         // Deactivate all slices before going dormant
                         if (state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState activeState) {
                             activeState.deactivateAllSlices();
                         }
-                        state().set(new NodeDeploymentState.DormantNodeDeploymentState());
+                        // Only go dormant if no ESTABLISHED arrived during cleanup (epoch unchanged)
+                        if (activationEpoch().get() == epochBeforeCleanup) {
+                            state().set(new NodeDeploymentState.DormantNodeDeploymentState());
+                            log.info("Node {} NodeDeploymentManager deactivated", self().id());
+                        } else {
+                            log.info("Node {} ignoring stale DISAPPEARED (epoch changed from {} to {})",
+                                     self().id(),
+                                     epochBeforeCleanup,
+                                     activationEpoch().get());
+                        }
                     }
                 }
             }
@@ -663,6 +697,7 @@ public interface NodeDeploymentManager {
                                      configuration,
                                      router,
                                      new AtomicReference<>(new NodeDeploymentState.DormantNodeDeploymentState()),
+                                     new AtomicLong(0),
                                      httpRoutePublisher,
                                      sliceInvokerFacade);
     }

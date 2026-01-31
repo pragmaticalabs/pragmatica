@@ -113,6 +113,7 @@ class AppHttpServerImpl implements AppHttpServer {
             log.info("App HTTP server is disabled");
             return Promise.success(unit());
         }
+        log.info("Starting App HTTP server on port {}", config.port());
         var serverConfig = buildServerConfig();
         var requestHandler = new AppHttpRequestHandler(routeRegistry,
                                                        sliceInvoker,
@@ -120,9 +121,14 @@ class AppHttpServerImpl implements AppHttpServer {
                                                        securityValidator);
         return HttpServer.httpServer(serverConfig, requestHandler::handle)
                          .map(server -> {
-                             serverRef.set(server);
-                             return unit();
-                         });
+                                  serverRef.set(server);
+                                  log.info("App HTTP server started on port {}",
+                                           server.port());
+                                  return unit();
+                              })
+                         .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
+                                                       config.port(),
+                                                       cause.message()));
     }
 
     private HttpServerConfig buildServerConfig() {
@@ -222,11 +228,19 @@ class AppHttpRequestHandler {
         log.debug("Received {} {} [{}]", method, path, requestId);
         routeRegistry.findRoute(method, path)
                      .onPresent(route -> handleRouteFound(request, response, route, path, requestId))
-                     .onEmpty(() -> sendProblem(response,
-                                                HttpStatus.NOT_FOUND,
-                                                "No route found for " + method + " " + path,
-                                                path,
-                                                requestId));
+                     .onEmpty(() -> {
+                                  log.warn("No route found for {} {} [{}]. Available routes: {}",
+                                           method,
+                                           path,
+                                           requestId,
+                                           routeRegistry.allRoutes()
+                                                        .size());
+                                  sendProblem(response,
+                                              HttpStatus.NOT_FOUND,
+                                              "No route found for " + method + " " + path,
+                                              path,
+                                              requestId);
+                              });
     }
 
     private void handleRouteFound(RequestContext request,
