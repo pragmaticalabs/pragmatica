@@ -19,7 +19,7 @@ RUN mkdir -p /app && \
 WORKDIR /app
 
 # Copy the shaded JAR from build context
-COPY --chown=aether:aether forge/target/aether-forge.jar /app/aether-forge.jar
+COPY --chown=aether:aether forge/forge-core/target/aether-forge.jar /app/aether-forge.jar
 
 # Environment variables matching ForgeServer.java
 ENV FORGE_PORT="8888"
