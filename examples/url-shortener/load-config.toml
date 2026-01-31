@@ -3,21 +3,9 @@
 
 [[load]]
 name = "shorten-urls"
-target = "POST /api/v1/urls"
-rate = "50/s"
+target = "POST /api/v1/urls/"
+rate = "100/s"
 duration = "5m"
 
 [load.body]
 url = "https://example.com/page/${random:######}"
-
-[[load]]
-name = "resolve-urls"
-target = "GET /api/v1/urls/${random:A-Za-z0-9:7}"
-rate = "100/s"
-duration = "5m"
-
-[[load]]
-name = "get-stats"
-target = "GET /api/v1/analytics/${random:A-Za-z0-9:7}"
-rate = "20/s"
-duration = "5m"
