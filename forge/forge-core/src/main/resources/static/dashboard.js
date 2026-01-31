@@ -15,6 +15,7 @@ const MAX_HISTORY = 60;
 let nodeMetricsData = [];
 let entryPointMetrics = [];
 let currentPage = 'overview';
+let rollingRestartActive = false;
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
@@ -138,8 +139,8 @@ function initControls() {
         const status = await fetchStatus();
         if (status?.cluster.leaderId !== 'none') await killNode(status.cluster.leaderId);
     });
-    document.getElementById('btn-rolling-restart').addEventListener('click', () => apiPost('/api/rolling-restart'));
-    document.getElementById('btn-add-node').addEventListener('click', () => apiPost('/api/add-node'));
+    document.getElementById('btn-rolling-restart').addEventListener('click', toggleRollingRestart);
+    document.getElementById('btn-add-node').addEventListener('click', () => apiPost('/api/chaos/add-node'));
 
     document.getElementById('btn-load-1k').addEventListener('click', () => setLoad(1000));
     document.getElementById('btn-load-5k').addEventListener('click', () => setLoad(5000));
@@ -154,7 +155,7 @@ function initControls() {
     slider.addEventListener('change', () => setLoad(parseInt(slider.value)));
 
     document.getElementById('btn-reset').addEventListener('click', async () => {
-        await apiPost('/api/reset-metrics');
+        await apiPost('/api/chaos/reset-metrics');
         successHistory = [];
         throughputHistory = [];
     });
@@ -203,7 +204,7 @@ function hideNodeModal() {
     document.getElementById('node-modal').classList.add('hidden');
 }
 
-async function killNode(nodeId) { await apiPost(`/api/kill/${nodeId}`); }
+async function killNode(nodeId) { await apiPost(`/api/chaos/kill/${nodeId}`); }
 
 async function setLoad(rate) {
     await apiPost(`/api/load/set/${rate}`);
@@ -216,6 +217,31 @@ function formatLoadRate(rate) {
 }
 
 const LOAD_STEPS = [1000, 5000, 10000, 25000, 50000, 100000];
+
+async function toggleRollingRestart() {
+    if (rollingRestartActive) {
+        await apiPost('/api/chaos/stop-rolling-restart');
+    } else {
+        await apiPost('/api/chaos/start-rolling-restart');
+    }
+    await checkRollingRestartStatus();
+}
+
+async function checkRollingRestartStatus() {
+    const data = await apiGet('/api/chaos/rolling-restart-status');
+    if (data) {
+        rollingRestartActive = data.active;
+        updateRollingRestartButton(data.active);
+    }
+}
+
+function updateRollingRestartButton(active) {
+    const btn = document.getElementById('btn-rolling-restart');
+    if (btn) {
+        btn.textContent = active ? 'Stop Rolling Restart' : 'Rolling Restart';
+        btn.classList.toggle('btn-active', active);
+    }
+}
 
 async function rampToNextStep() {
     const status = await fetchStatus();
@@ -359,6 +385,7 @@ async function poll() {
     updateNodesList(status.cluster.nodes);
 
     await fetchEntryPointMetrics();
+    await checkRollingRestartStatus();
 }
 
 function updateMetricsDisplay(metrics) {

@@ -38,6 +38,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.slf4j.Logger;
@@ -113,7 +114,8 @@ public interface ClusterDeploymentManager {
                       Map<SliceNodeKey, SliceState> sliceStates,
                       Map<Artifact, Set<Artifact>> sliceDependencies,
                       Set<ArtifactBase> activeRoutings,
-                      AtomicReference<List<NodeId>> activeNodes) implements ClusterDeploymentState {
+                      AtomicReference<List<NodeId>> activeNodes,
+                      AtomicInteger allocationIndex) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
             /**
@@ -440,7 +442,18 @@ public interface ClusterDeploymentManager {
                                               .filter(key -> key.nodeId()
                                                                 .equals(removedNode))
                                               .toList();
+                // Remove from in-memory state immediately
                 keysToRemove.forEach(sliceStates::remove);
+                // Also remove from KVStore to prevent stale state after leader changes
+                if (!keysToRemove.isEmpty()) {
+                    List<KVCommand<AetherKey>> removeCommands = keysToRemove.stream()
+                                                                            .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                                                                            .toList();
+                    cluster.apply(removeCommands)
+                           .onFailure(cause -> log.error("Failed to remove slice-node-keys for departed node {}: {}",
+                                                         removedNode,
+                                                         cause.message()));
+                }
                 log.info("Removed {} slice states for departed node {}", keysToRemove.size(), removedNode);
             }
 
@@ -512,14 +525,20 @@ public interface ClusterDeploymentManager {
             }
 
             private int allocateToEmptyNodes(Artifact artifact, int toAdd, Set<NodeId> nodesWithInstances) {
-                // Note: tryAllocate() has intentional side effect (issues LOAD command).
-                // Filter + count pattern is used to track successful allocations.
-                return (int) activeNodes.get()
-                                       .stream()
-                                       .filter(node -> !nodesWithInstances.contains(node))
-                                       .limit(toAdd)
-                                       .filter(node -> tryAllocate(artifact, node))
-                                       .count();
+                var nodes = activeNodes.get();
+                var nodeCount = nodes.size();
+                if (nodeCount == 0) {
+                    return 0;
+                }
+                var allocated = 0;
+                for (var i = 0; i < nodeCount && allocated < toAdd; i++) {
+                    var nodeIndex = allocationIndex.getAndIncrement() % nodeCount;
+                    var node = nodes.get(nodeIndex);
+                    if (!nodesWithInstances.contains(node) && tryAllocate(artifact, node)) {
+                        allocated++;
+                    }
+                }
+                return allocated;
             }
 
             private boolean tryAllocate(Artifact artifact, NodeId node) {
@@ -539,10 +558,24 @@ public interface ClusterDeploymentManager {
 
             private void allocateRoundRobin(Artifact artifact, int remaining) {
                 var nodes = activeNodes.get();
-                IntStream.range(0, remaining)
-                         .mapToObj(i -> nodes.get(i % nodes.size()))
-                         .map(node -> new SliceNodeKey(artifact, node))
-                         .forEach(this::issueLoadCommand);
+                var allocated = 0;
+                var attempts = 0;
+                var maxAttempts = nodes.size() * 2;
+                // Prevent infinite loop
+                while (allocated < remaining && attempts < maxAttempts) {
+                    var nodeIndex = allocationIndex.getAndIncrement() % nodes.size();
+                    var node = nodes.get(nodeIndex);
+                    if (tryAllocate(artifact, node)) {
+                        allocated++;
+                    }
+                    attempts++;
+                }
+                if (allocated < remaining) {
+                    log.warn("Could only allocate {} of {} requested instances for {} (not enough nodes without instances)",
+                             allocated,
+                             remaining,
+                             artifact);
+                }
             }
 
             private void scaleDown(Artifact artifact, int toRemove, List<SliceNodeKey> existingInstances) {
@@ -657,7 +690,8 @@ public interface ClusterDeploymentManager {
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
                                                                         ConcurrentHashMap.newKeySet(),
-                                                                        activeNodes);
+                                                                        activeNodes,
+                                                                        new AtomicInteger(0));
                     state.set(activeState);
                     // Rebuild state from KVStore and reconcile
                     activeState.rebuildStateFromKVStore();

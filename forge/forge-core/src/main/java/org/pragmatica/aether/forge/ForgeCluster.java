@@ -16,12 +16,23 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.aether.forge.api.ChaosRoutes.EventLogEntry;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.RollingRestartResponse;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.RollingRestartStatusResponse;
+import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,10 +49,16 @@ import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 public final class ForgeCluster {
     private static final Logger log = LoggerFactory.getLogger(ForgeCluster.class);
 
-    private static final int DEFAULT_BASE_PORT = 6000;
-    private static final int DEFAULT_BASE_MGMT_PORT = 6100;
+    public static final int DEFAULT_BASE_PORT = 6000;
+    public static final int DEFAULT_BASE_MGMT_PORT = 6100;
+    public static final int DEFAULT_BASE_APP_HTTP_PORT = 8070;
     private static final TimeSpan NODE_TIMEOUT = TimeSpan.timeSpan(10)
                                                         .seconds();
+    private static final long ROLLING_RESTART_DELAY_MS = 2500;
+
+    // Auto-heal constants
+    private static final int AUTO_HEAL_MAX_RETRIES = 3;
+    private static final TimeSpan AUTO_HEAL_RETRY_DELAY = timeSpan(5).seconds();
 
     private final Map<String, AetherNode> nodes = new ConcurrentHashMap<>();
     private final Map<String, NodeInfo> nodeInfos = new ConcurrentHashMap<>();
@@ -49,13 +66,30 @@ public final class ForgeCluster {
     private final int initialClusterSize;
     private final int basePort;
     private final int baseMgmtPort;
+    private final int baseAppHttpPort;
     private final String nodeIdPrefix;
+    private final AtomicBoolean rollingRestartActive = new AtomicBoolean(false);
+    private final ScheduledExecutorService rollingRestartExecutor = Executors.newSingleThreadScheduledExecutor();
+    private volatile ScheduledFuture<?> rollingRestartTask;
+    private final Random random = new Random();
 
-    private ForgeCluster(int initialClusterSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
+    // Auto-heal state
+    private final boolean autoHealEnabled;
+    private final int targetClusterSize;
+
+    private ForgeCluster(int initialClusterSize,
+                         int basePort,
+                         int baseMgmtPort,
+                         int baseAppHttpPort,
+                         String nodeIdPrefix,
+                         boolean autoHealEnabled) {
         this.initialClusterSize = initialClusterSize;
         this.basePort = basePort;
         this.baseMgmtPort = baseMgmtPort;
+        this.baseAppHttpPort = baseAppHttpPort;
         this.nodeIdPrefix = nodeIdPrefix;
+        this.autoHealEnabled = autoHealEnabled;
+        this.targetClusterSize = initialClusterSize;
     }
 
     public static ForgeCluster forgeCluster() {
@@ -63,7 +97,22 @@ public final class ForgeCluster {
     }
 
     public static ForgeCluster forgeCluster(int initialSize) {
-        return new ForgeCluster(initialSize, DEFAULT_BASE_PORT, DEFAULT_BASE_MGMT_PORT, "node");
+        return forgeCluster(initialSize, false);
+    }
+
+    /**
+     * Create a ForgeCluster with auto-heal option.
+     *
+     * @param initialSize     Number of nodes to start with
+     * @param autoHealEnabled If true, automatically replace killed nodes to maintain target size
+     */
+    public static ForgeCluster forgeCluster(int initialSize, boolean autoHealEnabled) {
+        return new ForgeCluster(initialSize,
+                                DEFAULT_BASE_PORT,
+                                DEFAULT_BASE_MGMT_PORT,
+                                DEFAULT_BASE_APP_HTTP_PORT,
+                                "node",
+                                autoHealEnabled);
     }
 
     /**
@@ -75,7 +124,7 @@ public final class ForgeCluster {
      * @param baseMgmtPort Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
      */
     public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort) {
-        return new ForgeCluster(initialSize, basePort, baseMgmtPort, "node");
+        return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, "node", false);
     }
 
     /**
@@ -88,7 +137,43 @@ public final class ForgeCluster {
      * @param nodeIdPrefix  Prefix for node IDs (e.g., "cf" creates nodes "cf-1", "cf-2", etc.)
      */
     public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
-        return new ForgeCluster(initialSize, basePort, baseMgmtPort, nodeIdPrefix);
+        return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, nodeIdPrefix, false);
+    }
+
+    /**
+     * Create a ForgeCluster with custom port ranges including app HTTP.
+     *
+     * @param initialSize     Number of nodes to start with
+     * @param basePort        Base port for cluster communication
+     * @param baseMgmtPort    Base port for management HTTP API
+     * @param baseAppHttpPort Base port for application HTTP API (slice endpoints)
+     * @param nodeIdPrefix    Prefix for node IDs
+     */
+    public static ForgeCluster forgeCluster(int initialSize,
+                                            int basePort,
+                                            int baseMgmtPort,
+                                            int baseAppHttpPort,
+                                            String nodeIdPrefix) {
+        return forgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, false);
+    }
+
+    /**
+     * Create a ForgeCluster with all options including auto-heal.
+     *
+     * @param initialSize     Number of nodes to start with
+     * @param basePort        Base port for cluster communication
+     * @param baseMgmtPort    Base port for management HTTP API
+     * @param baseAppHttpPort Base port for application HTTP API (slice endpoints)
+     * @param nodeIdPrefix    Prefix for node IDs
+     * @param autoHealEnabled If true, automatically replace killed nodes to maintain target size
+     */
+    public static ForgeCluster forgeCluster(int initialSize,
+                                            int basePort,
+                                            int baseMgmtPort,
+                                            int baseAppHttpPort,
+                                            String nodeIdPrefix,
+                                            boolean autoHealEnabled) {
+        return new ForgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, autoHealEnabled);
     }
 
     /**
@@ -118,7 +203,8 @@ public final class ForgeCluster {
                                     .id();
             var port = basePort + i;
             var mgmtPort = baseMgmtPort + i;
-            var node = createNode(nodeInfo.id(), port, mgmtPort, initialNodes);
+            var appHttpPort = baseAppHttpPort + i;
+            var node = createNode(nodeInfo.id(), port, mgmtPort, appHttpPort, initialNodes);
             nodes.put(nodeIdStr, node);
             // Wrap start() to capture success/failure with node context
             startPromises.add(node.start()
@@ -216,7 +302,8 @@ public final class ForgeCluster {
         // Get current topology including the new node
         var allNodes = new ArrayList<>(nodeInfos.values());
         var mgmtPort = baseMgmtPort + nodeNum - 1;
-        var node = createNode(nodeId, port, mgmtPort, allNodes);
+        var appHttpPort = baseAppHttpPort + nodeNum - 1;
+        var node = createNode(nodeId, port, mgmtPort, appHttpPort, allNodes);
         nodes.put(nodeId.id(), node);
         return node.start()
                    .map(_ -> nodeId)
@@ -265,7 +352,62 @@ public final class ForgeCluster {
                        nodeInfos.remove(nodeIdStr);
                        return Unit.unit();
                    })
-                   .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr));
+                   .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr))
+                   .onSuccess(_ -> triggerAutoHeal());
+    }
+
+    /**
+     * Trigger auto-healing if enabled and cluster is below target size.
+     * Called after a node is killed to maintain target cluster size.
+     */
+    private void triggerAutoHeal() {
+        if (!autoHealEnabled) {
+            return;
+        }
+        var currentSize = nodes.size();
+        var deficit = targetClusterSize - currentSize;
+        if (deficit > 0) {
+            log.info("AUTO-HEAL: Cluster size {} below target {}, starting {} replacement node(s)",
+                     currentSize,
+                     targetClusterSize,
+                     deficit);
+            for (int i = 0; i < deficit; i++) {
+                attemptNodeStart(0);
+            }
+        }
+    }
+
+    private void attemptNodeStart(int attemptNumber) {
+        if (attemptNumber >= AUTO_HEAL_MAX_RETRIES) {
+            log.error("AUTO-HEAL: Failed to start replacement node after {} attempts", AUTO_HEAL_MAX_RETRIES);
+            return;
+        }
+        log.info("AUTO-HEAL: Attempting to start replacement node (attempt {}/{})",
+                 attemptNumber + 1,
+                 AUTO_HEAL_MAX_RETRIES);
+        addNode().onSuccess(nodeId -> log.info("AUTO-HEAL: Successfully started replacement node {}",
+                                               nodeId.id()))
+               .onFailure(cause -> {
+                              log.warn("AUTO-HEAL: Failed to start replacement node: {}, retrying in {}",
+                                       cause.message(),
+                                       AUTO_HEAL_RETRY_DELAY);
+                              SharedScheduler.schedule(() -> attemptNodeStart(attemptNumber + 1),
+                                                       AUTO_HEAL_RETRY_DELAY);
+                          });
+    }
+
+    /**
+     * Check if auto-heal is enabled.
+     */
+    public boolean isAutoHealEnabled() {
+        return autoHealEnabled;
+    }
+
+    /**
+     * Get the target cluster size for auto-heal.
+     */
+    public int targetClusterSize() {
+        return targetClusterSize;
     }
 
     /**
@@ -337,7 +479,14 @@ public final class ForgeCluster {
                                                              .port() - basePort));
     }
 
-    private AetherNode createNode(NodeId nodeId, int port, int mgmtPort, List<NodeInfo> coreNodes) {
+    /**
+     * Get the app HTTP port of the first node (for load generation).
+     */
+    public int getAppHttpPort() {
+        return baseAppHttpPort;
+    }
+
+    private AetherNode createNode(NodeId nodeId, int port, int mgmtPort, int appHttpPort, List<NodeInfo> coreNodes) {
         var topology = new TopologyConfig(nodeId,
                                           coreNodes.size(),
                                           timeSpan(500).millis(),
@@ -353,7 +502,7 @@ public final class ForgeCluster {
                                           Option.empty(),
                                           org.pragmatica.aether.config.TTMConfig.disabled(),
                                           RollbackConfig.defaults(),
-                                          AppHttpConfig.disabled(),
+                                          AppHttpConfig.enabledOnPort(appHttpPort),
                                           ControllerConfig.forgeDefaults());
         return AetherNode.aetherNode(config)
                          .unwrap();
@@ -466,5 +615,93 @@ public final class ForgeCluster {
                                                                             .name(),
                                                              entry.getValue()))
                                .toList();
+    }
+
+    /**
+     * Start rolling restart cycle.
+     * Continuously kills random nodes and adds new ones to simulate rolling updates.
+     */
+    public Promise<RollingRestartResponse> startRollingRestart(Consumer<EventLogEntry> eventLogger) {
+        if (rollingRestartActive.compareAndSet(false, true)) {
+            eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Rolling restart started"));
+            log.info("Starting rolling restart cycle");
+            scheduleNextCycle(eventLogger);
+            return Promise.success(new RollingRestartResponse(true, "Rolling restart started"));
+        }
+        return Promise.success(new RollingRestartResponse(false, "Rolling restart already active"));
+    }
+
+    private void scheduleNextCycle(Consumer<EventLogEntry> eventLogger) {
+        if (!rollingRestartActive.get()) {
+            return;
+        }
+        rollingRestartTask = rollingRestartExecutor.schedule(() -> performRollingRestartCycle(eventLogger),
+                                                             ROLLING_RESTART_DELAY_MS,
+                                                             TimeUnit.MILLISECONDS);
+    }
+
+    private void performRollingRestartCycle(Consumer<EventLogEntry> eventLogger) {
+        if (!rollingRestartActive.get() || nodes.isEmpty()) {
+            return;
+        }
+        // Pick random node to kill
+        var nodeIds = new ArrayList<>(nodes.keySet());
+        var targetNodeId = nodeIds.get(random.nextInt(nodeIds.size()));
+        log.info("Rolling restart: killing node {}", targetNodeId);
+        eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Killing node " + targetNodeId));
+        killNode(targetNodeId).onSuccess(_ -> {
+                                             // Wait before adding new node
+        rollingRestartExecutor.schedule(() -> {
+                                            if (!rollingRestartActive.get()) {
+                                                return;
+                                            }
+                                            log.info("Rolling restart: adding new node");
+                                            eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Adding new node"));
+                                            addNode().onSuccess(newNodeId -> {
+                                                                    eventLogger.accept(new EventLogEntry("ROLLING_RESTART",
+                                                                                                         "Added node " + newNodeId.id()));
+                                                                    scheduleNextCycle(eventLogger);
+                                                                })
+                                                   .onFailure(cause -> {
+                                                                  log.error("Rolling restart: failed to add node: {}",
+                                                                            cause.message());
+                                                                  eventLogger.accept(new EventLogEntry("ROLLING_RESTART_ERROR",
+                                                                                                       "Failed to add node: " + cause.message()));
+                                                                  scheduleNextCycle(eventLogger);
+                                                              });
+                                        },
+                                        ROLLING_RESTART_DELAY_MS,
+                                        TimeUnit.MILLISECONDS);
+                                         })
+                .onFailure(cause -> {
+                               log.error("Rolling restart: failed to kill node: {}",
+                                         cause.message());
+                               eventLogger.accept(new EventLogEntry("ROLLING_RESTART_ERROR",
+                                                                    "Failed to kill node: " + cause.message()));
+                               scheduleNextCycle(eventLogger);
+                           });
+    }
+
+    /**
+     * Stop rolling restart cycle.
+     */
+    public Promise<RollingRestartResponse> stopRollingRestart(Consumer<EventLogEntry> eventLogger) {
+        if (rollingRestartActive.compareAndSet(true, false)) {
+            if (rollingRestartTask != null) {
+                rollingRestartTask.cancel(false);
+                rollingRestartTask = null;
+            }
+            eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Rolling restart stopped"));
+            log.info("Rolling restart stopped");
+            return Promise.success(new RollingRestartResponse(true, "Rolling restart stopped"));
+        }
+        return Promise.success(new RollingRestartResponse(false, "Rolling restart not active"));
+    }
+
+    /**
+     * Get rolling restart status.
+     */
+    public RollingRestartStatusResponse rollingRestartStatus() {
+        return new RollingRestartStatusResponse(rollingRestartActive.get());
     }
 }

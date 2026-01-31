@@ -1,7 +1,16 @@
 package org.pragmatica.aether.forge.api;
 
 import org.pragmatica.aether.forge.ForgeCluster;
-import org.pragmatica.aether.forge.api.ForgeApiResponses.*;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosEnabledResponse;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosInjectResponse;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosStatusResponse;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosStoppedResponse;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.ActiveChaosEventInfo;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.NodeActionResponse;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.NodeAddedResponse;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.RollingRestartResponse;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.RollingRestartStatusResponse;
+import org.pragmatica.aether.forge.api.ForgeApiResponses.SuccessResponse;
 import org.pragmatica.aether.forge.simulator.ChaosController;
 import org.pragmatica.aether.forge.simulator.ChaosController.ActiveChaosEvent;
 import org.pragmatica.aether.forge.simulator.ChaosController.ChaosStatus;
@@ -59,7 +68,10 @@ public final class ChaosRoutes {
                stopAllRoute(chaosController, eventLogger),
                addNodeRoute(cluster, eventLogger),
                killNodeRoute(cluster, eventLogger),
-               resetMetricsRoute(events, inventoryState, eventLogger));
+               resetMetricsRoute(events, inventoryState, eventLogger),
+               startRollingRestartRoute(cluster, eventLogger),
+               stopRollingRestartRoute(cluster, eventLogger),
+               rollingRestartStatusRoute(cluster));
     }
 
     // ========== Route Definitions ==========
@@ -115,6 +127,23 @@ public final class ChaosRoutes {
                                                             Consumer<EventLogEntry> eventLogger) {
         return Route.<SuccessResponse> post("/reset-metrics")
                     .toJson(_ -> resetMetrics(events, inventoryState, eventLogger));
+    }
+
+    private static Route<RollingRestartResponse> startRollingRestartRoute(ForgeCluster cluster,
+                                                                          Consumer<EventLogEntry> eventLogger) {
+        return Route.<RollingRestartResponse> post("/start-rolling-restart")
+                    .toJson(_ -> startRollingRestart(cluster, eventLogger));
+    }
+
+    private static Route<RollingRestartResponse> stopRollingRestartRoute(ForgeCluster cluster,
+                                                                         Consumer<EventLogEntry> eventLogger) {
+        return Route.<RollingRestartResponse> post("/stop-rolling-restart")
+                    .toJson(_ -> stopRollingRestart(cluster, eventLogger));
+    }
+
+    private static Route<RollingRestartStatusResponse> rollingRestartStatusRoute(ForgeCluster cluster) {
+        return Route.<RollingRestartStatusResponse> get("/rolling-restart-status")
+                    .toJson(() -> rollingRestartStatus(cluster));
     }
 
     // ========== Request Records ==========
@@ -307,5 +336,19 @@ public final class ChaosRoutes {
         inventoryState.reset();
         eventLogger.accept(new EventLogEntry("RESET", "Metrics and events reset"));
         return Promise.success(SuccessResponse.OK);
+    }
+
+    private static Promise<RollingRestartResponse> startRollingRestart(ForgeCluster cluster,
+                                                                       Consumer<EventLogEntry> eventLogger) {
+        return cluster.startRollingRestart(eventLogger);
+    }
+
+    private static Promise<RollingRestartResponse> stopRollingRestart(ForgeCluster cluster,
+                                                                      Consumer<EventLogEntry> eventLogger) {
+        return cluster.stopRollingRestart(eventLogger);
+    }
+
+    private static RollingRestartStatusResponse rollingRestartStatus(ForgeCluster cluster) {
+        return cluster.rollingRestartStatus();
     }
 }

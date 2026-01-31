@@ -131,7 +131,12 @@ public final class ForgeApiResponses {
     /**
      * Response from rolling restart operation.
      */
-    public record RollingRestartResponse(boolean success) {}
+    public record RollingRestartResponse(boolean success, String message) {}
+
+    /**
+     * Response from rolling restart status check.
+     */
+    public record RollingRestartStatusResponse(boolean active) {}
 
     // ========== Load Responses ==========
     /**

@@ -19,22 +19,48 @@ import java.nio.file.Path;
  */
 public record ForgeConfig(int nodes,
                           int managementPort,
-                          int dashboardPort) {
+                          int dashboardPort,
+                          int appHttpPort,
+                          boolean autoHealEnabled) {
     public static final int DEFAULT_NODES = 5;
     public static final int DEFAULT_MANAGEMENT_PORT = 5150;
     public static final int DEFAULT_DASHBOARD_PORT = 8888;
+    public static final int DEFAULT_APP_HTTP_PORT = 8070;
+    public static final boolean DEFAULT_AUTO_HEAL_ENABLED = false;
 
     /**
      * Default configuration.
      */
     public static ForgeConfig defaults() {
-        return new ForgeConfig(DEFAULT_NODES, DEFAULT_MANAGEMENT_PORT, DEFAULT_DASHBOARD_PORT);
+        return new ForgeConfig(DEFAULT_NODES,
+                               DEFAULT_MANAGEMENT_PORT,
+                               DEFAULT_DASHBOARD_PORT,
+                               DEFAULT_APP_HTTP_PORT,
+                               DEFAULT_AUTO_HEAL_ENABLED);
     }
 
     /**
      * Create configuration with specified values and validation.
      */
     public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort) {
+        return forgeConfig(nodes, managementPort, dashboardPort, DEFAULT_APP_HTTP_PORT, DEFAULT_AUTO_HEAL_ENABLED);
+    }
+
+    /**
+     * Create configuration with specified values and validation.
+     */
+    public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort, int appHttpPort) {
+        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, DEFAULT_AUTO_HEAL_ENABLED);
+    }
+
+    /**
+     * Create configuration with specified values and validation.
+     */
+    public static Result<ForgeConfig> forgeConfig(int nodes,
+                                                  int managementPort,
+                                                  int dashboardPort,
+                                                  int appHttpPort,
+                                                  boolean autoHealEnabled) {
         if (nodes < 1) {
             return ForgeConfigError.invalidValue("nodes", nodes, "must be at least 1")
                                    .result();
@@ -51,11 +77,15 @@ public record ForgeConfig(int nodes,
             return ForgeConfigError.invalidValue("dashboard_port", dashboardPort, "must be valid port")
                                    .result();
         }
+        if (appHttpPort < 1 || appHttpPort > 65535) {
+            return ForgeConfigError.invalidValue("app_http_port", appHttpPort, "must be valid port")
+                                   .result();
+        }
         if (managementPort == dashboardPort) {
             return ForgeConfigError.portConflict(managementPort)
                                    .result();
         }
-        return Result.success(new ForgeConfig(nodes, managementPort, dashboardPort));
+        return Result.success(new ForgeConfig(nodes, managementPort, dashboardPort, appHttpPort, autoHealEnabled));
     }
 
     /**
@@ -81,7 +111,11 @@ public record ForgeConfig(int nodes,
                                 .or(DEFAULT_MANAGEMENT_PORT);
         int dashboardPort = doc.getInt("cluster", "dashboard_port")
                                .or(DEFAULT_DASHBOARD_PORT);
-        return forgeConfig(nodes, managementPort, dashboardPort);
+        int appHttpPort = doc.getInt("cluster", "app_http_port")
+                             .or(DEFAULT_APP_HTTP_PORT);
+        boolean autoHealEnabled = doc.getBoolean("cluster", "auto_heal_enabled")
+                                     .or(DEFAULT_AUTO_HEAL_ENABLED);
+        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, autoHealEnabled);
     }
 
     /**

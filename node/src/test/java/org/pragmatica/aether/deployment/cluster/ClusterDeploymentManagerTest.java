@@ -259,13 +259,21 @@ class ClusterDeploymentManagerTest {
         clusterNode.appliedCommands.clear();
 
         // Remove node3 - this removes slice state for node3 and triggers reconciliation
-        // With 2 remaining nodes and slice target wanting 3, we need 1 more on one of the remaining nodes
+        // With 2 remaining nodes and slice target wanting 3, we have 2 instances remaining
+        // Reconciliation won't add more because we can't exceed node count
         manager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node3, List.of(self, node2)));
 
-        // After removing node3's state (1 instance), we have 2 tracked, want 3
-        // So should issue 1 LOAD command to replace lost instance
+        // Expect 1 command: Remove command to clean KVStore for departed node
+        // No LOAD command because remaining 2 instances already cover all available nodes
         assertThat(clusterNode.appliedCommands).hasSize(1);
-        assertAllCommandsAreLoadFor(artifact);
+
+        // Command should be Remove for the departed node's slice
+        var removeCmd = clusterNode.appliedCommands.getFirst();
+        assertThat(removeCmd).isInstanceOf(KVCommand.Remove.class);
+        var removeKey = ((KVCommand.Remove<?>) removeCmd).key();
+        assertThat(removeKey).isInstanceOf(SliceNodeKey.class);
+        assertThat(((SliceNodeKey) removeKey).nodeId()).isEqualTo(node3);
+        assertThat(((SliceNodeKey) removeKey).artifact()).isEqualTo(artifact);
     }
 
     // === Slice State Tracking Tests ===

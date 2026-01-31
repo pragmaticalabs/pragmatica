@@ -116,6 +116,10 @@ public final class ForgeServer {
         log.info("=".repeat(60));
         log.info("  Dashboard: http://localhost:{}", forgeConfig.dashboardPort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
+        log.info("  App HTTP port: {} (load target)", forgeConfig.appHttpPort());
+        if (forgeConfig.autoHealEnabled()) {
+            log.info("  Auto-heal: enabled");
+        }
         startupConfig.blueprint()
                      .onPresent(p -> log.info("  Blueprint: {}", p));
         startupConfig.loadConfig()
@@ -130,10 +134,16 @@ public final class ForgeServer {
         log.info("Starting Forge server...");
         // Initialize components
         metrics = ForgeMetrics.forgeMetrics();
-        cluster = ForgeCluster.forgeCluster(forgeConfig.nodes());
+        cluster = ForgeCluster.forgeCluster(forgeConfig.nodes(),
+                                            ForgeCluster.DEFAULT_BASE_PORT,
+                                            forgeConfig.managementPort(),
+                                            forgeConfig.appHttpPort(),
+                                            "node",
+                                            forgeConfig.autoHealEnabled());
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
-        loadGenerator = LoadGenerator.loadGenerator(forgeConfig.dashboardPort(), metrics, entryPointMetrics);
-        configurableLoadRunner = ConfigurableLoadRunner.configurableLoadRunner(forgeConfig.dashboardPort(),
+        // Load generators send to app HTTP port where slice routes are registered
+        loadGenerator = LoadGenerator.loadGenerator(forgeConfig.appHttpPort(), metrics, entryPointMetrics);
+        configurableLoadRunner = ConfigurableLoadRunner.configurableLoadRunner(forgeConfig.appHttpPort(),
                                                                                metrics,
                                                                                entryPointMetrics);
         apiHandler = ForgeApiHandler.forgeApiHandler(cluster, loadGenerator, metrics, configurableLoadRunner);
