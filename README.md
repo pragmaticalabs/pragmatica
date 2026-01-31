@@ -97,7 +97,7 @@ mvn package -DskipTests
 # JARs:
 #   cli/target/aether.jar
 #   node/target/aether-node.jar
-#   forge/target/aether-forge.jar
+#   forge/forge-core/target/aether-forge.jar
 ```
 
 ## Quick Start

@@ -11,7 +11,7 @@ This runbook verifies the slice lifecycle implementation matches the design in `
 
 2. Verify jars exist:
    ```bash
-   ls forge/target/aether-forge.jar
+   ls forge/forge-core/target/aether-forge.jar
    ls cli/target/aether.jar
    ```
 
@@ -22,7 +22,7 @@ This runbook verifies the slice lifecycle implementation matches the design in `
 ### 1. Start Forge
 
 ```bash
-java -jar forge/target/aether-forge.jar
+java -jar forge/forge-core/target/aether-forge.jar
 ```
 
 Expected output:
@@ -100,7 +100,7 @@ pkill -f "aether-forge.jar"
 ### 1. Start Forge (as cluster backend)
 
 ```bash
-java -jar forge/target/aether-forge.jar > /tmp/forge.log 2>&1 &
+java -jar forge/forge-core/target/aether-forge.jar > /tmp/forge.log 2>&1 &
 sleep 8
 ```
 

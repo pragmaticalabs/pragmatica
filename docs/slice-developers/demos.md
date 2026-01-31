@@ -93,14 +93,13 @@ The web dashboard (`index.html`) provides:
 
 ```bash
 # Build Forge
-cd forge
-mvn package
+mvn package -pl forge/forge-core -am -DskipTests
 
 # Run with defaults (5 nodes, 1000 req/sec)
-java -jar target/aether-forge.jar
+java -jar forge/forge-core/target/aether-forge.jar
 
 # Or with custom settings
-CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar target/aether-forge.jar
+CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar forge/forge-core/target/aether-forge.jar
 ```
 
 The dashboard opens automatically at `http://localhost:8888`.

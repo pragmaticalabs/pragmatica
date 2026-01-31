@@ -26,13 +26,13 @@ Forge provides:
 
 ```bash
 # Build Forge
-mvn package -pl forge -am -DskipTests
+mvn package -pl forge/forge-core -am -DskipTests
 
 # Start Forge with default configuration
-java -jar forge/target/aether-forge.jar
+java -jar forge/forge-core/target/aether-forge.jar
 
 # Start with blueprint and load config
-java -jar forge/target/aether-forge.jar \
+java -jar forge/forge-core/target/aether-forge.jar \
   --blueprint examples/blueprint.toml \
   --load-config examples/load-config.toml \
   --auto-start

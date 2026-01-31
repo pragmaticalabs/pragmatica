@@ -178,7 +178,16 @@ mvn test -Dtest=ClassName  # Specific test class
 mvn test -pl module-name   # Specific module
 ```
 
-**Important:** Run `mvn install -DskipTests` before testing forge module. Forge tests depend on locally installed artifacts from other modules.
+**Forge module structure:**
+- `forge/forge-core` - main sources, unit tests, shaded jar
+- `forge/forge-tests` - integration tests (failsafe)
+
+```bash
+mvn test -pl forge/forge-core           # Unit tests (43 tests)
+mvn verify -pl forge/forge-tests        # Integration tests (90 tests)
+```
+
+**Important:** Run `mvn install -DskipTests` before testing forge. Forge tests depend on locally installed artifacts.
 
 ## Parallel Releases with Circular Dependencies
 
