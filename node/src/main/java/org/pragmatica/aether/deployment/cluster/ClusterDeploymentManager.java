@@ -362,6 +362,17 @@ public interface ClusterDeploymentManager {
                 if (state == SliceState.ACTIVE) {
                     activateDependentSlices(sliceKey.artifact());
                 }
+                // When slice enters FAILED state, remove it and trigger replacement
+                if (state == SliceState.FAILED) {
+                    log.warn("Slice {} FAILED on {}, removing and scheduling replacement",
+                             sliceKey.artifact(),
+                             sliceKey.nodeId());
+                    sliceStates.remove(sliceKey);
+                    // Issue UNLOAD to clean up the failed slice on the node
+                    issueUnloadCommand(sliceKey);
+                    // Schedule reconciliation to allocate replacement
+                    SharedScheduler.schedule(this::reconcile, timeSpan(1).seconds());
+                }
             }
 
             /**
