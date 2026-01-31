@@ -712,28 +712,8 @@ public final class SliceProjectInitializer {
         # This file is read by the annotation processor and blueprint generator
 
         [blueprint]
-        # Number of instances to deploy
-        instances = 1
-
-        # Request timeout in milliseconds
-        # timeout_ms = 30000
-
-        # Memory allocation in MB
-        # memory_mb = 512
-
-        # Load balancing strategy: round_robin, least_connections, consistent_hash, random
-        # load_balancing = "round_robin"
-
-        # For consistent_hash load balancing, specify the request field to hash on
-        # affinity_key = "customerId"
-
-        # [transport]
-        # Transport configuration (future)
-        # type = "http"
-
-        # [transport.http]
-        # HTTP-specific settings (future)
-        # port = 8080
+        # Number of instances to deploy (default: 3)
+        instances = 3
         """;
 
     private static final String GENERATE_BLUEPRINT_TEMPLATE = """

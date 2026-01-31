@@ -242,40 +242,20 @@ For a slice named `OrderService`, create `src/main/resources/slices/OrderService
 # Slice configuration for OrderService
 
 [blueprint]
-# Required: number of slice instances
-instances = 3
-
-# Optional: request timeout in milliseconds
-timeout_ms = 30000
-
-# Optional: memory allocation per instance
-memory_mb = 512
-
-# Optional: load balancing strategy
-load_balancing = "round_robin"
-
-# Optional: request field for sticky routing
-affinity_key = "customerId"
+# Number of slice instances (default: 3)
+instances = 5
 ```
 
 ### Configuration Properties
 
 | Section | Property | Type | Default | Description |
 |---------|----------|------|---------|-------------|
-| `[blueprint]` | `instances` | int | `1` | Number of slice instances |
-| `[blueprint]` | `timeout_ms` | int | - | Request timeout |
-| `[blueprint]` | `memory_mb` | int | - | Memory per instance |
-| `[blueprint]` | `load_balancing` | string | - | Load balancing strategy |
-| `[blueprint]` | `affinity_key` | string | - | Field for sticky routing |
+| `[blueprint]` | `instances` | int | `3` | Number of slice instances |
 
 ### Default Behavior
 
-If no config file exists for a slice, defaults are used:
-- `instances = 1`
-- No timeout (uses runtime default)
-- No memory limit
-- Default load balancing
-- No affinity
+If no config file exists for a slice, default value is used:
+- `instances = 3`
 
 The plugin logs an info message when using defaults.
 

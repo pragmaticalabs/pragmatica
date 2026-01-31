@@ -58,14 +58,10 @@ instances = 1
 [[slices]]
 artifact = "org.example:commerce-payment-service:1.0.0"
 instances = 2
-timeout_ms = 30000
-load_balancing = "round_robin"
 
 [[slices]]
 artifact = "org.example:commerce-order-service:1.0.0"
 instances = 3
-memory_mb = 512
-affinity_key = "customerId"
 ```
 
 ### Slice Configuration
@@ -76,22 +72,14 @@ Blueprint properties are read from per-slice config files at `src/main/resources
 # src/main/resources/slices/OrderService.toml
 
 [blueprint]
-instances = 3
-timeout_ms = 30000
-memory_mb = 512
-load_balancing = "round_robin"
-affinity_key = "customerId"
+instances = 5
 ```
 
 | Property | Type | Default | Description |
 |----------|------|---------|-------------|
-| `instances` | int | `1` | Number of slice instances |
-| `timeout_ms` | int | - | Request timeout in milliseconds |
-| `memory_mb` | int | - | Memory allocation per instance |
-| `load_balancing` | string | - | Load balancing strategy (`round_robin`, `least_connections`) |
-| `affinity_key` | string | - | Request field for sticky routing |
+| `instances` | int | `3` | Number of slice instances |
 
-If a slice config file is missing, default values are used (logged as info message).
+If a slice config file is missing, default value is used (`instances = 3`, logged as info message).
 
 ### Topological Ordering
 

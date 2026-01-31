@@ -299,31 +299,6 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                            .blueprint()
                            .instances())
               .append("\n");
-            // Add optional properties if configured
-            entry.config()
-                 .blueprint()
-                 .timeoutMs()
-                 .onPresent(timeout -> sb.append("timeout_ms = ")
-                                         .append(timeout)
-                                         .append("\n"));
-            entry.config()
-                 .blueprint()
-                 .memoryMb()
-                 .onPresent(memory -> sb.append("memory_mb = ")
-                                        .append(memory)
-                                        .append("\n"));
-            entry.config()
-                 .blueprint()
-                 .loadBalancing()
-                 .onPresent(lb -> sb.append("load_balancing = \"")
-                                    .append(lb)
-                                    .append("\"\n"));
-            entry.config()
-                 .blueprint()
-                 .affinityKey()
-                 .onPresent(key -> sb.append("affinity_key = \"")
-                                     .append(key)
-                                     .append("\"\n"));
             if (entry.isDependency()) {
                 sb.append("# transitive dependency\n");
             }
