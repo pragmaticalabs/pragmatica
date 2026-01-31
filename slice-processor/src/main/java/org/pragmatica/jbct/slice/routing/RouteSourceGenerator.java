@@ -260,6 +260,7 @@ public class RouteSourceGenerator {
         var routeEntries = routeConfig.routes()
                                       .entrySet()
                                       .stream()
+                                      .sorted(Map.Entry.comparingByKey())
                                       .toList();
         // Filter valid routes and report errors for invalid ones
         var validRoutes = new ArrayList<Map.Entry<String, RouteDsl>>();
