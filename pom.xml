@@ -217,6 +217,12 @@
             </dependency>
 
             <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>forge-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>http-routing</artifactId>
                 <version>${pragmatica.version}</version>
