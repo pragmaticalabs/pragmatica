@@ -11,6 +11,7 @@ import org.pragmatica.consensus.topology.TopologyConfig;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.dht.DHTConfig;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -649,8 +650,22 @@ public final class ForgeCluster {
         var targetNodeId = nodeIds.get(random.nextInt(nodeIds.size()));
         log.info("Rolling restart: killing node {}", targetNodeId);
         eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Killing node " + targetNodeId));
-        killNode(targetNodeId).onSuccess(_ -> {
-                                             // Wait before adding new node
+        if (autoHealEnabled) {
+            // Auto-heal handles replacement, just kill and wait 2x delay to maintain pace
+            killNode(targetNodeId).onSuccess(_ -> {
+                                                 eventLogger.accept(new EventLogEntry("ROLLING_RESTART",
+                                                                                      "Auto-heal will replace node"));
+                                                 scheduleNextCycleWithDelay(eventLogger, ROLLING_RESTART_DELAY_MS * 2);
+                                             })
+                    .onFailure(cause -> handleRollingRestartFailure(eventLogger, "kill node", cause));
+        } else {
+            // Manual replacement: kill → wait → add
+            killNode(targetNodeId).onSuccess(_ -> scheduleAddNode(eventLogger))
+                    .onFailure(cause -> handleRollingRestartFailure(eventLogger, "kill node", cause));
+        }
+    }
+
+    private void scheduleAddNode(Consumer<EventLogEntry> eventLogger) {
         rollingRestartExecutor.schedule(() -> {
                                             if (!rollingRestartActive.get()) {
                                                 return;
@@ -662,24 +677,27 @@ public final class ForgeCluster {
                                                                                                          "Added node " + newNodeId.id()));
                                                                     scheduleNextCycle(eventLogger);
                                                                 })
-                                                   .onFailure(cause -> {
-                                                                  log.error("Rolling restart: failed to add node: {}",
-                                                                            cause.message());
-                                                                  eventLogger.accept(new EventLogEntry("ROLLING_RESTART_ERROR",
-                                                                                                       "Failed to add node: " + cause.message()));
-                                                                  scheduleNextCycle(eventLogger);
-                                                              });
+                                                   .onFailure(cause -> handleRollingRestartFailure(eventLogger,
+                                                                                                   "add node",
+                                                                                                   cause));
                                         },
                                         ROLLING_RESTART_DELAY_MS,
                                         TimeUnit.MILLISECONDS);
-                                         })
-                .onFailure(cause -> {
-                               log.error("Rolling restart: failed to kill node: {}",
-                                         cause.message());
-                               eventLogger.accept(new EventLogEntry("ROLLING_RESTART_ERROR",
-                                                                    "Failed to kill node: " + cause.message()));
-                               scheduleNextCycle(eventLogger);
-                           });
+    }
+
+    private void scheduleNextCycleWithDelay(Consumer<EventLogEntry> eventLogger, long delayMs) {
+        if (!rollingRestartActive.get()) {
+            return;
+        }
+        rollingRestartTask = rollingRestartExecutor.schedule(() -> performRollingRestartCycle(eventLogger),
+                                                             delayMs,
+                                                             TimeUnit.MILLISECONDS);
+    }
+
+    private void handleRollingRestartFailure(Consumer<EventLogEntry> eventLogger, String operation, Cause cause) {
+        log.error("Rolling restart: failed to {}: {}", operation, cause.message());
+        eventLogger.accept(new EventLogEntry("ROLLING_RESTART_ERROR", "Failed to " + operation + ": " + cause.message()));
+        scheduleNextCycle(eventLogger);
     }
 
     /**
