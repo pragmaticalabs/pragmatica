@@ -19,8 +19,18 @@ jobs:
           distribution: 'temurin'
           cache: maven
 
+      # Install modules individually to break cyclic dependency
+      - name: Install parent POM
+        run: mvn install -B -N -Djbct.skip=true
+
+      - name: Install jbct-core
+        run: mvn install -B -DskipTests -pl jbct-core -Djbct.skip=true
+
+      - name: Install jbct-maven-plugin
+        run: mvn install -B -DskipTests -pl jbct-maven-plugin -Djbct.skip=true
+
       - name: Build
-        run: mvn package -DskipTests -Djbct.skip -B
+        run: mvn package -B -DskipTests -pl jbct-cli -Djbct.skip=true
 
       - name: Create or update release
         env:
