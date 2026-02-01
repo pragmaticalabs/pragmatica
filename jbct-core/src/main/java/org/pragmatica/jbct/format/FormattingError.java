@@ -7,7 +7,7 @@ import org.pragmatica.lang.Option;
  * Sealed interface for formatting errors.
  */
 public sealed interface FormattingError extends Cause {
-    record ParseError(String file, int line, int column, String details) implements FormattingError {
+    record ParseFailed(String file, int line, int column, String details) implements FormattingError {
         @Override
         public String message() {
             return "Parse error at %s:%d:%d - %s". formatted(file, line, column, details);
@@ -19,7 +19,7 @@ public sealed interface FormattingError extends Cause {
         }
     }
 
-    record IoError(String file, Throwable exception) implements FormattingError {
+    record IoFailed(String file, Throwable exception) implements FormattingError {
         @Override
         public String message() {
             return "I/O error for %s: %s". formatted(file, exception.getMessage());
@@ -44,12 +44,12 @@ public sealed interface FormattingError extends Cause {
     }
 
     // Factory methods
-    static FormattingError parseError(String file, int line, int column, String details) {
-        return new ParseError(file, line, column, details);
+    static FormattingError parseFailed(String file, int line, int column, String details) {
+        return new ParseFailed(file, line, column, details);
     }
 
-    static FormattingError ioError(String file, Throwable exception) {
-        return new IoError(file, exception);
+    static FormattingError ioFailed(String file, Throwable exception) {
+        return new IoFailed(file, exception);
     }
 
     static FormattingError formatterError(String details) {

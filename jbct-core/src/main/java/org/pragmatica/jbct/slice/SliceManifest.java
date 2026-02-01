@@ -80,27 +80,29 @@ public record SliceManifest(String sliceName,
         return org.pragmatica.lang.Option.option(props.getProperty("slice.name"))
                                          .filter(s -> !s.isEmpty())
                                          .toResult(Causes.cause("Missing required property: slice.name"))
-                                         .map(sliceName -> {
-                                                  var artifactSuffix = getPropertyOrEmpty(props, "slice.artifactSuffix");
-                                                  var slicePackage = getPropertyOrEmpty(props, "slice.package");
-                                                  var implClasses = parseList(getPropertyOrEmpty(props, "impl.classes"));
-                                                  var requestClasses = parseList(getPropertyOrEmpty(props, "request.classes"));
-                                                  var responseClasses = parseList(getPropertyOrEmpty(props, "response.classes"));
-                                                  var baseArtifact = getPropertyOrEmpty(props, "base.artifact");
-                                                  var implArtifactId = getPropertyOrEmpty(props, "slice.artifactId");
-                                                  var dependencies = parseDependencies(props);
-                                                  var configFile = getPropertyOrEmpty(props, "config.file");
-                                                  return new SliceManifest(sliceName,
-                                                                           artifactSuffix,
-                                                                           slicePackage,
-                                                                           implClasses,
-                                                                           requestClasses,
-                                                                           responseClasses,
-                                                                           baseArtifact,
-                                                                           implArtifactId,
-                                                                           dependencies,
-                                                                           configFile);
-                                              });
+                                         .map(sliceName -> buildManifest(sliceName, props));
+    }
+
+    private static SliceManifest buildManifest(String sliceName, Properties props) {
+        var artifactSuffix = getPropertyOrEmpty(props, "slice.artifactSuffix");
+        var slicePackage = getPropertyOrEmpty(props, "slice.package");
+        var implClasses = parseList(getPropertyOrEmpty(props, "impl.classes"));
+        var requestClasses = parseList(getPropertyOrEmpty(props, "request.classes"));
+        var responseClasses = parseList(getPropertyOrEmpty(props, "response.classes"));
+        var baseArtifact = getPropertyOrEmpty(props, "base.artifact");
+        var implArtifactId = getPropertyOrEmpty(props, "slice.artifactId");
+        var dependencies = parseDependencies(props);
+        var configFile = getPropertyOrEmpty(props, "config.file");
+        return new SliceManifest(sliceName,
+                                 artifactSuffix,
+                                 slicePackage,
+                                 implClasses,
+                                 requestClasses,
+                                 responseClasses,
+                                 baseArtifact,
+                                 implArtifactId,
+                                 dependencies,
+                                 configFile);
     }
 
     private static String getPropertyOrEmpty(Properties props, String key) {

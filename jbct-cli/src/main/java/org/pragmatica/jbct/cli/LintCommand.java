@@ -14,7 +14,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -75,22 +74,19 @@ public class LintCommand implements Callable<Integer> {
             System.out.println("Found " + filesToProcess.size() + " Java file(s) to lint.");
         }
         var allDiagnostics = new ArrayList<Diagnostic>();
-        var errors = new AtomicInteger(0);
-        var warnings = new AtomicInteger(0);
-        var infos = new AtomicInteger(0);
-        var parseErrors = new AtomicInteger(0);
+        var counters = new int[4]; // 0=errors, 1=warnings, 2=infos, 3=parseErrors
         for (var file : filesToProcess) {
-            processFile(file, linter, allDiagnostics, errors, warnings, infos, parseErrors);
+            processFile(file, linter, allDiagnostics, counters);
         }
         // Output results
         printResults(allDiagnostics);
         // Print summary
-        printSummary(filesToProcess.size(), errors.get(), warnings.get(), infos.get(), parseErrors.get());
+        printSummary(filesToProcess.size(), counters[0], counters[1], counters[2], counters[3]);
         // Return appropriate exit code
-        if (parseErrors.get() > 0 || errors.get() > 0) {
+        if (counters[3] > 0 || counters[0] > 0) {
             return 2;
         }
-        if (failOnWarning && warnings.get() > 0) {
+        if (failOnWarning && counters[1] > 0) {
             return 1;
         }
         return 0;
@@ -110,22 +106,16 @@ public class LintCommand implements Callable<Integer> {
         return FileCollector.collectJavaFiles(paths, System.err::println);
     }
 
-    private void processFile(Path file,
-                             JbctLinter linter,
-                             List<Diagnostic> allDiagnostics,
-                             AtomicInteger errors,
-                             AtomicInteger warnings,
-                             AtomicInteger infos,
-                             AtomicInteger parseErrors) {
+    private void processFile(Path file, JbctLinter linter, List<Diagnostic> allDiagnostics, int[] counters) {
         SourceFile.sourceFile(file)
                   .flatMap(linter::lint)
                   .onSuccess(diagnostics -> {
                                  allDiagnostics.addAll(diagnostics);
                                  for (var d : diagnostics) {
                                      switch (d.severity()) {
-            case ERROR -> errors.incrementAndGet();
-            case WARNING -> warnings.incrementAndGet();
-            case INFO -> infos.incrementAndGet();
+            case ERROR -> counters[0]++;
+            case WARNING -> counters[1]++;
+            case INFO -> counters[2]++;
         }
                                  }
                                  if (verbose && diagnostics.isEmpty()) {
@@ -133,7 +123,7 @@ public class LintCommand implements Callable<Integer> {
                                  }
                              })
                   .onFailure(cause -> {
-                                 parseErrors.incrementAndGet();
+                                 counters[3]++;
                                  System.err.println("  ✗ " + file + ": " + cause.message());
                              });
     }

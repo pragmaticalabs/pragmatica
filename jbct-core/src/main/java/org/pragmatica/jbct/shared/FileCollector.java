@@ -35,7 +35,7 @@ public sealed interface FileCollector permits FileCollector.unused {
                 files.add(path);
             }
         }
-        return files;
+        return List.copyOf(files);
     }
 
     /**
@@ -58,7 +58,7 @@ public sealed interface FileCollector permits FileCollector.unused {
             testSourceDirectory.filter(Files::exists)
                                .onPresent(dir -> collectFromDirectory(dir, files, errorHandler));
         }
-        return files;
+        return List.copyOf(files);
     }
 
     private static void collectFromDirectory(Path directory, List<Path> files, Consumer<String> errorHandler) {

@@ -143,14 +143,20 @@ public final class SliceProjectInitializer {
                             createTestResources(),
                             createDeployScripts(),
                             createSliceConfigFiles())
-                     .flatMap(fileLists -> createDependencyManifest()
-        .map(manifest -> {
-                 var allFiles = fileLists.stream()
-                                         .flatMap(List::stream)
-                                         .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
-                 allFiles.add(manifest);
-                 return allFiles;
-             }));
+                     .flatMap(this::combineWithDependencyManifest);
+    }
+
+    private Result<List<Path>> combineWithDependencyManifest(List<List<Path>> fileLists) {
+        return createDependencyManifest()
+                   .map(manifest -> combineFileLists(fileLists, manifest));
+    }
+
+    private List<Path> combineFileLists(List<List<Path>> fileLists, Path manifest) {
+        var allFiles = fileLists.stream()
+                                .flatMap(List::stream)
+                                .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+        allFiles.add(manifest);
+        return allFiles;
     }
 
     private Result<List<Path>> createSliceConfigFiles() {

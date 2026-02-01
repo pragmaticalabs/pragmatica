@@ -78,15 +78,17 @@ public final class AiToolsUpdater {
      */
     public Result<List<Path>> update(boolean force) {
         return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH)
-                                   .flatMap(latestSha -> {
-                                                var currentSha = getCurrentVersion();
-                                                var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha))
-                                                                                     .isPresent();
-                                                if (isUpToDate) {
-                                                    return Result.success(List.<Path>of());
-                                                }
-                                                return downloadFiles(latestSha);
-                                            });
+                                   .flatMap(latestSha -> performUpdate(latestSha, force));
+    }
+
+    private Result<List<Path>> performUpdate(String latestSha, boolean force) {
+        var currentSha = getCurrentVersion();
+        var isUpToDate = !force && currentSha.filter(sha -> sha.equals(latestSha))
+                                             .isPresent();
+        if (isUpToDate) {
+            return Result.success(List.of());
+        }
+        return downloadFiles(latestSha);
     }
 
     private Result<List<Path>> downloadFiles(String commitSha) {

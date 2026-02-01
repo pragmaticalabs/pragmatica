@@ -11,7 +11,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.Callable;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -65,17 +64,15 @@ public class FormatCommand implements Callable<Integer> {
         if (verbose) {
             System.out.println("Found " + filesToProcess.size() + " Java file(s) to process.");
         }
-        var formatted = new AtomicInteger(0);
-        var unchanged = new AtomicInteger(0);
-        var errors = new AtomicInteger(0);
+        var counters = new int[3]; // 0=formatted, 1=unchanged, 2=errors
         var needsFormatting = new ArrayList<Path>();
         for (var file : filesToProcess) {
-            processFile(file, formatted, unchanged, errors, needsFormatting);
+            processFile(file, counters, needsFormatting);
         }
         // Print summary
-        printSummary(formatted.get(), unchanged.get(), errors.get(), needsFormatting);
+        printSummary(counters[0], counters[1], counters[2], needsFormatting);
         // Return appropriate exit code
-        if (errors.get() > 0) {
+        if (counters[2] > 0) {
             return 2;
         }
         if (checkOnly && !needsFormatting.isEmpty()) {
@@ -88,34 +85,27 @@ public class FormatCommand implements Callable<Integer> {
         return FileCollector.collectJavaFiles(paths, System.err::println);
     }
 
-    private void processFile(Path file,
-                             AtomicInteger formatted,
-                             AtomicInteger unchanged,
-                             AtomicInteger errors,
-                             List<Path> needsFormatting) {
+    private void processFile(Path file, int[] counters, List<Path> needsFormatting) {
         SourceFile.sourceFile(file)
-                  .flatMap(source -> checkAndFormat(source, file, formatted, unchanged, needsFormatting))
+                  .flatMap(source -> checkAndFormat(source, file, counters, needsFormatting))
                   .onFailure(cause -> {
-                                 errors.incrementAndGet();
+                                 counters[2]++;
                                  System.err.println("  error: " + file + " - " + cause.message());
                              });
     }
 
     private org.pragmatica.lang.Result<SourceFile> checkAndFormat(SourceFile source,
                                                                   Path file,
-                                                                  AtomicInteger formatted,
-                                                                  AtomicInteger unchanged,
+                                                                  int[] counters,
                                                                   List<Path> needsFormatting) {
         return formatter.isFormatted(source)
                         .flatMap(isFormatted -> isFormatted
-                                                ? handleUnchanged(source, file, unchanged)
-                                                : handleNeedsFormatting(source, file, formatted, needsFormatting));
+                                                ? handleUnchanged(source, file, counters)
+                                                : handleNeedsFormatting(source, file, counters, needsFormatting));
     }
 
-    private org.pragmatica.lang.Result<SourceFile> handleUnchanged(SourceFile source,
-                                                                   Path file,
-                                                                   AtomicInteger unchanged) {
-        unchanged.incrementAndGet();
+    private org.pragmatica.lang.Result<SourceFile> handleUnchanged(SourceFile source, Path file, int[] counters) {
+        counters[1]++;
         if (verbose) {
             System.out.println("  unchanged: " + file);
         }
@@ -124,33 +114,29 @@ public class FormatCommand implements Callable<Integer> {
 
     private org.pragmatica.lang.Result<SourceFile> handleNeedsFormatting(SourceFile source,
                                                                          Path file,
-                                                                         AtomicInteger formatted,
+                                                                         int[] counters,
                                                                          List<Path> needsFormatting) {
         needsFormatting.add(file);
         if (checkOnly) {
             System.out.println("  needs formatting: " + file);
             return org.pragmatica.lang.Result.success(source);
         }
-        return formatAndWrite(source, file, formatted);
+        return formatAndWrite(source, file, counters);
     }
 
-    private org.pragmatica.lang.Result<SourceFile> formatAndWrite(SourceFile source,
-                                                                  Path file,
-                                                                  AtomicInteger formatted) {
+    private org.pragmatica.lang.Result<SourceFile> formatAndWrite(SourceFile source, Path file, int[] counters) {
         return formatter.format(source)
-                        .flatMap(formattedSource -> writeFormatted(formattedSource, file, formatted));
+                        .flatMap(formattedSource -> writeFormatted(formattedSource, file, counters));
     }
 
-    private org.pragmatica.lang.Result<SourceFile> writeFormatted(SourceFile formattedSource,
-                                                                  Path file,
-                                                                  AtomicInteger formatted) {
+    private org.pragmatica.lang.Result<SourceFile> writeFormatted(SourceFile formattedSource, Path file, int[] counters) {
         if (dryRun) {
             System.out.println("  would format: " + file);
             return org.pragmatica.lang.Result.success(formattedSource);
         }
         return formattedSource.write()
                               .onSuccess(_ -> {
-                                             formatted.incrementAndGet();
+                                             counters[0]++;
                                              if (verbose) {
                                                  System.out.println("  formatted: " + file);
                                              }

@@ -531,7 +531,7 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
 
         var factoryContent = compilation.generatedSourceFile("test.OrderServiceFactory")
-                                        .orElseThrow()
+                                        .get()
                                         .getCharContent(false)
                                         .toString();
 
@@ -622,7 +622,7 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
 
         var factoryContent = compilation.generatedSourceFile("test.OrderProcessorFactory")
-                                        .orElseThrow()
+                                        .get()
                                         .getCharContent(false)
                                         .toString();
 
@@ -666,7 +666,7 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
 
         var factoryContent = compilation.generatedSourceFile("test.UserServiceFactory")
-                                        .orElseThrow()
+                                        .get()
                                         .getCharContent(false)
                                         .toString();
 
@@ -729,7 +729,7 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
 
         var factoryContent = compilation.generatedSourceFile("test.UserServiceFactory")
-                                        .orElseThrow()
+                                        .get()
                                         .getCharContent(false)
                                         .toString();
 
@@ -792,7 +792,7 @@ class SliceProcessorTest {
 
         assertThat(manifestFile.isPresent()).isTrue();
 
-        var manifestContent = manifestFile.orElseThrow()
+        var manifestContent = manifestFile.get()
                                           .getCharContent(false)
                                           .toString();
 
@@ -854,7 +854,7 @@ class SliceProcessorTest {
 
         assertThat(manifestFile.isPresent()).isTrue();
 
-        var manifestContent = manifestFile.orElseThrow()
+        var manifestContent = manifestFile.get()
                                           .getCharContent(false)
                                           .toString();
 
@@ -925,7 +925,7 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
 
         var factoryContent = compilation.generatedSourceFile("test.UserServiceFactory")
-                                        .orElseThrow()
+                                        .get()
                                         .getCharContent(false)
                                         .toString();
 
@@ -995,7 +995,7 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
 
         var factoryContent = compilation.generatedSourceFile("test.UserServiceFactory")
-                                        .orElseThrow()
+                                        .get()
                                         .getCharContent(false)
                                         .toString();
 
@@ -1077,7 +1077,7 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
 
         var factoryContent = compilation.generatedSourceFile("test.UserServiceFactory")
-                                        .orElseThrow()
+                                        .get()
                                         .getCharContent(false)
                                         .toString();
 
@@ -1133,7 +1133,7 @@ class SliceProcessorTest {
         assertCompilation(compilation).succeeded();
 
         var factoryContent = compilation.generatedSourceFile("test.UserServiceFactory")
-                                        .orElseThrow()
+                                        .get()
                                         .getCharContent(false)
                                         .toString();
 
@@ -1378,7 +1378,7 @@ class SliceProcessorTest {
 
         assertThat(manifestFile.isPresent()).isTrue();
 
-        var manifestContent = manifestFile.orElseThrow()
+        var manifestContent = manifestFile.get()
                                           .getCharContent(false)
                                           .toString();
 

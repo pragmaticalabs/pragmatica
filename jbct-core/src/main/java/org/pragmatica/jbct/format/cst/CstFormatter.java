@@ -51,12 +51,12 @@ public class CstFormatter {
         var result = parser.parseWithDiagnostics(source.content());
         if (result.isSuccess()) {
             return result.node()
-                         .toResult(FormattingError.parseError(source.fileName(), 1, 1, "Parse error"));
+                         .toResult(FormattingError.parseFailed(source.fileName(), 1, 1, "Parse error"));
         }
         return result.diagnostics()
                      .stream()
                      .findFirst()
-                     .map(d -> FormattingError.parseError(source.fileName(),
+                     .map(d -> FormattingError.parseFailed(source.fileName(),
                                                           d.span()
                                                            .start()
                                                            .line(),
@@ -64,7 +64,7 @@ public class CstFormatter {
                                                            .start()
                                                            .column(),
                                                           d.message()))
-                     .orElse(FormattingError.parseError(source.fileName(), 1, 1, "Parse error"))
+                     .orElse(FormattingError.parseFailed(source.fileName(), 1, 1, "Parse error"))
                      .result();
     }
 

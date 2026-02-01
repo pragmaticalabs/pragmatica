@@ -82,16 +82,12 @@ public class InitCommand implements Callable<Integer> {
             return 1;
         }
         // Determine project directory
-        if (projectDir == null) {
-            projectDir = Path.of(System.getProperty("user.dir"));
-        } else {
-            projectDir = projectDir.toAbsolutePath();
-        }
+        projectDir = org.pragmatica.lang.Option.option(projectDir)
+                                               .map(Path::toAbsolutePath)
+                                               .or(() -> Path.of(System.getProperty("user.dir")));
         // Determine artifact ID from directory name if not specified
-        if (artifactId == null) {
-            artifactId = projectDir.getFileName()
-                                   .toString();
-        }
+        artifactId = org.pragmatica.lang.Option.option(artifactId)
+                                               .or(() -> projectDir.getFileName().toString());
         var projectCreated = false;
         var aiToolsInstalled = false;
         // Create project structure unless --ai-only
@@ -184,21 +180,18 @@ public class InitCommand implements Callable<Integer> {
     }
 
     private String effectivePragmaticaVersion() {
-        return pragmaticaVersion != null
-               ? pragmaticaVersion
-               : GitHubVersionResolver.defaultPragmaticaVersion();
+        return org.pragmatica.lang.Option.option(pragmaticaVersion)
+                                         .or(GitHubVersionResolver::defaultPragmaticaVersion);
     }
 
     private String effectiveAetherVersion() {
-        return aetherVersion != null
-               ? aetherVersion
-               : GitHubVersionResolver.defaultAetherVersion();
+        return org.pragmatica.lang.Option.option(aetherVersion)
+                                         .or(GitHubVersionResolver::defaultAetherVersion);
     }
 
     private String effectiveJbctVersion() {
-        return jbctVersion != null
-               ? jbctVersion
-               : GitHubVersionResolver.defaultJbctVersion();
+        return org.pragmatica.lang.Option.option(jbctVersion)
+                                         .or(GitHubVersionResolver::defaultJbctVersion);
     }
 
     private boolean initSliceProject() {

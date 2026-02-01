@@ -25,17 +25,16 @@ class JbctFormatterTest {
                     }
                 }
                 """);
-        var result = formatter.format(source);
-        assertThat(result.isSuccess())
-                  .as("Format should succeed")
-                  .isTrue();
-        var formatted = result.unwrap();
-        assertThat(formatted.content())
-                  .contains("package com.example;");
-        assertThat(formatted.content())
-                  .contains("public class Test");
-        assertThat(formatted.content())
-                  .contains("return \"world\"");
+        formatter.format(source)
+                 .onFailure(cause -> Assertions.fail(cause.message()))
+                 .onSuccess(formatted -> {
+                                assertThat(formatted.content())
+                                          .contains("package com.example;");
+                                assertThat(formatted.content())
+                                          .contains("public class Test");
+                                assertThat(formatted.content())
+                                          .contains("return \"world\"");
+                            });
     }
 
     @Test
@@ -52,19 +51,18 @@ class JbctFormatterTest {
                     }
                 }
                 """);
-        var result = formatter.format(source);
-        assertThat(result.isSuccess())
-                  .as("Format should succeed")
-                  .isTrue();
-        var formatted = result.unwrap();
-        // Verify chain structure is preserved
-        assertThat(formatted.content())
-                  .contains("Result.success(\"hello\")");
-        // Verify method chain operations are preserved
-        assertThat(formatted.content())
-                  .contains(".map(String::toUpperCase)");
-        assertThat(formatted.content())
-                  .contains(".flatMap(s -> Result.success(s + \"!\"))");
+        formatter.format(source)
+                 .onFailure(cause -> Assertions.fail(cause.message()))
+                 .onSuccess(formatted -> {
+                                // Verify chain structure is preserved
+                                assertThat(formatted.content())
+                                          .contains("Result.success(\"hello\")");
+                                // Verify method chain operations are preserved
+                                assertThat(formatted.content())
+                                          .contains(".map(String::toUpperCase)");
+                                assertThat(formatted.content())
+                                          .contains(".flatMap(s -> Result.success(s + \"!\"))");
+                            });
     }
 
     @Test
@@ -76,17 +74,14 @@ class JbctFormatterTest {
                 public class Formatted {
                 }
                 """);
-        var result = formatter.format(source)
-                              .flatMap(formatter::isFormatted);
-        assertThat(result.isSuccess())
-                  .as("Format check should succeed")
-                  .isTrue();
-        assertThat(result.unwrap())
-                  .isTrue();
+        formatter.format(source)
+                 .flatMap(formatter::isFormatted)
+                 .onFailure(cause -> Assertions.fail(cause.message()))
+                 .onSuccess(isFormatted -> assertThat(isFormatted).isTrue());
     }
 
     @Test
-    void format_returnsParseError_forInvalidSyntax() {
+    void format_returnsParseFailed_forInvalidSyntax() {
         var source = new SourceFile(Path.of("Invalid.java"),
                                     """
                 package com.example;
@@ -99,6 +94,6 @@ class JbctFormatterTest {
                   .as("Format should fail for invalid syntax")
                   .isTrue();
         result.onFailure(cause -> assertThat(cause)
-                                            .isInstanceOf(FormattingError.ParseError.class));
+                                            .isInstanceOf(FormattingError.ParseFailed.class));
     }
 }

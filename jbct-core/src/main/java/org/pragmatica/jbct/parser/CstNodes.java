@@ -99,14 +99,16 @@ public final class CstNodes {
      */
     public static Option<CstNode> findAncestor(CstNode root, CstNode target, Class<? extends RuleId> ruleClass) {
         return findAncestorPath(root, target)
-        .flatMap(path -> {
-                     for (int i = path.size() - 2; i >= 0; i--) {
-                         if (isRule(path.get(i), ruleClass)) {
-                             return Option.some(path.get(i));
-                         }
-                     }
-                     return Option.none();
-                 });
+                   .flatMap(path -> findAncestorInPath(path, ruleClass));
+    }
+
+    private static Option<CstNode> findAncestorInPath(List<CstNode> path, Class<? extends RuleId> ruleClass) {
+        for (int i = path.size() - 2; i >= 0; i--) {
+            if (isRule(path.get(i), ruleClass)) {
+                return Option.some(path.get(i));
+            }
+        }
+        return Option.none();
     }
 
     /**
