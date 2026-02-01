@@ -24,32 +24,32 @@ public sealed interface UrlValidation permits UrlValidation.unused {
      */
     static Result<URI> validateDownloadUrl(String url) {
         if (url == null || url.isBlank()) {
-            return SecurityError.InvalidUrl.invalidUrl(url, "URL is null or blank")
+            return SecurityError.UrlRejected.urlRejected(url, "URL is null or blank")
                                 .result();
         }
         URI uri;
         try{
             uri = URI.create(url);
         } catch (IllegalArgumentException e) {
-            return SecurityError.InvalidUrl.invalidUrl(url,
+            return SecurityError.UrlRejected.urlRejected(url,
                                                        "malformed URL: " + e.getMessage())
                                 .result();
         }
         // Require HTTPS
         var scheme = uri.getScheme();
         if (scheme == null || !scheme.equalsIgnoreCase("https")) {
-            return SecurityError.InvalidUrl.invalidUrl(url, "HTTPS required")
+            return SecurityError.UrlRejected.urlRejected(url, "HTTPS required")
                                 .result();
         }
         // Validate domain against whitelist
         var host = uri.getHost();
         if (host == null) {
-            return SecurityError.InvalidUrl.invalidUrl(url, "no host specified")
+            return SecurityError.UrlRejected.urlRejected(url, "no host specified")
                                 .result();
         }
         var hostLower = host.toLowerCase();
         if (!TRUSTED_DOMAINS.contains(hostLower)) {
-            return SecurityError.UntrustedDomain.untrustedDomain(url, hostLower)
+            return SecurityError.DomainRejected.domainRejected(url, hostLower)
                                 .result();
         }
         return Result.success(uri);

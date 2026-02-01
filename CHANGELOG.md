@@ -48,7 +48,7 @@
 ## [0.5.0] - 2026-01-20
 
 ### Added
-- Security: `SecurityError` sealed interface with `PathTraversal`, `InvalidUrl`, `UntrustedDomain` error types
+- Security: `SecurityError` sealed interface with `PathTraversalDetected`, `UrlRejected`, `DomainRejected` error types
 - Slice verify: dependency scope validation for Aether runtime libraries
   - `jbct:verify-slice` now fails if `org.pragmatica-lite` or `org.pragmatica-lite.aether` dependencies are not `provided` scope
   - Prevents accidental bundling of runtime libraries in slice JARs

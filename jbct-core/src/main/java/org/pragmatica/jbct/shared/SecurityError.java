@@ -7,11 +7,12 @@ import java.nio.file.Path;
 
 /**
  * Security-related errors for path and URL validation.
+ * Named using past tense per JBCT error naming convention.
  */
 public sealed interface SecurityError extends Cause {
-    record PathTraversal(String path, String reason) implements SecurityError {
-        public static PathTraversal pathTraversal(String path, String reason) {
-            return new PathTraversal(path, reason);
+    record PathTraversalDetected(String path, String reason) implements SecurityError {
+        public static PathTraversalDetected pathTraversalDetected(String path, String reason) {
+            return new PathTraversalDetected(path, reason);
         }
 
         @Override
@@ -20,25 +21,25 @@ public sealed interface SecurityError extends Cause {
         }
     }
 
-    record InvalidUrl(String url, String reason) implements SecurityError {
-        public static InvalidUrl invalidUrl(String url, String reason) {
-            return new InvalidUrl(url, reason);
+    record UrlRejected(String url, String reason) implements SecurityError {
+        public static UrlRejected urlRejected(String url, String reason) {
+            return new UrlRejected(url, reason);
         }
 
         @Override
         public String message() {
-            return "Invalid URL: " + url + " (" + reason + ")";
+            return "URL rejected: " + url + " (" + reason + ")";
         }
     }
 
-    record UntrustedDomain(String url, String domain) implements SecurityError {
-        public static UntrustedDomain untrustedDomain(String url, String domain) {
-            return new UntrustedDomain(url, domain);
+    record DomainRejected(String url, String domain) implements SecurityError {
+        public static DomainRejected domainRejected(String url, String domain) {
+            return new DomainRejected(url, domain);
         }
 
         @Override
         public String message() {
-            return "Untrusted domain: " + domain + " in URL: " + url;
+            return "Domain rejected: " + domain + " in URL: " + url;
         }
     }
 }

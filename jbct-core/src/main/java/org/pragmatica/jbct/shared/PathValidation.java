@@ -19,18 +19,18 @@ public sealed interface PathValidation permits PathValidation.unused {
      */
     static Result<Path> validateRelativePath(String relativePath, Path baseDir) {
         if (relativePath == null || relativePath.isBlank()) {
-            return SecurityError.PathTraversal.pathTraversal(relativePath, "path is null or blank")
+            return SecurityError.PathTraversalDetected.pathTraversalDetected(relativePath, "path is null or blank")
                                 .result();
         }
         // Reject path traversal sequences
         if (relativePath.contains("..")) {
-            return SecurityError.PathTraversal.pathTraversal(relativePath, "contains '..' sequence")
+            return SecurityError.PathTraversalDetected.pathTraversalDetected(relativePath, "contains '..' sequence")
                                 .result();
         }
         // Reject absolute paths
         var pathObj = Path.of(relativePath);
         if (pathObj.isAbsolute()) {
-            return SecurityError.PathTraversal.pathTraversal(relativePath, "absolute path not allowed")
+            return SecurityError.PathTraversalDetected.pathTraversalDetected(relativePath, "absolute path not allowed")
                                 .result();
         }
         // Resolve and normalize the path
@@ -41,7 +41,7 @@ public sealed interface PathValidation permits PathValidation.unused {
                                     .toAbsolutePath();
         // Verify the resolved path starts with base directory
         if (!resolved.startsWith(normalizedBase)) {
-            return SecurityError.PathTraversal.pathTraversal(relativePath, "path escapes base directory")
+            return SecurityError.PathTraversalDetected.pathTraversalDetected(relativePath, "path escapes base directory")
                                 .result();
         }
         return Result.success(resolved);

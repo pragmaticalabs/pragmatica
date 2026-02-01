@@ -17,6 +17,10 @@ Relevant RFCs:
 
 To invoke: Use the `/jbct` skill or spawn the `jbct-coder` agent via the Task tool.
 
+## Versioning Policy
+
+Until release 1.0, backward compatibility is not guaranteed. Breaking changes are acceptable for JBCT compliance improvements.
+
 ## Project Overview
 CLI tool and Maven plugin for JBCT (Java Backend Coding Technology) code formatting and linting.
 
