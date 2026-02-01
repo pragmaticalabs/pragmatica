@@ -519,8 +519,8 @@ public final class ForgeCluster {
     private AetherNode createNode(NodeId nodeId, int port, int mgmtPort, int appHttpPort, List<NodeInfo> coreNodes) {
         var topology = new TopologyConfig(nodeId,
                                           coreNodes.size(),
-                                          timeSpan(500).millis(),
-                                          timeSpan(100).millis(),
+                                          timeSpan(1).seconds(),
+                                          timeSpan(10).seconds(),
                                           coreNodes);
         // Use forgeDefaults() for controller config - disables CPU-based scaling in simulation
         var config = new AetherNodeConfig(topology,
