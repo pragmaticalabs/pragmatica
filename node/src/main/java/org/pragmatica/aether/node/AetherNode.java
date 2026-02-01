@@ -731,13 +731,23 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class, controlLoop::onValueRemove));
         // Alert threshold sync via KV-Store
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                              notification -> alertManager.onKvStoreUpdate((AetherKey) notification.cause()
-                                                                                                                  .key(),
-                                                                                           (AetherValue) notification.cause()
-                                                                                                                    .value())));
+                                              notification -> {
+                                                  // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
+        if (notification.cause()
+                        .key() instanceof AetherKey key &&
+        notification.cause()
+                    .value() instanceof AetherValue value) {
+                                                      alertManager.onKvStoreUpdate(key, value);
+                                                  }
+                                              }));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                              notification -> alertManager.onKvStoreRemove((AetherKey) notification.cause()
-                                                                                                                  .key())));
+                                              notification -> {
+                                                  // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
+        if (notification.cause()
+                        .key() instanceof AetherKey key) {
+                                                      alertManager.onKvStoreRemove(key);
+                                                  }
+                                              }));
         // Quorum state notifications - these handlers activate/deactivate components.
         // NOTE: RabiaNode's handlers run first (consensus activates before LeaderManager emits LeaderChange).
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
