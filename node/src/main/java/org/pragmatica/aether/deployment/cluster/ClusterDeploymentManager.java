@@ -177,6 +177,11 @@ public interface ClusterDeploymentManager {
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
+                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
+                if (! (valuePut.cause()
+                               .key() instanceof AetherKey)) {
+                    return;
+                }
                 var key = valuePut.cause()
                                   .key();
                 var value = valuePut.cause()
@@ -198,6 +203,11 @@ public interface ClusterDeploymentManager {
 
             @Override
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
+                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
+                if (! (valueRemove.cause()
+                                  .key() instanceof AetherKey)) {
+                    return;
+                }
                 var key = valueRemove.cause()
                                      .key();
                 switch (key) {
@@ -354,7 +364,12 @@ public interface ClusterDeploymentManager {
             }
 
             private void trackSliceState(SliceNodeKey sliceKey, SliceState state) {
-                sliceStates.put(sliceKey, state);
+                var previousState = sliceStates.put(sliceKey, state);
+                log.info("Slice {} on {} state: {} -> {}",
+                         sliceKey.artifact(),
+                         sliceKey.nodeId(),
+                         previousState,
+                         state);
                 // When slice reaches LOADED, check if dependencies are ACTIVE before activating
                 if (state == SliceState.LOADED) {
                     tryActivateIfDependenciesReady(sliceKey);
@@ -716,12 +731,22 @@ public interface ClusterDeploymentManager {
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
+                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
+                if (! (valuePut.cause()
+                               .key() instanceof AetherKey)) {
+                    return;
+                }
                 state.get()
                      .onValuePut(valuePut);
             }
 
             @Override
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
+                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
+                if (! (valueRemove.cause()
+                                  .key() instanceof AetherKey)) {
+                    return;
+                }
                 state.get()
                      .onValueRemove(valueRemove);
             }

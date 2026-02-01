@@ -91,11 +91,21 @@ class ArtifactMetricsCollectorImpl implements ArtifactMetricsCollector {
 
     @Override
     public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
+        // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
+        if (! (valuePut.cause()
+                       .key() instanceof AetherKey)) {
+            return;
+        }
         deploymentTracker.onValuePut(valuePut);
     }
 
     @Override
     public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
+        // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
+        if (! (valueRemove.cause()
+                          .key() instanceof AetherKey)) {
+            return;
+        }
         deploymentTracker.onValueRemove(valueRemove);
     }
 

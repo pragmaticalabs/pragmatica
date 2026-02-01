@@ -274,13 +274,15 @@ public interface AetherNode {
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
         var networkMetricsHandler = NetworkMetricsHandler.networkMetricsHandler();
         // Assemble all components and collect routes
+        // Use consensus-based leader election to prevent flapping when nodes see different topologies
         return RabiaNode.rabiaNode(nodeConfig,
                                    delegateRouter,
                                    kvStore,
                                    serializer,
                                    deserializer,
                                    rabiaMetricsCollector,
-                                   List.of(networkMetricsHandler))
+                                   List.of(networkMetricsHandler),
+                                   true)
                         .flatMap(clusterNode -> assembleNode(config,
                                                              delegateRouter,
                                                              kvStore,
@@ -402,6 +404,22 @@ public interface AetherNode {
                                           eventLoopMetricsCollector.register(server.workerGroup());
                                           log.info("Registered EventLoopGroups for metrics collection");
                                       });
+                                                 // TODO: Leader election timing issue workaround.
+                //
+                // The problem: QuorumStateNotification.ESTABLISHED fires when quorum is detected,
+                // but consensus may still be syncing (nodes exchanging phase/sequence info).
+                // If LeaderManager submits a proposal immediately on ESTABLISHED, it can fail
+                // because other nodes aren't ready yet, causing retries and phase divergence.
+                //
+                // The fix: LeaderManager no longer submits proposals automatically in consensus mode.
+                // Instead, we trigger election manually here after clusterNode.start() completes.
+                // At this point, consensus is fully synchronized and ready for proposals.
+                //
+                // Future improvement: Add ConsensusReadyNotification that fires after sync completes,
+                // separate from QuorumStateNotification which only indicates network connectivity.
+                // LeaderManager would then listen for ConsensusReadyNotification instead of ESTABLISHED.
+                clusterNode.leaderManager()
+                           .triggerElection();
                                              })
                                   .onFailure(cause -> log.error("Cluster formation failed: {}",
                                                                 cause.message()));
@@ -745,11 +763,23 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class, rollbackManager::onValuePut));
         entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
                                               rollbackManager::onAllInstancesFailed));
-        // Topology change notifications
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class,
+        // Topology change notifications - must register for each subtype since router uses exact class matching
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
                                               clusterDeploymentManager::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class, metricsScheduler::onTopologyChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class, controlLoop::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              clusterDeploymentManager::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
+                                              clusterDeploymentManager::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
+                                              metricsScheduler::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              metricsScheduler::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
+                                              metricsScheduler::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, controlLoop::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              controlLoop::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, controlLoop::onTopologyChange));
         // Metrics messages
         entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPing.class, metricsCollector::onMetricsPing));
         entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPong.class, metricsCollector::onMetricsPong));
@@ -758,7 +788,11 @@ public interface AetherNode {
                                               deploymentMetricsCollector::onDeploymentMetricsPing));
         entries.add(MessageRouter.Entry.route(DeploymentMetricsMessage.DeploymentMetricsPong.class,
                                               deploymentMetricsCollector::onDeploymentMetricsPong));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class,
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
+                                              deploymentMetricsCollector::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              deploymentMetricsCollector::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
                                               deploymentMetricsCollector::onTopologyChange));
         // Deployment events (dispatched locally via MessageRouter)
         entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentStarted.class,
@@ -772,7 +806,11 @@ public interface AetherNode {
         // Deployment metrics scheduler leader/topology notifications
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
                                               deploymentMetricsScheduler::onLeaderChange));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.class,
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
+                                              deploymentMetricsScheduler::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              deploymentMetricsScheduler::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
                                               deploymentMetricsScheduler::onTopologyChange));
         // Invocation messages
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));

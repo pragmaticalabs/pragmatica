@@ -251,6 +251,11 @@ public interface RollbackManager {
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
+                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
+                if (! (valuePut.cause()
+                               .key() instanceof AetherKey)) {
+                    return;
+                }
                 var key = valuePut.cause()
                                   .key();
                 var value = valuePut.cause()

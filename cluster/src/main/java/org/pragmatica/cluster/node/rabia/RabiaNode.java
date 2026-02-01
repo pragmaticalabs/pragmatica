@@ -72,10 +72,14 @@ import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import io.netty.channel.ChannelHandler;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.messaging.MessageRouter.Entry.route;
 
 public interface RabiaNode<C extends Command> extends ClusterNode<C> {
+    Logger log = LoggerFactory.getLogger(RabiaNode.class);
+
     ClusterNetwork network();
 
     LeaderManager leaderManager();
@@ -126,7 +130,14 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     /**
      * Creates a RabiaNode with metrics collection and custom network handlers.
      * Uses local leader election (backward compatible).
+     * <p>
+     * TODO: Remove local leader election entirely. It causes leader flapping when nodes
+     * see different topologies during concurrent topology changes. Consensus-based election
+     * should be the only option. Kept temporarily for test compatibility.
+     *
+     * @deprecated Use the overload with {@code useConsensusLeaderElection=true} for production.
      */
+    @Deprecated
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
                                                               StateMachine<C> stateMachine,
@@ -214,6 +225,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         if (useConsensusLeaderElection) {
             // Consensus-based leader election: submit proposals through consensus
             LeaderManager.LeaderProposalHandler proposalHandler = (candidate, viewSequence) -> {
+                log.info("Submitting leader proposal: candidate={}, viewSequence={}", candidate, viewSequence);
                 var key = LeaderKey.INSTANCE;
                 var value = LeaderValue.leaderValue(candidate, viewSequence);
                 var command = new KVCommand.Put<>(key, value);
