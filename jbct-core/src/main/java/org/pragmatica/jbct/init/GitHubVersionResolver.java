@@ -40,9 +40,9 @@ public final class GitHubVersionResolver {
     private static final Duration API_TIMEOUT = Duration.ofSeconds(10);
 
     // Default fallback versions when offline or API fails
-    private static final String DEFAULT_PRAGMATICA_VERSION = "0.11.2";
-    private static final String DEFAULT_AETHER_VERSION = "0.8.1";
-    private static final String DEFAULT_JBCT_VERSION = "0.6.0";
+    private static final String DEFAULT_PRAGMATICA_VERSION = "0.11.3";
+    private static final String DEFAULT_AETHER_VERSION = "0.8.2";
+    private static final String DEFAULT_JBCT_VERSION = "0.6.1";
 
     // Running binary version (loaded from jbct-version.properties)
     private static final String RUNNING_JBCT_VERSION = loadRunningVersion();

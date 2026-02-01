@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1] - Unreleased
+
+### Changed
+- Slice init: updated default JBCT version to 0.6.1
+- Build: Bump Pragmatica Lite to 0.11.3
+- Build: Bump Aether to 0.8.2
+- Routes: Add `.named()` call to generated routes for better tracing
+
 ## [0.6.0] - 2026-01-29
 
 ### Added
