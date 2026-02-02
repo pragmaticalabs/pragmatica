@@ -113,7 +113,16 @@ When `routes.toml` exists in the slice package resources, the processor generate
 - No manual registration required
 - Type-safe factory creation
 
-### D6: ErrorMapper Generation
+### D6: Route Naming for Observability
+
+**Decision**: All generated routes include `.named("methodName")` for tracing and metrics.
+
+**Rationale**:
+- Enables distributed tracing correlation
+- Provides meaningful names in logs and metrics
+- Method name directly maps to slice method being invoked
+
+### D7: ErrorMapper Generation
 
 **Decision**: Generate `ErrorMapper` that returns `HttpError` with proper status codes.
 
@@ -281,16 +290,18 @@ public final class UserServiceRoutes implements RouteSource, SliceRouterFactory<
         return Stream.of(
             Route.<User>get("/api/v1/users/{id}")
                  .withPath(PathParameter.aLong())
-                 .toJson(id -> delegate.getUser(new GetUserRequest(id))),
+                 .to(id -> delegate.getUser(new GetUserRequest(id)))
+                 .named("getUser").asJson(),
 
             Route.<User>post("/api/v1/users/")
                  .withBody(new TypeToken<CreateUserRequest>() {})
-                 .toJson(request -> delegate.createUser(request)),
+                 .to(request -> delegate.createUser(request))
+                 .named("createUser").asJson(),
 
             Route.<List<User>>get("/api/v1/users/")
                  .withQuery(QueryParameter.aString("name"), QueryParameter.aInteger("limit"))
                  .to((name, limit) -> delegate.searchUsers(new SearchUsersRequest(name, limit)))
-                 .asJson()
+                 .named("searchUsers").asJson()
         );
     }
 
@@ -329,7 +340,8 @@ getUser = "GET /{id:Long}"
 ```java
 Route.<User>get("/api/v1/users/{id}")
      .withPath(PathParameter.aLong())
-     .toJson(id -> delegate.getUser(new GetUserRequest(id)))
+     .to(id -> delegate.getUser(new GetUserRequest(id)))
+     .named("getUser").asJson()
 ```
 
 ### Multiple Path Parameters
@@ -343,7 +355,7 @@ Route.<OrderItem>get("/api/v1/orders/{orderId}/items/{itemId}")
      .withPath(PathParameter.aLong(), PathParameter.aLong())
      .to((orderId, itemId) -> delegate.getOrderItem(
          new GetOrderItemRequest(orderId, itemId)))
-     .asJson()
+     .named("getOrderItem").asJson()
 ```
 
 ### Query Parameters Only
@@ -356,7 +368,7 @@ searchUsers = "GET /?name&limit:Integer"
 Route.<List<User>>get("/api/v1/users/")
      .withQuery(QueryParameter.aString("name"), QueryParameter.aInteger("limit"))
      .to((name, limit) -> delegate.searchUsers(new SearchUsersRequest(name, limit)))
-     .asJson()
+     .named("searchUsers").asJson()
 ```
 
 Query parameters are wrapped in `Option<T>` since they are optional by nature.
@@ -370,7 +382,8 @@ createUser = "POST /"
 ```java
 Route.<User>post("/api/v1/users/")
      .withBody(new TypeToken<CreateUserRequest>() {})
-     .toJson(request -> delegate.createUser(request))
+     .to(request -> delegate.createUser(request))
+     .named("createUser").asJson()
 ```
 
 ### Path + Body Combined
@@ -383,7 +396,8 @@ updateUser = "PUT /{id:Long}"
 Route.<User>put("/api/v1/users/{id}")
      .withPath(PathParameter.aLong())
      .withBody(new TypeToken<UpdateUserRequest>() {})
-     .toJson((id, body) -> delegate.updateUser(body))
+     .to((id, body) -> delegate.updateUser(body))
+     .named("updateUser").asJson()
 ```
 
 ### Path + Query Combined
@@ -398,7 +412,7 @@ Route.<List<Order>>get("/api/v1/users/{userId}/orders")
      .withQuery(QueryParameter.aString("status"), QueryParameter.aInteger("limit"))
      .to((userId, status, limit) -> delegate.getUserOrders(
          new GetUserOrdersRequest(userId, status, limit)))
-     .asJson()
+     .named("getUserOrders").asJson()
 ```
 
 ### Query + Body Combined
@@ -411,7 +425,8 @@ searchWithFilter = "POST /?includeDeleted:Boolean"
 Route.<SearchResult>post("/api/v1/search")
      .withQuery(QueryParameter.aBoolean("includeDeleted"))
      .withBody(new TypeToken<SearchRequest>() {})
-     .toJson((includeDeleted, body) -> delegate.search(body))
+     .to((includeDeleted, body) -> delegate.search(body))
+     .named("searchWithFilter").asJson()
 ```
 
 ### Path + Query + Body Combined
@@ -425,7 +440,8 @@ Route.<OrderItem>put("/api/v1/orders/{orderId}/items/{itemId}")
      .withPath(PathParameter.aLong(), PathParameter.aLong())
      .withQuery(QueryParameter.aBoolean("notify"))
      .withBody(new TypeToken<UpdateItemRequest>() {})
-     .toJson((orderId, itemId, notify, body) -> delegate.updateItem(body))
+     .to((orderId, itemId, notify, body) -> delegate.updateItem(body))
+     .named("updateOrderItem").asJson()
 ```
 
 ### No Parameters
@@ -437,7 +453,8 @@ healthCheck = "GET /health"
 ```java
 Route.<HealthStatus>get("/api/v1/health")
      .withoutParameters()
-     .toJson(() -> delegate.healthCheck(null))
+     .to(_ -> delegate.healthCheck(new HealthCheckRequest()))
+     .named("healthCheck").asJson()
 ```
 
 ## Error Type Discovery
@@ -560,3 +577,4 @@ slice-processor/
 | 2026-01-14 | Claude | Added SliceRouterFactory integration |
 | 2026-01-14 | Claude | Added service loader file generation |
 | 2026-01-15 | Claude | Full parameter support: query params, path+body, path+query, all combinations |
+| 2026-02-01 | Claude | Added `.named()` for route tracing/observability |

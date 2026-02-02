@@ -241,7 +241,7 @@ dependency.1.version=2.1.0
 
 # Metadata
 generated.timestamp=2024-01-15T10:30:00Z
-processor.version=0.6.0
+processor.version=0.6.1
 ```
 
 ### Slice API Manifest (`META-INF/slice-api.properties`)

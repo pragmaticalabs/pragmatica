@@ -354,7 +354,7 @@ public class RouteSourceGenerator {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withoutParameters()");
         out.println("                 .to(_ -> delegate." + method.name() + "(new " + method.parameterType() + "()))");
-        out.println("                 .asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
     }
 
     private void generatePathRoute(PrintWriter out,
@@ -379,7 +379,7 @@ public class RouteSourceGenerator {
                       : "(" + paramList + ") -> ";
         out.println("                 .to(" + handler + "delegate." + method.name() + "(new " + parameterType + "(" + paramList
                     + ")))");
-        out.println("                 .asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
     }
 
     private void generateQueryRoute(PrintWriter out,
@@ -409,7 +409,7 @@ public class RouteSourceGenerator {
             out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(new " + parameterType
                         + "(" + constructorArgs + ")))");
         }
-        out.println("                 .asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
     }
 
     private void generateBodyRoute(PrintWriter out,
@@ -421,7 +421,8 @@ public class RouteSourceGenerator {
                                    String comma) {
         out.println("            Route.<" + responseType + ">" + httpMethod + "(\"" + path + "\")");
         out.println("                 .withBody(new TypeToken<" + parameterType + ">() {})");
-        out.println("                 .toJson(request -> delegate." + method.name() + "(request))" + comma);
+        out.println("                 .to(request -> delegate." + method.name() + "(request))");
+        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
     }
 
     private void generatePathBodyRoute(PrintWriter out,
@@ -443,7 +444,8 @@ public class RouteSourceGenerator {
         var allParams = new ArrayList<>(pathParamNames);
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
-        out.println("                 .toJson((" + handlerParams + ") -> delegate." + method.name() + "(body))" + comma);
+        out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
     }
 
     private void generateQueryBodyRoute(PrintWriter out,
@@ -465,7 +467,8 @@ public class RouteSourceGenerator {
         var allParams = new ArrayList<>(queryParamNames);
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
-        out.println("                 .toJson((" + handlerParams + ") -> delegate." + method.name() + "(body))" + comma);
+        out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
     }
 
     private void generatePathQueryRoute(PrintWriter out,
@@ -495,7 +498,7 @@ public class RouteSourceGenerator {
         var constructorArgs = String.join(", ", allParams);
         out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(new " + parameterType
                     + "(" + constructorArgs + ")))");
-        out.println("                 .asJson()" + comma);
+        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
     }
 
     private void generatePathQueryBodyRoute(PrintWriter out,
@@ -523,7 +526,8 @@ public class RouteSourceGenerator {
         allParams.addAll(queryParamNames);
         allParams.add("body");
         var handlerParams = String.join(", ", allParams);
-        out.println("                 .toJson((" + handlerParams + ") -> delegate." + method.name() + "(body))" + comma);
+        out.println("                 .to((" + handlerParams + ") -> delegate." + method.name() + "(body))");
+        out.println("                 .named(\"" + method.name() + "\").asJson()" + comma);
     }
 
     private String pathParamList(List<PathParam> pathParams) {

@@ -195,7 +195,7 @@ Or with Maven:
 <plugin>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jbct-maven-plugin</artifactId>
-    <version>0.6.0</version>
+    <version>0.6.1</version>
     <executions>
         <execution>
             <goals>
