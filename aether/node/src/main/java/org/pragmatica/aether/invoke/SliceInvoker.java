@@ -457,12 +457,14 @@ class SliceInvokerImpl implements SliceInvoker {
                       .onResult(_ -> pendingInvocations.remove(correlationId));
         var invokeRequest = new InvokeRequest(self, correlationId, requestId, slice, method, payload, true);
         network.send(endpoint.nodeId(), invokeRequest);
-        log.info("[requestId={}] SENT InvokeRequest to {}: {}.{} [{}]",
-                 requestId,
-                 endpoint.nodeId(),
-                 slice,
-                 method,
-                 correlationId);
+        if (log.isDebugEnabled()) {
+            log.debug("[requestId={}] Sent InvokeRequest to {}: {}.{} [{}]",
+                      requestId,
+                      endpoint.nodeId(),
+                      slice,
+                      method,
+                      correlationId);
+        }
     }
 
     @Override

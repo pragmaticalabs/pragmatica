@@ -14,12 +14,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Unified version management across all modules
 - Consolidated documentation structure
 - Moved `cluster` module from aether to integrations (generic distributed networking)
+- AppHttpServer immediate retry on node departure (no more 5-second timeout wait)
+- Production tinylog configuration for aether/node
 
 ### Changed
 - All modules now use version 0.15.0
 - Root POM provides dependency management for entire ecosystem
 - Unified CI workflows at monorepo root
 - E2E and Forge tests moved to `-Pwith-e2e` profile (require examples to be installed first)
+- Standardized tinylog configurations across all modules (24 files)
+- Added Fury and Netty logging suppression to all test configs
+- Comprehensive logging level overhaul in aether module:
+  - Hot paths (SliceInvoker, InvocationHandler, AppHttpServer) moved to DEBUG/TRACE
+  - Routine operations (deployment, slice lifecycle) moved to DEBUG
+  - Important events (leader/quorum changes, rolling updates) kept at INFO
+  - Production logs are now scannable and concise
 
 ### Technical Notes
 - Group IDs preserved for Maven Central compatibility:

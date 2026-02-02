@@ -840,6 +840,11 @@ public interface AetherNode {
                                               deploymentMetricsScheduler::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
                                               deploymentMetricsScheduler::onTopologyChange));
+        // AppHttpServer topology change notifications (for immediate retry on node departure)
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              appHttpServer::onNodeRemoved));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
+                                              appHttpServer::onNodeDown));
         // Invocation messages
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));

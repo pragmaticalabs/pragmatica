@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.routing.HttpStatus;
@@ -95,6 +96,18 @@ public interface AppHttpServer {
      */
     void rebuildRouter();
 
+    /**
+     * Handle node removal for immediate retry of pending forwards.
+     */
+    @MessageReceiver
+    void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
+
+    /**
+     * Handle node down for immediate retry of pending forwards.
+     */
+    @MessageReceiver
+    void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
+
     static AppHttpServer appHttpServer(AppHttpConfig config,
                                        NodeId selfNodeId,
                                        HttpRouteRegistry routeRegistry,
@@ -153,12 +166,16 @@ class AppHttpServerImpl implements AppHttpServer {
     // Pending HTTP forward requests awaiting responses
     private final Map<String, PendingForward> pendingForwards = new ConcurrentHashMap<>();
 
+    // Secondary index: NodeId -> Set of correlationIds for that node (for fast lookup on node departure)
+    private final Map<NodeId, Set<String>> pendingForwardsByNode = new ConcurrentHashMap<>();
+
     // Round-robin counter per route for load balancing
     private final Map<HttpRouteKey, AtomicInteger> roundRobinCounters = new ConcurrentHashMap<>();
 
     record PendingForward(Promise<HttpResponseData> promise,
                           long createdAtMs,
                           String requestId,
+                          NodeId targetNode,
                           Runnable onFailure) {}
 
     AppHttpServerImpl(AppHttpConfig config,
@@ -262,7 +279,7 @@ class AppHttpServerImpl implements AppHttpServer {
                             .name();
         var path = request.path();
         var requestId = request.requestId();
-        log.debug("Received {} {} [{}]", method, path, requestId);
+        log.trace("Received {} {} [{}]", method, path, requestId);
         var routeTable = routeTableRef.get();
         var normalizedPath = normalizePath(path);
         // Try local route first
@@ -334,7 +351,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                   ResponseWriter response,
                                   HttpRouteKey routeKey,
                                   String requestId) {
-        log.debug("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
+        log.trace("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
         httpRoutePublisher.flatMap(pub -> pub.findLocalRouter(routeKey.httpMethod(),
                                                               routeKey.pathPrefix()))
                           .onEmpty(() -> {
@@ -384,7 +401,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                    ResponseWriter response,
                                    HttpRouteRegistry.RouteInfo route,
                                    String requestId) {
-        log.debug("Handling remote route {} {} -> {} nodes [{}]",
+        log.trace("Handling remote route {} {} -> {} nodes [{}]",
                   route.httpMethod(),
                   route.pathPrefix(),
                   route.nodes()
@@ -529,15 +546,18 @@ class AppHttpServerImpl implements AppHttpServer {
         }
         // Create pending forward entry with onFailure callback
         var promise = Promise.<HttpResponseData>promise();
-        var pending = new PendingForward(promise, System.currentTimeMillis(), requestId, onFailure);
+        var pending = new PendingForward(promise, System.currentTimeMillis(), requestId, targetNode, onFailure);
         pendingForwards.put(correlationId, pending);
+        // Add to secondary index for fast lookup on node departure
+        pendingForwardsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet())
+                             .add(correlationId);
         // Set up timeout
         promise.timeout(timeSpan(config.forwardTimeoutMs()).millis())
-               .onResult(_ -> pendingForwards.remove(correlationId));
+               .onResult(_ -> removePendingForward(correlationId, targetNode));
         // Send forward request
         var forwardRequest = new HttpForwardRequest(selfNodeId, correlationId, requestId, requestData);
         network.send(targetNode, forwardRequest);
-        log.debug("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
+        log.trace("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
         // Handle response
         promise.onSuccess(responseData -> sendResponse(response, responseData, requestId))
                .onFailure(cause -> handleForwardFailure(response,
@@ -559,7 +579,7 @@ class AppHttpServerImpl implements AppHttpServer {
     // ================== Forward Message Handlers ==================
     @Override
     public void onHttpForwardRequest(HttpForwardRequest request) {
-        log.debug("Received HttpForwardRequest [{}] correlationId={}", request.requestId(), request.correlationId());
+        log.trace("Received HttpForwardRequest [{}] correlationId={}", request.requestId(), request.correlationId());
         if (deserializer.isEmpty() || serializer.isEmpty() || clusterNetwork.isEmpty()) {
             log.error("Cannot handle forward request - missing dependencies");
             return;
@@ -611,7 +631,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                                           true,
                                                           payload);
             network.send(request.sender(), forwardResponse);
-            log.debug("Sent forward success response [{}]", request.requestId());
+            log.trace("Sent forward success response [{}]", request.requestId());
         } catch (Exception e) {
             log.error("Failed to serialize forward response [{}]: {}", request.requestId(), e.getMessage());
             sendForwardError(network, request, "Response serialization failed");
@@ -627,12 +647,12 @@ class AppHttpServerImpl implements AppHttpServer {
                                                       false,
                                                       errorMessage.getBytes(StandardCharsets.UTF_8));
         network.send(request.sender(), forwardResponse);
-        log.debug("Sent forward error response [{}]: {}", request.requestId(), errorMessage);
+        log.trace("Sent forward error response [{}]: {}", request.requestId(), errorMessage);
     }
 
     @Override
     public void onHttpForwardResponse(HttpForwardResponse response) {
-        log.debug("Received HttpForwardResponse [{}] correlationId={} success={}",
+        log.trace("Received HttpForwardResponse [{}] correlationId={} success={}",
                   response.requestId(),
                   response.correlationId(),
                   response.success());
@@ -641,10 +661,59 @@ class AppHttpServerImpl implements AppHttpServer {
             log.warn("Received forward response for unknown correlationId: {}", response.correlationId());
             return;
         }
+        // Remove from secondary index
+        removeFromNodeIndex(response.correlationId(), pending.targetNode());
         if (response.success()) {
             handleSuccessfulForwardResponse(pending, response);
         } else {
             handleFailedForwardResponse(pending, response);
+        }
+    }
+
+    @Override
+    public void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved) {
+        handleNodeDeparture(nodeRemoved.nodeId());
+    }
+
+    @Override
+    public void onNodeDown(TopologyChangeNotification.NodeDown nodeDown) {
+        handleNodeDeparture(nodeDown.nodeId());
+    }
+
+    private void handleNodeDeparture(NodeId departedNode) {
+        var correlationIds = pendingForwardsByNode.remove(departedNode);
+        if (correlationIds == null || correlationIds.isEmpty()) {
+            return;
+        }
+        log.info("Node {} departed, triggering immediate retry for {} pending forwards",
+                 departedNode,
+                 correlationIds.size());
+        for (var correlationId : correlationIds) {
+            var pending = pendingForwards.remove(correlationId);
+            if (pending != null) {
+                log.debug("Triggering retry for request [{}] due to node {} departure",
+                          pending.requestId(),
+                          departedNode);
+                // Fail the promise to trigger onFailure callback which handles retry
+                pending.promise()
+                       .fail(Causes.cause("Target node " + departedNode + " departed"));
+            }
+        }
+    }
+
+    private void removePendingForward(String correlationId, NodeId targetNode) {
+        pendingForwards.remove(correlationId);
+        removeFromNodeIndex(correlationId, targetNode);
+    }
+
+    private void removeFromNodeIndex(String correlationId, NodeId targetNode) {
+        var nodeCorrelations = pendingForwardsByNode.get(targetNode);
+        if (nodeCorrelations != null) {
+            nodeCorrelations.remove(correlationId);
+            // Clean up empty sets
+            if (nodeCorrelations.isEmpty()) {
+                pendingForwardsByNode.remove(targetNode, nodeCorrelations);
+            }
         }
     }
 
@@ -659,7 +728,7 @@ class AppHttpServerImpl implements AppHttpServer {
                                                         .decode(response.payload());
             pending.promise()
                    .succeed(responseData);
-            log.debug("Completed forward request [{}]", pending.requestId());
+            log.trace("Completed forward request [{}]", pending.requestId());
         } catch (Exception e) {
             log.error("Failed to deserialize forward response [{}]: {}", pending.requestId(), e.getMessage());
             pending.promise()
@@ -748,7 +817,7 @@ class AppHttpServerImpl implements AppHttpServer {
                      responseData.statusCode(),
                      new String(responseData.body(), StandardCharsets.UTF_8));
         } else {
-            log.debug("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());
+            log.trace("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());
         }
         var writer = response.header(ResponseWriter.X_REQUEST_ID, requestId);
         for (var entry : responseData.headers()

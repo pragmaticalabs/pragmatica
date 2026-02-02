@@ -176,7 +176,7 @@ public interface ClusterDeploymentManager {
 
             private void restoreAppBlueprint(AppBlueprintValue appBlueprintValue) {
                 var expanded = appBlueprintValue.blueprint();
-                log.debug("Restored app blueprint: {} with {} slices",
+                log.trace("Restored app blueprint: {} with {} slices",
                           expanded.id()
                                   .asString(),
                           expanded.loadOrder()
@@ -197,12 +197,12 @@ public interface ClusterDeploymentManager {
                                              .withVersion(sliceTargetValue.currentVersion());
                 var instances = sliceTargetValue.targetInstances();
                 blueprints.put(artifact, new Blueprint(artifact, instances));
-                log.debug("Restored slice target: {} with {} instances", artifact, instances);
+                log.trace("Restored slice target: {} with {} instances", artifact, instances);
             }
 
             private void restoreSliceState(SliceNodeKey sliceNodeKey, SliceNodeValue sliceNodeValue) {
                 sliceStates.put(sliceNodeKey, sliceNodeValue.state());
-                log.debug("Restored slice state: {} = {}", sliceNodeKey, sliceNodeValue.state());
+                log.trace("Restored slice state: {} = {}", sliceNodeKey, sliceNodeValue.state());
             }
 
             @Override
@@ -219,7 +219,7 @@ public interface ClusterDeploymentManager {
                     case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue sliceNodeValue ->
                     trackSliceState(sliceNodeKey, sliceNodeValue.state());
                     case AetherKey.VersionRoutingKey routingKey -> {
-                        log.debug("Rolling update started for {}", routingKey.artifactBase());
+                        log.info("Rolling update started for {}", routingKey.artifactBase());
                         activeRoutings.add(routingKey.artifactBase());
                     }
                     default -> {}
@@ -336,10 +336,10 @@ public interface ClusterDeploymentManager {
                     var artifact = slice.artifact();
                     var dependencies = slice.dependencies();
                     sliceDependencies.put(artifact, dependencies);
-                    log.info("buildDependencyMap: Slice {} has {} dependencies: {}",
-                             artifact,
-                             dependencies.size(),
-                             dependencies);
+                    log.debug("buildDependencyMap: Slice {} has {} dependencies: {}",
+                              artifact,
+                              dependencies.size(),
+                              dependencies);
                 }
             }
 
@@ -385,11 +385,11 @@ public interface ClusterDeploymentManager {
 
             private void trackSliceState(SliceNodeKey sliceKey, SliceState state) {
                 var previousState = sliceStates.put(sliceKey, state);
-                log.info("Slice {} on {} state: {} -> {}",
-                         sliceKey.artifact(),
-                         sliceKey.nodeId(),
-                         previousState,
-                         state);
+                log.debug("Slice {} on {} state: {} -> {}",
+                          sliceKey.artifact(),
+                          sliceKey.nodeId(),
+                          previousState,
+                          state);
                 // When slice reaches LOADED, check if dependencies are ACTIVE before activating
                 if (state == SliceState.LOADED) {
                     tryActivateIfDependenciesReady(sliceKey);
@@ -418,19 +418,19 @@ public interface ClusterDeploymentManager {
                 var artifact = sliceKey.artifact();
                 var dependencies = sliceDependencies.getOrDefault(artifact, Set.of());
                 if (dependencies.isEmpty()) {
-                    log.info("Slice {} has no dependencies, activating immediately", artifact);
+                    log.debug("Slice {} has no dependencies, activating immediately", artifact);
                     issueActivateCommand(sliceKey);
                     return;
                 }
                 if (allDependenciesActive(dependencies)) {
-                    log.info("All {} dependencies of {} are ACTIVE, activating", dependencies.size(), artifact);
+                    log.debug("All {} dependencies of {} are ACTIVE, activating", dependencies.size(), artifact);
                     issueActivateCommand(sliceKey);
                 } else {
-                    log.info("Slice {} waiting for dependencies to become ACTIVE: {}",
-                             artifact,
-                             dependencies.stream()
-                                         .filter(dep -> !isDependencyActive(dep))
-                                         .toList());
+                    log.debug("Slice {} waiting for dependencies to become ACTIVE: {}",
+                              artifact,
+                              dependencies.stream()
+                                          .filter(dep -> !isDependencyActive(dep))
+                                          .toList());
                 }
             }
 
@@ -473,7 +473,7 @@ public interface ClusterDeploymentManager {
             }
 
             private void issueActivateCommand(SliceNodeKey sliceKey) {
-                log.info("Issuing ACTIVATE command for {}", sliceKey);
+                log.debug("Issuing ACTIVATE command for {}", sliceKey);
                 var value = new SliceNodeValue(SliceState.ACTIVATE);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(sliceKey, value);
                 cluster.apply(List.of(command))
@@ -550,17 +550,17 @@ public interface ClusterDeploymentManager {
                                                                if (updatedValue.isEmpty()) {
                                                                    // No nodes left - remove the route entirely
                 commands.add(new KVCommand.Remove<>(routeKey));
-                                                                   log.info("Removing HTTP route {} (last node {} departed)",
-                                                                            routeKey,
-                                                                            removedNode);
+                                                                   log.debug("Removing HTTP route {} (last node {} departed)",
+                                                                             routeKey,
+                                                                             removedNode);
                                                                } else {
                                                                    // Update the route with remaining nodes
                 commands.add(new KVCommand.Put<>(routeKey, updatedValue));
-                                                                   log.info("Updating HTTP route {} - removed departed node {}, {} nodes remaining",
-                                                                            routeKey,
-                                                                            removedNode,
-                                                                            updatedValue.nodes()
-                                                                                        .size());
+                                                                   log.debug("Updating HTTP route {} - removed departed node {}, {} nodes remaining",
+                                                                             routeKey,
+                                                                             removedNode,
+                                                                             updatedValue.nodes()
+                                                                                         .size());
                                                                }
                                                            }
                                                        }
@@ -590,20 +590,20 @@ public interface ClusterDeploymentManager {
                                                                }
                                                                if (updatedValue.isEmpty()) {
                                                                    commands.add(new KVCommand.Remove<>(routeKey));
-                                                                   log.info("Removing stale HTTP route {} (no valid nodes)",
-                                                                            routeKey);
+                                                                   log.debug("Removing stale HTTP route {} (no valid nodes)",
+                                                                             routeKey);
                                                                } else {
                                                                    commands.add(new KVCommand.Put<>(routeKey,
                                                                                                     updatedValue));
-                                                                   log.info("Cleaning up HTTP route {} - removed {} stale nodes",
-                                                                            routeKey,
-                                                                            staleNodes.size());
+                                                                   log.debug("Cleaning up HTTP route {} - removed {} stale nodes",
+                                                                             routeKey,
+                                                                             staleNodes.size());
                                                                }
                                                            }
                                                        }
                                                    });
                 if (!commands.isEmpty()) {
-                    log.info("Cleaning up {} stale HTTP route entries", commands.size());
+                    log.debug("Cleaning up {} stale HTTP route entries", commands.size());
                     cluster.apply(commands)
                            .onFailure(cause -> log.error("Failed to clean up stale HTTP routes: {}",
                                                          cause.message()));
@@ -663,29 +663,29 @@ public interface ClusterDeploymentManager {
             }
 
             private void scaleUp(Artifact artifact, int toAdd, List<SliceNodeKey> existingInstances) {
-                log.info("scaleUp: artifact={}, toAdd={}, activeNodes={}, activeNodeIds={}",
-                         artifact,
-                         toAdd,
-                         activeNodes.get()
-                                    .size(),
-                         activeNodes.get());
+                log.debug("scaleUp: artifact={}, toAdd={}, activeNodes={}, activeNodeIds={}",
+                          artifact,
+                          toAdd,
+                          activeNodes.get()
+                                     .size(),
+                          activeNodes.get());
                 var nodesWithInstances = existingInstances.stream()
                                                           .map(SliceNodeKey::nodeId)
                                                           .collect(Collectors.toSet());
                 // Phase 1: Allocate to truly empty nodes (nodes with NO slices at all)
                 var trulyEmptyNodes = findTrulyEmptyNodes();
-                log.info("scaleUp: found {} truly empty nodes: {}", trulyEmptyNodes.size(), trulyEmptyNodes);
+                log.debug("scaleUp: found {} truly empty nodes: {}", trulyEmptyNodes.size(), trulyEmptyNodes);
                 var allocatedToTrulyEmpty = allocateToSpecificNodes(artifact, toAdd, trulyEmptyNodes);
-                log.info("scaleUp: allocated {} instances to truly empty nodes", allocatedToTrulyEmpty);
+                log.debug("scaleUp: allocated {} instances to truly empty nodes", allocatedToTrulyEmpty);
                 var remaining = toAdd - allocatedToTrulyEmpty;
                 if (remaining <= 0) {
                     return;
                 }
                 // Phase 2: Allocate to nodes without THIS artifact (but may have other slices)
                 var allocated = allocateToEmptyNodes(artifact, remaining, nodesWithInstances);
-                log.info("scaleUp: allocated {} instances to nodes without this artifact, remaining={}",
-                         allocated,
-                         remaining - allocated);
+                log.debug("scaleUp: allocated {} instances to nodes without this artifact, remaining={}",
+                          allocated,
+                          remaining - allocated);
                 // Phase 3: Round-robin for any remaining
                 allocateRoundRobin(artifact, remaining - allocated);
             }
@@ -741,11 +741,11 @@ public interface ClusterDeploymentManager {
             private boolean tryAllocate(Artifact artifact, NodeId node) {
                 var sliceKey = new SliceNodeKey(artifact, node);
                 var alreadyExists = sliceStates.containsKey(sliceKey);
-                log.info("tryAllocate: artifact={}, node={}, sliceKey={}, alreadyExists={}",
-                         artifact,
-                         node,
-                         sliceKey,
-                         alreadyExists);
+                log.debug("tryAllocate: artifact={}, node={}, sliceKey={}, alreadyExists={}",
+                          artifact,
+                          node,
+                          sliceKey,
+                          alreadyExists);
                 if (!alreadyExists) {
                     issueLoadCommand(sliceKey);
                     return true;
@@ -795,7 +795,7 @@ public interface ClusterDeploymentManager {
             }
 
             private void issueLoadCommand(SliceNodeKey sliceKey) {
-                log.info("Issuing LOAD command for {}", sliceKey);
+                log.debug("Issuing LOAD command for {}", sliceKey);
                 // Optimistic tracking: add to sliceStates BEFORE consensus to prevent duplicates
                 // The actual state will be updated via onValuePut when consensus commits
                 sliceStates.put(sliceKey, SliceState.LOAD);
@@ -816,7 +816,7 @@ public interface ClusterDeploymentManager {
             }
 
             private void issueUnloadCommand(SliceNodeKey sliceKey) {
-                log.info("Issuing UNLOAD command for {}", sliceKey);
+                log.debug("Issuing UNLOAD command for {}", sliceKey);
                 var value = new SliceNodeValue(SliceState.UNLOAD);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(sliceKey, value);
                 cluster.apply(List.of(command))
@@ -834,16 +834,16 @@ public interface ClusterDeploymentManager {
              * Called on leader activation, topology changes, etc.
              */
             void reconcile() {
-                log.info("Performing cluster reconciliation");
+                log.debug("Performing cluster reconciliation");
                 for (var blueprint : blueprints.values()) {
                     var artifact = blueprint.artifact();
                     var desiredInstances = blueprint.instances();
                     var currentInstances = getCurrentInstances(artifact);
                     if (currentInstances.size() != desiredInstances) {
-                        log.info("Reconciliation: {} has {} instances, desired {}",
-                                 artifact,
-                                 currentInstances.size(),
-                                 desiredInstances);
+                        log.debug("Reconciliation: {} has {} instances, desired {}",
+                                  artifact,
+                                  currentInstances.size(),
+                                  desiredInstances);
                         allocateInstances(artifact, desiredInstances);
                     }
                 }

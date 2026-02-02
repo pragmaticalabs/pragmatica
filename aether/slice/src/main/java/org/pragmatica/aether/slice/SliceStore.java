@@ -123,7 +123,7 @@ public interface SliceStore {
         }
 
         private Promise<LoadedSliceEntry> startLoading(Artifact artifact) {
-            log.info("Loading slice {}", artifact);
+            log.debug("Loading slice {}", artifact);
             return locateInRepositories(artifact).flatMap(_ -> loadFromLocation(artifact))
                                        .onFailure(_ -> CompletableFuture.runAsync(() -> entries.remove(artifact)));
         }
@@ -165,7 +165,7 @@ public interface SliceStore {
                                              SliceClassLoader classLoader,
                                              SliceLoadingContext loadingContext) {
             var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
-            log.info("Slice {} loaded successfully", artifact);
+            log.debug("Slice {} loaded successfully", artifact);
             return entry;
         }
 
@@ -186,7 +186,7 @@ public interface SliceStore {
                 return INVALID_STATE_TRANSITION.apply(entry.state() + " → ACTIVE")
                                                .promise();
             }
-            log.info("Activating slice {}", artifact);
+            log.debug("Activating slice {}", artifact);
             // Eager dependency validation: materialize all method handles before start()
             // This ensures no technical failures occur after the slice reaches ACTIVE state
             return materializeHandles(artifact, entry).flatMap(_ -> entry.sliceInstance()
@@ -213,7 +213,7 @@ public interface SliceStore {
         private LoadedSlice transitionToActive(Artifact artifact, LoadedSliceEntry entry) {
             var activeEntry = entry.withState(EntryState.ACTIVE);
             entries.put(artifact, Promise.success(activeEntry));
-            log.info("Slice {} activated successfully", artifact);
+            log.debug("Slice {} activated successfully", artifact);
             return activeEntry;
         }
 
@@ -234,7 +234,7 @@ public interface SliceStore {
                 return INVALID_STATE_TRANSITION.apply(entry.state() + " → LOADED")
                                                .promise();
             }
-            log.info("Deactivating slice {}", artifact);
+            log.debug("Deactivating slice {}", artifact);
             return entry.sliceInstance()
                         .stop()
                         .timeout(config.startStopTimeout())
@@ -247,7 +247,7 @@ public interface SliceStore {
         private LoadedSlice transitionToLoaded(Artifact artifact, LoadedSliceEntry entry) {
             var loadedEntry = entry.withState(EntryState.LOADED);
             entries.put(artifact, Promise.success(loadedEntry));
-            log.info("Slice {} deactivated successfully", artifact);
+            log.debug("Slice {} deactivated successfully", artifact);
             return loadedEntry;
         }
 
@@ -262,7 +262,7 @@ public interface SliceStore {
         }
 
         private Promise<Unit> unloadEntry(Artifact artifact, LoadedSliceEntry entry) {
-            log.info("Unloading slice {}", artifact);
+            log.debug("Unloading slice {}", artifact);
             Promise<Unit> deactivatePromise = entry.state() == EntryState.ACTIVE
                                               ? entry.sliceInstance()
                                                      .stop()
@@ -278,7 +278,7 @@ public interface SliceStore {
             registry.unregister(artifact);
             closeClassLoader(entry.classLoader());
             entries.remove(artifact);
-            log.info("Slice {} unloaded successfully", artifact);
+            log.debug("Slice {} unloaded successfully", artifact);
             return Unit.unit();
         }
 

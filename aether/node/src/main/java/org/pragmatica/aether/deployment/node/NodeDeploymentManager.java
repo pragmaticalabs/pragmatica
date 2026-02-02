@@ -129,7 +129,7 @@ public interface NodeDeploymentManager {
             private void handleSliceValuePut(SliceNodeKey sliceKey, AetherValue value) {
                 switch (value) {
                     case SliceNodeValue(SliceState state) -> {
-                        log.info("ValuePut received for key: {}, state: {}", sliceKey, state);
+                        log.debug("ValuePut received for key: {}, state: {}", sliceKey, state);
                         recordDeployment(sliceKey, state);
                         processStateTransition(sliceKey, state);
                     }
@@ -286,10 +286,10 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {
                 var artifact = sliceKey.artifact();
-                log.info("publishHttpRoutes called for {} - httpRoutePublisher.isPresent={}, sliceInvokerFacade.isPresent={}",
-                         artifact,
-                         httpRoutePublisher.isPresent(),
-                         sliceInvokerFacade.isPresent());
+                log.debug("publishHttpRoutes called for {} - httpRoutePublisher.isPresent={}, sliceInvokerFacade.isPresent={}",
+                          artifact,
+                          httpRoutePublisher.isPresent(),
+                          sliceInvokerFacade.isPresent());
                 if (httpRoutePublisher.isEmpty()) {
                     log.warn("Cannot publish HTTP routes for {}: httpRoutePublisher is not configured", artifact);
                     return Promise.unitPromise();
@@ -307,10 +307,10 @@ public interface NodeDeploymentManager {
                 var classLoader = ls.slice()
                                     .getClass()
                                     .getClassLoader();
-                log.info("Publishing HTTP routes for {} using classLoader={}",
-                         artifact,
-                         classLoader.getClass()
-                                    .getName());
+                log.debug("Publishing HTTP routes for {} using classLoader={}",
+                          artifact,
+                          classLoader.getClass()
+                                     .getName());
                 return httpRoutePublisher.unwrap()
                                          .publishRoutes(artifact,
                                                         classLoader,
@@ -341,7 +341,7 @@ public interface NodeDeploymentManager {
                 var serializerFactory = serializerProvider.createFactory(typeTokens);
                 var sliceBridge = SliceBridgeImpl.sliceBridge(artifact, slice, serializerFactory);
                 invocationHandler.registerSlice(artifact, sliceBridge);
-                log.info("Registered slice {} for invocation", artifact);
+                log.debug("Registered slice {} for invocation", artifact);
                 return Unit.unit();
             }
 
@@ -353,7 +353,7 @@ public interface NodeDeploymentManager {
             private void unregisterSliceFromInvocation(SliceNodeKey sliceKey) {
                 var artifact = sliceKey.artifact();
                 invocationHandler.unregisterSlice(artifact);
-                log.info("Unregistered slice {} from invocation", artifact);
+                log.debug("Unregistered slice {} from invocation", artifact);
             }
 
             private Promise<Unit> publishEndpoints(SliceNodeKey sliceKey) {
@@ -377,9 +377,9 @@ public interface NodeDeploymentManager {
                 }
                 return cluster.apply(commands)
                               .mapToUnit()
-                              .onSuccess(_ -> log.info("Published {} endpoints for slice {}",
-                                                       methods.size(),
-                                                       artifact))
+                              .onSuccess(_ -> log.debug("Published {} endpoints for slice {}",
+                                                        methods.size(),
+                                                        artifact))
                               .onFailure(cause -> log.error("Failed to publish endpoints for {}: {}",
                                                             artifact,
                                                             cause.message()));
@@ -453,9 +453,9 @@ public interface NodeDeploymentManager {
                 }
                 return cluster.apply(commands)
                               .mapToUnit()
-                              .onSuccess(_ -> log.info("Unpublished {} endpoints for slice {}",
-                                                       methods.size(),
-                                                       artifact))
+                              .onSuccess(_ -> log.debug("Unpublished {} endpoints for slice {}",
+                                                        methods.size(),
+                                                        artifact))
                               .onFailure(cause -> log.error("Failed to unpublish endpoints for {}: {}",
                                                             artifact,
                                                             cause.message()));
@@ -496,7 +496,7 @@ public interface NodeDeploymentManager {
             private Promise<Unit> deleteSliceNodeKey(SliceNodeKey sliceKey) {
                 return cluster.apply(List.of(new KVCommand.Remove<>(sliceKey)))
                               .mapToUnit()
-                              .onSuccess(_ -> log.info("Deleted slice-node-key {} from KV store", sliceKey));
+                              .onSuccess(_ -> log.debug("Deleted slice-node-key {} from KV store", sliceKey));
             }
 
             private void executeWithStateTransition(SliceNodeKey sliceKey,
@@ -519,9 +519,9 @@ public interface NodeDeploymentManager {
                                           return operation.timeout(timeout);
                                       })
                              .onSuccess(_ -> {
-                                            log.info("Operation succeeded for {}, transitioning to {}",
-                                                     sliceKey.artifact(),
-                                                     successState);
+                                            log.debug("Operation succeeded for {}, transitioning to {}",
+                                                      sliceKey.artifact(),
+                                                      successState);
                                             transitionTo(sliceKey, successState);
                                         })
                              .onFailure(cause -> {
@@ -588,7 +588,7 @@ public interface NodeDeploymentManager {
                     var sliceKey = entry.getKey();
                     var deployment = entry.getValue();
                     if (deployment.state() == SliceState.ACTIVE) {
-                        log.info("Suspending active slice {}", sliceKey.artifact());
+                        log.debug("Suspending active slice {}", sliceKey.artifact());
                         // Unpublish routes and endpoints (local state only - KV won't commit without quorum)
                         suspendSlice(sliceKey);
                         suspended.add(new SuspendedSlice(sliceKey, deployment));
@@ -596,7 +596,7 @@ public interface NodeDeploymentManager {
                         log.debug("Slice {} in state {} - not suspending", sliceKey.artifact(), deployment.state());
                     }
                 }
-                log.info("Suspended {} active slices, ready for reactivation", suspended.size());
+                log.debug("Suspended {} active slices, ready for reactivation", suspended.size());
                 return suspended;
             }
 
@@ -647,11 +647,11 @@ public interface NodeDeploymentManager {
                         deployments.remove(sliceKey);
                         continue;
                     }
-                    log.info("Reactivating suspended slice {}", sliceKey.artifact());
+                    log.debug("Reactivating suspended slice {}", sliceKey.artifact());
                     // Re-register for invocation
                     registerSliceForInvocation(sliceKey).flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
-                                              .onSuccess(_ -> log.info("Successfully reactivated slice {}",
-                                                                       sliceKey.artifact()))
+                                              .onSuccess(_ -> log.debug("Successfully reactivated slice {}",
+                                                                        sliceKey.artifact()))
                                               .onFailure(cause -> {
                                                              log.error("Failed to reactivate slice {}: {}",
                                                                        sliceKey.artifact(),

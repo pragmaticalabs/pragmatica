@@ -200,11 +200,13 @@ class InvocationHandlerImpl implements InvocationHandler {
 
     @Override
     public void onInvokeRequest(InvokeRequest request) {
-        log.info("[requestId={}] RECEIVED InvokeRequest [{}]: {}.{}",
-                 request.requestId(),
-                 request.correlationId(),
-                 request.targetSlice(),
-                 request.method());
+        if (log.isDebugEnabled()) {
+            log.debug("[requestId={}] Received InvokeRequest [{}]: {}.{}",
+                      request.requestId(),
+                      request.correlationId(),
+                      request.targetSlice(),
+                      request.method());
+        }
         // Set the request ID in context for chain propagation
         InvocationContext.setRequestId(request.requestId());
         Option.option(localSlices.get(request.targetSlice()))
