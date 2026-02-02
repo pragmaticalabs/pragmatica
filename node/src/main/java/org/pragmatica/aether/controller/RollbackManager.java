@@ -23,6 +23,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -251,11 +252,6 @@ public interface RollbackManager {
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-                if (! (valuePut.cause()
-                               .key() instanceof AetherKey)) {
-                    return;
-                }
                 var key = valuePut.cause()
                                   .key();
                 var value = valuePut.cause()
@@ -309,9 +305,14 @@ public interface RollbackManager {
                                                 });
             }
 
+            @SuppressWarnings("rawtypes")
             private void loadPreviousVersionsFromKvStore() {
-                kvStore.snapshot()
-                       .forEach(this::loadPreviousVersionEntry);
+                // Use raw forEach to avoid ClassCastException - KV store may contain LeaderKey entries
+                ((Map) kvStore.snapshot()).forEach((key, value) -> {
+                                                       if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue) {
+                                                           loadPreviousVersionEntry(aetherKey, aetherValue);
+                                                       }
+                                                   });
                 log.debug("Loaded {} previous version entries from KVStore", rollbackStates.size());
             }
 

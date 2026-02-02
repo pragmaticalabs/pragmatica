@@ -70,11 +70,6 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
 
     @Override
     public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-        // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-        if (! (valuePut.cause()
-                       .key() instanceof AetherKey)) {
-            return;
-        }
         var key = valuePut.cause()
                           .key();
         if (key instanceof SliceNodeKey sliceNodeKey) {
@@ -90,11 +85,6 @@ class ArtifactDeploymentTrackerImpl implements ArtifactDeploymentTracker {
 
     @Override
     public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-        // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-        if (! (valueRemove.cause()
-                          .key() instanceof AetherKey)) {
-            return;
-        }
         var key = valueRemove.cause()
                              .key();
         if (key instanceof SliceNodeKey sliceNodeKey) {
