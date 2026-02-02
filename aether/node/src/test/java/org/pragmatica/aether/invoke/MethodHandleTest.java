@@ -205,6 +205,12 @@ class MethodHandleTest {
         public void onInvokeResponse(InvocationMessage.InvokeResponse response) {}
 
         @Override
+        public void onNodeRemoved(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved event) {}
+
+        @Override
+        public void onNodeDown(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown event) {}
+
+        @Override
         public Promise<Unit> stop() {
             return Promise.success(unit());
         }

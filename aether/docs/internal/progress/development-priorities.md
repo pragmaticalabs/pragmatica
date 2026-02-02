@@ -7,6 +7,7 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 ## Completed ✅
 
 ### Core Infrastructure
+- **Request ID Propagation** - ScopedValue-based context with ServiceLoader propagation hook in Promise
 - **SliceInvoker Immediate Retry** - Event-driven retry on node departure (matches AppHttpServer pattern)
 - **Structured Keys** - KV schema foundation
 - **Consensus Integration** - Distributed operations working
@@ -40,18 +41,18 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 - **Lifecycle Hook Documentation** - Complete semantics documented
 
 ### Infrastructure Services (infra-slices)
-- **Distributed Cache** - `infra-cache` with consistent hashing
-- **Pub/Sub** - `infra-pubsub` topic-based messaging
+- **Cache** - `infra-cache` in-memory implementation
+- **Pub/Sub** - `infra-pubsub` topic-based messaging (in-memory)
 - **State Machine** - `infra-statemachine` for local state transitions
 - **Artifact Repository** - Maven protocol subset, deploy/resolve operations
 - **Database** - `infra-database` abstraction
-- **Blob Storage** - `infra-blob` for binary objects
-- **Secrets** - `infra-secrets` management
-- **Rate Limiter** - `infra-ratelimit` for throttling
-- **Distributed Lock** - `infra-lock` for coordination
-- **Feature Flags** - `infra-feature` for feature toggles
-- **Scheduler** - `infra-scheduler` for timed tasks
-- **Outbox** - `infra-outbox` for transactional messaging
+- **Secrets** - `infra-secrets` management (in-memory)
+- **Rate Limiter** - `infra-ratelimit` for throttling (in-memory)
+- **Distributed Lock** - `infra-lock` for coordination (in-memory)
+- **Scheduler** - `infra-scheduler` for timed tasks (in-memory)
+- **Config** - `infra-config` configuration management (in-memory)
+- **HTTP Client** - `infra-http` HTTP client wrapper
+- **Aspects** - `infra-aspect` decorators/cross-cutting concerns
 
 ### Examples & Testing
 - **Order Domain Demo** - 5-slice order domain example
@@ -72,17 +73,15 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 
 ### HIGH PRIORITY - Cluster Operations
 
-1. **Request ID Propagation (Distributed Tracing)**
-   - Current gap: HTTP requestId doesn't bridge to InvocationContext for local slice calls
-   - Need: Reliable async context propagation that works across thread boundaries
-   - Consider: Context-aware Promise or explicit context parameter passing
-   - Should cover: HTTP entry → local slice → inter-slice calls (local & remote)
-   - Goal: Full request correlation across all hops without thread-local limitations
-
-2. **DB Connector Infrastructure**
+1. **DB Connector Infrastructure**
    - Database connectivity layer for slices
    - Connection pooling and transaction management
    - Support for common databases (PostgreSQL, MySQL, etc.)
+
+2. **Dynamic Configuration via KV Store**
+   - Expose most configuration in consensus KV store
+   - Nodes automatically pick up configuration changes
+   - No restart required for config updates
 
 3. **External Secrets Management Integration**
    - HashiCorp Vault integration
@@ -95,60 +94,97 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
    - Node auto-discovery and registration
 
-5. **Dynamic Configuration via KV Store**
-   - Expose most configuration in consensus KV store
-   - Nodes automatically pick up configuration changes
-   - No restart required for config updates
-
-6. **Dependency Lifecycle Management**
-   - Handle dependency removal while dependent slice is ACTIVE
-   - Options when dependency becomes unavailable:
-     - **Cascade deactivation** - Automatically deactivate dependent slices
-     - **Graceful degradation** - Mark dependency calls as failing, let slice handle it
-     - **Blocking** - Prevent dependency undeployment while dependents are ACTIVE
+5. **Dependency Lifecycle Management**
+   - Block manual unload while dependents are ACTIVE
+   - Graceful degradation on dependency failure (calls fail, slice handles it)
    - Dependency graph tracking in KV store
    - Clear error reporting with dependency chain visualization
-   - Consider: Should slices declare "required" vs "optional" dependencies?
 
 ### MEDIUM PRIORITY - Infrastructure Services
 
-7. **Mini-Kafka (Message Streaming)**
-   - Ordered message streaming with partitions (differs from pub/sub)
-   - In-memory storage (initial implementation)
-   - Consumer group coordination
-   - Retention policies
-
-8. **Distributed Saga Orchestration**
+6. **Distributed Saga Orchestration**
    - Long-running transaction orchestration (saga pattern)
    - Durable state transitions with compensation on failure
    - Differs from local state machine - coordinates across multiple slices
    - Automatic retry, timeout, and dead-letter handling
    - Visualization of in-flight sagas and their states
 
+7. **Disruption Budget**
+   - Minimum healthy instances during rolling updates and node failures
+   - Configurable per slice or blueprint
+   - Controller respects budget before scaling down or migrating
+   - Prevents cascading failures during maintenance
+
+8. **Forge Script - Scenario Language**
+   - DSL for defining load/chaos test scenarios
+   - Reusable scenario libraries
+   - CI/CD integration for automated testing
+   - Note: Paid tier feature
+
+9. **Placement Hints**
+   - Affinity/anti-affinity rules for slice placement
+   - Spread: distribute instances across nodes/zones
+   - Co-locate: place related slices on same node
+   - Zone-aware scheduling for high availability
+
 ### LOWER PRIORITY - Security & Operations
 
-9. **TLS Certificate Management**
-   - Certificate provisioning and rotation
-   - Mutual TLS between nodes
-   - Integration with external CA or self-signed
+10. **TLS Certificate Management**
+    - Certificate provisioning and rotation
+    - Mutual TLS between nodes
+    - Integration with external CA or self-signed
 
-10. **Canary & Blue-Green Deployment Strategies**
+11. **Canary & Blue-Green Deployment Strategies**
     - Current: Rolling updates with weighted routing exist
     - Add explicit canary deployment with automatic rollback on error threshold
     - Add blue-green deployment with instant switchover
     - A/B testing support with traffic splitting by criteria
 
-11. **Topology in KV Store**
+12. **Topology in KV Store**
     - Leader maintains cluster topology in consensus KV store
     - Best-effort updates on membership changes
     - Enables external observability without direct node queries
 
-### FUTURE - AI Integration
+13. **RBAC for Management API**
+    - Role-based access control for operations
+    - Predefined roles: admin, operator, viewer
+    - Per-endpoint authorization rules
+    - Audit logging for sensitive operations
 
-12. **LLM Integration (Layer 3)**
+### FUTURE
+
+14. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
+
+15. **Mini-Kafka (Message Streaming)**
+    - Ordered message streaming with partitions (differs from pub/sub)
+    - In-memory storage (initial implementation)
+    - Consumer group coordination
+    - Retention policies
+
+---
+
+## Infra Development
+
+Infrastructure slices requiring distributed implementations:
+
+| Service | In-Memory | Distributed | Notes |
+|---------|:---------:|:-----------:|-------|
+| infra-cache | ✅ | ❌ | KV-backed distributed cache |
+| infra-pubsub | ✅ | ❌ | Cross-node message delivery |
+| infra-scheduler | ✅ | ❌ | Leader-coordinated scheduling |
+| infra-statemachine | ✅ | ❌ | Consensus state transitions |
+| infra-lock | ✅ | ❌ | Consensus-backed locking |
+| infra-ratelimit | ✅ | ❌ | Shared counters across nodes |
+| infra-secrets | ✅ | ❌ | → External Secrets (#3) |
+| infra-config | ✅ | ❌ | → Dynamic Config (#2) |
+| infra-database | ✅ | N/A | → DB Connector (#1) |
+| infra-http | ✅ | N/A | HTTP client, no distributed needed |
+| infra-aspect | ✅ | N/A | Decorators, no distributed needed |
+
+**Dropped:** infra-server, infra-streaming, infra-outbox, infra-blob, infra-feature
 
 ---
 

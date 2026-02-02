@@ -7,6 +7,7 @@ import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse
 import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.http.handler.HttpResponseData;
 import org.pragmatica.aether.http.security.SecurityValidator;
+import org.pragmatica.aether.invoke.InvocationContext;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
@@ -275,10 +276,15 @@ class AppHttpServerImpl implements AppHttpServer {
 
     // ================== Request Handling ==================
     private void handleRequest(RequestContext request, ResponseWriter response) {
+        var requestId = request.requestId();
+        // Set request ID in invocation context for the entire request handling scope
+        InvocationContext.runWithRequestId(requestId, () -> handleRequestInScope(request, response, requestId));
+    }
+
+    private void handleRequestInScope(RequestContext request, ResponseWriter response, String requestId) {
         var method = request.method()
                             .name();
         var path = request.path();
-        var requestId = request.requestId();
         log.trace("Received {} {} [{}]", method, path, requestId);
         var routeTable = routeTableRef.get();
         var normalizedPath = normalizePath(path);

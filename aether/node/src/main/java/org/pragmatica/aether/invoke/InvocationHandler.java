@@ -207,8 +207,12 @@ class InvocationHandlerImpl implements InvocationHandler {
                       request.targetSlice(),
                       request.method());
         }
-        // Set the request ID in context for chain propagation
-        InvocationContext.setRequestId(request.requestId());
+        // Run within request ID scope for chain propagation
+        InvocationContext.runWithRequestId(request.requestId(),
+                                           () -> processInvokeRequest(request));
+    }
+
+    private void processInvokeRequest(InvokeRequest request) {
         Option.option(localSlices.get(request.targetSlice()))
               .onEmpty(() -> handleSliceNotFound(request))
               .onPresent(bridge -> invokeSliceMethod(request, bridge));
@@ -287,7 +291,6 @@ class InvocationHandlerImpl implements InvocationHandler {
                   request.targetSlice(),
                   request.method());
         metricsCollector.onPresent(mc -> recordSuccessMetrics(mc, request, durationNs, requestBytes, responseBytes));
-        InvocationContext.clear();
     }
 
     private void recordSuccessMetrics(InvocationMetricsCollector mc,
@@ -314,7 +317,6 @@ class InvocationHandlerImpl implements InvocationHandler {
             sendErrorResponse(request, cause.message());
         }
         metricsCollector.onPresent(mc -> recordFailureMetrics(mc, request, durationNs, requestBytes, errorType));
-        InvocationContext.clear();
     }
 
     private void recordFailureMetrics(InvocationMetricsCollector mc,
