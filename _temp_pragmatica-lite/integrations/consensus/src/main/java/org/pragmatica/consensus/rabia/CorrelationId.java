@@ -1,0 +1,37 @@
+/*
+ *  Copyright (c) 2020-2025 Sergiy Yevtushenko.
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License");
+ *  you may not use this file except in compliance with the License.
+ *  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software
+ *  distributed under the License is distributed on an "AS IS" BASIS,
+ *  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *  See the License for the specific language governing permissions and
+ *  limitations under the License.
+ */
+
+package org.pragmatica.consensus.rabia;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Verify;
+import org.pragmatica.utility.IdGenerator;
+
+/// Correlation identifier for tracking command batches through consensus.
+public record CorrelationId(String id) {
+    public static Result<CorrelationId> correlationId(String id) {
+        return Verify.ensure(id, Verify.Is::notBlank)
+                     .map(CorrelationId::new);
+    }
+
+    public static CorrelationId randomCorrelationId() {
+        return new CorrelationId(IdGenerator.generate("xref"));
+    }
+
+    public static CorrelationId emptyCorrelationId() {
+        return new CorrelationId("empty");
+    }
+}

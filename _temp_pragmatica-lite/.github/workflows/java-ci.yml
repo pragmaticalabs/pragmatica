@@ -1,0 +1,27 @@
+name: Java CI
+
+# Run CI on all pushes and pull requests
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Test and Build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '25'
+          cache: 'maven'
+
+      - name: Run tests and build package
+        run: mvn --no-transfer-progress --batch-mode --update-snapshots package

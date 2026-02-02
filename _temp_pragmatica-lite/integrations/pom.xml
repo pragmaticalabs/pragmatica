@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <parent>
+        <artifactId>pragmatica-lite</artifactId>
+        <groupId>org.pragmatica-lite</groupId>
+        <version>0.11.3</version>
+    </parent>
+    <modelVersion>4.0.0</modelVersion>
+
+    <artifactId>integrations</artifactId>
+    <packaging>pom</packaging>
+
+    <name>Pragmatica Lite Integrations</name>
+    <description>Integration modules for popular Java libraries</description>
+
+    <modules>
+        <module>json</module>
+        <module>metrics</module>
+        <module>db</module>
+        <module>net</module>
+        <module>serialization</module>
+        <module>messaging</module>
+        <module>utility</module>
+        <module>dht</module>
+        <module>consensus</module>
+        <module>config</module>
+        <module>http-routing</module>
+    </modules>
+</project>
