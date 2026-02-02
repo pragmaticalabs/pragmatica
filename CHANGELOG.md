@@ -16,6 +16,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Moved `cluster` module from aether to integrations (generic distributed networking)
 - AppHttpServer immediate retry on node departure (no more 5-second timeout wait)
 - Production tinylog configuration for aether/node
+- Tinylog format now includes thread name: `[{thread}]`
+- Request ID logging for critical log statements in AppHttpServer and SliceInvoker
+- Blueprint CLI commands: `list`, `get`, `delete`, `status`, `validate` (also in REPL)
+- Blueprint REST API endpoints: GET/DELETE `/api/blueprint/{id}`, GET `/api/blueprints`,
+  GET `/api/blueprint/{id}/status`, POST `/api/blueprint/validate`
+- Consolidated startup banner showing node configuration (ID, ports, peers, TTM, TLS)
 
 ### Changed
 - All modules now use version 0.15.0

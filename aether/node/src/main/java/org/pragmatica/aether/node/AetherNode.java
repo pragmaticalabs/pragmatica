@@ -94,6 +94,7 @@ import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
  * Assembles all components: consensus, KV-store, slice management, deployment managers.
  */
 public interface AetherNode {
+    String VERSION = "0.15.0";
     NodeId self();
 
     Promise<Unit> start();
@@ -423,8 +424,56 @@ public interface AetherNode {
                 clusterNode.leaderManager()
                            .triggerElection();
                                              })
+                                  .onSuccess(_ -> printStartupBanner())
                                   .onFailure(cause -> log.error("Cluster formation failed: {}",
                                                                 cause.message()));
+            }
+
+            private void printStartupBanner() {
+                var nodeId = self().id();
+                var clusterPort = config.topology()
+                                        .coreNodes()
+                                        .stream()
+                                        .filter(n -> n.id().equals(self()))
+                                        .findFirst()
+                                        .map(n -> n.address().port())
+                                        .orElse(0);
+                var mgmtPort = config.managementPort();
+                var appHttpPort = config.appHttp().enabled() ? config.appHttp().port() : 0;
+                var peerCount = config.topology().coreNodes().size();
+                var ttmEnabled = ttmManager.isEnabled();
+                var tlsEnabled = config.tls().isPresent();
+
+                log.info("{}",
+                         "+-----------------------------------------------------------------+");
+                log.info("{}",
+                         "|                     AETHER NODE v" + VERSION + "                       |");
+                log.info("{}",
+                         "+-----------------------------------------------------------------+");
+                log.info("|  Node ID:        {}", pad(nodeId, 46) + "|");
+                log.info("|  Cluster Port:   {}", pad(String.valueOf(clusterPort), 46) + "|");
+                if (mgmtPort > 0) {
+                    log.info("|  Management:     {}", pad("http://localhost:" + mgmtPort, 46) + "|");
+                } else {
+                    log.info("|  Management:     {}", pad("disabled", 46) + "|");
+                }
+                if (appHttpPort > 0) {
+                    log.info("|  App HTTP:       {}", pad("http://localhost:" + appHttpPort, 46) + "|");
+                } else {
+                    log.info("|  App HTTP:       {}", pad("disabled", 46) + "|");
+                }
+                log.info("|  Peers:          {}", pad(peerCount + " configured", 46) + "|");
+                log.info("|  TTM:            {}", pad(ttmEnabled ? "enabled" : "disabled", 46) + "|");
+                log.info("|  TLS:            {}", pad(tlsEnabled ? "enabled" : "disabled", 46) + "|");
+                log.info("{}",
+                         "+-----------------------------------------------------------------+");
+            }
+
+            private static String pad(String value, int width) {
+                if (value.length() >= width) {
+                    return value.substring(0, width);
+                }
+                return value + " ".repeat(width - value.length());
             }
 
             @Override

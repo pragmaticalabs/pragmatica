@@ -581,7 +581,7 @@ class AppHttpServerImpl implements AppHttpServer {
     public void onHttpForwardRequest(HttpForwardRequest request) {
         log.trace("Received HttpForwardRequest [{}] correlationId={}", request.requestId(), request.correlationId());
         if (deserializer.isEmpty() || serializer.isEmpty() || clusterNetwork.isEmpty()) {
-            log.error("Cannot handle forward request - missing dependencies");
+            log.error("[{}] Cannot handle forward request - missing dependencies", request.requestId());
             return;
         }
         var des = deserializer.unwrap();
@@ -658,7 +658,9 @@ class AppHttpServerImpl implements AppHttpServer {
                   response.success());
         var pending = pendingForwards.remove(response.correlationId());
         if (pending == null) {
-            log.warn("Received forward response for unknown correlationId: {}", response.correlationId());
+            log.warn("[{}] Received forward response for unknown correlationId: {}",
+                     response.requestId(),
+                     response.correlationId());
             return;
         }
         // Remove from secondary index
@@ -685,9 +687,16 @@ class AppHttpServerImpl implements AppHttpServer {
         if (correlationIds == null || correlationIds.isEmpty()) {
             return;
         }
-        log.info("Node {} departed, triggering immediate retry for {} pending forwards",
+        var affectedRequestIds = correlationIds.stream()
+                                               .map(pendingForwards::get)
+                                               .filter(p -> p != null)
+                                               .map(PendingForward::requestId)
+                                               .limit(5)
+                                               .toList();
+        log.info("Node {} departed, triggering immediate retry for {} pending forwards, requestIds={}",
                  departedNode,
-                 correlationIds.size());
+                 correlationIds.size(),
+                 affectedRequestIds);
         for (var correlationId : correlationIds) {
             var pending = pendingForwards.remove(correlationId);
             if (pending != null) {
@@ -804,7 +813,8 @@ class AppHttpServerImpl implements AppHttpServer {
                                                      json.getBytes(StandardCharsets.UTF_8),
                                                      CONTENT_TYPE_PROBLEM))
                    .onFailure(cause -> {
-                                  log.error("Failed to serialize ProblemDetail: {}",
+                                  log.error("[{}] Failed to serialize ProblemDetail: {}",
+                                            requestId,
                                             cause.message());
                                   sendPlainError(response, status, requestId);
                               });

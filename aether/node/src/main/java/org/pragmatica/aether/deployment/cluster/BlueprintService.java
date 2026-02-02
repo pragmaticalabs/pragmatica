@@ -1,5 +1,6 @@
 package org.pragmatica.aether.deployment.cluster;
 
+import org.pragmatica.aether.slice.blueprint.Blueprint;
 import org.pragmatica.aether.slice.blueprint.BlueprintExpander;
 import org.pragmatica.aether.slice.blueprint.BlueprintId;
 import org.pragmatica.aether.slice.blueprint.BlueprintParser;
@@ -16,6 +17,7 @@ import org.pragmatica.cluster.state.kvstore.KVCommand.Remove;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.util.List;
@@ -74,6 +76,18 @@ public interface BlueprintService {
      */
     Promise<Unit> delete(BlueprintId id);
 
+    /**
+     * Validate a blueprint DSL string without deploying.
+     * <p>
+     * Parses the DSL and checks for syntax errors.
+     * Does NOT validate artifact availability in repository.
+     *
+     * @param dsl Blueprint DSL definition
+     *
+     * @return Result containing parsed Blueprint if valid, or error cause if invalid
+     */
+    Result<Blueprint> validate(String dsl);
+
     static BlueprintService blueprintService(ClusterNode<KVCommand<AetherKey>> cluster,
                                              KVStore<AetherKey, AetherValue> store,
                                              Repository repository) {
@@ -107,6 +121,11 @@ public interface BlueprintService {
             @Override
             public Promise<Unit> delete(BlueprintId id) {
                 return removeFromStore(AppBlueprintKey.appBlueprintKey(id));
+            }
+
+            @Override
+            public Result<Blueprint> validate(String dsl) {
+                return BlueprintParser.parse(dsl);
             }
 
             private Promise<ExpandedBlueprint> storeBlueprint(ExpandedBlueprint expanded) {

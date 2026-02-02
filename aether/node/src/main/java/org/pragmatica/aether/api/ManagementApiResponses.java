@@ -77,6 +77,38 @@ public sealed interface ManagementApiResponses {
                              String blueprint,
                              int slices) {}
 
+    // ===== Blueprint Management Routes =====
+    record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
+
+    record BlueprintSummary(String id,
+                            int sliceCount) {}
+
+    record BlueprintDetailResponse(String id,
+                                   List<BlueprintSliceInfo> slices,
+                                   List<String> dependencies) {}
+
+    record BlueprintSliceInfo(String artifact,
+                              int instances,
+                              boolean isDependency,
+                              List<String> dependencies) {}
+
+    record BlueprintStatusResponse(String id,
+                                   String overallStatus,
+                                   List<BlueprintSliceStatus> slices) {}
+
+    record BlueprintSliceStatus(String artifact,
+                                int targetInstances,
+                                int activeInstances,
+                                String status) {}
+
+    record BlueprintDeleteResponse(String status,
+                                   String id) {}
+
+    record BlueprintValidationResponse(boolean valid,
+                                       String id,
+                                       int sliceCount,
+                                       List<String> errors) {}
+
     // ===== Metrics Routes =====
     record MetricsFullResponse(Map<String, Map<String, Double>> load,
                                Map<String, List<DeploymentMetrics>> deployments) {}

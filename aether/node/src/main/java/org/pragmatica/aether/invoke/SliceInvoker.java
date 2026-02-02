@@ -356,7 +356,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private boolean isStaleAndCleanup(Map.Entry<String, PendingInvocation> entry, long staleThreshold) {
         var pending = entry.getValue();
         if (pending.createdAtMs() < staleThreshold) {
-            log.warn("Cleaning up stale pending invocation: {}", entry.getKey());
+            log.warn("[requestId={}] Cleaning up stale pending invocation: {}", pending.requestId(), entry.getKey());
             pending.promise()
                    .resolve(Causes.cause("Invocation timed out (cleanup)")
                                   .result());
@@ -647,15 +647,22 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private void publishFailureEvent(SliceFailureEvent event) {
-        log.warn("SliceFailureEvent: {}", event);
-        failureListener.onPresent(listener -> safeNotifyFailureListener(listener, event));
+        var requestId = extractRequestId(event);
+        log.warn("[requestId={}] SliceFailureEvent: {}", requestId, event);
+        failureListener.onPresent(listener -> safeNotifyFailureListener(listener, event, requestId));
     }
 
-    private void safeNotifyFailureListener(SliceFailureListener listener, SliceFailureEvent event) {
+    private String extractRequestId(SliceFailureEvent event) {
+        return switch (event) {
+            case SliceFailureEvent.AllInstancesFailed failed -> failed.requestId();
+        };
+    }
+
+    private void safeNotifyFailureListener(SliceFailureListener listener, SliceFailureEvent event, String requestId) {
         try{
             listener.onSliceFailure(event);
         } catch (Exception e) {
-            log.error("Error notifying failure listener: {}", e.getMessage());
+            log.error("[requestId={}] Error notifying failure listener: {}", requestId, e.getMessage());
         }
     }
 
@@ -679,7 +686,8 @@ class SliceInvokerImpl implements SliceInvoker {
     @SuppressWarnings("unchecked")
     public void onInvokeResponse(InvokeResponse response) {
         Option.option(pendingInvocations.remove(response.correlationId()))
-              .onEmpty(() -> log.warn("Received response for unknown correlationId: {}",
+              .onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",
+                                      response.requestId(),
                                       response.correlationId()))
               .onPresent(pending -> handlePendingResponse(pending, response));
     }
@@ -728,7 +736,10 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                 MethodName method,
                                                                 RollingUpdate update) {
         if (log.isDebugEnabled()) {
-            log.debug("Using weighted routing for {} during rolling update {}", slice, update.updateId());
+            log.debug("[requestId={}] Using weighted routing for {} during rolling update {}",
+                      InvocationContext.getOrGenerateRequestId(),
+                      slice,
+                      update.updateId());
         }
         return endpointRegistry.selectEndpointWithRouting(artifactBase,
                                                           method,
