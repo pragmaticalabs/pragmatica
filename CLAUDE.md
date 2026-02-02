@@ -259,7 +259,9 @@ This breaks the circular dependency chain while preserving functionality.
 
 ### Communication
 - `node/.../invoke/SliceInvoker.java` - Inter-slice calls
-- `node/.../api/ManagementServer.java` - HTTP API
+- `node/.../http/AppHttpServer.java` - Application HTTP routing and forwarding
+- `node/.../http/HttpRouteRegistry.java` - Route discovery from KVStore
+- `node/.../api/ManagementServer.java` - Management HTTP API
 - `cluster/.../kvstore/KVStore.java`
 
 ### CLI & Tools
@@ -314,6 +316,7 @@ See [docs/contributors/consensus.md](docs/contributors/consensus.md) for details
 | **Future Work** | [docs/internal/progress/development-priorities.md](docs/internal/progress/development-priorities.md) |
 | Architecture | [docs/contributors/architecture.md](docs/contributors/architecture.md) |
 | Slice Lifecycle | [docs/contributors/slice-lifecycle.md](docs/contributors/slice-lifecycle.md) |
+| HTTP Routing | [docs/contributors/http-routing.md](docs/contributors/http-routing.md) |
 | Metrics & Control | [docs/contributors/metrics-control.md](docs/contributors/metrics-control.md) |
 | TTM Integration | [docs/contributors/ttm-integration.md](docs/contributors/ttm-integration.md) |
 | Consensus | [docs/contributors/consensus.md](docs/contributors/consensus.md) |

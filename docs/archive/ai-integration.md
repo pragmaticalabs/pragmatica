@@ -1,5 +1,8 @@
 # AI Integration Architecture
 
+> **Note**: This document describes the AI integration design. Agents interact with the cluster
+> via [Management API](../reference/management-api.md) REST endpoints directly.
+
 ## Overview
 
 Aether uses a **layered autonomy** architecture for AI integration. The key principle: the cluster must survive and operate effectively with only the lowest layer (decision tree). Upper layers add intelligence but are not dependencies.

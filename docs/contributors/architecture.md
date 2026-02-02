@@ -498,13 +498,20 @@ router.route(new ReactionMessage(...));  // Blocks caller
 - Integration tests for cluster scenarios
 - Unit tests for individual component logic
 
+## Related Documentation
+
+- [HTTP Routing](http-routing.md) - Request routing and inter-node forwarding
+- [Consensus](consensus.md) - Rabia protocol and leader election
+- [Slice Lifecycle](slice-lifecycle.md) - Slice state machine
+- [Metrics and Control](metrics-control.md) - Observability and AI integration
+
 ## Questions for Future Discussion
 
 1. **Reconciliation Strategies**: Should we implement configurable reconciliation policies (conservative vs aggressive)?
 
 2. **Allocation Algorithms**: What specific AI/ML techniques should drive instance placement decisions?
 
-3. **Remote Call Routing**: How should we implement efficient cross-slice communication?
+3. ~~**Remote Call Routing**: How should we implement efficient cross-slice communication?~~ → **Resolved**: See [HTTP Routing](http-routing.md)
 
 4. **Resource Management**: Should we add CPU/memory constraints to allocation decisions?
 

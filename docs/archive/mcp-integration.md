@@ -1,5 +1,9 @@
 # MCP Integration Architecture
 
+> **DEPRECATED**: MCP Server integration has been replaced by direct Management API access.
+> See [Management API Reference](../reference/management-api.md) for the current approach.
+> Agents should interact with the cluster via REST API endpoints directly.
+
 ## Overview
 
 The Model Context Protocol (MCP) integration provides external management and monitoring capabilities for the Aether

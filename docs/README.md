@@ -29,10 +29,11 @@ Extend and maintain Aether:
 4. [Slice Runtime](contributors/slice-runtime.md) - How slices execute in Aether
 5. [Slice Lifecycle](contributors/slice-lifecycle.md) - States and transitions
 6. [Consensus](contributors/consensus.md) - Rabia protocol implementation
-7. [Metrics and Control](contributors/metrics-control.md) - Observability and AI integration
-8. [Invocation Metrics](contributors/invocation-metrics.md) - Per-method metrics
-9. [TTM Integration](contributors/ttm-integration.md) - Predictive scaling with ONNX
-10. [Node Implementation](contributors/aether-node.md) - AetherNode internals
+7. [HTTP Routing](contributors/http-routing.md) - Request routing and forwarding
+8. [Metrics and Control](contributors/metrics-control.md) - Observability and AI integration
+9. [Invocation Metrics](contributors/invocation-metrics.md) - Per-method metrics
+10. [TTM Integration](contributors/ttm-integration.md) - Predictive scaling with ONNX
+11. [Node Implementation](contributors/aether-node.md) - AetherNode internals
 
 ### Operators
 
@@ -68,7 +69,7 @@ Deploy and run Aether clusters:
 
 ## Version
 
-This documentation is for **Aether v0.7.3**.
+This documentation is for **Aether v0.8.2**.
 
 ## Getting Help
 
