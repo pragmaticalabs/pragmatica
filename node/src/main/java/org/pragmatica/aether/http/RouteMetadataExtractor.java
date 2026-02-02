@@ -53,7 +53,7 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
                                         .name(),
                                    extractPathPrefix(route.path()),
                                    artifactCoord,
-                                   deriveSliceMethod(route.path()),
+                                   deriveSliceMethod(route),
                                    RouteSecurityPolicy.publicRoute());
     }
 
@@ -71,7 +71,10 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
                : path;
     }
 
-    private String deriveSliceMethod(String path) {
-        return path;
+    private String deriveSliceMethod(Route<?> route) {
+        var name = route.name();
+        return name.isEmpty()
+               ? route.path()
+               : name;
     }
 }

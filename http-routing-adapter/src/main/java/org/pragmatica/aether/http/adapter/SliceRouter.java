@@ -18,6 +18,9 @@ import org.pragmatica.lang.Promise;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Request router that processes HTTP requests using http-routing routes.
  * <p>
@@ -42,6 +45,8 @@ import java.util.Map;
  * }</pre>
  */
 public interface SliceRouter {
+    Logger log = LoggerFactory.getLogger(SliceRouter.class);
+
     /**
      * Process an HTTP request and produce a response.
      *
@@ -108,6 +113,13 @@ public interface SliceRouter {
 
             private HttpResponseData errorToResponse(Cause cause, HttpRequestContext request) {
                 var httpError = errorMapper.map(cause);
+                log.warn("[requestId={}] SliceRouter error: {} {} -> {} {}",
+                         request.requestId(),
+                         request.method(),
+                         request.path(),
+                         httpError.status()
+                                  .code(),
+                         cause.message());
                 var problemDetail = ProblemDetail.fromHttpError(httpError, request.path(), request.requestId());
                 return jsonMapper.writeAsBytes(problemDetail)
                                  .fold(_ -> plainErrorResponse(httpError.status(),
