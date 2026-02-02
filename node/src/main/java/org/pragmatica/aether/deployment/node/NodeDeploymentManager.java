@@ -61,12 +61,25 @@ public interface NodeDeploymentManager {
 
     boolean isActive();
 
+    /**
+     * Information about a suspended slice that can be reactivated.
+     * Tracks the slice key and the original deployment state.
+     */
+    record SuspendedSlice(SliceNodeKey key, SliceDeployment deployment) {}
+
     sealed interface NodeDeploymentState {
         default void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
 
         default void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {}
 
-        record DormantNodeDeploymentState() implements NodeDeploymentState {}
+        /**
+         * Dormant state with optional suspended slices for reactivation.
+         */
+        record DormantNodeDeploymentState(List<SuspendedSlice> suspendedSlices) implements NodeDeploymentState {
+            public DormantNodeDeploymentState() {
+                this(List.of());
+            }
+        }
 
         record ActiveNodeDeploymentState(NodeId self,
                                          SliceStore sliceStore,
@@ -554,8 +567,109 @@ public interface NodeDeploymentManager {
             }
 
             /**
+             * Suspend all active slices on quorum loss without unloading them.
+             * Returns the list of suspended slices for potential reactivation.
+             *
+             * <p>This method:
+             * <ul>
+             *   <li>Unpublishes HTTP routes (removes from local handlers map)</li>
+             *   <li>Unpublishes endpoints (note: KV commands won't commit without quorum)</li>
+             *   <li>Unregisters slices from invocation handler</li>
+             *   <li>Does NOT unload slices from SliceStore</li>
+             *   <li>Does NOT clear deployments - saves them for reactivation</li>
+             * </ul>
+             *
+             * @return List of suspended slices that can be reactivated when quorum returns
+             */
+            List<SuspendedSlice> suspendSlices() {
+                log.warn("Suspending {} slices due to quorum loss (keeping loaded in memory)", deployments.size());
+                var suspended = new java.util.ArrayList<SuspendedSlice>();
+                for (var entry : deployments.entrySet()) {
+                    var sliceKey = entry.getKey();
+                    var deployment = entry.getValue();
+                    if (deployment.state() == SliceState.ACTIVE) {
+                        log.info("Suspending active slice {}", sliceKey.artifact());
+                        // Unpublish routes and endpoints (local state only - KV won't commit without quorum)
+                        suspendSlice(sliceKey);
+                        suspended.add(new SuspendedSlice(sliceKey, deployment));
+                    } else {
+                        log.debug("Slice {} in state {} - not suspending", sliceKey.artifact(), deployment.state());
+                    }
+                }
+                log.info("Suspended {} active slices, ready for reactivation", suspended.size());
+                return suspended;
+            }
+
+            /**
+             * Suspend a single slice: unpublish routes/endpoints and unregister from invocation.
+             * Does NOT unload the slice from SliceStore.
+             */
+            private void suspendSlice(SliceNodeKey sliceKey) {
+                // Unpublish HTTP routes (local handler map only)
+                httpRoutePublisher.onPresent(publisher -> {
+                                                 publisher.unpublishRoutes(sliceKey.artifact());
+                                                 log.debug("Unpublished HTTP routes for suspended slice {}",
+                                                           sliceKey.artifact());
+                                             });
+                // Unregister from invocation handler
+                unregisterSliceFromInvocation(sliceKey);
+            }
+
+            /**
+             * Reactivate previously suspended slices after quorum is restored.
+             *
+             * <p>For each suspended slice:
+             * <ul>
+             *   <li>Check if slice is still loaded in SliceStore</li>
+             *   <li>Re-register with invocation handler</li>
+             *   <li>Re-publish HTTP routes</li>
+             *   <li>Re-publish endpoints to KV store</li>
+             * </ul>
+             *
+             * @param suspended List of suspended slices to reactivate
+             */
+            void reactivateSuspendedSlices(List<SuspendedSlice> suspended) {
+                if (suspended.isEmpty()) {
+                    log.debug("No suspended slices to reactivate");
+                    return;
+                }
+                log.info("Reactivating {} suspended slices after quorum restored", suspended.size());
+                for (var suspendedSlice : suspended) {
+                    var sliceKey = suspendedSlice.key();
+                    var deployment = suspendedSlice.deployment();
+                    // Restore deployment record
+                    deployments.put(sliceKey, deployment);
+                    // Check if slice is still in SliceStore
+                    var loadedSlice = findLoadedSlice(sliceKey.artifact());
+                    if (loadedSlice.isEmpty()) {
+                        log.warn("Suspended slice {} no longer in SliceStore, skipping reactivation",
+                                 sliceKey.artifact());
+                        deployments.remove(sliceKey);
+                        continue;
+                    }
+                    log.info("Reactivating suspended slice {}", sliceKey.artifact());
+                    // Re-register for invocation
+                    registerSliceForInvocation(sliceKey).flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
+                                              .onSuccess(_ -> log.info("Successfully reactivated slice {}",
+                                                                       sliceKey.artifact()))
+                                              .onFailure(cause -> {
+                                                             log.error("Failed to reactivate slice {}: {}",
+                                                                       sliceKey.artifact(),
+                                                                       cause.message());
+                                                             // Clean up failed reactivation
+                    unregisterSliceFromInvocation(sliceKey);
+                                                             unpublishHttpRoutes(sliceKey);
+                                                             deployments.remove(sliceKey);
+                                                         });
+                }
+            }
+
+            /**
              * Deactivate all slices on quorum loss.
              * Called before transitioning to dormant state.
+             *
+             * @deprecated Use {@link #suspendSlices()} instead to preserve slices in memory.
+             *             This method is kept for actual slice removal (ValueRemove).
              */
             void deactivateAllSlices() {
                 log.warn("Deactivating all {} slices due to quorum loss", deployments.size());
@@ -630,22 +744,12 @@ public interface NodeDeploymentManager {
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-                if (! (valuePut.cause()
-                               .key() instanceof AetherKey)) {
-                    return;
-                }
                 state.get()
                      .onValuePut(valuePut);
             }
 
             @Override
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-                if (! (valueRemove.cause()
-                                  .key() instanceof AetherKey)) {
-                    return;
-                }
                 state.get()
                      .onValueRemove(valueRemove);
             }
@@ -658,32 +762,43 @@ public interface NodeDeploymentManager {
                         // Increment epoch FIRST to invalidate any in-flight DISAPPEARED handlers
                         var epoch = activationEpoch().incrementAndGet();
                         log.debug("Node {} activation epoch incremented to {}", self().id(), epoch);
-                        // Only activate if currently dormant (idempotent)
-                        if (state().get() instanceof NodeDeploymentState.DormantNodeDeploymentState) {
-                            state().set(new NodeDeploymentState.ActiveNodeDeploymentState(self(),
-                                                                                          sliceStore(),
-                                                                                          configuration(),
-                                                                                          cluster(),
-                                                                                          kvStore(),
-                                                                                          invocationHandler(),
-                                                                                          router(),
-                                                                                          new ConcurrentHashMap<>(),
-                                                                                          httpRoutePublisher(),
-                                                                                          sliceInvokerFacade()));
+                        // Check if we have suspended slices to reactivate
+                        if (state().get() instanceof NodeDeploymentState.DormantNodeDeploymentState dormant) {
+                            var suspended = dormant.suspendedSlices();
+                            // Create new active state with fresh deployments map
+                            var activeState = new NodeDeploymentState.ActiveNodeDeploymentState(self(),
+                                                                                                sliceStore(),
+                                                                                                configuration(),
+                                                                                                cluster(),
+                                                                                                kvStore(),
+                                                                                                invocationHandler(),
+                                                                                                router(),
+                                                                                                new ConcurrentHashMap<>(),
+                                                                                                httpRoutePublisher(),
+                                                                                                sliceInvokerFacade());
+                            state().set(activeState);
                             log.info("Node {} NodeDeploymentManager activated", self().id());
+                            // Reactivate suspended slices if any
+                            if (!suspended.isEmpty()) {
+                                log.info("Node {} has {} suspended slices to reactivate", self().id(), suspended.size());
+                                activeState.reactivateSuspendedSlices(suspended);
+                            }
                         }
                     }
                     case DISAPPEARED -> {
                         // Capture epoch BEFORE any cleanup
                         var epochBeforeCleanup = activationEpoch().get();
-                        // Deactivate all slices before going dormant
+                        // Suspend slices (keep in memory) before going dormant
+                        var suspended = List.<SuspendedSlice>of();
                         if (state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState activeState) {
-                            activeState.deactivateAllSlices();
+                            suspended = activeState.suspendSlices();
                         }
                         // Only go dormant if no ESTABLISHED arrived during cleanup (epoch unchanged)
                         if (activationEpoch().get() == epochBeforeCleanup) {
-                            state().set(new NodeDeploymentState.DormantNodeDeploymentState());
-                            log.info("Node {} NodeDeploymentManager deactivated", self().id());
+                            state().set(new NodeDeploymentState.DormantNodeDeploymentState(suspended));
+                            log.info("Node {} NodeDeploymentManager deactivated with {} suspended slices",
+                                     self().id(),
+                                     suspended.size());
                         } else {
                             log.info("Node {} ignoring stale DISAPPEARED (epoch changed from {} to {})",
                                      self().id(),

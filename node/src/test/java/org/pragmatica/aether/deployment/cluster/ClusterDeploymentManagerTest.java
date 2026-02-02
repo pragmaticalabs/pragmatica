@@ -119,15 +119,19 @@ class ClusterDeploymentManagerTest {
 
         var artifact = createTestArtifact();
 
-        // First allocate
+        // First allocate 2 instances
         sendSliceTargetPut(artifact, 2);
-        // Simulate slices are tracked
-        trackSliceState(artifact, self, SliceState.ACTIVE);
-        trackSliceState(artifact, node2, SliceState.ACTIVE);
+        assertThat(clusterNode.appliedCommands).hasSize(2);
+
+        // Mark the actually allocated nodes as ACTIVE
+        for (var command : clusterNode.appliedCommands) {
+            var key = extractSliceNodeKey(command);
+            trackSliceState(artifact, key.nodeId(), SliceState.ACTIVE);
+        }
 
         clusterNode.appliedCommands.clear();
 
-        // Then remove slice target
+        // Then remove slice target - should unload both allocated instances
         sendSliceTargetRemove(artifact);
 
         assertThat(clusterNode.appliedCommands).hasSize(2);
@@ -154,15 +158,15 @@ class ClusterDeploymentManagerTest {
     }
 
     @Test
-    void allocation_wraps_around_when_instances_exceed_nodes() {
+    void allocation_limited_to_available_nodes() {
         becomeLeader();
         addTopology(self, node2);
 
         var artifact = createTestArtifact();
         sendSliceTargetPut(artifact, 4);
 
-        // With 2 nodes and 4 instances, each node gets 2
-        assertThat(clusterNode.appliedCommands).hasSize(4);
+        // With 2 nodes and 4 requested instances, only 2 can be allocated (max 1 per node per artifact)
+        assertThat(clusterNode.appliedCommands).hasSize(2);
     }
 
     @Test
@@ -188,17 +192,28 @@ class ClusterDeploymentManagerTest {
 
         var artifact = createTestArtifact();
 
-        // Initial allocation
+        // Initial allocation of 1 instance
         sendSliceTargetPut(artifact, 1);
-        trackSliceState(artifact, self, SliceState.ACTIVE);
+        assertThat(clusterNode.appliedCommands).hasSize(1);
+
+        // Get the node that was allocated and mark it as ACTIVE
+        var allocatedKey = extractSliceNodeKey(clusterNode.appliedCommands.get(0));
+        trackSliceState(artifact, allocatedKey.nodeId(), SliceState.ACTIVE);
 
         clusterNode.appliedCommands.clear();
 
-        // Scale up
+        // Scale up to 3 instances - should add 2 more (to the 2 remaining nodes)
         sendSliceTargetPut(artifact, 3);
 
-        // Should add 2 more instances
         assertThat(clusterNode.appliedCommands).hasSize(2);
+    }
+
+    @SuppressWarnings("unchecked")
+    private SliceNodeKey extractSliceNodeKey(KVCommand<AetherKey> command) {
+        if (command instanceof KVCommand.Put<?, ?> put && put.key() instanceof SliceNodeKey key) {
+            return key;
+        }
+        throw new IllegalArgumentException("Expected Put with SliceNodeKey, got: " + command);
     }
 
     @Test
