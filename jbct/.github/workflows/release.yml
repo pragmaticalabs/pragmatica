@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+          cache: maven
+
+      # Install modules individually to break cyclic dependency
+      - name: Install parent POM
+        run: mvn install -B -N -Djbct.skip=true
+
+      - name: Install jbct-core
+        run: mvn install -B -DskipTests -pl jbct-core -Djbct.skip=true
+
+      - name: Install jbct-maven-plugin
+        run: mvn install -B -DskipTests -pl jbct-maven-plugin -Djbct.skip=true
+
+      - name: Build
+        run: mvn package -B -DskipTests -pl jbct-cli -Djbct.skip=true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME exists, uploading artifacts..."
+            gh release upload "$GITHUB_REF_NAME" \
+              jbct-cli/target/jbct.jar \
+              jbct-cli/target/jbct-cli-*-dist.tar.gz \
+              jbct-cli/target/jbct-cli-*-dist.zip \
+              --clobber
+          else
+            echo "Creating release $GITHUB_REF_NAME..."
+            gh release create "$GITHUB_REF_NAME" \
+              jbct-cli/target/jbct.jar \
+              jbct-cli/target/jbct-cli-*-dist.tar.gz \
+              jbct-cli/target/jbct-cli-*-dist.zip \
+              --title "JBCT $VERSION" \
+              --generate-notes
+          fi

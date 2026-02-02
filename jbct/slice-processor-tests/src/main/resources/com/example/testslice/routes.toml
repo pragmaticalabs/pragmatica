@@ -1,0 +1,16 @@
+prefix = "/api/v1/test"
+
+[routes]
+create = "POST /"
+getById = "GET /{id:Long}"
+getItem = "GET /orders/{orderId:Long}/items/{itemId:Long}"
+search = "GET /search?query&limit:Integer&offset:Integer"
+update = "PUT /{id:Long}"
+getOrders = "GET /{userId:Long}/orders?status&limit:Integer"
+health = "GET /health"
+
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*"]
+HTTP_400 = ["*Invalid*"]
+HTTP_409 = ["*Duplicate*"]

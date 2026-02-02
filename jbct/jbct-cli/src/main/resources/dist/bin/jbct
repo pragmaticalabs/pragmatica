@@ -1,0 +1,31 @@
+#!/bin/bash
+#
+# JBCT - Java Backend Coding Technology CLI
+#
+# Usage: jbct <command> [options] [arguments]
+#
+
+# Resolve symlinks and find the actual script location
+SCRIPT="$0"
+while [ -h "$SCRIPT" ]; do
+    LINK=$(readlink "$SCRIPT")
+    case "$LINK" in
+        /*) SCRIPT="$LINK" ;;
+        *)  SCRIPT="$(dirname "$SCRIPT")/$LINK" ;;
+    esac
+done
+
+JBCT_HOME="$(cd "$(dirname "$SCRIPT")/.." && pwd)"
+JBCT_JAR="$JBCT_HOME/lib/jbct.jar"
+
+# Check if JAR exists
+if [ ! -f "$JBCT_JAR" ]; then
+    echo "Error: jbct.jar not found at $JBCT_JAR" >&2
+    exit 1
+fi
+
+# Set default JVM options if not already set
+JBCT_OPTS="${JBCT_OPTS:-}"
+
+# Run JBCT
+exec java $JBCT_OPTS -jar "$JBCT_JAR" "$@"

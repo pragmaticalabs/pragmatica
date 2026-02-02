@@ -1,0 +1,25 @@
+# JBCT Configuration
+# https://github.com/siy/jbct-cli
+
+[format]
+maxLineLength = 120
+indentSize = 4
+useTabs = false
+alignChainedCalls = true
+alignArguments = true
+alignParameters = true
+organizeImports = true
+
+[lint]
+failOnWarning = false
+businessPackages = ["{{basePackage}}.usecase.**", "{{basePackage}}.domain.**"]
+
+# Rule severity overrides
+# Possible values: "error", "warning", "off"
+[lint.rules]
+# JBCT-RET-01 = "error"
+# JBCT-RET-02 = "error"
+# JBCT-VO-01 = "warning"
+
+[project]
+sourceDirectories = ["src/main/java"]
