@@ -54,9 +54,7 @@
         <module>cli</module>
         <module>forge</module>
         <module>infra-services</module>
-        <!-- e2e-tests commented until examples are built
-        <module>e2e-tests</module>
-        -->
+        <!-- e2e-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
         <module>aether-ttm</module>
         <module>http-handler-api</module>
         <module>http-routing-adapter</module>
@@ -458,6 +456,12 @@
     </build>
 
     <profiles>
+        <profile>
+            <id>with-e2e</id>
+            <modules>
+                <module>e2e-tests</module>
+            </modules>
+        </profile>
         <profile>
             <id>release</id>
             <activation>

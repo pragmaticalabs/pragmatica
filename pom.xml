@@ -49,9 +49,7 @@
         <module>testing</module>
         <module>jbct</module>
         <module>aether</module>
-        <!-- examples commented until jbct-maven-plugin 0.15.0 is published
         <module>examples</module>
-        -->
     </modules>
 
     <properties>

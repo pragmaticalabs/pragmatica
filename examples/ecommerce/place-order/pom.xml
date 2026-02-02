@@ -59,7 +59,7 @@
                         <path>
                             <groupId>org.pragmatica-lite</groupId>
                             <artifactId>slice-processor</artifactId>
-                            <version>${jbct.version}</version>
+                            <version>${project.version}</version>
                         </path>
                     </annotationProcessorPaths>
                     <compilerArgs>

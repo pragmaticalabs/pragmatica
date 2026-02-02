@@ -83,7 +83,7 @@
                 <executions>
                     <execution>
                         <id>copy-test-slice-artifact</id>
-                        <phase>generate-test-resources</phase>
+                        <phase>pre-integration-test</phase>
                         <goals>
                             <goal>copy</goal>
                         </goals>
@@ -116,7 +116,7 @@
                 <executions>
                     <execution>
                         <id>repackage-test-artifacts</id>
-                        <phase>generate-test-resources</phase>
+                        <phase>pre-integration-test</phase>
                         <goals>
                             <goal>run</goal>
                         </goals>
@@ -176,7 +176,7 @@ Slice-Class: org.pragmatica.aether.example.inventory.InventoryServiceFactory
                 <executions>
                     <execution>
                         <id>install-test-artifact-v1</id>
-                        <phase>process-test-resources</phase>
+                        <phase>pre-integration-test</phase>
                         <goals>
                             <goal>install-file</goal>
                         </goals>
@@ -190,7 +190,7 @@ Slice-Class: org.pragmatica.aether.example.inventory.InventoryServiceFactory
                     </execution>
                     <execution>
                         <id>install-test-artifact-v2</id>
-                        <phase>process-test-resources</phase>
+                        <phase>pre-integration-test</phase>
                         <goals>
                             <goal>install-file</goal>
                         </goals>

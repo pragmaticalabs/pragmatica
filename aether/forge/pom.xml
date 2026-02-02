@@ -17,8 +17,15 @@
 
     <modules>
         <module>forge-core</module>
-        <!-- forge-tests commented until examples are built
-        <module>forge-tests</module>
-        -->
+        <!-- forge-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
     </modules>
+
+    <profiles>
+        <profile>
+            <id>with-e2e</id>
+            <modules>
+                <module>forge-tests</module>
+            </modules>
+        </profile>
+    </profiles>
 </project>
