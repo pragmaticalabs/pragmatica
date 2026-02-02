@@ -142,6 +142,8 @@ public interface ClusterDeploymentManager {
                 triggerLoadedSliceActivation();
                 // Clean up stale HTTP routes (routes pointing to nodes not in topology)
                 cleanupStaleHttpRoutes();
+                // Clean up stale slice entries (slices on nodes not in topology)
+                cleanupStaleSliceEntries();
             }
 
             /**
@@ -607,6 +609,27 @@ public interface ClusterDeploymentManager {
                     cluster.apply(commands)
                            .onFailure(cause -> log.error("Failed to clean up stale HTTP routes: {}",
                                                          cause.message()));
+                }
+            }
+
+            /**
+             * Remove slice state entries for nodes not in the current topology.
+             * This handles cases where nodes died before the leader could clean up their states.
+             */
+            private void cleanupStaleSliceEntries() {
+                var currentNodes = new HashSet<>(activeNodes.get());
+                var staleKeys = sliceStates.keySet()
+                                           .stream()
+                                           .filter(key -> !currentNodes.contains(key.nodeId()))
+                                           .toList();
+                if (!staleKeys.isEmpty()) {
+                    log.info("Cleaning up {} stale slice entries for nodes not in topology", staleKeys.size());
+                    staleKeys.forEach(sliceStates::remove);
+                    var commands = staleKeys.stream()
+                                            .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                                            .toList();
+                    cluster.apply(commands)
+                           .onFailure(cause -> log.error("Failed to clean up stale slice entries: {}", cause.message()));
                 }
             }
 
