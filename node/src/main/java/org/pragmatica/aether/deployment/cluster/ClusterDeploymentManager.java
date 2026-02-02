@@ -7,10 +7,14 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.AppBlueprintKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.EndpointKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.EndpointValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
@@ -122,13 +126,39 @@ public interface ClusterDeploymentManager {
              * Rebuild state from KVStore snapshot on leader activation.
              * This ensures the new leader has complete knowledge of desired and actual state.
              */
+            @SuppressWarnings("rawtypes")
             void rebuildStateFromKVStore() {
                 log.info("Rebuilding cluster deployment state from KVStore");
-                kvStore.snapshot()
-                       .forEach(this::processKVEntry);
+                // Use raw forEach to avoid ClassCastException - KV store may contain LeaderKey entries
+                ((Map) kvStore.snapshot()).forEach((key, value) -> {
+                                                       if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue) {
+                                                           processKVEntry(aetherKey, aetherValue);
+                                                       }
+                                                   });
                 log.info("Restored {} blueprints and {} slice states from KVStore",
                          blueprints.size(),
                          sliceStates.size());
+                // Trigger activation for any slices stuck in LOADED state
+                triggerLoadedSliceActivation();
+                // Clean up stale HTTP routes (routes pointing to nodes not in topology)
+                cleanupStaleHttpRoutes();
+            }
+
+            /**
+             * After state rebuild, check all LOADED slices and trigger activation if dependencies are ready.
+             * This handles slices that were LOADED when the previous leader died.
+             */
+            private void triggerLoadedSliceActivation() {
+                var loadedSlices = sliceStates.entrySet()
+                                              .stream()
+                                              .filter(e -> e.getValue() == SliceState.LOADED)
+                                              .map(Map.Entry::getKey)
+                                              .toList();
+                if (!loadedSlices.isEmpty()) {
+                    log.info("Found {} slices in LOADED state, checking dependencies for activation",
+                             loadedSlices.size());
+                    loadedSlices.forEach(this::tryActivateIfDependenciesReady);
+                }
             }
 
             private void processKVEntry(AetherKey key, AetherValue value) {
@@ -177,11 +207,6 @@ public interface ClusterDeploymentManager {
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-                if (! (valuePut.cause()
-                               .key() instanceof AetherKey)) {
-                    return;
-                }
                 var key = valuePut.cause()
                                   .key();
                 var value = valuePut.cause()
@@ -203,11 +228,6 @@ public interface ClusterDeploymentManager {
 
             @Override
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-                if (! (valueRemove.cause()
-                                  .key() instanceof AetherKey)) {
-                    return;
-                }
                 var key = valueRemove.cause()
                                      .key();
                 switch (key) {
@@ -463,25 +483,131 @@ public interface ClusterDeploymentManager {
             }
 
             private void handleNodeRemoval(NodeId removedNode) {
-                // Remove state entries for the removed node
-                var keysToRemove = sliceStates.keySet()
-                                              .stream()
-                                              .filter(key -> key.nodeId()
-                                                                .equals(removedNode))
-                                              .toList();
+                // Remove slice state entries for the removed node
+                var sliceKeysToRemove = sliceStates.keySet()
+                                                   .stream()
+                                                   .filter(key -> key.nodeId()
+                                                                     .equals(removedNode))
+                                                   .toList();
                 // Remove from in-memory state immediately
-                keysToRemove.forEach(sliceStates::remove);
-                // Also remove from KVStore to prevent stale state after leader changes
-                if (!keysToRemove.isEmpty()) {
-                    List<KVCommand<AetherKey>> removeCommands = keysToRemove.stream()
-                                                                            .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
-                                                                            .toList();
-                    cluster.apply(removeCommands)
-                           .onFailure(cause -> log.error("Failed to remove slice-node-keys for departed node {}: {}",
+                sliceKeysToRemove.forEach(sliceStates::remove);
+                // Find endpoint keys for the removed node by scanning KVStore snapshot
+                var endpointKeysToRemove = findEndpointKeysForNode(removedNode);
+                // Clean up HTTP routes containing the removed node
+                var httpRouteCommands = cleanupHttpRoutesForNode(removedNode);
+                // Combine all commands
+                List<KVCommand<AetherKey>> allCommands = new java.util.ArrayList<>();
+                sliceKeysToRemove.stream()
+                                 .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                                 .forEach(allCommands::add);
+                endpointKeysToRemove.stream()
+                                    .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                                    .forEach(allCommands::add);
+                allCommands.addAll(httpRouteCommands);
+                // Remove from KVStore to prevent stale state after leader changes
+                if (!allCommands.isEmpty()) {
+                    cluster.apply(allCommands)
+                           .onFailure(cause -> log.error("Failed to remove keys for departed node {}: {}",
                                                          removedNode,
                                                          cause.message()));
                 }
-                log.info("Removed {} slice states for departed node {}", keysToRemove.size(), removedNode);
+                log.info("Removed {} slice states, {} endpoints, and {} HTTP route updates for departed node {}",
+                         sliceKeysToRemove.size(),
+                         endpointKeysToRemove.size(),
+                         httpRouteCommands.size(),
+                         removedNode);
+            }
+
+            @SuppressWarnings("rawtypes")
+            private List<EndpointKey> findEndpointKeysForNode(NodeId nodeId) {
+                var result = new java.util.ArrayList<EndpointKey>();
+                // Use raw forEach to avoid ClassCastException - KV store may contain various key types
+                ((Map) kvStore.snapshot()).forEach((key, value) -> {
+                                                       if (key instanceof EndpointKey endpointKey && value instanceof EndpointValue endpointValue) {
+                                                           if (endpointValue.nodeId()
+                                                                            .equals(nodeId)) {
+                                                               result.add(endpointKey);
+                                                           }
+                                                       }
+                                                   });
+                return result;
+            }
+
+            /**
+             * Clean up HTTP routes that reference the removed node.
+             * For each HttpRouteValue, remove the node from the node set.
+             * If the node set becomes empty, delete the entry.
+             */
+            @SuppressWarnings("rawtypes")
+            private List<KVCommand<AetherKey>> cleanupHttpRoutesForNode(NodeId removedNode) {
+                var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
+                // Scan KVStore for HttpRouteKey entries containing the removed node
+                ((Map) kvStore.snapshot()).forEach((key, value) -> {
+                                                       if (key instanceof HttpRouteKey routeKey && value instanceof HttpRouteValue routeValue) {
+                                                           if (routeValue.nodes()
+                                                                         .contains(removedNode)) {
+                                                               var updatedValue = routeValue.withoutNode(removedNode);
+                                                               if (updatedValue.isEmpty()) {
+                                                                   // No nodes left - remove the route entirely
+                commands.add(new KVCommand.Remove<>(routeKey));
+                                                                   log.info("Removing HTTP route {} (last node {} departed)",
+                                                                            routeKey,
+                                                                            removedNode);
+                                                               } else {
+                                                                   // Update the route with remaining nodes
+                commands.add(new KVCommand.Put<>(routeKey, updatedValue));
+                                                                   log.info("Updating HTTP route {} - removed departed node {}, {} nodes remaining",
+                                                                            routeKey,
+                                                                            removedNode,
+                                                                            updatedValue.nodes()
+                                                                                        .size());
+                                                               }
+                                                           }
+                                                       }
+                                                   });
+                return commands;
+            }
+
+            /**
+             * Remove HTTP route entries that reference nodes not in the current topology.
+             * This handles cases where nodes died before the leader could clean up their routes.
+             */
+            @SuppressWarnings("rawtypes")
+            private void cleanupStaleHttpRoutes() {
+                var currentNodes = new HashSet<>(activeNodes.get());
+                var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
+                ((Map) kvStore.snapshot()).forEach((key, value) -> {
+                                                       if (key instanceof HttpRouteKey routeKey && value instanceof HttpRouteValue routeValue) {
+                                                           // Find nodes in route that are NOT in current topology
+                var staleNodes = routeValue.nodes()
+                                           .stream()
+                                           .filter(n -> !currentNodes.contains(n))
+                                           .toList();
+                                                           if (!staleNodes.isEmpty()) {
+                                                               var updatedValue = routeValue;
+                                                               for (var staleNode : staleNodes) {
+                                                                   updatedValue = updatedValue.withoutNode(staleNode);
+                                                               }
+                                                               if (updatedValue.isEmpty()) {
+                                                                   commands.add(new KVCommand.Remove<>(routeKey));
+                                                                   log.info("Removing stale HTTP route {} (no valid nodes)",
+                                                                            routeKey);
+                                                               } else {
+                                                                   commands.add(new KVCommand.Put<>(routeKey,
+                                                                                                    updatedValue));
+                                                                   log.info("Cleaning up HTTP route {} - removed {} stale nodes",
+                                                                            routeKey,
+                                                                            staleNodes.size());
+                                                               }
+                                                           }
+                                                       }
+                                                   });
+                if (!commands.isEmpty()) {
+                    log.info("Cleaning up {} stale HTTP route entries", commands.size());
+                    cluster.apply(commands)
+                           .onFailure(cause -> log.error("Failed to clean up stale HTTP routes: {}",
+                                                         cause.message()));
+                }
             }
 
             /**
@@ -546,9 +672,53 @@ public interface ClusterDeploymentManager {
                 var nodesWithInstances = existingInstances.stream()
                                                           .map(SliceNodeKey::nodeId)
                                                           .collect(Collectors.toSet());
-                var allocated = allocateToEmptyNodes(artifact, toAdd, nodesWithInstances);
-                log.info("scaleUp: allocated {} instances to empty nodes, remaining={}", allocated, toAdd - allocated);
-                allocateRoundRobin(artifact, toAdd - allocated);
+                // Phase 1: Allocate to truly empty nodes (nodes with NO slices at all)
+                var trulyEmptyNodes = findTrulyEmptyNodes();
+                log.info("scaleUp: found {} truly empty nodes: {}", trulyEmptyNodes.size(), trulyEmptyNodes);
+                var allocatedToTrulyEmpty = allocateToSpecificNodes(artifact, toAdd, trulyEmptyNodes);
+                log.info("scaleUp: allocated {} instances to truly empty nodes", allocatedToTrulyEmpty);
+                var remaining = toAdd - allocatedToTrulyEmpty;
+                if (remaining <= 0) {
+                    return;
+                }
+                // Phase 2: Allocate to nodes without THIS artifact (but may have other slices)
+                var allocated = allocateToEmptyNodes(artifact, remaining, nodesWithInstances);
+                log.info("scaleUp: allocated {} instances to nodes without this artifact, remaining={}",
+                         allocated,
+                         remaining - allocated);
+                // Phase 3: Round-robin for any remaining
+                allocateRoundRobin(artifact, remaining - allocated);
+            }
+
+            /**
+             * Find nodes that have absolutely no slices deployed (truly empty).
+             * These are ideal candidates for new deployments (e.g., AUTO-HEAL nodes).
+             */
+            private Set<NodeId> findTrulyEmptyNodes() {
+                var nodesWithAnySlice = sliceStates.keySet()
+                                                   .stream()
+                                                   .map(SliceNodeKey::nodeId)
+                                                   .collect(Collectors.toSet());
+                return activeNodes.get()
+                                  .stream()
+                                  .filter(node -> !nodesWithAnySlice.contains(node))
+                                  .collect(Collectors.toSet());
+            }
+
+            /**
+             * Allocate to a specific set of nodes.
+             */
+            private int allocateToSpecificNodes(Artifact artifact, int toAdd, Set<NodeId> targetNodes) {
+                var allocated = 0;
+                for (var node : targetNodes) {
+                    if (allocated >= toAdd) {
+                        break;
+                    }
+                    if (tryAllocate(artifact, node)) {
+                        allocated++;
+                    }
+                }
+                return allocated;
             }
 
             private int allocateToEmptyNodes(Artifact artifact, int toAdd, Set<NodeId> nodesWithInstances) {
@@ -615,15 +785,20 @@ public interface ClusterDeploymentManager {
             }
 
             private List<SliceNodeKey> getCurrentInstances(Artifact artifact) {
+                var currentNodes = activeNodes.get();
                 return sliceStates.keySet()
                                   .stream()
                                   .filter(key -> key.artifact()
                                                     .equals(artifact))
+                                  .filter(key -> currentNodes.contains(key.nodeId()))
                                   .toList();
             }
 
             private void issueLoadCommand(SliceNodeKey sliceKey) {
                 log.info("Issuing LOAD command for {}", sliceKey);
+                // Optimistic tracking: add to sliceStates BEFORE consensus to prevent duplicates
+                // The actual state will be updated via onValuePut when consensus commits
+                sliceStates.put(sliceKey, SliceState.LOAD);
                 // Emit deployment started event for metrics via MessageRouter
                 var timestamp = System.currentTimeMillis();
                 router.route(new DeploymentStarted(sliceKey.artifact(), sliceKey.nodeId(), timestamp));
@@ -635,6 +810,8 @@ public interface ClusterDeploymentManager {
 
             private void handleLoadCommandFailure(Cause cause, SliceNodeKey sliceKey) {
                 log.error("Failed to issue LOAD command for {}: {}", sliceKey, cause.message());
+                // Remove optimistic entry on failure to allow retry
+                sliceStates.remove(sliceKey);
                 SharedScheduler.schedule(this::reconcile, timeSpan(5).seconds());
             }
 
@@ -731,28 +908,34 @@ public interface ClusterDeploymentManager {
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-                if (! (valuePut.cause()
-                               .key() instanceof AetherKey)) {
-                    return;
-                }
                 state.get()
                      .onValuePut(valuePut);
             }
 
             @Override
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-                if (! (valueRemove.cause()
-                                  .key() instanceof AetherKey)) {
-                    return;
-                }
                 state.get()
                      .onValueRemove(valueRemove);
             }
 
             @Override
             public void onTopologyChange(TopologyChangeNotification topologyChange) {
+                // Always update topology even when dormant, so we have current topology when becoming leader
+                switch (topologyChange) {
+                    case NodeAdded(_, List<NodeId> newTopology) -> {
+                        topology.clear();
+                        topology.addAll(newTopology);
+                    }
+                    case NodeRemoved(_, List<NodeId> newTopology) -> {
+                        topology.clear();
+                        topology.addAll(newTopology);
+                    }
+                    case NodeDown(_, List<NodeId> newTopology) -> {
+                        topology.clear();
+                        topology.addAll(newTopology);
+                    }
+                    default -> {}
+                }
                 state.get()
                      .onTopologyChange(topologyChange);
             }

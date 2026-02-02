@@ -1,17 +1,18 @@
 package org.pragmatica.aether.http;
 
-import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
@@ -51,24 +52,24 @@ public interface HttpRouteRegistry {
     Option<RouteInfo> findRoute(String httpMethod, String path);
 
     /**
-     * Get all registered routes (for monitoring/debugging).
+     * Get all registered routes (for monitoring/debugging and router building).
      */
     List<RouteInfo> allRoutes();
 
     /**
-     * Route information with target artifact and method.
+     * Route information with set of nodes that can handle the route.
      *
      * @param httpMethod HTTP method
      * @param pathPrefix path prefix that matched
-     * @param artifact target artifact coordinate
-     * @param sliceMethod slice method to invoke
-     * @param securityPolicy security policy for this route
+     * @param nodes set of node IDs that have this route available
      */
     record RouteInfo(String httpMethod,
                      String pathPrefix,
-                     String artifact,
-                     String sliceMethod,
-                     RouteSecurityPolicy securityPolicy) {
+                     Set<NodeId> nodes) {
+        public static RouteInfo routeInfo(String httpMethod, String pathPrefix, Set<NodeId> nodes) {
+            return new RouteInfo(httpMethod, pathPrefix, nodes);
+        }
+
         public HttpRouteKey toKey() {
             return HttpRouteKey.httpRouteKey(httpMethod, pathPrefix);
         }
@@ -83,11 +84,6 @@ public interface HttpRouteRegistry {
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-                if (! (valuePut.cause()
-                               .key() instanceof AetherKey)) {
-                    return;
-                }
                 var key = valuePut.cause()
                                   .key();
                 var value = valuePut.cause()
@@ -101,12 +97,9 @@ public interface HttpRouteRegistry {
                     log.info("HttpRouteRegistry: Processing HttpRouteKey {} {}",
                              httpRouteKey.httpMethod(),
                              httpRouteKey.pathPrefix());
-                    var securityPolicy = RouteSecurityPolicy.fromString(httpRouteValue.securityPolicy());
-                    var routeInfo = new RouteInfo(httpRouteKey.httpMethod(),
-                                                  httpRouteKey.pathPrefix(),
-                                                  httpRouteValue.artifact(),
-                                                  httpRouteValue.sliceMethod(),
-                                                  securityPolicy);
+                    var routeInfo = RouteInfo.routeInfo(httpRouteKey.httpMethod(),
+                                                        httpRouteKey.pathPrefix(),
+                                                        httpRouteValue.nodes());
                     var ref = routesByMethod.computeIfAbsent(httpRouteKey.httpMethod(),
                                                              _ -> new AtomicReference<>(new TreeMap<>()));
                     // Atomic copy-on-write: copy current map, add entry, swap
@@ -115,22 +108,16 @@ public interface HttpRouteRegistry {
                                          updated.put(httpRouteKey.pathPrefix(), routeInfo);
                                          return updated;
                                      });
-                    log.info("HttpRouteRegistry: Registered route {} {} -> {}:{} [{}]",
+                    log.info("HttpRouteRegistry: Registered route {} {} -> {} nodes",
                              httpRouteKey.httpMethod(),
                              httpRouteKey.pathPrefix(),
-                             httpRouteValue.artifact(),
-                             httpRouteValue.sliceMethod(),
-                             securityPolicy.asString());
+                             httpRouteValue.nodes()
+                                           .size());
                 }
             }
 
             @Override
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                // Filter out non-AetherKey notifications (e.g., LeaderKey) due to type erasure
-                if (! (valueRemove.cause()
-                                  .key() instanceof AetherKey)) {
-                    return;
-                }
                 var key = valueRemove.cause()
                                      .key();
                 if (key instanceof HttpRouteKey httpRouteKey) {

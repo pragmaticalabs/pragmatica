@@ -8,6 +8,9 @@ import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Option;
 
+import java.util.HashSet;
+import java.util.Set;
+
 /// Value type stored in the consensus KVStore
 public sealed interface AetherValue {
     /// Slice target stores runtime scaling configuration for a slice.
@@ -183,20 +186,32 @@ public sealed interface AetherValue {
     }
 
     /// HTTP route mapping stored in consensus.
-    /// Maps HTTP method + path prefix to artifact + slice method for cluster-wide HTTP routing.
+    /// Tracks which nodes have registered a particular HTTP route.
     ///
-    /// @param artifact full artifact coordinate (e.g., "org.example:user-service:1.0.0")
-    /// @param sliceMethod slice method name to invoke
-    /// @param securityPolicy security policy for this route ("PUBLIC", "API_KEY", etc.)
-    record HttpRouteValue(String artifact, String sliceMethod, String securityPolicy) implements AetherValue {
-        /// Create HTTP route value with public security.
-        public static HttpRouteValue httpRouteValue(String artifact, String sliceMethod) {
-            return new HttpRouteValue(artifact, sliceMethod, "PUBLIC");
+    /// @param nodes set of node IDs that have this route available
+    record HttpRouteValue(Set<NodeId> nodes) implements AetherValue {
+        /// Creates HTTP route value with given nodes (immutable copy).
+        public static HttpRouteValue httpRouteValue(Set<NodeId> nodes) {
+            return new HttpRouteValue(Set.copyOf(nodes));
         }
 
-        /// Create HTTP route value with security policy.
-        public static HttpRouteValue httpRouteValue(String artifact, String sliceMethod, String securityPolicy) {
-            return new HttpRouteValue(artifact, sliceMethod, securityPolicy);
+        /// Returns a new value with the given node added.
+        public HttpRouteValue withNode(NodeId nodeId) {
+            var updated = new HashSet<>(nodes);
+            updated.add(nodeId);
+            return new HttpRouteValue(Set.copyOf(updated));
+        }
+
+        /// Returns a new value with the given node removed.
+        public HttpRouteValue withoutNode(NodeId nodeId) {
+            var updated = new HashSet<>(nodes);
+            updated.remove(nodeId);
+            return new HttpRouteValue(Set.copyOf(updated));
+        }
+
+        /// Checks if no nodes have this route.
+        public boolean isEmpty() {
+            return nodes.isEmpty();
         }
     }
 

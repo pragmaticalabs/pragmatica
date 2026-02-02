@@ -64,8 +64,7 @@ public sealed interface ManagementApiResponses {
 
     record RouteInfo(String method,
                      String path,
-                     String artifact,
-                     String sliceMethod) {}
+                     List<String> nodes) {}
 
     record DeployResponse(String status,
                           String artifact,

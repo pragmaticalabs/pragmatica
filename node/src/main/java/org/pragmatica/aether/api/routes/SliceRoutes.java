@@ -173,12 +173,17 @@ public final class SliceRoutes implements RouteSource {
         var routes = node.httpRouteRegistry()
                          .allRoutes()
                          .stream()
-                         .map(route -> new RouteInfo(route.httpMethod(),
-                                                     route.pathPrefix(),
-                                                     route.artifact(),
-                                                     route.sliceMethod()))
+                         .map(this::toRouteInfo)
                          .toList();
         return new RoutesResponse(routes);
+    }
+
+    private RouteInfo toRouteInfo(org.pragmatica.aether.http.HttpRouteRegistry.RouteInfo route) {
+        List<String> nodeIds = route.nodes()
+                                    .stream()
+                                    .map(NodeId::id)
+                                    .toList();
+        return new RouteInfo(route.httpMethod(), route.pathPrefix(), nodeIds);
     }
 
     private SlicesStatusResponse buildSlicesStatusResponse() {

@@ -6,24 +6,31 @@ import org.pragmatica.aether.http.adapter.SliceRouterFactory;
 import org.pragmatica.aether.http.handler.HttpRequestHandler;
 import org.pragmatica.aether.http.handler.HttpRequestHandlerFactory;
 import org.pragmatica.aether.http.handler.HttpRouteDefinition;
+import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.ServiceLoader;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue.httpRouteValue;
 
 /**
  * Publishes HTTP routes to KV-Store when slices become active.
@@ -31,7 +38,9 @@ import org.slf4j.LoggerFactory;
  * <p>Discovers {@link HttpRequestHandlerFactory} implementations via ServiceLoader,
  * creates handlers, and publishes their route definitions to the cluster.
  *
- * <p>Routes are idempotent - same route from multiple nodes results in same KV entry.
+ * <p>Routes track which nodes have registered them. When a node publishes a route,
+ * it adds itself to the node set. When unpublishing, it removes itself. The route
+ * key is only deleted when no nodes have it registered.
  */
 public interface HttpRoutePublisher {
     /**
@@ -83,22 +92,76 @@ public interface HttpRoutePublisher {
      */
     Option<SliceRouter> getSliceRouter(Artifact artifact);
 
-    static HttpRoutePublisher httpRoutePublisher(ClusterNode<KVCommand<AetherKey>> cluster) {
-        return new HttpRoutePublisherImpl(cluster);
+    /**
+     * Get all HTTP routes that this node can handle locally.
+     * Used by AppHttpServer to distinguish local vs remote routes.
+     *
+     * @return Set of HttpRouteKey for locally available routes
+     */
+    Set<HttpRouteKey> allLocalRoutes();
+
+    /**
+     * Find a local SliceRouter that can handle the given HTTP method and path prefix.
+     * Used by AppHttpServer for local request handling.
+     *
+     * @param httpMethod HTTP method (GET, POST, etc.)
+     * @param pathPrefix path prefix
+     * @return SliceRouter if this node has a local handler for the route
+     */
+    Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix);
+
+    /**
+     * Find local route info for a given HTTP method and path.
+     * Used by AppHttpServer to get artifact/method info for local routing.
+     *
+     * @param httpMethod HTTP method
+     * @param path request path
+     * @return LocalRouteInfo if found locally
+     */
+    Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path);
+
+    /**
+     * Local route information containing artifact and method details.
+     * This information is only available on nodes that have the route registered.
+     */
+    record LocalRouteInfo(String httpMethod,
+                          String pathPrefix,
+                          String artifactCoord,
+                          String sliceMethod,
+                          RouteSecurityPolicy security) {
+        public static LocalRouteInfo localRouteInfo(HttpRouteDefinition def) {
+            return new LocalRouteInfo(def.httpMethod(),
+                                      def.pathPrefix(),
+                                      def.artifactCoord(),
+                                      def.sliceMethod(),
+                                      def.security());
+        }
+    }
+
+    static HttpRoutePublisher httpRoutePublisher(NodeId selfNodeId,
+                                                 ClusterNode<KVCommand<AetherKey>> cluster,
+                                                 KVStore<AetherKey, ?> kvStore) {
+        return new HttpRoutePublisherImpl(selfNodeId, cluster, kvStore);
     }
 }
 
 class HttpRoutePublisherImpl implements HttpRoutePublisher {
     private static final Logger log = LoggerFactory.getLogger(HttpRoutePublisherImpl.class);
 
+    private final NodeId selfNodeId;
     private final ClusterNode<KVCommand<AetherKey>> cluster;
+    private final KVStore<AetherKey, ?> kvStore;
     private final Map<Artifact, HttpRequestHandler> handlers = new ConcurrentHashMap<>();
     private final Map<Artifact, SliceRouter> sliceRouters = new ConcurrentHashMap<>();
     private final Map<Artifact, List<HttpRouteDefinition>> publishedRoutes = new ConcurrentHashMap<>();
     private final RouteMetadataExtractor routeMetadataExtractor = RouteMetadataExtractor.routeMetadataExtractor();
 
-    HttpRoutePublisherImpl(ClusterNode<KVCommand<AetherKey>> cluster) {
+    HttpRoutePublisherImpl(NodeId selfNodeId,
+                           ClusterNode<KVCommand<AetherKey>> cluster,
+                           KVStore<AetherKey, ?> kvStore) {
+        this.selfNodeId = selfNodeId;
         this.cluster = cluster;
+        this.kvStore = kvStore;
     }
 
     @Override
@@ -130,22 +193,10 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
             log.info("No HTTP routes defined for slice {}, skipping publication", artifact);
             return Promise.unitPromise();
         }
-        // Create KV commands for route publication
-        var commands = routes.stream()
-                             .map(this::createRoutePutCommand)
-                             .toList();
         // Store published routes for unpublishing later
         publishedRoutes.put(artifact, routes);
-        // Submit to cluster
-        log.info("Calling cluster.apply() with {} commands for slice {}", commands.size(), artifact);
-        return cluster.apply(commands)
-                      .mapToUnit()
-                      .onSuccess(_ -> log.info("cluster.apply() SUCCESS: Published {} HTTP routes for slice {}",
-                                               routes.size(),
-                                               artifact))
-                      .onFailure(cause -> log.error("cluster.apply() FAILED for {}: {}",
-                                                    artifact,
-                                                    cause.message()));
+        // Publish routes using read-modify-write pattern
+        return publishRoutesToCluster(routes, artifact);
     }
 
     @Override
@@ -204,25 +255,34 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
                 return Promise.unitPromise();
             }
             publishedRoutes.put(artifact, routes);
-            var commands = routes.stream()
-                                 .map(this::createRoutePutCommand)
-                                 .toList();
-            log.info("Calling cluster.apply() with {} commands for slice {} via SliceRouterFactory",
-                     commands.size(),
-                     artifact);
-            return cluster.apply(commands)
-                          .mapToUnit()
-                          .onSuccess(_ -> log.info("cluster.apply() SUCCESS: Published {} HTTP routes for slice {} via SliceRouterFactory",
-                                                   routes.size(),
-                                                   artifact))
-                          .onFailure(cause -> log.error("cluster.apply() FAILED for {} via SliceRouterFactory: {}",
-                                                        artifact,
-                                                        cause.message()));
+            return publishRoutesToCluster(routes, artifact);
         }
         log.warn("SliceRouterFactory {} does not implement RouteSource, no routes published",
                  factory.getClass()
                         .getName());
         return Promise.unitPromise();
+    }
+
+    private Promise<Unit> publishRoutesToCluster(List<HttpRouteDefinition> routes, Artifact artifact) {
+        // Build commands using read-modify-write pattern
+        var commands = new ArrayList<KVCommand<AetherKey>>();
+        for (var route : routes) {
+            var key = HttpRouteKey.httpRouteKey(route.httpMethod(), route.pathPrefix());
+            var currentValue = kvStore.get(key);
+            var newValue = currentValue.map(v -> (HttpRouteValue) v)
+                                       .map(v -> v.withNode(selfNodeId))
+                                       .or(() -> httpRouteValue(Set.of(selfNodeId)));
+            commands.add(new KVCommand.Put<>(key, newValue));
+        }
+        log.info("Calling cluster.apply() with {} commands for slice {}", commands.size(), artifact);
+        return cluster.apply(commands)
+                      .mapToUnit()
+                      .onSuccess(_ -> log.info("cluster.apply() SUCCESS: Published {} HTTP routes for slice {}",
+                                               routes.size(),
+                                               artifact))
+                      .onFailure(cause -> log.error("cluster.apply() FAILED for {}: {}",
+                                                    artifact,
+                                                    cause.message()));
     }
 
     @Override
@@ -231,14 +291,31 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         sliceRouters.remove(artifact);
         return Option.option(publishedRoutes.remove(artifact))
                      .filter(routes -> !routes.isEmpty())
-                     .map(this::unpublishRoutesToCluster)
+                     .map(this::unpublishRoutesFromCluster)
                      .or(Promise.unitPromise());
     }
 
-    private Promise<Unit> unpublishRoutesToCluster(List<HttpRouteDefinition> routes) {
-        var commands = routes.stream()
-                             .map(this::createRouteRemoveCommand)
-                             .toList();
+    private Promise<Unit> unpublishRoutesFromCluster(List<HttpRouteDefinition> routes) {
+        // Build commands using read-modify-write pattern
+        var commands = new ArrayList<KVCommand<AetherKey>>();
+        for (var route : routes) {
+            var key = HttpRouteKey.httpRouteKey(route.httpMethod(), route.pathPrefix());
+            var currentValue = kvStore.get(key);
+            currentValue.map(v -> (HttpRouteValue) v)
+                        .onPresent(value -> {
+                                       var updated = value.withoutNode(selfNodeId);
+                                       if (updated.isEmpty()) {
+                                           // No more nodes have this route, delete the key
+            commands.add(new KVCommand.Remove<>(key));
+                                       } else {
+                                           // Other nodes still have this route, update the value
+            commands.add(new KVCommand.Put<>(key, updated));
+                                       }
+                                   });
+        }
+        if (commands.isEmpty()) {
+            return Promise.unitPromise();
+        }
         return cluster.apply(commands)
                       .mapToUnit()
                       .onSuccess(_ -> log.info("Unpublished {} HTTP routes",
@@ -257,17 +334,62 @@ class HttpRoutePublisherImpl implements HttpRoutePublisher {
         return Option.option(sliceRouters.get(artifact));
     }
 
-    private KVCommand<AetherKey> createRoutePutCommand(HttpRouteDefinition route) {
-        var key = HttpRouteKey.httpRouteKey(route.httpMethod(), route.pathPrefix());
-        var value = HttpRouteValue.httpRouteValue(route.artifactCoord(),
-                                                  route.sliceMethod(),
-                                                  route.security()
-                                                       .asString());
-        return new KVCommand.Put<>(key, value);
+    @Override
+    public Set<HttpRouteKey> allLocalRoutes() {
+        var localRoutes = new java.util.HashSet<HttpRouteKey>();
+        for (var routes : publishedRoutes.values()) {
+            for (var route : routes) {
+                localRoutes.add(HttpRouteKey.httpRouteKey(route.httpMethod(), route.pathPrefix()));
+            }
+        }
+        return Set.copyOf(localRoutes);
     }
 
-    private KVCommand<AetherKey> createRouteRemoveCommand(HttpRouteDefinition route) {
-        var key = HttpRouteKey.httpRouteKey(route.httpMethod(), route.pathPrefix());
-        return new KVCommand.Remove<>(key);
+    @Override
+    public Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix) {
+        // Find which artifact has a route matching the given method and path
+        for (var entry : publishedRoutes.entrySet()) {
+            var artifact = entry.getKey();
+            var routes = entry.getValue();
+            for (var route : routes) {
+                if (route.httpMethod()
+                         .equalsIgnoreCase(httpMethod) &&
+                route.pathPrefix()
+                     .equals(pathPrefix)) {
+                    return Option.option(sliceRouters.get(artifact));
+                }
+            }
+        }
+        return Option.none();
+    }
+
+    @Override
+    public Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path) {
+        var normalizedPath = normalizePath(path);
+        // Try prefix matching against all published routes
+        for (var routes : publishedRoutes.values()) {
+            for (var route : routes) {
+                if (route.httpMethod()
+                         .equalsIgnoreCase(httpMethod) &&
+                normalizedPath.startsWith(route.pathPrefix())) {
+                    return Option.some(LocalRouteInfo.localRouteInfo(route));
+                }
+            }
+        }
+        return Option.none();
+    }
+
+    private String normalizePath(String path) {
+        if (path == null || path.isBlank()) {
+            return "/";
+        }
+        var normalized = path.strip();
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
+        if (!normalized.endsWith("/")) {
+            normalized = normalized + "/";
+        }
+        return normalized;
     }
 }

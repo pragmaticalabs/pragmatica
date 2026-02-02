@@ -60,6 +60,11 @@ public class LocalNetwork implements ClusterNetwork {
     }
 
     @Override
+    public Set<NodeId> connectedPeers() {
+        return Set.copyOf(nodes.keySet());
+    }
+
+    @Override
     public <M extends ProtocolMessage> Unit broadcast(M message) {
         nodes.keySet()
              .forEach(nodeId -> send(nodeId, message));
