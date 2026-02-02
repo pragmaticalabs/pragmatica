@@ -56,7 +56,7 @@ public final class ForgeCluster {
     public static final int DEFAULT_BASE_APP_HTTP_PORT = 8070;
     private static final TimeSpan NODE_TIMEOUT = TimeSpan.timeSpan(10)
                                                         .seconds();
-    private static final long ROLLING_RESTART_DELAY_MS = 10_000;
+    private static final long ROLLING_RESTART_DELAY_MS = 5_000;
 
     // Auto-heal constants
     private static final int AUTO_HEAL_MAX_RETRIES = 3;
