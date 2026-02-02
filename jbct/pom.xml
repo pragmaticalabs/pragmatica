@@ -13,7 +13,7 @@
     <artifactId>jbct-parent</artifactId>
     <packaging>pom</packaging>
 
-    <name>JBCT Tools Parent</name>
+    <name>Pragmatica JBCT Tools Parent</name>
     <description>CLI tool and Maven plugin for JBCT code formatting and linting</description>
     <url>https://github.com/siy/jbct-cli</url>
 
@@ -310,11 +310,14 @@
     </build>
 
     <profiles>
+        <!-- jbct profile disabled - dogfooding creates cycle. Run jbct:check manually on single modules -->
+        <!--
         <profile>
             <id>jbct</id>
             <activation>
                 <property>
-                    <name>!jbct.skip</name>
+                    <name>jbct.skip</name>
+                    <value>false</value>
                 </property>
             </activation>
             <build>
@@ -335,6 +338,7 @@
                 </plugins>
             </build>
         </profile>
+        -->
         <profile>
             <id>release</id>
             <activation>

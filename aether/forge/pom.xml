@@ -17,6 +17,8 @@
 
     <modules>
         <module>forge-core</module>
+        <!-- forge-tests commented until examples are built
         <module>forge-tests</module>
+        -->
     </modules>
 </project>

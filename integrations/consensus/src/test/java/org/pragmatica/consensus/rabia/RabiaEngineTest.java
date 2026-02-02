@@ -44,6 +44,7 @@ import org.pragmatica.net.tcp.NodeAddress;
 import java.net.SocketAddress;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -614,6 +615,11 @@ class RabiaEngineTest {
         @Override
         public int connectedNodeCount() {
             return 0; // Test network has no real connections
+        }
+
+        @Override
+        public Set<NodeId> connectedPeers() {
+            return Set.of(); // Test network has no real connections
         }
 
         @Override

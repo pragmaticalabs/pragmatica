@@ -47,6 +47,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -553,6 +554,13 @@ class RabiaConsensusIntegrationTest {
         @Override
         public int connectedNodeCount() {
             return cluster.nodeIds.size() - 1; // All nodes except self
+        }
+
+        @Override
+        public Set<NodeId> connectedPeers() {
+            return cluster.nodeIds.stream()
+                          .filter(id -> !id.equals(self))
+                          .collect(java.util.stream.Collectors.toSet());
         }
 
         @Override

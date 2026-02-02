@@ -54,7 +54,9 @@
         <module>cli</module>
         <module>forge</module>
         <module>infra-services</module>
+        <!-- e2e-tests commented until examples are built
         <module>e2e-tests</module>
+        -->
         <module>aether-ttm</module>
         <module>http-handler-api</module>
         <module>http-routing-adapter</module>
@@ -446,10 +448,12 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
             </plugin>
+            <!-- jbct-maven-plugin commented until 0.15.0 is published
             <plugin>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>jbct-maven-plugin</artifactId>
             </plugin>
+            -->
         </plugins>
     </build>
 
