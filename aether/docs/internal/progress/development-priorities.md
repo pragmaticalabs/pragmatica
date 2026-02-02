@@ -7,6 +7,7 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 ## Completed ✅
 
 ### Core Infrastructure
+- **SliceInvoker Immediate Retry** - Event-driven retry on node departure (matches AppHttpServer pattern)
 - **Structured Keys** - KV schema foundation
 - **Consensus Integration** - Distributed operations working
 - **ClusterDeploymentManager** - Cluster orchestration
@@ -78,17 +79,28 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
    - Should cover: HTTP entry → local slice → inter-slice calls (local & remote)
    - Goal: Full request correlation across all hops without thread-local limitations
 
-2. **Topology in KV Store**
-   - Leader maintains cluster topology in consensus KV store
-   - Best-effort updates on membership changes
-   - Enables external observability without direct node queries
+2. **DB Connector Infrastructure**
+   - Database connectivity layer for slices
+   - Connection pooling and transaction management
+   - Support for common databases (PostgreSQL, MySQL, etc.)
 
-3. **Dynamic Configuration via KV Store**
+3. **External Secrets Management Integration**
+   - HashiCorp Vault integration
+   - AWS Secrets Manager / Azure Key Vault support
+   - Current: in-memory `infra-secrets` implementation exists
+
+4. **Cloud Provider Adapters (NodeLifecycleManager)**
+   - Implement `NodeLifecycleManager.executeAction(NodeAction)`
+   - Cloud provider adapters: AWS, GCP, Azure
+   - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
+   - Node auto-discovery and registration
+
+5. **Dynamic Configuration via KV Store**
    - Expose most configuration in consensus KV store
    - Nodes automatically pick up configuration changes
    - No restart required for config updates
 
-4. **Dependency Lifecycle Management**
+6. **Dependency Lifecycle Management**
    - Handle dependency removal while dependent slice is ACTIVE
    - Options when dependency becomes unavailable:
      - **Cascade deactivation** - Automatically deactivate dependent slices
@@ -100,13 +112,13 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 
 ### MEDIUM PRIORITY - Infrastructure Services
 
-5. **Mini-Kafka (Message Streaming)**
+7. **Mini-Kafka (Message Streaming)**
    - Ordered message streaming with partitions (differs from pub/sub)
    - In-memory storage (initial implementation)
    - Consumer group coordination
    - Retention policies
 
-6. **Distributed Saga Orchestration**
+8. **Distributed Saga Orchestration**
    - Long-running transaction orchestration (saga pattern)
    - Durable state transitions with compensation on failure
    - Differs from local state machine - coordinates across multiple slices
@@ -115,28 +127,28 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 
 ### LOWER PRIORITY - Security & Operations
 
-7. **TLS Certificate Management**
+9. **TLS Certificate Management**
    - Certificate provisioning and rotation
    - Mutual TLS between nodes
    - Integration with external CA or self-signed
 
-8. **External Secrets Management Integration**
-   - HashiCorp Vault integration
-   - AWS Secrets Manager / Azure Key Vault support
-   - Current: in-memory `infra-secrets` implementation exists
-
-9. **Canary & Blue-Green Deployment Strategies**
+10. **Canary & Blue-Green Deployment Strategies**
     - Current: Rolling updates with weighted routing exist
     - Add explicit canary deployment with automatic rollback on error threshold
     - Add blue-green deployment with instant switchover
     - A/B testing support with traffic splitting by criteria
 
+11. **Topology in KV Store**
+    - Leader maintains cluster topology in consensus KV store
+    - Best-effort updates on membership changes
+    - Enables external observability without direct node queries
+
 ### FUTURE - AI Integration
 
-10. **LLM Integration (Layer 3)**
-   - Claude/GPT API integration
-   - Complex reasoning workflows
-   - Multi-cloud decision support
+12. **LLM Integration (Layer 3)**
+    - Claude/GPT API integration
+    - Complex reasoning workflows
+    - Multi-cloud decision support
 
 ---
 

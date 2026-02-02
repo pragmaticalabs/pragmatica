@@ -14,6 +14,7 @@ import org.pragmatica.aether.update.RollingUpdate;
 import org.pragmatica.aether.update.RollingUpdateManager;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -27,6 +28,7 @@ import org.pragmatica.serialization.Serializer;
 import org.pragmatica.utility.KSUID;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -180,6 +182,18 @@ public interface SliceInvoker extends SliceInvokerFacade {
     void onInvokeResponse(InvokeResponse response);
 
     /**
+     * Handle node removal for immediate retry of pending invocations.
+     */
+    @MessageReceiver
+    void onNodeRemoved(TopologyChangeNotification.NodeRemoved event);
+
+    /**
+     * Handle node down for immediate retry of pending invocations.
+     */
+    @MessageReceiver
+    void onNodeDown(TopologyChangeNotification.NodeDown event);
+
+    /**
      * Stop the invoker and release resources.
      * <p>
      * Shuts down the retry scheduler, cancels pending invocations,
@@ -312,10 +326,13 @@ class SliceInvokerImpl implements SliceInvoker {
     // Maps correlationId -> (promise, createdAtMs)
     private final ConcurrentHashMap<String, PendingInvocation> pendingInvocations = new ConcurrentHashMap<>();
 
+    // Secondary index: NodeId -> Set of correlationIds for that node (for fast lookup on node departure)
+    private final Map<NodeId, Set<String>> pendingInvocationsByNode = new ConcurrentHashMap<>();
+
     private volatile boolean stopped = false;
     private volatile Option<SliceFailureListener> failureListener = Option.empty();
 
-    record PendingInvocation(Promise<Object> promise, long createdAtMs, String requestId) {}
+    record PendingInvocation(Promise<Object> promise, long createdAtMs, String requestId, NodeId targetNode) {}
 
     SliceInvokerImpl(NodeId self,
                      ClusterNetwork network,
@@ -357,6 +374,7 @@ class SliceInvokerImpl implements SliceInvoker {
         var pending = entry.getValue();
         if (pending.createdAtMs() < staleThreshold) {
             log.warn("[requestId={}] Cleaning up stale pending invocation: {}", pending.requestId(), entry.getKey());
+            removeFromNodeIndex(entry.getKey(), pending.targetNode());
             pending.promise()
                    .resolve(Causes.cause("Invocation timed out (cleanup)")
                                   .result());
@@ -380,6 +398,7 @@ class SliceInvokerImpl implements SliceInvoker {
         // Cancel all pending invocations
         pendingInvocations.forEach(this::cancelPendingInvocation);
         pendingInvocations.clear();
+        pendingInvocationsByNode.clear();
         // Shutdown scheduler
         scheduler.shutdown();
         try{
@@ -451,16 +470,19 @@ class SliceInvokerImpl implements SliceInvoker {
                                         MethodName method,
                                         byte[] payload) {
         var requestId = InvocationContext.getOrGenerateRequestId();
-        var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), requestId);
+        var targetNode = endpoint.nodeId();
+        var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), requestId, targetNode);
         pendingInvocations.put(correlationId, pending);
+        pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet())
+                                .add(correlationId);
         pendingPromise.timeout(timeSpan(timeoutMs).millis())
-                      .onResult(_ -> pendingInvocations.remove(correlationId));
+                      .onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = new InvokeRequest(self, correlationId, requestId, slice, method, payload, true);
-        network.send(endpoint.nodeId(), invokeRequest);
+        network.send(targetNode, invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent InvokeRequest to {}: {}.{} [{}]",
                       requestId,
-                      endpoint.nodeId(),
+                      targetNode,
                       slice,
                       method,
                       correlationId);
@@ -556,17 +578,20 @@ class SliceInvokerImpl implements SliceInvoker {
         var payload = serializeRequest(ctx.request);
         var correlationId = KSUID.ksuid()
                                  .toString();
+        var targetNode = endpoint.nodeId();
         var pendingPromise = Promise.<Object>promise();
-        var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), ctx.requestId);
+        var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), ctx.requestId, targetNode);
         pendingInvocations.put(correlationId, pending);
+        pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet())
+                                .add(correlationId);
         pendingPromise.timeout(timeSpan(timeoutMs).millis())
-                      .onResult(_ -> pendingInvocations.remove(correlationId));
+                      .onResult(_ -> removePendingInvocation(correlationId, targetNode));
         var invokeRequest = new InvokeRequest(self, correlationId, ctx.requestId, ctx.slice, ctx.method, payload, true);
-        network.send(endpoint.nodeId(), invokeRequest);
+        network.send(targetNode, invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
                       ctx.requestId,
-                      endpoint.nodeId(),
+                      targetNode,
                       ctx.slice,
                       ctx.method,
                       correlationId,
@@ -575,7 +600,7 @@ class SliceInvokerImpl implements SliceInvoker {
         pendingPromise.onSuccess(result -> promise.succeed((R) result))
                       .onFailure(cause -> handleFailoverFailure(promise,
                                                                 ctx,
-                                                                endpoint.nodeId(),
+                                                                targetNode,
                                                                 cause));
     }
 
@@ -689,7 +714,64 @@ class SliceInvokerImpl implements SliceInvoker {
               .onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",
                                       response.requestId(),
                                       response.correlationId()))
-              .onPresent(pending -> handlePendingResponse(pending, response));
+              .onPresent(pending -> {
+                             removeFromNodeIndex(response.correlationId(), pending.targetNode());
+                             handlePendingResponse(pending, response);
+                         });
+    }
+
+    @Override
+    public void onNodeRemoved(TopologyChangeNotification.NodeRemoved event) {
+        handleNodeDeparture(event.nodeId());
+    }
+
+    @Override
+    public void onNodeDown(TopologyChangeNotification.NodeDown event) {
+        handleNodeDeparture(event.nodeId());
+    }
+
+    private void handleNodeDeparture(NodeId departedNode) {
+        var correlationIds = pendingInvocationsByNode.remove(departedNode);
+        if (correlationIds == null || correlationIds.isEmpty()) {
+            return;
+        }
+        var affectedRequestIds = correlationIds.stream()
+                                               .map(pendingInvocations::get)
+                                               .filter(p -> p != null)
+                                               .map(PendingInvocation::requestId)
+                                               .limit(5)
+                                               .toList();
+        log.info("Node {} departed, triggering immediate retry for {} pending invocations, requestIds={}",
+                 departedNode,
+                 correlationIds.size(),
+                 affectedRequestIds);
+        for (var correlationId : correlationIds) {
+            var pending = pendingInvocations.remove(correlationId);
+            if (pending != null) {
+                log.debug("Triggering retry for request [{}] due to node {} departure",
+                          pending.requestId(),
+                          departedNode);
+                // Fail the promise to trigger onFailure callback which handles retry
+                pending.promise()
+                       .fail(Causes.cause("Target node " + departedNode + " departed"));
+            }
+        }
+    }
+
+    private void removePendingInvocation(String correlationId, NodeId targetNode) {
+        pendingInvocations.remove(correlationId);
+        removeFromNodeIndex(correlationId, targetNode);
+    }
+
+    private void removeFromNodeIndex(String correlationId, NodeId targetNode) {
+        var nodeCorrelations = pendingInvocationsByNode.get(targetNode);
+        if (nodeCorrelations != null) {
+            nodeCorrelations.remove(correlationId);
+            // Clean up empty sets
+            if (nodeCorrelations.isEmpty()) {
+                pendingInvocationsByNode.remove(targetNode, nodeCorrelations);
+            }
+        }
     }
 
     private void handlePendingResponse(PendingInvocation pending, InvokeResponse response) {
