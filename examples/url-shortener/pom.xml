@@ -16,9 +16,7 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.release>25</maven.compiler.release>
-        <pragmatica-lite.version>0.11.3</pragmatica-lite.version>
-        <aether.version>0.8.2</aether.version>
-        <jbct.version>0.6.1</jbct.version>
+        <pragmatica.version>0.15.0</pragmatica.version>
     </properties>
 
     <dependencies>
@@ -26,7 +24,7 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>core</artifactId>
-            <version>${pragmatica-lite.version}</version>
+            <version>${pragmatica.version}</version>
             <scope>provided</scope>
         </dependency>
 
@@ -34,13 +32,13 @@
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-annotations</artifactId>
-            <version>${aether.version}</version>
+            <version>${pragmatica.version}</version>
             <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>slice-api</artifactId>
-            <version>${aether.version}</version>
+            <version>${pragmatica.version}</version>
             <scope>provided</scope>
         </dependency>
 
@@ -48,7 +46,7 @@
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>infra-cache</artifactId>
-            <version>${aether.version}</version>
+            <version>${pragmatica.version}</version>
             <scope>provided</scope>
         </dependency>
 
@@ -56,7 +54,7 @@
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>http-routing-adapter</artifactId>
-            <version>${aether.version}</version>
+            <version>${pragmatica.version}</version>
             <scope>provided</scope>
         </dependency>
 
@@ -64,7 +62,7 @@
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>slice-processor</artifactId>
-            <version>${jbct.version}</version>
+            <version>${pragmatica.version}</version>
             <scope>provided</scope>
         </dependency>
 
@@ -94,7 +92,7 @@
                         <path>
                             <groupId>org.pragmatica-lite</groupId>
                             <artifactId>slice-processor</artifactId>
-                            <version>${jbct.version}</version>
+                            <version>${pragmatica.version}</version>
                         </path>
                     </annotationProcessorPaths>
                     <compilerArgs>
@@ -111,7 +109,7 @@
             <plugin>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>jbct-maven-plugin</artifactId>
-                <version>${jbct.version}</version>
+                <version>${pragmatica.version}</version>
                 <executions>
                     <execution>
                         <id>jbct-check</id>

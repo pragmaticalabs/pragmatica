@@ -6,14 +6,14 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>ecommerce</artifactId>
-        <version>0.8.2</version>
+        <version>0.15.0</version>
         <relativePath>../pom.xml</relativePath>
     </parent>
 
     <groupId>org.pragmatica-lite.aether.example</groupId>
-    <artifactId>pricing</artifactId>
-    <name>Example Slice - Pricing Service</name>
-    <description>Pricing slice for price calculation, discounts, and taxes</description>
+    <artifactId>fulfillment</artifactId>
+    <name>Example Slice - Fulfillment Service</name>
+    <description>Fulfillment slice for shipping and tracking</description>
 
     <dependencies>
         <dependency>

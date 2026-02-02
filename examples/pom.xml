@@ -5,38 +5,21 @@
     <modelVersion>4.0.0</modelVersion>
     <parent>
         <groupId>org.pragmatica-lite</groupId>
-        <artifactId>pragmatica-lite</artifactId>
-        <version>0.11.3</version>
+        <artifactId>pragmatica</artifactId>
+        <version>0.15.0</version>
     </parent>
 
     <artifactId>examples</artifactId>
+    <packaging>pom</packaging>
 
-    <name>Pragmatica Lite Examples</name>
-    <description>Examples for Pragmatica Lite</description>
+    <name>Pragmatica Examples</name>
+    <description>Example projects for Pragmatica ecosystem</description>
 
-    <dependencies>
-        <!-- Internal -->
-        <dependency>
-            <groupId>org.pragmatica-lite</groupId>
-            <artifactId>core</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-
-        <!-- External -->
-        <dependency>
-            <groupId>org.slf4j</groupId>
-            <artifactId>slf4j-api</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-api</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>org.junit.jupiter</groupId>
-            <artifactId>junit-jupiter-engine</artifactId>
-            <scope>test</scope>
-        </dependency>
-    </dependencies>
+    <modules>
+        <module>pragmatica-lite</module>
+        <module>url-shortener</module>
+        <module>ecommerce</module>
+    </modules>
 
     <build>
         <plugins>
@@ -44,7 +27,7 @@
                 <groupId>org.sonatype.central</groupId>
                 <artifactId>central-publishing-maven-plugin</artifactId>
                 <configuration>
-                    <publish>false</publish>
+                    <skipPublishing>true</skipPublishing>
                 </configuration>
             </plugin>
         </plugins>

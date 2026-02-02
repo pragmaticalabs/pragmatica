@@ -4,32 +4,33 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <parent>
-        <groupId>org.pragmatica-lite</groupId>
-        <artifactId>pragmatica</artifactId>
-        <version>0.15.0</version>
-    </parent>
-
-    <groupId>org.pragmatica-lite.aether</groupId>
-    <artifactId>aether</artifactId>
+    <groupId>org.pragmatica-lite</groupId>
+    <artifactId>pragmatica</artifactId>
+    <version>0.15.0</version>
     <packaging>pom</packaging>
-    <name>Pragmatica Aether Distributed Runtime</name>
-    <description>AI-driven distributed runtime environment for Java applications</description>
 
-    <url>https://github.com/siy/aether</url>
+    <name>Pragmatica</name>
+    <description>Pragmatica ecosystem: functional core library, JBCT tooling, and Aether distributed runtime</description>
+    <url>https://github.com/pragmaticalabs/pragmatica</url>
 
     <licenses>
         <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+            <comments>Core modules (core, integrations, jbct)</comments>
+        </license>
+        <license>
             <name>Business Source License 1.1</name>
             <url>https://mariadb.com/bsl11/</url>
-            <comments>Converts to Apache License 2.0 on January 1, 2030</comments>
+            <comments>Aether modules - converts to Apache License 2.0 on January 1, 2030</comments>
         </license>
     </licenses>
 
     <scm>
-        <url>https://github.com/siy/aether.git</url>
-        <connection>scm:git:ssh://git@github.com/siy/aether.git</connection>
-        <developerConnection>scm:git:ssh://git@github.com/siy/aether.git</developerConnection>
+        <url>https://github.com/pragmaticalabs/pragmatica.git</url>
+        <connection>scm:git:ssh://git@github.com/pragmaticalabs/pragmatica.git</connection>
+        <developerConnection>scm:git:ssh://git@github.com/pragmaticalabs/pragmatica.git</developerConnection>
         <tag>HEAD</tag>
     </scm>
 
@@ -37,37 +38,59 @@
         <developer>
             <name>Sergiy Yevtushenko</name>
             <email>sergiy.yevtushenko@gmail.com</email>
-            <organization>Pragmatica Lite</organization>
+            <organization>Pragmatica Labs</organization>
             <organizationUrl>https://www.pragmatica-lite.org</organizationUrl>
         </developer>
     </developers>
 
     <modules>
-        <module>slice-annotations</module>
-        <module>aether-config</module>
-        <module>aether-setup</module>
-        <module>dashboard</module>
-        <module>node</module>
-        <module>slice-api</module>
-        <module>infra-api</module>
-        <module>slice</module>
-        <module>cli</module>
-        <module>forge</module>
-        <module>infra-services</module>
-        <module>e2e-tests</module>
-        <module>aether-ttm</module>
-        <module>http-handler-api</module>
-        <module>http-routing-adapter</module>
-        <module>infra-slices</module>
+        <module>core</module>
+        <module>integrations</module>
+        <module>testing</module>
+        <module>jbct</module>
+        <module>aether</module>
+        <module>examples</module>
     </modules>
 
     <properties>
-        <!-- Enable JBCT for aether modules -->
-        <jbct.skip>false</jbct.skip>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <java.release>25</java.release>
+
+        <!-- Dependencies -->
+        <netty.version>4.2.9.Final</netty.version>
+        <slf4j.version>2.0.17</slf4j.version>
+        <junit.version>5.13.4</junit.version>
+        <assertj-core.version>3.27.7</assertj-core.version>
+        <mockito.version>5.21.0</mockito.version>
+        <awaitility.version>4.3.0</awaitility.version>
+        <tinylog.version>2.7.0</tinylog.version>
+        <kryo.version>5.6.2</kryo.version>
+        <fury-core.version>0.10.3</fury-core.version>
+        <picocli.version>4.7.6</picocli.version>
+        <asm.version>9.8</asm.version>
+        <micrometer.version>1.16.1</micrometer.version>
+        <onnxruntime.version>1.23.2</onnxruntime.version>
+
+        <!-- Integration Dependencies -->
+        <jackson.version>3.0.3</jackson.version>
+        <jakarta.persistence.version>3.2.0</jakarta.persistence.version>
+        <jooq.version>3.20.10</jooq.version>
+
+        <!-- Maven Plugin versions -->
+        <maven-compiler-plugin.version>3.14.0</maven-compiler-plugin.version>
+        <maven-surefire-plugin.version>3.5.2</maven-surefire-plugin.version>
+        <maven-failsafe-plugin.version>3.5.1</maven-failsafe-plugin.version>
+        <maven-plugin-api.version>3.9.9</maven-plugin-api.version>
+        <maven-plugin-annotations.version>3.15.1</maven-plugin-annotations.version>
+        <maven-plugin-plugin.version>4.0.0-beta-2</maven-plugin-plugin.version>
+
+        <!-- Skip jbct by default to avoid cycle during reactor build -->
+        <jbct.skip>true</jbct.skip>
     </properties>
 
     <dependencyManagement>
         <dependencies>
+            <!-- Core module -->
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>core</artifactId>
@@ -75,7 +98,49 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
+                <artifactId>testing</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- Integration Modules -->
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jackson</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>micrometer</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jpa</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jooq</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>http-routing</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>toml</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>http-client</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>http-server</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>
@@ -105,11 +170,6 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
-                <artifactId>http-server</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>dns</artifactId>
                 <version>${project.version}</version>
             </dependency>
@@ -130,88 +190,66 @@
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
-                <artifactId>micrometer</artifactId>
+                <artifactId>net-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>http-client</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>jackson</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.micrometer</groupId>
-                <artifactId>micrometer-core</artifactId>
-                <version>${micrometer.version}</version>
-            </dependency>
-            <dependency>
-                <groupId>io.micrometer</groupId>
-                <artifactId>micrometer-registry-prometheus</artifactId>
-                <version>${micrometer.version}</version>
-            </dependency>
-
-            <!-- Internal -->
-            <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>slice-annotations</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>slice-api</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>infra-api</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>slice</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
-            <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>node</artifactId>
-                <version>${project.version}</version>
-            </dependency>
-
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>cluster</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
+            <!-- JBCT modules -->
             <dependency>
-                <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>artifact-repo</artifactId>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
+            <!-- Aether modules -->
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>slice-annotations</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>slice-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>infra-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>slice</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>node</artifactId>
+                <version>${project.version}</version>
+            </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>aether-ttm</artifactId>
                 <version>${project.version}</version>
             </dependency>
-
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>forge-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
-
             <dependency>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>http-routing</artifactId>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>http-routing-adapter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>infra-aspect</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -235,6 +273,12 @@
             <!-- Testing -->
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter</artifactId>
+                <version>${junit.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter-api</artifactId>
                 <version>${junit.version}</version>
                 <scope>test</scope>
@@ -242,6 +286,12 @@
             <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter-engine</artifactId>
+                <version>${junit.version}</version>
+                <scope>test</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.junit.jupiter</groupId>
+                <artifactId>junit-jupiter-params</artifactId>
                 <version>${junit.version}</version>
                 <scope>test</scope>
             </dependency>
@@ -270,7 +320,7 @@
                 <scope>test</scope>
             </dependency>
 
-            <!-- Netty dependencies -->
+            <!-- Netty -->
             <dependency>
                 <groupId>io.netty</groupId>
                 <artifactId>netty-all</artifactId>
@@ -283,7 +333,6 @@
                 <artifactId>kryo</artifactId>
                 <version>${kryo.version}</version>
             </dependency>
-
             <dependency>
                 <groupId>org.apache.fury</groupId>
                 <artifactId>fury-core</artifactId>
@@ -294,7 +343,59 @@
             <dependency>
                 <groupId>info.picocli</groupId>
                 <artifactId>picocli</artifactId>
-                <version>4.7.6</version>
+                <version>${picocli.version}</version>
+            </dependency>
+
+            <!-- Maven Plugin API -->
+            <dependency>
+                <groupId>org.apache.maven</groupId>
+                <artifactId>maven-plugin-api</artifactId>
+                <version>${maven-plugin-api.version}</version>
+                <scope>provided</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.maven.plugin-tools</groupId>
+                <artifactId>maven-plugin-annotations</artifactId>
+                <version>${maven-plugin-annotations.version}</version>
+                <scope>provided</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.maven</groupId>
+                <artifactId>maven-core</artifactId>
+                <version>${maven-plugin-api.version}</version>
+                <scope>provided</scope>
+            </dependency>
+
+            <!-- Integration External Dependencies -->
+            <dependency>
+                <groupId>tools.jackson.core</groupId>
+                <artifactId>jackson-databind</artifactId>
+                <version>${jackson.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.fasterxml.jackson.core</groupId>
+                <artifactId>jackson-annotations</artifactId>
+                <version>2.20</version>
+            </dependency>
+            <dependency>
+                <groupId>io.micrometer</groupId>
+                <artifactId>micrometer-core</artifactId>
+                <version>${micrometer.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.micrometer</groupId>
+                <artifactId>micrometer-registry-prometheus</artifactId>
+                <version>${micrometer.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>jakarta.persistence</groupId>
+                <artifactId>jakarta.persistence-api</artifactId>
+                <version>${jakarta.persistence.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jooq</groupId>
+                <artifactId>jooq</artifactId>
+                <version>${jooq.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>
@@ -305,7 +406,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-compiler-plugin</artifactId>
-                    <version>3.14.0</version>
+                    <version>${maven-compiler-plugin.version}</version>
                     <configuration>
                         <showDeprecation>true</showDeprecation>
                         <showWarnings>true</showWarnings>
@@ -319,8 +420,9 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-surefire-plugin</artifactId>
-                    <version>3.5.1</version>
+                    <version>${maven-surefire-plugin.version}</version>
                     <configuration>
+                        <excludedGroups>Infinite, Slow, Benchmark</excludedGroups>
                         <excludes>
                             <exclude>**/*IT.java</exclude>
                         </excludes>
@@ -329,7 +431,7 @@
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-failsafe-plugin</artifactId>
-                    <version>3.5.1</version>
+                    <version>${maven-failsafe-plugin.version}</version>
                     <configuration>
                         <includes>
                             <include>**/*IT.java</include>
@@ -345,36 +447,10 @@
                     </executions>
                 </plugin>
                 <plugin>
-                    <groupId>org.pragmatica-lite</groupId>
-                    <artifactId>jbct-maven-plugin</artifactId>
-                    <version>${project.version}</version>
-                    <configuration>
-                        <skip>${jbct.skip}</skip>
-                    </configuration>
-                    <executions>
-                        <execution>
-                            <goals>
-                                <goal>format</goal>
-                            </goals>
-                        </execution>
-                    </executions>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>versions-maven-plugin</artifactId>
+                    <version>2.18.0</version>
                 </plugin>
-                <plugin>
-                    <artifactId>maven-shade-plugin</artifactId>
-                    <version>3.6.0</version>
-                    <configuration>
-                        <createDependencyReducedPom>false</createDependencyReducedPom>
-                    </configuration>
-                    <executions>
-                        <execution>
-                            <phase>package</phase>
-                            <goals>
-                                <goal>shade</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                </plugin>
-                <!-- Publishing plugins -->
                 <plugin>
                     <groupId>org.apache.maven.plugins</groupId>
                     <artifactId>maven-source-plugin</artifactId>
@@ -428,7 +504,50 @@
                     <extensions>true</extensions>
                     <configuration>
                         <publishingServerId>central</publishingServerId>
+                        <autoPublish>true</autoPublish>
                     </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-plugin-plugin</artifactId>
+                    <version>${maven-plugin-plugin.version}</version>
+                    <dependencies>
+                        <dependency>
+                            <groupId>org.ow2.asm</groupId>
+                            <artifactId>asm</artifactId>
+                            <version>${asm.version}</version>
+                        </dependency>
+                    </dependencies>
+                </plugin>
+                <plugin>
+                    <artifactId>maven-shade-plugin</artifactId>
+                    <version>3.6.0</version>
+                    <configuration>
+                        <createDependencyReducedPom>false</createDependencyReducedPom>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <phase>package</phase>
+                            <goals>
+                                <goal>shade</goal>
+                            </goals>
+                        </execution>
+                    </executions>
+                </plugin>
+                <plugin>
+                    <groupId>org.pragmatica-lite</groupId>
+                    <artifactId>jbct-maven-plugin</artifactId>
+                    <version>${project.version}</version>
+                    <configuration>
+                        <skip>${jbct.skip}</skip>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>format</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
             </plugins>
         </pluginManagement>
@@ -443,12 +562,12 @@
                 <artifactId>maven-surefire-plugin</artifactId>
             </plugin>
             <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-failsafe-plugin</artifactId>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>versions-maven-plugin</artifactId>
             </plugin>
             <plugin>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>jbct-maven-plugin</artifactId>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-source-plugin</artifactId>
             </plugin>
         </plugins>
     </build>

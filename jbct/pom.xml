@@ -4,9 +4,13 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <groupId>org.pragmatica-lite</groupId>
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>pragmatica</artifactId>
+        <version>0.15.0</version>
+    </parent>
+
     <artifactId>jbct-parent</artifactId>
-    <version>0.6.1</version>
     <packaging>pom</packaging>
 
     <name>JBCT Tools Parent</name>
@@ -84,54 +88,54 @@
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>core</artifactId>
-                <version>${pragmatica-lite.version}</version>
+                <version>${project.version}</version>
             </dependency>
 
             <!-- Pragmatica Lite HTTP Client -->
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>http-client</artifactId>
-                <version>${pragmatica-lite.version}</version>
+                <version>${project.version}</version>
             </dependency>
 
             <!-- Pragmatica Lite TOML Parser -->
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>toml</artifactId>
-                <version>${pragmatica-lite.version}</version>
+                <version>${project.version}</version>
             </dependency>
 
             <!-- Pragmatica Lite HTTP Routing -->
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>http-routing</artifactId>
-                <version>${pragmatica-lite.version}</version>
+                <version>${project.version}</version>
             </dependency>
 
             <!-- Aether Slice API -->
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>slice-annotations</artifactId>
-                <version>${aether.version}</version>
+                <version>${project.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>slice-api</artifactId>
-                <version>${aether.version}</version>
+                <version>${project.version}</version>
             </dependency>
 
             <!-- Aether HTTP Routing Adapter -->
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>http-routing-adapter</artifactId>
-                <version>${aether.version}</version>
+                <version>${project.version}</version>
             </dependency>
 
             <!-- Aether Infra Aspect -->
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>infra-aspect</artifactId>
-                <version>${aether.version}</version>
+                <version>${project.version}</version>
             </dependency>
 
             <!-- Picocli -->
@@ -318,7 +322,7 @@
                     <plugin>
                         <groupId>org.pragmatica-lite</groupId>
                         <artifactId>jbct-maven-plugin</artifactId>
-                        <version>0.6.1</version>
+                        <version>0.15.0</version>
                         <executions>
                             <execution>
                                 <id>check</id>
