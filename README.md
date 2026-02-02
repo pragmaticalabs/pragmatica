@@ -97,7 +97,7 @@ mvn package -DskipTests
 # JARs:
 #   cli/target/aether.jar
 #   node/target/aether-node.jar
-#   forge/target/aether-forge.jar
+#   forge/forge-core/target/aether-forge.jar
 ```
 
 ## Quick Start
@@ -193,7 +193,7 @@ aetherx/
 ├── forge/               # Local cluster simulator & dashboard
 ├── cli/                 # Command-line tools
 └── examples/
-    └── order-demo/      # Complete demo (5 slices)
+    └── ecommerce/       # E-commerce demo (PlaceOrder, Payment, Inventory, etc.)
 ```
 
 ## Requirements

@@ -51,7 +51,7 @@ final class InMemoryDatabaseService implements DatabaseService {
     // ========== Table Operations ==========
     @Override
     public Promise<Unit> createTable(String tableName, List<String> columns) {
-        var table = new Table(tableName, columns);
+        var table = Table.table(tableName, columns);
         return option(tables.putIfAbsent(tableName, table))
         .fold(() -> Promise.success(unit()),
               existing -> DatabaseError.duplicateKey("schema", tableName)
@@ -102,9 +102,10 @@ final class InMemoryDatabaseService implements DatabaseService {
     }
 
     private <T> Promise<Option<T>> mapRowById(Table table, Object id, RowMapper<T> mapper) {
-        return table.getRow(toLong(id))
-                    .fold(() -> Promise.success(none()),
-                          row -> mapSingleRow(row, mapper));
+        return toLong(id).fold(() -> Promise.success(none()),
+                               longId -> table.getRow(longId)
+                                              .fold(() -> Promise.success(none()),
+                                                    row -> mapSingleRow(row, mapper)));
     }
 
     private <T> Promise<Option<T>> mapSingleRow(Map<String, Object> row, RowMapper<T> mapper) {
@@ -157,9 +158,9 @@ final class InMemoryDatabaseService implements DatabaseService {
     }
 
     private int updateRowById(Table table, Object id, Map<String, Object> updates) {
-        return table.update(toLong(id), updates)
-               ? 1
-               : 0;
+        return toLong(id).fold(() -> 0, longId -> table.update(longId, updates)
+                                                  ? 1
+                                                  : 0);
     }
 
     @Override
@@ -171,8 +172,10 @@ final class InMemoryDatabaseService implements DatabaseService {
         int count = 0;
         for (var row : table.getAllRows()) {
             if (value.equals(row.get(column))) {
-                var id = toLong(row.get(ID_COLUMN));
-                if (table.update(id, updates)) {
+                var updated = option(row.get(ID_COLUMN)).flatMap(this::toLong)
+                                    .fold(() -> false,
+                                          id -> table.update(id, updates));
+                if (updated) {
                     count++;
                 }
             }
@@ -183,7 +186,7 @@ final class InMemoryDatabaseService implements DatabaseService {
     // ========== Delete Operations ==========
     @Override
     public Promise<Boolean> deleteById(String tableName, Object id) {
-        return getTableOrFail(tableName).map(table -> table.delete(toLong(id)));
+        return getTableOrFail(tableName).map(table -> toLong(id).fold(() -> false, table::delete));
     }
 
     @Override
@@ -195,7 +198,8 @@ final class InMemoryDatabaseService implements DatabaseService {
         var toDelete = table.getAllRows()
                             .stream()
                             .filter(row -> value.equals(row.get(column)))
-                            .map(row -> toLong(row.get(ID_COLUMN)))
+                            .flatMap(row -> option(row.get(ID_COLUMN)).flatMap(this::toLong)
+                                                  .stream())
                             .toList();
         int count = 0;
         for (var id : toDelete) {
@@ -243,26 +247,30 @@ final class InMemoryDatabaseService implements DatabaseService {
                            value -> Promise.success(List.of()));
     }
 
-    private long toLong(Object value) {
-        if (value instanceof Long l) return l;
-        if (value instanceof Integer i) return i.longValue();
-        if (value instanceof String s) return Long.parseLong(s);
-        return 0L;
+    private Option<Long> toLong(Object value) {
+        if (value instanceof Long l) return option(l);
+        if (value instanceof Integer i) return option(i.longValue());
+        if (value instanceof String s) {
+            try{
+                return option(Long.parseLong(s));
+            } catch (NumberFormatException e) {
+                return none();
+            }
+        }
+        return none();
     }
 
     // ========== Internal Classes ==========
-    private static final class Table {
-        private final String name;
-        private final List<String> columns;
-        private final ConcurrentHashMap<Long, Map<String, Object>> rows = new ConcurrentHashMap<>();
-        private final AtomicLong idGenerator = new AtomicLong(1);
-
-        Table(String name, List<String> columns) {
-            this.name = name;
-            this.columns = new ArrayList<>(columns);
-            if (!this.columns.contains(ID_COLUMN)) {
-                this.columns.add(0, ID_COLUMN);
+    private record Table(String name,
+                         List<String> columns,
+                         ConcurrentHashMap<Long, Map<String, Object>> rows,
+                         AtomicLong idGenerator) {
+        static Table table(String name, List<String> columns) {
+            var cols = new ArrayList<>(columns);
+            if (!cols.contains(ID_COLUMN)) {
+                cols.add(0, ID_COLUMN);
             }
+            return new Table(name, cols, new ConcurrentHashMap<>(), new AtomicLong(1));
         }
 
         long insert(Map<String, Object> row) {

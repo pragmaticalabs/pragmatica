@@ -1,0 +1,10 @@
+prefix = "/api/v1/urls"
+
+[routes]
+shorten = "POST /"
+resolve = "GET /{shortCode}"
+
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*"]
+HTTP_400 = ["*Invalid*"]

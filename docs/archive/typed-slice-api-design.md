@@ -1467,9 +1467,9 @@ Automatic contract verification:
 
 ## Appendix A: Complete Example
 
-See `examples/order-demo/` in the Aether repository for a complete working example with:
+See `examples/ecommerce/` in the Aether repository for a complete working example with:
 
-- 5 interacting slices
+- Multiple interacting slices (PlaceOrder, Payment, Inventory, Pricing, Fulfillment)
 - Typed dependencies
 - Full Maven configuration
 - Integration tests

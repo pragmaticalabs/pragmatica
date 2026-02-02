@@ -1,21 +1,24 @@
 package org.pragmatica.aether.api.routes;
 
 import org.pragmatica.aether.api.AlertManager;
-import org.pragmatica.http.HttpMethod;
-import org.pragmatica.http.HttpStatus;
-import org.pragmatica.http.server.RequestContext;
-import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.aether.api.ManagementApiResponses.AlertsClearedResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.AlertsResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.ThresholdRemovedResponse;
+import org.pragmatica.aether.api.ManagementApiResponses.ThresholdSetResponse;
+import org.pragmatica.http.routing.Route;
+import org.pragmatica.http.routing.RouteSource;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 
-import java.util.regex.Pattern;
+import java.util.stream.Stream;
+
+import static org.pragmatica.http.routing.PathParameter.aString;
 
 /**
  * Routes for alert management: thresholds, active alerts, history.
  */
-public final class AlertRoutes implements RouteHandler {
-    private static final Pattern METRIC_PATTERN = Pattern.compile("\"metric\"\\s*:\\s*\"([^\"]+)\"");
-    private static final Pattern WARNING_PATTERN = Pattern.compile("\"warning\"\\s*:\\s*([0-9.]+)");
-    private static final Pattern CRITICAL_PATTERN = Pattern.compile("\"critical\"\\s*:\\s*([0-9.]+)");
-
+public final class AlertRoutes implements RouteSource {
     private final AlertManager alertManager;
 
     private AlertRoutes(AlertManager alertManager) {
@@ -26,91 +29,82 @@ public final class AlertRoutes implements RouteHandler {
         return new AlertRoutes(alertManager);
     }
 
+    // Request DTO
+    record ThresholdRequest(String metric, Double warning, Double critical) {}
+
     @Override
-    public boolean handle(RequestContext ctx, ResponseWriter response) {
-        var path = ctx.path();
-        var method = ctx.method();
-        // GET endpoints
-        if (method == HttpMethod.GET) {
-            return switch (path) {
-                case "/api/thresholds" -> {
-                    response.ok(alertManager.thresholdsAsJson());
-                    yield true;
-                }
-                case "/api/alerts" -> {
-                    response.ok(buildAlertsResponse());
-                    yield true;
-                }
-                case "/api/alerts/active" -> {
-                    response.ok(alertManager.activeAlertsAsJson());
-                    yield true;
-                }
-                case "/api/alerts/history" -> {
-                    response.ok(alertManager.alertHistoryAsJson());
-                    yield true;
-                }
-                default -> false;
-            };
-        }
+    public Stream<Route<?>> routes() {
+        return Stream.of(// GET endpoints
+        Route.<Object> get("/api/thresholds")
+             .toJson(alertManager::thresholdsAsJson),
+        Route.<AlertsResponse> get("/api/alerts")
+             .toJson(this::buildAlertsResponse),
+        Route.<Object> get("/api/alerts/active")
+             .toJson(alertManager::activeAlertsAsJson),
+        Route.<Object> get("/api/alerts/history")
+             .toJson(alertManager::alertHistoryAsJson),
         // POST endpoints
-        if (method == HttpMethod.POST) {
-            return switch (path) {
-                case "/api/thresholds" -> {
-                    handleSetThreshold(response, ctx.bodyAsString());
-                    yield true;
-                }
-                case "/api/alerts/clear" -> {
-                    alertManager.clearAlerts();
-                    response.ok("{\"status\":\"alerts_cleared\"}");
-                    yield true;
-                }
-                default -> false;
-            };
-        }
-        // DELETE endpoints
-        if (method == HttpMethod.DELETE && path.startsWith("/api/thresholds/")) {
-            var metric = path.substring("/api/thresholds/".length());
-            handleDeleteThreshold(response, metric);
-            return true;
-        }
-        return false;
+        Route.<ThresholdSetResponse> post("/api/thresholds")
+             .withBody(ThresholdRequest.class)
+             .toJson(this::handleSetThreshold),
+        Route.<AlertsClearedResponse> post("/api/alerts/clear")
+             .toJson(this::handleClearAlerts),
+        // DELETE with path parameter
+        Route.<ThresholdRemovedResponse> delete("/api/thresholds")
+             .withPath(aString())
+             .to(this::handleDeleteThreshold)
+             .asJson());
     }
 
-    private void handleSetThreshold(ResponseWriter response, String body) {
-        try{
-            var metricMatch = METRIC_PATTERN.matcher(body);
-            var warningMatch = WARNING_PATTERN.matcher(body);
-            var criticalMatch = CRITICAL_PATTERN.matcher(body);
-            if (!metricMatch.find() || !warningMatch.find() || !criticalMatch.find()) {
-                response.badRequest("Missing metric, warning, or critical field");
-                return;
-            }
-            var metric = metricMatch.group(1);
-            var warning = Double.parseDouble(warningMatch.group(1));
-            var critical = Double.parseDouble(criticalMatch.group(1));
-            alertManager.setThreshold(metric, warning, critical)
-                        .onSuccess(_ -> response.ok("{\"status\":\"threshold_set\",\"metric\":\"" + metric
-                                                    + "\",\"warning\":" + warning + ",\"critical\":" + critical + "}"))
-                        .onFailure(cause -> response.error(HttpStatus.INTERNAL_SERVER_ERROR,
-                                                           "Failed to persist threshold: " + cause.message()));
-        } catch (Exception e) {
-            response.badRequest(e.getMessage());
-        }
+    private Promise<ThresholdSetResponse> handleSetThreshold(ThresholdRequest req) {
+        return validateThresholdRequest(req).async()
+                                       .flatMap(valid -> alertManager.setThreshold(valid.metric(),
+                                                                                   valid.warning(),
+                                                                                   valid.critical())
+                                                                     .map(_ -> new ThresholdSetResponse("threshold_set",
+                                                                                                        valid.metric(),
+                                                                                                        valid.warning(),
+                                                                                                        valid.critical())));
     }
 
-    private void handleDeleteThreshold(ResponseWriter response, String metric) {
+    private Result<ThresholdRequest> validateThresholdRequest(ThresholdRequest req) {
+        if (req.metric() == null || req.metric()
+                                       .isEmpty()) {
+            return AlertError.MISSING_FIELDS.result();
+        }
+        if (req.warning() == null || req.critical() == null) {
+            return AlertError.MISSING_FIELDS.result();
+        }
+        return Result.success(req);
+    }
+
+    private AlertsClearedResponse handleClearAlerts() {
+        alertManager.clearAlerts();
+        return new AlertsClearedResponse("alerts_cleared");
+    }
+
+    private Promise<ThresholdRemovedResponse> handleDeleteThreshold(String metric) {
         if (metric.isEmpty()) {
-            response.badRequest("Metric name required");
-            return;
+            return AlertError.METRIC_REQUIRED.promise();
         }
-        alertManager.removeThreshold(metric)
-                    .onSuccess(_ -> response.ok("{\"status\":\"threshold_removed\",\"metric\":\"" + metric + "\"}"))
-                    .onFailure(cause -> response.error(HttpStatus.INTERNAL_SERVER_ERROR,
-                                                       "Failed to remove threshold: " + cause.message()));
+        return alertManager.removeThreshold(metric)
+                           .map(_ -> new ThresholdRemovedResponse("threshold_removed", metric));
     }
 
-    private String buildAlertsResponse() {
-        return "{\"active\":" + alertManager.activeAlertsAsJson() + ",\"history\":" + alertManager.alertHistoryAsJson()
-               + "}";
+    private AlertsResponse buildAlertsResponse() {
+        return new AlertsResponse(alertManager.activeAlertsAsJson(), alertManager.alertHistoryAsJson());
+    }
+
+    private enum AlertError implements Cause {
+        MISSING_FIELDS("Missing metric, warning, or critical field"),
+        METRIC_REQUIRED("Metric name required");
+        private final String message;
+        AlertError(String message) {
+            this.message = message;
+        }
+        @Override
+        public String message() {
+            return message;
+        }
     }
 }

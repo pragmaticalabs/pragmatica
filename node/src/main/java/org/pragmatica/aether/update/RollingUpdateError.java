@@ -49,6 +49,20 @@ public sealed interface RollingUpdateError extends Cause {
     }
 
     /**
+     * Initial deployment (no previous version exists).
+     */
+    record InitialDeployment(ArtifactBase artifactBase) implements RollingUpdateError {
+        public static InitialDeployment initialDeployment(ArtifactBase artifactBase) {
+            return new InitialDeployment(artifactBase);
+        }
+
+        @Override
+        public String message() {
+            return "Initial deployment for " + artifactBase + " (no previous version)";
+        }
+    }
+
+    /**
      * Insufficient instances to satisfy routing ratio.
      */
     record InsufficientInstances(VersionRouting routing,

@@ -1,0 +1,2 @@
+# Slice dependencies (one artifact per line)
+org.pragmatica-lite.aether:infra-cache

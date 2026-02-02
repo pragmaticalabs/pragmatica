@@ -10,7 +10,7 @@ Aether includes:
 |-----------|---------|----------|
 | **Aether Forge** (`forge/`) | Cluster simulator with visual dashboard for resilience testing | Developers, DevOps, executives |
 | **Real Cluster Demo** (`script/demo-cluster.sh`) | Multi-process cluster with slice deployment | Developers, DevOps |
-| **Order Domain Demo** (`examples/order-demo/`) | Multi-slice business domain example | Developers, architects |
+| **E-commerce Example** (`examples/ecommerce/`) | Multi-slice business domain example | Developers, architects |
 
 ---
 
@@ -93,14 +93,13 @@ The web dashboard (`index.html`) provides:
 
 ```bash
 # Build Forge
-cd forge
-mvn package
+mvn package -pl forge/forge-core -am -DskipTests
 
 # Run with defaults (5 nodes, 1000 req/sec)
-java -jar target/aether-forge.jar
+java -jar forge/forge-core/target/aether-forge.jar
 
 # Or with custom settings
-CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar target/aether-forge.jar
+CLUSTER_SIZE=7 LOAD_RATE=2000 java -jar forge/forge-core/target/aether-forge.jar
 ```
 
 The dashboard opens automatically at `http://localhost:8888`.
@@ -310,7 +309,7 @@ mvn package -DskipTests
 # Start 5-node cluster
 ./script/demo-cluster.sh start
 
-# Deploy order-demo slices
+# Deploy ecommerce slices
 ./script/demo-cluster.sh deploy
 
 # Check status
@@ -350,7 +349,7 @@ mvn package -DskipTests
 | `start` | Start 5-node cluster (auto-builds if needed) |
 | `stop` | Gracefully stop all nodes |
 | `status` | Show node health and cluster status |
-| `deploy` | Deploy order-demo blueprint |
+| `deploy` | Deploy ecommerce blueprint |
 | `logs` | Tail all node logs |
 | `clean` | Stop cluster and remove logs/pids |
 
@@ -445,207 +444,8 @@ lsof -i :8081-8095  # Check for processes using these ports
 
 **Slice deployment fails:**
 ```bash
-# Ensure order-demo is installed
-cd examples/order-demo && mvn install -DskipTests
-```
-
----
-
-## Order Domain Demo
-
-A multi-module demonstration of slice-based microservices architecture using the Aether runtime.
-
-### Architecture
-
-```
-                           ┌─────────────────────┐
-                           │   HTTP Gateway      │
-                           │ (demo-order.blueprint) │
-                           └──────────┬──────────┘
-                                      │
-        ┌─────────────────────────────┼─────────────────────────────┐
-        │                             │                             │
-        ▼                             ▼                             ▼
-┌───────────────┐           ┌─────────────────┐           ┌───────────────┐
-│  place-order  │           │get-order-status │           │ cancel-order  │
-│   (3 inst)    │           │    (2 inst)     │           │   (2 inst)    │
-│  Lean Slice   │           │   Lean Slice    │           │  Lean Slice   │
-└───────┬───────┘           └─────────────────┘           └───────┬───────┘
-        │                                                         │
-        ├─────────────────────────────────────────────────────────┤
-        │                                                         │
-        ▼                                                         ▼
-┌───────────────────┐                                 ┌───────────────────┐
-│ inventory-service │                                 │  pricing-service  │
-│     (2 inst)      │                                 │     (2 inst)      │
-│   Service Slice   │                                 │   Service Slice   │
-└───────────────────┘                                 └───────────────────┘
-        │                                                         │
-        └─────────────────────────┬───────────────────────────────┘
-                                  │
-                                  ▼
-                         ┌───────────────┐
-                         │ order-domain  │
-                         │ (shared types)│
-                         └───────────────┘
-```
-
-### Module Structure
-
-```
-examples/order-demo/
-├── order-domain/           # Shared domain types (no slice)
-│   └── OrderId, ProductId, CustomerId, Money, OrderStatus
-├── inventory-service/      # Service Slice: stock management
-│   └── checkStock, reserveStock, releaseStock
-├── pricing-service/        # Service Slice: price calculations
-│   └── getPrice, calculateTotal
-├── place-order/            # Lean Slice: place order use case
-│   └── placeOrder
-├── get-order-status/       # Lean Slice: status query use case
-│   └── getOrderStatus
-├── cancel-order/           # Lean Slice: cancellation use case
-│   └── cancelOrder
-└── demo-order.blueprint    # Deployment configuration (TOML format)
-```
-
-### Slice Types
-
-**Service Slices** (multiple methods):
-
-- `InventoryServiceSlice`: checkStock, reserveStock, releaseStock
-- `PricingServiceSlice`: getPrice, calculateTotal
-
-**Lean Slices** (single use case):
-
-- `PlaceOrderSlice`: Orchestrates order placement
-- `GetOrderStatusSlice`: Retrieves order status
-- `CancelOrderSlice`: Handles order cancellation
-
-### Blueprint Configuration
-
-The `demo-order.blueprint` file defines the deployment using TOML format:
-
-```toml
-# Aether Blueprint - Order Demo
-id = "demo-order:0.1.0"
-
-[slices.inventory_service]
-artifact = "org.pragmatica-lite.aether.demo:inventory-service:0.1.0"
-instances = 2
-
-[slices.pricing_service]
-artifact = "org.pragmatica-lite.aether.demo:pricing-service:0.1.0"
-instances = 2
-
-[slices.place_order]
-artifact = "org.pragmatica-lite.aether.demo:place-order:0.1.0"
-instances = 3
-
-[slices.get_order_status]
-artifact = "org.pragmatica-lite.aether.demo:get-order-status:0.1.0"
-instances = 2
-
-[slices.cancel_order]
-artifact = "org.pragmatica-lite.aether.demo:cancel-order:0.1.0"
-instances = 2
-```
-
-**Note**: Routes are self-registered by slices during activation via RouteRegistry.
-
-### PlaceOrder Flow
-
-The `PlaceOrderSlice` demonstrates orchestrated inter-slice calls:
-
-```
-1. ValidatRequest
-       │
-       ▼
-2. CheckAllStock ─────────────► InventoryService.checkStock (parallel)
-       │
-       ▼
-3. CalculateTotal ────────────► PricingService.calculateTotal
-       │
-       ▼
-4. ReserveAllStock ───────────► InventoryService.reserveStock (parallel)
-       │
-       ▼
-5. CreateOrder ───────────────► PlaceOrderResponse
-```
-
-### Building the Demo
-
-```bash
-cd examples/order-demo
-mvn clean install
-```
-
-This produces 6 slice JARs:
-
-- `order-domain/target/order-domain-0.1.0.jar`
-- `inventory-service/target/inventory-service-0.1.0.jar`
-- `pricing-service/target/pricing-service-0.1.0.jar`
-- `place-order/target/place-order-0.1.0.jar`
-- `get-order-status/target/get-order-status-0.1.0.jar`
-- `cancel-order/target/cancel-order-0.1.0.jar`
-
-### Running with CLI
-
-```bash
-# Start cluster
-aether cluster start --nodes 3
-
-# Deploy blueprint
-aether blueprint apply examples/order-demo/demo-order.blueprint
-
-# Check status
-aether slice list
-
-# Test endpoints
-curl -X POST http://localhost:8080/api/orders \
-  -H "Content-Type: application/json" \
-  -d '{"customerId": "CUST-123", "items": [{"productId": "PROD-ABC123", "quantity": 2}]}'
-
-curl http://localhost:8080/api/orders/ORD-xxx
-
-curl -X DELETE http://localhost:8080/api/orders/ORD-xxx
-```
-
-### Key Implementation Patterns
-
-**1. Parse, Don't Validate**:
-
-```java
-public static Result<ValidPlaceOrderRequest> validPlaceOrderRequest(PlaceOrderRequest request) {
-    // Returns Result<T> - only valid if parsing succeeds
-}
-```
-
-**2. Inter-Slice Invocation**:
-
-```java
-invoker.invoke(
-    INVENTORY,
-    MethodName.methodName("checkStock").unwrap(),
-    new CheckStockRequest(item.productId(), item.quantity()),
-    StockAvailability.class
-)
-```
-
-**3. Pipeline Context Records**:
-
-```java
-private record ValidWithStockCheck(ValidPlaceOrderRequest request) {}
-private record ValidWithPrice(ValidPlaceOrderRequest request, OrderTotal total) {}
-```
-
-**4. Parallel Operations**:
-
-```java
-var stockChecks = request.items().stream()
-    .map(item -> invoker.invoke(...))
-    .toList();
-return Promise.allOf(stockChecks)...
+# Ensure ecommerce example is installed
+cd examples/ecommerce && mvn install -DskipTests
 ```
 
 ---

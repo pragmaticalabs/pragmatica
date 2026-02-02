@@ -58,7 +58,7 @@ class NodeDeploymentManagerTest {
     // === Quorum State Tests ===
 
     @Test
-    void manager_starts_in_dormant_state() {
+    void onValuePut_ignoresCommand_beforeQuorumEstablished() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -69,7 +69,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void manager_activates_on_quorum_established() {
+    void onValuePut_processesCommand_afterQuorumEstablished() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -83,7 +83,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void manager_returns_to_dormant_on_quorum_disappeared() {
+    void onValuePut_ignoresCommand_afterQuorumDisappeared() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -100,7 +100,7 @@ class NodeDeploymentManagerTest {
     // === Key Filtering Tests ===
 
     @Test
-    void manager_ignores_keys_for_other_nodes() {
+    void onValuePut_ignoresKey_forOtherNodes() {
         var artifact = createTestArtifact();
         var otherNode = NodeId.randomNodeId();
         var key = new SliceNodeKey(artifact, otherNode);
@@ -112,7 +112,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void manager_processes_keys_for_own_node() {
+    void onValuePut_processesKey_forOwnNode() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -125,7 +125,7 @@ class NodeDeploymentManagerTest {
     // === State Transition Tests ===
 
     @Test
-    void load_state_triggers_loading() {
+    void onValuePut_triggersLoading_forLoadState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -136,7 +136,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void activate_state_triggers_activation() {
+    void onValuePut_triggersActivation_forActivateState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -150,7 +150,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void deactivate_state_triggers_deactivation() {
+    void onValuePut_triggersDeactivation_forDeactivateState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -164,7 +164,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void unload_state_triggers_unloading() {
+    void onValuePut_triggersUnloading_forUnloadState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -175,7 +175,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void transitional_states_are_ignored() {
+    void onValuePut_ignoresTransitionalStates() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -194,7 +194,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void loaded_state_is_recorded_but_no_action() {
+    void onValuePut_recordsButNoAction_forLoadedState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -207,7 +207,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void active_state_is_recorded_but_no_action() {
+    void onValuePut_recordsButNoAction_forActiveState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -220,7 +220,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void failed_state_is_recorded_but_no_action() {
+    void onValuePut_recordsButNoAction_forFailedState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -234,7 +234,7 @@ class NodeDeploymentManagerTest {
     // === Consensus Integration Tests ===
 
     @Test
-    void successful_load_transitions_to_loaded_state() {
+    void onValuePut_transitionsToLoaded_afterSuccessfulLoad() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -254,7 +254,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void successful_activation_transitions_to_active_state() {
+    void onValuePut_transitionsToActive_afterSuccessfulActivation() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -282,7 +282,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void successful_deactivation_transitions_to_loaded_state() {
+    void onValuePut_transitionsToLoaded_afterSuccessfulDeactivation() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -295,7 +295,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void failed_load_transitions_to_failed_state() {
+    void onValuePut_transitionsToFailed_afterFailedLoad() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -317,7 +317,7 @@ class NodeDeploymentManagerTest {
     // === ValueRemove Tests ===
 
     @Test
-    void value_remove_for_active_slice_triggers_cleanup() {
+    void onValueRemove_triggersCleanup_forActiveSlice() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -335,7 +335,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void value_remove_for_non_active_slice_no_cleanup() {
+    void onValueRemove_noCleanup_forNonActiveSlice() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 
@@ -352,7 +352,7 @@ class NodeDeploymentManagerTest {
     }
 
     @Test
-    void value_remove_in_dormant_state_is_ignored() {
+    void onValueRemove_ignoresCommand_inDormantState() {
         var artifact = createTestArtifact();
         var key = new SliceNodeKey(artifact, self);
 

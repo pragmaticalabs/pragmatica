@@ -1,7 +1,11 @@
 package org.pragmatica.aether.controller;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.metrics.MetricsCollector;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.util.List;
@@ -38,9 +42,9 @@ public interface DecisionTreeController extends ClusterController {
      *
      * @return Result containing controller or validation error
      */
-    static org.pragmatica.lang.Result<DecisionTreeController> decisionTreeController(double cpuScaleUpThreshold,
-                                                                                     double cpuScaleDownThreshold,
-                                                                                     double callRateScaleUpThreshold) {
+    static Result<DecisionTreeController> decisionTreeController(double cpuScaleUpThreshold,
+                                                                 double cpuScaleDownThreshold,
+                                                                 double callRateScaleUpThreshold) {
         return ControllerConfig.controllerConfig(cpuScaleUpThreshold,
                                                  cpuScaleDownThreshold,
                                                  callRateScaleUpThreshold,
@@ -112,10 +116,10 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
         return Promise.success(new ControlDecisions(changes));
     }
 
-    private List<BlueprintChange> evaluateBlueprint(org.pragmatica.aether.artifact.Artifact artifact,
+    private List<BlueprintChange> evaluateBlueprint(Artifact artifact,
                                                     Blueprint blueprint,
                                                     double avgCpu,
-                                                    java.util.Map<org.pragmatica.consensus.NodeId, java.util.Map<String, Double>> metrics,
+                                                    Map<NodeId, Map<String, Double>> metrics,
                                                     ControllerConfig currentConfig) {
         return evaluateCpuRules(artifact, blueprint, avgCpu, currentConfig).orElse(() -> evaluateCallRateRule(artifact,
                                                                                                               metrics,
@@ -123,17 +127,17 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
                                .or(List::of);
     }
 
-    private org.pragmatica.lang.Option<List<BlueprintChange>> evaluateCpuRules(org.pragmatica.aether.artifact.Artifact artifact,
-                                                                               Blueprint blueprint,
-                                                                               double avgCpu,
-                                                                               ControllerConfig currentConfig) {
+    private Option<List<BlueprintChange>> evaluateCpuRules(Artifact artifact,
+                                                           Blueprint blueprint,
+                                                           double avgCpu,
+                                                           ControllerConfig currentConfig) {
         // Rule 1: High CPU → scale up
         if (avgCpu > currentConfig.cpuScaleUpThreshold()) {
             log.info("Rule triggered: High CPU ({} > {}), scaling up {}",
                      avgCpu,
                      currentConfig.cpuScaleUpThreshold(),
                      artifact);
-            return org.pragmatica.lang.Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
+            return Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
         }
         // Rule 2: Low CPU → scale down (if more than 1 instance)
         if (avgCpu < currentConfig.cpuScaleDownThreshold() && blueprint.instances() > 1) {
@@ -141,38 +145,55 @@ class DecisionTreeControllerImpl implements DecisionTreeController {
                      avgCpu,
                      currentConfig.cpuScaleDownThreshold(),
                      artifact);
-            return org.pragmatica.lang.Option.some(List.of(new BlueprintChange.ScaleDown(artifact, 1)));
+            return Option.some(List.of(new BlueprintChange.ScaleDown(artifact, 1)));
         }
-        return org.pragmatica.lang.Option.empty();
+        return Option.empty();
     }
 
-    private org.pragmatica.lang.Option<List<BlueprintChange>> evaluateCallRateRule(org.pragmatica.aether.artifact.Artifact artifact,
-                                                                                   java.util.Map<org.pragmatica.consensus.NodeId, java.util.Map<String, Double>> metrics,
-                                                                                   ControllerConfig currentConfig) {
+    private Option<List<BlueprintChange>> evaluateCallRateRule(Artifact artifact,
+                                                               Map<NodeId, Map<String, Double>> metrics,
+                                                               ControllerConfig currentConfig) {
         // Rule 3: High call rate → scale up
         // Calculate actual rate using delta from previous evaluation
         var currentTime = System.currentTimeMillis();
         var elapsedSeconds = Math.max(1.0, (currentTime - lastEvaluationTime) / 1000.0);
         lastEvaluationTime = currentTime;
-        var hasHighCallRate = metrics.values()
-                                     .stream()
-                                     .flatMap(nodeMetrics -> nodeMetrics.entrySet()
-                                                                        .stream())
-                                     .filter(entry -> isCallMetric(entry.getKey()))
-                                     .anyMatch(entry -> {
-                                                   var metricName = entry.getKey();
-                                                   var currentCount = entry.getValue();
-                                                   var previousCount = previousCallCounts.getOrDefault(metricName, 0.0);
-                                                   previousCallCounts.put(metricName, currentCount);
-                                                   var delta = currentCount - previousCount;
-                                                   var callsPerSecond = delta / elapsedSeconds;
-                                                   return callsPerSecond > currentConfig.callRateScaleUpThreshold();
-                                               });
+        // Collect call metrics and update previous counts, then check for high rate
+        var callMetricEntries = metrics.values()
+                                       .stream()
+                                       .flatMap(nodeMetrics -> nodeMetrics.entrySet()
+                                                                          .stream())
+                                       .filter(entry -> isCallMetric(entry.getKey()))
+                                       .toList();
+        var hasHighCallRate = checkAndUpdateCallRates(callMetricEntries, elapsedSeconds, currentConfig);
         if (hasHighCallRate) {
             log.info("Rule triggered: High call rate, scaling up {}", artifact);
-            return org.pragmatica.lang.Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
+            return Option.some(List.of(new BlueprintChange.ScaleUp(artifact, 1)));
         }
-        return org.pragmatica.lang.Option.empty();
+        return Option.empty();
+    }
+
+    /**
+     * Check for high call rates and update previous call counts.
+     * Separates the query (checking rates) from the mutation (updating counts).
+     */
+    private boolean checkAndUpdateCallRates(List<Map.Entry<String, Double>> callMetricEntries,
+                                            double elapsedSeconds,
+                                            ControllerConfig currentConfig) {
+        var hasHighRate = false;
+        for (var entry : callMetricEntries) {
+            var metricName = entry.getKey();
+            var currentCount = entry.getValue();
+            var previousCount = previousCallCounts.getOrDefault(metricName, 0.0);
+            var delta = currentCount - previousCount;
+            var callsPerSecond = delta / elapsedSeconds;
+            // Update count after computing rate
+            previousCallCounts.put(metricName, currentCount);
+            if (callsPerSecond > currentConfig.callRateScaleUpThreshold()) {
+                hasHighRate = true;
+            }
+        }
+        return hasHighRate;
     }
 
     private boolean isCallMetric(String metricName) {

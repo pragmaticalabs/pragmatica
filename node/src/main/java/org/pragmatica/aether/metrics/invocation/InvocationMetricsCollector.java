@@ -115,6 +115,40 @@ public final class InvocationMetricsCollector {
     }
 
     /**
+     * Record that an invocation has started for active invocation tracking.
+     *
+     * @param artifact Slice artifact
+     * @param method   Method name
+     */
+    public void recordStart(Artifact artifact, MethodName method) {
+        getOrCreateMetrics(artifact, method).metrics.recordStart();
+    }
+
+    /**
+     * Record that an invocation has completed for active invocation tracking.
+     *
+     * @param artifact Slice artifact
+     * @param method   Method name
+     */
+    public void recordComplete(Artifact artifact, MethodName method) {
+        getOrCreateMetrics(artifact, method).metrics.recordComplete();
+    }
+
+    /**
+     * Get total active invocations across all methods.
+     *
+     * @return Total count of currently active invocations
+     */
+    public long totalActiveInvocations() {
+        return metricsMap.values()
+                         .stream()
+                         .flatMap(methods -> methods.values()
+                                                    .stream())
+                         .mapToLong(m -> m.metrics.activeInvocations())
+                         .sum();
+    }
+
+    /**
      * Convenience method for recording failure.
      */
     public void recordFailure(Artifact artifact,
@@ -194,6 +228,11 @@ public final class InvocationMetricsCollector {
     }
 
     private MethodMetricsWithSlowCalls getOrCreateMetrics(Artifact artifact, MethodName method) {
+        // Note: Nested computeIfAbsent may allocate on every call when the outer map exists
+        // but the inner key is new. This is acceptable because:
+        // 1. After warm-up, all methods are registered and allocations stop
+        // 2. Alternative (caching per-artifact map) adds complexity for marginal gain
+        // 3. The allocation cost is O(1) per new method, not per invocation
         return metricsMap.computeIfAbsent(artifact,
                                           _ -> new ConcurrentHashMap<>())
                          .computeIfAbsent(method, MethodMetricsWithSlowCalls::new);

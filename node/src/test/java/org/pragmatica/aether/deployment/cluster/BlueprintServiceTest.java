@@ -43,7 +43,7 @@ class BlueprintServiceTest {
         // Repository is not used in tests since we test get/list/delete directly
         repository = artifact -> Causes.cause("Repository not used in tests").promise();
 
-        service = BlueprintServiceImpl.blueprintService(cluster, store, repository);
+        service = BlueprintService.blueprintService(cluster, store, repository);
     }
 
     @Nested
@@ -52,16 +52,17 @@ class BlueprintServiceTest {
         // These tests verify parser validation only.
 
         @Test
-        void publish_fails_withInvalidDsl() {
+        void publish_fails_forInvalidDsl() {
             var dsl = "invalid blueprint";
 
             service.publish(dsl)
                    .await()
-                   .onSuccessRun(Assertions::fail);
+                   .onSuccessRun(Assertions::fail)
+                   .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }
 
         @Test
-        void publish_fails_withMissingHeader() {
+        void publish_fails_forMissingHeader() {
             var dsl = """
                     [slices]
                     org.example:slice-a:1.0.0 = 2
@@ -69,14 +70,15 @@ class BlueprintServiceTest {
 
             service.publish(dsl)
                    .await()
-                   .onSuccessRun(Assertions::fail);
+                   .onSuccessRun(Assertions::fail)
+                   .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }
     }
 
     @Nested
     class GetTests {
         @Test
-        void get_returnsNone_whenBlueprintNotFound() {
+        void get_returnsNone_forNonExistentBlueprint() {
             var id = BlueprintId.blueprintId("org.example:missing:1.0.0").unwrap();
 
             var result = service.get(id);
@@ -85,7 +87,7 @@ class BlueprintServiceTest {
         }
 
         @Test
-        void get_returnsSome_whenBlueprintExists() {
+        void get_returnsSome_forExistingBlueprint() {
             var blueprintId = BlueprintId.blueprintId("org.example:existing:1.0.0").unwrap();
             var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
             var expanded = ExpandedBlueprint.expandedBlueprint(
@@ -109,14 +111,14 @@ class BlueprintServiceTest {
     @Nested
     class ListTests {
         @Test
-        void list_returnsEmpty_whenNoBlueprints() {
+        void list_returnsEmpty_forEmptyStore() {
             var result = service.list();
 
             assertThat(result).isEmpty();
         }
 
         @Test
-        void list_returnsAll_whenMultipleBlueprints() {
+        void list_returnsAll_forMultipleBlueprints() {
             var id1 = BlueprintId.blueprintId("org.example:app1:1.0.0").unwrap();
             var id2 = BlueprintId.blueprintId("org.example:app2:2.0.0").unwrap();
             var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
@@ -143,7 +145,7 @@ class BlueprintServiceTest {
     @Nested
     class DeleteTests {
         @Test
-        void delete_succeeds_whenBlueprintExists() {
+        void delete_succeeds_forExistingBlueprint() {
             var blueprintId = BlueprintId.blueprintId("org.example:to-delete:1.0.0").unwrap();
             var artifact = Artifact.artifact("org.example:slice:1.0.0").unwrap();
             var expanded = ExpandedBlueprint.expandedBlueprint(
@@ -163,7 +165,7 @@ class BlueprintServiceTest {
         }
 
         @Test
-        void delete_succeeds_whenBlueprintNotFound() {
+        void delete_succeeds_forNonExistentBlueprint() {
             var id = BlueprintId.blueprintId("org.example:non-existent:1.0.0").unwrap();
 
             service.delete(id)

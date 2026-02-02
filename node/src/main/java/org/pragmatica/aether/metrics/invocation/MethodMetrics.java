@@ -36,6 +36,10 @@ public final class MethodMetrics {
     private final AtomicLong totalDurationNs = new AtomicLong();
     private final AtomicInteger[] histogram;
 
+    // Two-counter tracking for active invocations
+    private final AtomicLong invocationsStarted = new AtomicLong();
+    private final AtomicLong invocationsCompleted = new AtomicLong();
+
     public MethodMetrics(MethodName methodName) {
         this.methodName = methodName;
         this.histogram = new AtomicInteger[HISTOGRAM_SIZE];
@@ -85,6 +89,11 @@ public final class MethodMetrics {
 
     /**
      * Take a snapshot without resetting (for monitoring).
+     *
+     * <p>Note: This method performs multiple non-atomic reads. The resulting snapshot
+     * may contain slightly inconsistent values (e.g., count may not exactly equal
+     * successCount + failureCount). This is an intentional trade-off for lock-free
+     * performance. For monitoring purposes, eventual consistency is acceptable.
      */
     public Snapshot snapshot() {
         var snapshotHistogram = new int[HISTOGRAM_SIZE];
@@ -111,6 +120,42 @@ public final class MethodMetrics {
         return totalDurationNs.get();
     }
 
+    /**
+     * Record that an invocation has started.
+     * Call this before the actual method invocation.
+     */
+    public void recordStart() {
+        invocationsStarted.incrementAndGet();
+    }
+
+    /**
+     * Record that an invocation has completed.
+     * Call this after the method invocation (both success and failure paths).
+     */
+    public void recordComplete() {
+        invocationsCompleted.incrementAndGet();
+    }
+
+    /**
+     * Get the number of currently active invocations.
+     * This is the difference between started and completed invocations.
+     *
+     * <p>Note: This method performs two non-atomic reads, so the result may be
+     * temporarily negative or inconsistent if reads interleave with concurrent
+     * updates. This is an intentional trade-off for lock-free performance.
+     * For monitoring purposes, eventual consistency is acceptable since the
+     * value will converge to the correct count.
+     *
+     * <p>The result is clamped to zero to prevent negative values from confusing
+     * downstream consumers (dashboards, alerts, scaling decisions).
+     *
+     * @return Number of active invocations (started - completed), minimum 0
+     */
+    public long activeInvocations() {
+        return Math.max(0,
+                        invocationsStarted.get() - invocationsCompleted.get());
+    }
+
     private static int bucketFor(long durationNs) {
         if (durationNs < BUCKET_1MS) return 0;
         if (durationNs < BUCKET_10MS) return 1;
@@ -129,7 +174,16 @@ public final class MethodMetrics {
                            long totalDurationNs,
                            int[] histogram) {
         /**
-         * Factory method with defensive copy of histogram array.
+         * Compact constructor with defensive copy of histogram array.
+         */
+        public Snapshot {
+            histogram = histogram == null
+                        ? new int[HISTOGRAM_SIZE]
+                        : histogram.clone();
+        }
+
+        /**
+         * Factory method for creating snapshots.
          */
         public static Snapshot snapshot(MethodName methodName,
                                         long count,
@@ -137,14 +191,7 @@ public final class MethodMetrics {
                                         long failureCount,
                                         long totalDurationNs,
                                         int[] histogram) {
-            return new Snapshot(methodName,
-                                count,
-                                successCount,
-                                failureCount,
-                                totalDurationNs,
-                                histogram == null
-                                ? new int[HISTOGRAM_SIZE]
-                                : histogram.clone());
+            return new Snapshot(methodName, count, successCount, failureCount, totalDurationNs, histogram);
         }
 
         /**

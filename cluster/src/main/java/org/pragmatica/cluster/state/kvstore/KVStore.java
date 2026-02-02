@@ -96,7 +96,7 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
     }
 
     public Map<K, V> snapshot() {
-        return new HashMap<>(storage);
+        return Map.copyOf(storage);
     }
 
     public Option<V> get(K key) {

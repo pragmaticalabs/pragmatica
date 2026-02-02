@@ -59,7 +59,7 @@ public sealed interface ThresholdStrategy {
      * @param maxThresholdMs Maximum threshold in milliseconds (ceiling)
      */
     static ThresholdStrategy adaptive(long minThresholdMs, long maxThresholdMs) {
-        return new Adaptive(minThresholdMs * 1_000_000, maxThresholdMs * 1_000_000, 3.0);
+        return Adaptive.adaptive(minThresholdMs * 1_000_000, maxThresholdMs * 1_000_000, 3.0);
     }
 
     /**
@@ -70,7 +70,7 @@ public sealed interface ThresholdStrategy {
      * @param multiplier     Multiplier for average (e.g., 3.0 means 3x average)
      */
     static ThresholdStrategy adaptive(long minThresholdMs, long maxThresholdMs, double multiplier) {
-        return new Adaptive(minThresholdMs * 1_000_000, maxThresholdMs * 1_000_000, multiplier);
+        return Adaptive.adaptive(minThresholdMs * 1_000_000, maxThresholdMs * 1_000_000, multiplier);
     }
 
     /**
@@ -79,7 +79,7 @@ public sealed interface ThresholdStrategy {
      * @param defaultThresholdMs Default threshold for methods not explicitly configured
      */
     static PerMethod perMethod(long defaultThresholdMs) {
-        return new PerMethod(defaultThresholdMs * 1_000_000);
+        return PerMethod.perMethod(defaultThresholdMs * 1_000_000);
     }
 
     /**
@@ -113,36 +113,19 @@ public sealed interface ThresholdStrategy {
     /**
      * Adaptive threshold - learns from observed latencies.
      */
-    final class Adaptive implements ThresholdStrategy {
-        private final long minThresholdNs;
-        private final long maxThresholdNs;
-        private final double multiplier;
-
-        // Per-method tracking using exponential moving average
-        private final Map<MethodName, MethodStats> methodStats = new ConcurrentHashMap<>();
-
-        Adaptive(long minThresholdNs, long maxThresholdNs, double multiplier) {
-            this.minThresholdNs = minThresholdNs;
-            this.maxThresholdNs = maxThresholdNs;
-            this.multiplier = multiplier;
-        }
-
-        public long minThresholdNs() {
-            return minThresholdNs;
-        }
-
-        public long maxThresholdNs() {
-            return maxThresholdNs;
-        }
-
-        public double multiplier() {
-            return multiplier;
+    record Adaptive(long minThresholdNs,
+                    long maxThresholdNs,
+                    double multiplier,
+                    Map<MethodName, MethodStats> methodStats) implements ThresholdStrategy {
+        static Adaptive adaptive(long minThresholdNs, long maxThresholdNs, double multiplier) {
+            return new Adaptive(minThresholdNs, maxThresholdNs, multiplier, new ConcurrentHashMap<>());
         }
 
         @Override
         public boolean isSlow(MethodName method, long durationNs) {
             var stats = methodStats.get(method);
-            if (stats == null || stats.count.get() < 10) {
+            if (stats == null || stats.count()
+                                      .get() < 10) {
                 // Use minimum threshold until we have enough data
                 return durationNs > minThresholdNs;
             }
@@ -151,14 +134,15 @@ public sealed interface ThresholdStrategy {
 
         @Override
         public void observe(MethodName method, long durationNs) {
-            var stats = methodStats.computeIfAbsent(method, _ -> new MethodStats());
+            var stats = methodStats.computeIfAbsent(method, _ -> MethodStats.methodStats());
             stats.update(durationNs);
         }
 
         @Override
         public long thresholdNs(MethodName method) {
             var stats = methodStats.get(method);
-            if (stats == null || stats.count.get() < 10) {
+            if (stats == null || stats.count()
+                                      .get() < 10) {
                 return minThresholdNs;
             }
             return computeThreshold(stats);
@@ -174,11 +158,12 @@ public sealed interface ThresholdStrategy {
          * Per-method statistics using exponential moving average.
          * Thread-safe using CAS loop for atomic EMA updates.
          */
-        private static final class MethodStats {
+        record MethodStats(AtomicLong count, AtomicReference<Double> ema) {
             private static final double ALPHA = 0.1;
 
-            private final AtomicLong count = new AtomicLong();
-            private final AtomicReference<Double> ema = new AtomicReference<>(0.0);
+            static MethodStats methodStats() {
+                return new MethodStats(new AtomicLong(), new AtomicReference<>(0.0));
+            }
 
             void update(long durationNs) {
                 var c = count.incrementAndGet();
@@ -205,16 +190,10 @@ public sealed interface ThresholdStrategy {
     /**
      * Per-method configurable thresholds.
      */
-    final class PerMethod implements ThresholdStrategy {
-        private final long defaultThresholdNs;
-        private final Map<MethodName, Long> methodThresholds = new ConcurrentHashMap<>();
-
-        PerMethod(long defaultThresholdNs) {
-            this.defaultThresholdNs = defaultThresholdNs;
-        }
-
-        public long defaultThresholdNs() {
-            return defaultThresholdNs;
+    record PerMethod(long defaultThresholdNs,
+                     Map<MethodName, Long> methodThresholds) implements ThresholdStrategy {
+        static PerMethod perMethod(long defaultThresholdNs) {
+            return new PerMethod(defaultThresholdNs, new ConcurrentHashMap<>());
         }
 
         /**

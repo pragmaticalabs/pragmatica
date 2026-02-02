@@ -4,6 +4,7 @@ import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TTMConfig;
+import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
 import org.pragmatica.consensus.NodeId;
@@ -25,16 +26,17 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /**
  * Configuration for an Aether cluster node.
  *
- * @param topology        Cluster topology configuration
- * @param protocol        Consensus protocol configuration
- * @param sliceAction     Slice lifecycle configuration
- * @param sliceConfig     Slice repository configuration (types to create at runtime)
- * @param managementPort  Port for HTTP management API (0 to disable)
- * @param artifactRepo    DHT configuration for artifact repository (replication factor, 0 = full)
- * @param tls             TLS configuration for secure connections (empty for plain TCP/HTTP)
- * @param ttm             TTM (Tiny Time Mixers) predictive scaling configuration
- * @param rollback        Automatic rollback configuration
- * @param appHttp         Application HTTP server configuration for slice routes
+ * @param topology         Cluster topology configuration
+ * @param protocol         Consensus protocol configuration
+ * @param sliceAction      Slice lifecycle configuration
+ * @param sliceConfig      Slice repository configuration (types to create at runtime)
+ * @param managementPort   Port for HTTP management API (0 to disable)
+ * @param artifactRepo     DHT configuration for artifact repository (replication factor, 0 = full)
+ * @param tls              TLS configuration for secure connections (empty for plain TCP/HTTP)
+ * @param ttm              TTM (Tiny Time Mixers) predictive scaling configuration
+ * @param rollback         Automatic rollback configuration
+ * @param appHttp          Application HTTP server configuration for slice routes
+ * @param controllerConfig Controller configuration for scaling thresholds and behavior
  */
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
@@ -45,12 +47,13 @@ public record AetherNodeConfig(TopologyConfig topology,
                                Option<TlsConfig> tls,
                                TTMConfig ttm,
                                RollbackConfig rollback,
-                               AppHttpConfig appHttp) {
+                               AppHttpConfig appHttp,
+                               ControllerConfig controllerConfig) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
 
     public static SliceActionConfig defaultSliceActionConfig() {
-        return SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider());
+        return SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider(AetherCustomClasses::configure));
     }
 
     public static AetherNodeConfig aetherNodeConfig(NodeId self,
@@ -113,7 +116,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     TTMConfig.disabled(),
                                     RollbackConfig.defaults(),
-                                    AppHttpConfig.disabled());
+                                    AppHttpConfig.disabled(),
+                                    ControllerConfig.defaults());
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -132,7 +136,31 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     Option.empty(),
                                     TTMConfig.disabled(),
                                     RollbackConfig.defaults(),
-                                    AppHttpConfig.disabled());
+                                    AppHttpConfig.disabled(),
+                                    ControllerConfig.defaults());
+    }
+
+    /**
+     * Create a test configuration for Forge simulation environment.
+     * Uses ForgeDefaults scaling config which disables CPU-based scaling.
+     */
+    public static AetherNodeConfig forgeConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
+        var topology = new TopologyConfig(self,
+                                          coreNodes.size(),
+                                          timeSpan(500).millis(),
+                                          timeSpan(100).millis(),
+                                          coreNodes);
+        return new AetherNodeConfig(topology,
+                                    ProtocolConfig.testConfig(),
+                                    defaultSliceActionConfig(),
+                                    SliceConfig.defaults(),
+                                    MANAGEMENT_DISABLED,
+                                    DHTConfig.FULL,
+                                    Option.empty(),
+                                    TTMConfig.disabled(),
+                                    RollbackConfig.defaults(),
+                                    AppHttpConfig.disabled(),
+                                    ControllerConfig.forgeDefaults());
     }
 
     /**
@@ -157,7 +185,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tlsOption,
                                     ttm,
                                     rollback,
-                                    appHttp);
+                                    appHttp,
+                                    controllerConfig);
     }
 
     /**
@@ -173,7 +202,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     ttmConfig,
                                     rollback,
-                                    appHttp);
+                                    appHttp,
+                                    controllerConfig);
     }
 
     /**
@@ -189,7 +219,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     ttm,
                                     rollbackConfig,
-                                    appHttp);
+                                    appHttp,
+                                    controllerConfig);
     }
 
     /**
@@ -205,7 +236,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     ttm,
                                     rollback,
-                                    appHttp);
+                                    appHttp,
+                                    controllerConfig);
     }
 
     /**
@@ -221,7 +253,25 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     tls,
                                     ttm,
                                     rollback,
-                                    appHttpConfig);
+                                    appHttpConfig,
+                                    controllerConfig);
+    }
+
+    /**
+     * Create a new configuration with different controller configuration.
+     */
+    public AetherNodeConfig withControllerConfig(ControllerConfig newControllerConfig) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    newControllerConfig);
     }
 
     public NodeId self() {

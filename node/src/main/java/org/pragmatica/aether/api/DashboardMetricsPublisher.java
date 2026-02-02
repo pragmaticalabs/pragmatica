@@ -6,6 +6,7 @@ import org.pragmatica.consensus.NodeId;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -25,7 +26,7 @@ public class DashboardMetricsPublisher {
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
     private final ScheduledExecutorService scheduler;
-    private volatile boolean running;
+    private final AtomicBoolean running = new AtomicBoolean(false);
 
     public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier, AlertManager alertManager) {
         this.nodeSupplier = nodeSupplier;
@@ -38,8 +39,9 @@ public class DashboardMetricsPublisher {
     }
 
     public void start() {
-        if (running) return;
-        running = true;
+        if (!running.compareAndSet(false, true)) {
+            return;
+        }
         scheduler.scheduleAtFixedRate(this::publishMetrics,
                                       BROADCAST_INTERVAL_MS,
                                       BROADCAST_INTERVAL_MS,
@@ -48,7 +50,9 @@ public class DashboardMetricsPublisher {
     }
 
     public void stop() {
-        running = false;
+        if (!running.compareAndSet(true, false)) {
+            return;
+        }
         scheduler.shutdown();
         log.info("Dashboard metrics publisher stopped");
     }

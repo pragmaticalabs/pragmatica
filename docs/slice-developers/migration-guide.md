@@ -313,6 +313,68 @@ interface CalculatePricing {
 // etc.
 ```
 
+### Option C: The Peeling Pattern (Incremental)
+
+The peeling pattern bridges Options A and B. Start with a wrapped legacy call, then incrementally refactor layer by layer. Working code at every step.
+
+**Phase 1: Wrap everything**
+
+```java
+private Promise<OrderResult> process(OrderRequest request) {
+    return Promise.lift(() -> legacyOrderService.processOrder(request));
+}
+```
+
+**Phase 2: Peel outer layer into Sequencer**
+
+Refactor the structure, but keep each step wrapped:
+
+```java
+private Promise<OrderResult> process(OrderRequest request) {
+    return validateRequest(request)                                    // JBCT
+        .flatMap(valid -> Promise.lift(() -> legacyCheckInventory(valid)))  // wrapped
+        .flatMap(inv -> Promise.lift(() -> legacyCalculatePricing(inv)))    // wrapped
+        .flatMap(quote -> Promise.lift(() -> legacyProcessPayment(quote)))  // wrapped
+        .flatMap(payment -> Promise.lift(() -> legacyCreateOrder(payment))) // wrapped
+        .flatMap(order -> Promise.lift(() -> legacySendConfirmation(order))); // wrapped
+}
+```
+
+**Phase 3: Peel one step deeper**
+
+Take `legacyCheckInventory` and expand it:
+
+```java
+private Promise<Availability> checkInventory(ValidRequest request) {
+    return Promise.all(
+        Promise.lift(() -> legacyCheckWarehouse(request)),
+        Promise.lift(() -> legacyCheckSupplier(request))
+    ).map(this::combineAvailability);  // JBCT
+}
+```
+
+**Phase 4: Continue peeling**
+
+Repeat for each step. Eventually all `lift()` calls disappear:
+
+```java
+private Promise<OrderResult> process(OrderRequest request) {
+    return validateRequest(request)
+        .flatMap(this::checkInventory)
+        .flatMap(this::calculatePricing)
+        .flatMap(this::processPayment)
+        .flatMap(this::createOrder)
+        .flatMap(this::sendConfirmation);
+}
+```
+
+**Benefits:**
+- Working code at every phase
+- Tests pass continuously
+- Stop anywhere—mixed JBCT and legacy works fine
+- `lift()` calls mark remaining legacy code
+- Progress is visible and measurable
+
 ## Step 4: Deploy the Slice
 
 ```bash

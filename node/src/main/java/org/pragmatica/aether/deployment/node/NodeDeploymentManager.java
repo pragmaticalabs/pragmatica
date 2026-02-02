@@ -1,9 +1,11 @@
 package org.pragmatica.aether.deployment.node;
 
+import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
 import org.pragmatica.aether.slice.MethodName;
+import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.SliceBridgeImpl;
 import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
@@ -24,7 +26,6 @@ import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
-import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
@@ -37,9 +38,11 @@ import org.pragmatica.messaging.MessageRouter;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,12 +61,25 @@ public interface NodeDeploymentManager {
 
     boolean isActive();
 
+    /**
+     * Information about a suspended slice that can be reactivated.
+     * Tracks the slice key and the original deployment state.
+     */
+    record SuspendedSlice(SliceNodeKey key, SliceDeployment deployment) {}
+
     sealed interface NodeDeploymentState {
         default void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
 
         default void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {}
 
-        record DormantNodeDeploymentState() implements NodeDeploymentState {}
+        /**
+         * Dormant state with optional suspended slices for reactivation.
+         */
+        record DormantNodeDeploymentState(List<SuspendedSlice> suspendedSlices) implements NodeDeploymentState {
+            public DormantNodeDeploymentState() {
+                this(List.of());
+            }
+        }
 
         record ActiveNodeDeploymentState(NodeId self,
                                          SliceStore sliceStore,
@@ -270,20 +286,39 @@ public interface NodeDeploymentManager {
 
             private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {
                 var artifact = sliceKey.artifact();
-                return httpRoutePublisher.flatMap(publisher -> sliceInvokerFacade.flatMap(invoker -> findLoadedSlice(artifact)
-                .map(ls -> {
-                         var classLoader = ls.slice()
-                                             .getClass()
-                                             .getClassLoader();
-                         return publisher.publishRoutes(artifact,
+                log.info("publishHttpRoutes called for {} - httpRoutePublisher.isPresent={}, sliceInvokerFacade.isPresent={}",
+                         artifact,
+                         httpRoutePublisher.isPresent(),
+                         sliceInvokerFacade.isPresent());
+                if (httpRoutePublisher.isEmpty()) {
+                    log.warn("Cannot publish HTTP routes for {}: httpRoutePublisher is not configured", artifact);
+                    return Promise.unitPromise();
+                }
+                if (sliceInvokerFacade.isEmpty()) {
+                    log.warn("Cannot publish HTTP routes for {}: sliceInvokerFacade is not configured", artifact);
+                    return Promise.unitPromise();
+                }
+                var loadedSlice = findLoadedSlice(artifact);
+                if (loadedSlice.isEmpty()) {
+                    log.warn("Cannot publish HTTP routes for {}: slice not found in SliceStore", artifact);
+                    return Promise.unitPromise();
+                }
+                var ls = loadedSlice.unwrap();
+                var classLoader = ls.slice()
+                                    .getClass()
+                                    .getClassLoader();
+                log.info("Publishing HTTP routes for {} using classLoader={}",
+                         artifact,
+                         classLoader.getClass()
+                                    .getName());
+                return httpRoutePublisher.unwrap()
+                                         .publishRoutes(artifact,
                                                         classLoader,
                                                         ls.slice(),
-                                                        invoker)
+                                                        sliceInvokerFacade.unwrap())
                                          .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}",
                                                                       artifact,
                                                                       cause.message()));
-                     })))
-                                         .or(Promise.unitPromise());
             }
 
             private Promise<Unit> registerSliceForInvocation(SliceNodeKey sliceKey) {
@@ -296,12 +331,12 @@ public interface NodeDeploymentManager {
 
             private static final Fn1<Cause, String> SLICE_NOT_LOADED_FOR_REGISTRATION = Causes.forOneValue("Slice not loaded for registration: {}");
 
-            private Unit registerSliceBridge(Artifact artifact, org.pragmatica.aether.slice.Slice slice) {
+            private Unit registerSliceBridge(Artifact artifact, Slice slice) {
                 var serializerProvider = resolveSerializerProvider();
                 var typeTokens = slice.methods()
                                       .stream()
-                                      .flatMap(m -> java.util.stream.Stream.of(m.parameterType(),
-                                                                               m.returnType()))
+                                      .flatMap(m -> Stream.of(m.parameterType(),
+                                                              m.returnType()))
                                       .collect(Collectors.toList());
                 var serializerFactory = serializerProvider.createFactory(typeTokens);
                 var sliceBridge = SliceBridgeImpl.sliceBridge(artifact, slice, serializerFactory);
@@ -311,10 +346,8 @@ public interface NodeDeploymentManager {
             }
 
             private SerializerFactoryProvider resolveSerializerProvider() {
-                var provider = configuration.serializerProvider();
-                return provider != null
-                       ? provider
-                       : FurySerializerFactoryProvider.furySerializerFactoryProvider();
+                return Option.option(configuration.serializerProvider())
+                             .or(() -> FurySerializerFactoryProvider.furySerializerFactoryProvider());
             }
 
             private void unregisterSliceFromInvocation(SliceNodeKey sliceKey) {
@@ -330,7 +363,7 @@ public interface NodeDeploymentManager {
                                       .or(Promise.unitPromise());
             }
 
-            private Promise<Unit> publishEndpointsForSlice(Artifact artifact, org.pragmatica.aether.slice.Slice slice) {
+            private Promise<Unit> publishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
                 int instanceNumber = Math.abs(self.id()
                                                   .hashCode());
@@ -352,7 +385,7 @@ public interface NodeDeploymentManager {
                                                             cause.message()));
             }
 
-            private KVCommand<AetherKey> createEndpointPutCommand(org.pragmatica.aether.artifact.Artifact artifact,
+            private KVCommand<AetherKey> createEndpointPutCommand(Artifact artifact,
                                                                   MethodName methodName,
                                                                   int instanceNumber) {
                 var key = new EndpointKey(artifact, methodName, instanceNumber);
@@ -406,8 +439,7 @@ public interface NodeDeploymentManager {
                                       .or(Promise.unitPromise());
             }
 
-            private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact,
-                                                             org.pragmatica.aether.slice.Slice slice) {
+            private Promise<Unit> unpublishEndpointsForSlice(Artifact artifact, Slice slice) {
                 var methods = slice.methods();
                 int instanceNumber = Math.abs(self.id()
                                                   .hashCode());
@@ -429,7 +461,7 @@ public interface NodeDeploymentManager {
                                                             cause.message()));
             }
 
-            private KVCommand<AetherKey> createEndpointRemoveCommand(org.pragmatica.aether.artifact.Artifact artifact,
+            private KVCommand<AetherKey> createEndpointRemoveCommand(Artifact artifact,
                                                                      MethodName methodName,
                                                                      int instanceNumber) {
                 var key = new EndpointKey(artifact, methodName, instanceNumber);
@@ -479,26 +511,26 @@ public interface NodeDeploymentManager {
                           failureState,
                           operation.isResolved());
                 configuration.timeoutFor(currentState)
-                             .onSuccess(timeout -> {
-                                            log.debug("Got timeout {} for {}, setting up callbacks",
-                                                      timeout,
-                                                      sliceKey.artifact());
-                                            operation.timeout(timeout)
-                                                     .onSuccess(_ -> {
-                                                                    log.info("Operation succeeded for {}, transitioning to {}",
-                                                                             sliceKey.artifact(),
-                                                                             successState);
-                                                                    transitionTo(sliceKey, successState);
-                                                                })
-                                                     .onFailure(cause -> {
-                                                                    log.warn("Operation failed for {}: {}, transitioning to {}",
-                                                                             sliceKey.artifact(),
-                                                                             cause.message(),
-                                                                             failureState);
-                                                                    transitionTo(sliceKey, failureState);
-                                                                });
+                             .async()
+                             .flatMap(timeout -> {
+                                          log.debug("Got timeout {} for {}, setting up callbacks",
+                                                    timeout,
+                                                    sliceKey.artifact());
+                                          return operation.timeout(timeout);
+                                      })
+                             .onSuccess(_ -> {
+                                            log.info("Operation succeeded for {}, transitioning to {}",
+                                                     sliceKey.artifact(),
+                                                     successState);
+                                            transitionTo(sliceKey, successState);
                                         })
-                             .onFailure(cause -> logStateUpdateFailure(sliceKey, cause));
+                             .onFailure(cause -> {
+                                            log.warn("Operation failed for {}: {}, transitioning to {}",
+                                                     sliceKey.artifact(),
+                                                     cause.message(),
+                                                     failureState);
+                                            transitionTo(sliceKey, failureState);
+                                        });
             }
 
             private Promise<Unit> transitionTo(SliceNodeKey sliceKey, SliceState newState) {
@@ -535,8 +567,109 @@ public interface NodeDeploymentManager {
             }
 
             /**
+             * Suspend all active slices on quorum loss without unloading them.
+             * Returns the list of suspended slices for potential reactivation.
+             *
+             * <p>This method:
+             * <ul>
+             *   <li>Unpublishes HTTP routes (removes from local handlers map)</li>
+             *   <li>Unpublishes endpoints (note: KV commands won't commit without quorum)</li>
+             *   <li>Unregisters slices from invocation handler</li>
+             *   <li>Does NOT unload slices from SliceStore</li>
+             *   <li>Does NOT clear deployments - saves them for reactivation</li>
+             * </ul>
+             *
+             * @return List of suspended slices that can be reactivated when quorum returns
+             */
+            List<SuspendedSlice> suspendSlices() {
+                log.warn("Suspending {} slices due to quorum loss (keeping loaded in memory)", deployments.size());
+                var suspended = new java.util.ArrayList<SuspendedSlice>();
+                for (var entry : deployments.entrySet()) {
+                    var sliceKey = entry.getKey();
+                    var deployment = entry.getValue();
+                    if (deployment.state() == SliceState.ACTIVE) {
+                        log.info("Suspending active slice {}", sliceKey.artifact());
+                        // Unpublish routes and endpoints (local state only - KV won't commit without quorum)
+                        suspendSlice(sliceKey);
+                        suspended.add(new SuspendedSlice(sliceKey, deployment));
+                    } else {
+                        log.debug("Slice {} in state {} - not suspending", sliceKey.artifact(), deployment.state());
+                    }
+                }
+                log.info("Suspended {} active slices, ready for reactivation", suspended.size());
+                return suspended;
+            }
+
+            /**
+             * Suspend a single slice: unpublish routes/endpoints and unregister from invocation.
+             * Does NOT unload the slice from SliceStore.
+             */
+            private void suspendSlice(SliceNodeKey sliceKey) {
+                // Unpublish HTTP routes (local handler map only)
+                httpRoutePublisher.onPresent(publisher -> {
+                                                 publisher.unpublishRoutes(sliceKey.artifact());
+                                                 log.debug("Unpublished HTTP routes for suspended slice {}",
+                                                           sliceKey.artifact());
+                                             });
+                // Unregister from invocation handler
+                unregisterSliceFromInvocation(sliceKey);
+            }
+
+            /**
+             * Reactivate previously suspended slices after quorum is restored.
+             *
+             * <p>For each suspended slice:
+             * <ul>
+             *   <li>Check if slice is still loaded in SliceStore</li>
+             *   <li>Re-register with invocation handler</li>
+             *   <li>Re-publish HTTP routes</li>
+             *   <li>Re-publish endpoints to KV store</li>
+             * </ul>
+             *
+             * @param suspended List of suspended slices to reactivate
+             */
+            void reactivateSuspendedSlices(List<SuspendedSlice> suspended) {
+                if (suspended.isEmpty()) {
+                    log.debug("No suspended slices to reactivate");
+                    return;
+                }
+                log.info("Reactivating {} suspended slices after quorum restored", suspended.size());
+                for (var suspendedSlice : suspended) {
+                    var sliceKey = suspendedSlice.key();
+                    var deployment = suspendedSlice.deployment();
+                    // Restore deployment record
+                    deployments.put(sliceKey, deployment);
+                    // Check if slice is still in SliceStore
+                    var loadedSlice = findLoadedSlice(sliceKey.artifact());
+                    if (loadedSlice.isEmpty()) {
+                        log.warn("Suspended slice {} no longer in SliceStore, skipping reactivation",
+                                 sliceKey.artifact());
+                        deployments.remove(sliceKey);
+                        continue;
+                    }
+                    log.info("Reactivating suspended slice {}", sliceKey.artifact());
+                    // Re-register for invocation
+                    registerSliceForInvocation(sliceKey).flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
+                                              .onSuccess(_ -> log.info("Successfully reactivated slice {}",
+                                                                       sliceKey.artifact()))
+                                              .onFailure(cause -> {
+                                                             log.error("Failed to reactivate slice {}: {}",
+                                                                       sliceKey.artifact(),
+                                                                       cause.message());
+                                                             // Clean up failed reactivation
+                    unregisterSliceFromInvocation(sliceKey);
+                                                             unpublishHttpRoutes(sliceKey);
+                                                             deployments.remove(sliceKey);
+                                                         });
+                }
+            }
+
+            /**
              * Deactivate all slices on quorum loss.
              * Called before transitioning to dormant state.
+             *
+             * @deprecated Use {@link #suspendSlices()} instead to preserve slices in memory.
+             *             This method is kept for actual slice removal (ValueRemove).
              */
             void deactivateAllSlices() {
                 log.warn("Deactivating all {} slices due to quorum loss", deployments.size());
@@ -604,6 +737,7 @@ public interface NodeDeploymentManager {
                                  SliceActionConfig configuration,
                                  MessageRouter router,
                                  AtomicReference<NodeDeploymentState> state,
+                                 AtomicLong activationEpoch,
                                  Option<HttpRoutePublisher> httpRoutePublisher,
                                  Option<SliceInvokerFacade> sliceInvokerFacade) implements NodeDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(NodeDeploymentManager.class);
@@ -625,28 +759,52 @@ public interface NodeDeploymentManager {
                 log.info("Node {} received QuorumStateNotification: {}", self().id(), quorumStateNotification);
                 switch (quorumStateNotification) {
                     case ESTABLISHED -> {
-                        // Only activate if currently dormant (idempotent)
-                        if (state().get() instanceof NodeDeploymentState.DormantNodeDeploymentState) {
-                            state()
-                            .set(new NodeDeploymentState.ActiveNodeDeploymentState(self(),
-                                                                                   sliceStore(),
-                                                                                   configuration(),
-                                                                                   cluster(),
-                                                                                   kvStore(),
-                                                                                   invocationHandler(),
-                                                                                   router(),
-                                                                                   new ConcurrentHashMap<>(),
-                                                                                   httpRoutePublisher(),
-                                                                                   sliceInvokerFacade()));
+                        // Increment epoch FIRST to invalidate any in-flight DISAPPEARED handlers
+                        var epoch = activationEpoch().incrementAndGet();
+                        log.debug("Node {} activation epoch incremented to {}", self().id(), epoch);
+                        // Check if we have suspended slices to reactivate
+                        if (state().get() instanceof NodeDeploymentState.DormantNodeDeploymentState dormant) {
+                            var suspended = dormant.suspendedSlices();
+                            // Create new active state with fresh deployments map
+                            var activeState = new NodeDeploymentState.ActiveNodeDeploymentState(self(),
+                                                                                                sliceStore(),
+                                                                                                configuration(),
+                                                                                                cluster(),
+                                                                                                kvStore(),
+                                                                                                invocationHandler(),
+                                                                                                router(),
+                                                                                                new ConcurrentHashMap<>(),
+                                                                                                httpRoutePublisher(),
+                                                                                                sliceInvokerFacade());
+                            state().set(activeState);
                             log.info("Node {} NodeDeploymentManager activated", self().id());
+                            // Reactivate suspended slices if any
+                            if (!suspended.isEmpty()) {
+                                log.info("Node {} has {} suspended slices to reactivate", self().id(), suspended.size());
+                                activeState.reactivateSuspendedSlices(suspended);
+                            }
                         }
                     }
                     case DISAPPEARED -> {
-                        // Deactivate all slices before going dormant
+                        // Capture epoch BEFORE any cleanup
+                        var epochBeforeCleanup = activationEpoch().get();
+                        // Suspend slices (keep in memory) before going dormant
+                        var suspended = List.<SuspendedSlice>of();
                         if (state().get() instanceof NodeDeploymentState.ActiveNodeDeploymentState activeState) {
-                            activeState.deactivateAllSlices();
+                            suspended = activeState.suspendSlices();
                         }
-                        state().set(new NodeDeploymentState.DormantNodeDeploymentState());
+                        // Only go dormant if no ESTABLISHED arrived during cleanup (epoch unchanged)
+                        if (activationEpoch().get() == epochBeforeCleanup) {
+                            state().set(new NodeDeploymentState.DormantNodeDeploymentState(suspended));
+                            log.info("Node {} NodeDeploymentManager deactivated with {} suspended slices",
+                                     self().id(),
+                                     suspended.size());
+                        } else {
+                            log.info("Node {} ignoring stale DISAPPEARED (epoch changed from {} to {})",
+                                     self().id(),
+                                     epochBeforeCleanup,
+                                     activationEpoch().get());
+                        }
                     }
                 }
             }
@@ -664,6 +822,7 @@ public interface NodeDeploymentManager {
                                      configuration,
                                      router,
                                      new AtomicReference<>(new NodeDeploymentState.DormantNodeDeploymentState()),
+                                     new AtomicLong(0),
                                      httpRoutePublisher,
                                      sliceInvokerFacade);
     }

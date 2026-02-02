@@ -213,10 +213,10 @@ class EndpointRegistryTest {
 
     @Test
     void ignores_non_endpoint_key_put() {
-        // Send a blueprint key instead of endpoint key
-        var blueprintKey = new AetherKey.BlueprintKey(artifact);
-        var blueprintValue = new AetherValue.BlueprintValue(3);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(blueprintKey, blueprintValue);
+        // Send a slice target key instead of endpoint key
+        var sliceTargetKey = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
+        var sliceTargetValue = AetherValue.SliceTargetValue.sliceTargetValue(artifact.version(), 3);
+        var command = new KVCommand.Put<AetherKey, AetherValue>(sliceTargetKey, sliceTargetValue);
         var notification = new ValuePut<>(command, Option.none());
 
         registry.onValuePut(notification);
@@ -228,9 +228,9 @@ class EndpointRegistryTest {
     void ignores_non_endpoint_key_remove() {
         registerEndpoint(artifact, methodName, 1, node1);
 
-        // Try to remove using a blueprint key
-        var blueprintKey = new AetherKey.BlueprintKey(artifact);
-        var command = new KVCommand.Remove<AetherKey>(blueprintKey);
+        // Try to remove using a slice target key
+        var sliceTargetKey = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
+        var command = new KVCommand.Remove<AetherKey>(sliceTargetKey);
         var notification = new ValueRemove<AetherKey, AetherValue>(command, Option.none());
 
         registry.onValueRemove(notification);

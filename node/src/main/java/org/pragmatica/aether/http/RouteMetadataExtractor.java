@@ -51,13 +51,30 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
     private HttpRouteDefinition toDefinition(Route<?> route, String artifactCoord) {
         return httpRouteDefinition(route.method()
                                         .name(),
-                                   route.path(),
+                                   extractPathPrefix(route.path()),
                                    artifactCoord,
-                                   deriveSliceMethod(route.path()),
+                                   deriveSliceMethod(route),
                                    RouteSecurityPolicy.publicRoute());
     }
 
-    private String deriveSliceMethod(String path) {
-        return path;
+    /**
+     * Extract path prefix before first path parameter placeholder.
+     * Examples:
+     * - /api/v1/urls/{shortCode} → /api/v1/urls/
+     * - /api/v1/analytics/{shortCode}/click → /api/v1/analytics/
+     * - /api/v1/users → /api/v1/users
+     */
+    private String extractPathPrefix(String path) {
+        int placeholderIndex = path.indexOf('{');
+        return placeholderIndex > 0
+               ? path.substring(0, placeholderIndex)
+               : path;
+    }
+
+    private String deriveSliceMethod(Route<?> route) {
+        var name = route.name();
+        return name.isEmpty()
+               ? route.path()
+               : name;
     }
 }

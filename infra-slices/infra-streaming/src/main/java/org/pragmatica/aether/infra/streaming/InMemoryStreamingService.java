@@ -50,7 +50,8 @@ final class InMemoryStreamingService implements StreamingService {
     // ========== Topic Management ==========
     @Override
     public Promise<Unit> createTopic(String topic, int partitions) {
-        return option(topics.putIfAbsent(topic, new Topic(topic, partitions, Instant.now())))
+        return option(topics.putIfAbsent(topic,
+                                         Topic.topic(topic, partitions, Instant.now())))
         .fold(() -> Promise.success(unit()),
               existing -> StreamingError.topicAlreadyExists(topic)
                                         .promise());
@@ -116,7 +117,7 @@ final class InMemoryStreamingService implements StreamingService {
     // ========== Consumer Groups ==========
     @Override
     public Promise<Unit> createConsumerGroup(String groupId) {
-        consumerGroups.putIfAbsent(groupId, new ConsumerGroup(groupId));
+        consumerGroups.putIfAbsent(groupId, ConsumerGroup.consumerGroup(groupId));
         return Promise.success(unit());
     }
 
@@ -335,22 +336,17 @@ final class InMemoryStreamingService implements StreamingService {
     }
 
     // ========== Internal Classes ==========
-    private static final class Topic {
-        private final String name;
-        private final int partitions;
-        private final Instant createdAt;
-        private final List<List<StreamMessage>> partitionData;
-        private final AtomicLongArray offsets;
-
-        Topic(String name, int partitions, Instant createdAt) {
-            this.name = name;
-            this.partitions = partitions;
-            this.createdAt = createdAt;
-            this.partitionData = new ArrayList<>(partitions);
-            this.offsets = new AtomicLongArray(partitions);
+    private record Topic(String name,
+                         int partitions,
+                         Instant createdAt,
+                         List<List<StreamMessage>> partitionData,
+                         AtomicLongArray offsets) {
+        static Topic topic(String name, int partitions, Instant createdAt) {
+            var data = new ArrayList<List<StreamMessage>>(partitions);
             for (int i = 0; i < partitions; i++) {
-                partitionData.add(Collections.synchronizedList(new ArrayList<>()));
+                data.add(Collections.synchronizedList(new ArrayList<>()));
             }
+            return new Topic(name, partitions, createdAt, data, new AtomicLongArray(partitions));
         }
 
         StreamMessage publish(int partition, Option<String> key, byte[] value) {
@@ -393,14 +389,15 @@ final class InMemoryStreamingService implements StreamingService {
         }
     }
 
-    private static final class ConsumerGroup {
-        private final String groupId;
-        private final Set<String> subscribedTopics = ConcurrentHashMap.newKeySet();
-        private final ConcurrentHashMap<String, ConcurrentHashMap<Integer, Long>> committedOffsets = new ConcurrentHashMap<>();
-        private final ConcurrentHashMap<String, ConcurrentHashMap<Integer, Long>> currentOffsets = new ConcurrentHashMap<>();
-
-        ConsumerGroup(String groupId) {
-            this.groupId = groupId;
+    private record ConsumerGroup(String groupId,
+                                 Set<String> subscribedTopics,
+                                 ConcurrentHashMap<String, ConcurrentHashMap<Integer, Long>> committedOffsets,
+                                 ConcurrentHashMap<String, ConcurrentHashMap<Integer, Long>> currentOffsets) {
+        static ConsumerGroup consumerGroup(String groupId) {
+            return new ConsumerGroup(groupId,
+                                     ConcurrentHashMap.newKeySet(),
+                                     new ConcurrentHashMap<>(),
+                                     new ConcurrentHashMap<>());
         }
 
         void subscribe(String topic, int partitions) {
@@ -421,8 +418,7 @@ final class InMemoryStreamingService implements StreamingService {
 
         long getCurrentOffset(String topic, int partition) {
             return option(currentOffsets.get(topic)).flatMap(m -> option(m.get(partition)))
-                         .fold(() -> 0L,
-                               o -> o);
+                         .or(0L);
         }
 
         void setCurrentOffset(String topic, int partition, long offset) {

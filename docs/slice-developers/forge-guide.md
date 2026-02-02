@@ -26,13 +26,13 @@ Forge provides:
 
 ```bash
 # Build Forge
-mvn package -pl forge -am -DskipTests
+mvn package -pl forge/forge-core -am -DskipTests
 
 # Start Forge with default configuration
-java -jar forge/target/aether-forge.jar
+java -jar forge/forge-core/target/aether-forge.jar
 
 # Start with blueprint and load config
-java -jar forge/target/aether-forge.jar \
+java -jar forge/forge-core/target/aether-forge.jar \
   --blueprint examples/blueprint.toml \
   --load-config examples/load-config.toml \
   --auto-start
@@ -73,22 +73,30 @@ Environment variables override CLI arguments:
 | CLUSTER_SIZE | Number of nodes (default: 5) |
 | LOAD_RATE | Initial load rate (legacy support) |
 
-### Management Ports
+### Ports
 
-Each Forge node exposes a management API:
+Each Forge node exposes multiple APIs:
 
-| Node | Cluster Port | Management Port |
-|------|--------------|-----------------|
-| node-1 | 5050 | 5150 |
-| node-2 | 5051 | 5151 |
-| node-3 | 5052 | 5152 |
-| ... | ... | ... |
+| Node | Cluster Port | Management Port | App HTTP Port |
+|------|--------------|-----------------|---------------|
+| node-1 | 6000 | 5150 | 8070 |
+| node-2 | 6001 | 5151 | 8071 |
+| node-3 | 6002 | 5152 | 8072 |
+| ... | ... | ... | ... |
+
+- **Management API** — Node management, health checks, metrics
+- **App HTTP API** — Application slice endpoints (load target)
 
 Access any node's management API directly:
 ```bash
 curl http://localhost:5150/health
 curl http://localhost:5151/metrics
 curl http://localhost:5152/status
+```
+
+Slice endpoints are available on app HTTP ports:
+```bash
+curl http://localhost:8070/api/v1/urls/abc123
 ```
 
 ## Configuration
@@ -102,6 +110,28 @@ curl http://localhost:5152/status
 nodes = 5                    # Number of nodes to simulate
 management_port = 5150       # Base management port
 dashboard_port = 8888        # Dashboard port
+app_http_port = 8070         # Base app HTTP port (load target)
+auto_heal_enabled = false    # Auto-replace failed nodes (default: false)
+```
+
+### Auto-Healing
+
+When `auto_heal_enabled = true`, Forge automatically maintains cluster size:
+
+- **Reactive**: When a node fails or is killed, replacement starts immediately
+- **Retry**: Up to 3 attempts with 5-second delay between retries
+- **Logging**: All attempts logged with `AUTO-HEAL:` prefix
+
+```
+AUTO-HEAL: Cluster size 4 below target 5, starting 1 replacement node(s)
+AUTO-HEAL: Attempting to start replacement node (attempt 1/3)
+AUTO-HEAL: Successfully started replacement node node-6
+```
+
+Enable via TOML:
+```toml
+[cluster]
+auto_heal_enabled = true
 ```
 
 ### Blueprint (blueprint.toml)
@@ -269,9 +299,11 @@ The dashboard provides one-click chaos operations:
 
 - **Kill Node**: Immediately terminate a node
 - **Kill Leader**: Terminate the current leader node
-- **Rolling Restart**: Restart nodes one by one
+- **Rolling Restart**: Toggle continuous rolling restart (kills random node, waits 2.5s, adds replacement, repeats)
 - **Add Node**: Add a new node to the cluster
 - **Reset Metrics**: Clear all metrics and events
+
+The Rolling Restart button toggles between "Rolling Restart" (start) and "Stop Restart" (stop) states.
 
 ### Via REST API
 
@@ -282,8 +314,14 @@ curl -X POST http://localhost:8888/api/chaos/kill/node-3
 # Add a new node
 curl -X POST http://localhost:8888/api/chaos/add-node
 
-# Rolling restart all nodes
-curl -X POST http://localhost:8888/api/chaos/rolling-restart
+# Start continuous rolling restart
+curl -X POST http://localhost:8888/api/chaos/start-rolling-restart
+
+# Stop rolling restart
+curl -X POST http://localhost:8888/api/chaos/stop-rolling-restart
+
+# Get rolling restart status
+curl http://localhost:8888/api/chaos/rolling-restart-status
 
 # Inject chaos event
 curl -X POST http://localhost:8888/api/chaos/inject \

@@ -6,7 +6,7 @@
 
     <groupId>org.pragmatica-lite.aether</groupId>
     <artifactId>aether</artifactId>
-    <version>0.8.1</version>
+    <version>0.8.2</version>
     <packaging>pom</packaging>
     <name>Pragmatica Aether Distributed Runtime</name>
     <description>AI-driven distributed runtime environment for Java applications</description>
@@ -67,13 +67,13 @@
         <junit.version>5.13.4</junit.version>
         <assertj-core.version>3.26.3</assertj-core.version>
         <mockito.version>5.14.2</mockito.version>
-        <pragmatica.version>0.11.1</pragmatica.version>
+        <pragmatica.version>0.11.3</pragmatica.version>
         <awaitility.version>4.2.1</awaitility.version>
         <tinylog.version>2.7.0</tinylog.version>
         <netty.version>4.2.9.Final</netty.version>
         <kryo.version>5.6.2</kryo.version>
         <fury-core.version>0.10.2</fury-core.version>
-        <jbct.version>0.5.0</jbct.version>
+        <jbct.version>0.6.1</jbct.version>
         <jbct.skip>false</jbct.skip>
         <micrometer.version>1.16.1</micrometer.version>
         <onnxruntime.version>1.23.2</onnxruntime.version>
@@ -213,6 +213,12 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>aether-ttm</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>forge-core</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

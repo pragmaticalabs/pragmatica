@@ -18,8 +18,7 @@ import org.pragmatica.messaging.MessageReceiver;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentLinkedDeque;
-import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.LinkedBlockingDeque;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,8 +38,7 @@ public class AlertManager {
 
     private final Map<String, Threshold> thresholds = new ConcurrentHashMap<>();
     private final Map<String, ActiveAlert> activeAlerts = new ConcurrentHashMap<>();
-    private final ConcurrentLinkedDeque<AlertHistoryEntry> alertHistory = new ConcurrentLinkedDeque<>();
-    private final AtomicInteger historySize = new AtomicInteger(0);
+    private final LinkedBlockingDeque<AlertHistoryEntry> alertHistory = new LinkedBlockingDeque<>(MAX_ALERT_HISTORY);
 
     private AlertManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                          KVStore<AetherKey, AetherValue> kvStore) {
@@ -254,17 +252,10 @@ public class AlertManager {
     }
 
     private void addToHistory(String metric, NodeId nodeId, double value, String severity, String status) {
-        alertHistory.addLast(new AlertHistoryEntry(System.currentTimeMillis(),
-                                                   metric,
-                                                   nodeId.id(),
-                                                   value,
-                                                   severity,
-                                                   status));
-        // Approximate size tracking - may briefly exceed MAX_ALERT_HISTORY under contention
-        if (historySize.incrementAndGet() > MAX_ALERT_HISTORY) {
-            if (alertHistory.pollFirst() != null) {
-                historySize.decrementAndGet();
-            }
+        var entry = new AlertHistoryEntry(System.currentTimeMillis(), metric, nodeId.id(), value, severity, status);
+        // Remove oldest entry if at capacity, then add new entry
+        while (!alertHistory.offerLast(entry)) {
+            alertHistory.pollFirst();
         }
     }
 
@@ -395,8 +386,7 @@ public class AlertManager {
     }
 
     private final Map<String, SliceFailureAlert> activeSliceFailureAlerts = new ConcurrentHashMap<>();
-    private final ConcurrentLinkedDeque<SliceFailureHistoryEntry> sliceFailureHistory = new ConcurrentLinkedDeque<>();
-    private final AtomicInteger sliceFailureHistorySize = new AtomicInteger(0);
+    private final LinkedBlockingDeque<SliceFailureHistoryEntry> sliceFailureHistory = new LinkedBlockingDeque<>(MAX_ALERT_HISTORY);
 
     private void addSliceFailureToHistory(SliceFailureEvent.AllInstancesFailed event) {
         var entry = new SliceFailureHistoryEntry(event.timestamp(),
@@ -413,11 +403,9 @@ public class AlertManager {
                                                  ? event.lastError()
                                                         .message()
                                                  : "unknown");
-        sliceFailureHistory.addLast(entry);
-        if (sliceFailureHistorySize.incrementAndGet() > MAX_ALERT_HISTORY) {
-            if (sliceFailureHistory.pollFirst() != null) {
-                sliceFailureHistorySize.decrementAndGet();
-            }
+        // Remove oldest entry if at capacity, then add new entry
+        while (!sliceFailureHistory.offerLast(entry)) {
+            sliceFailureHistory.pollFirst();
         }
     }
 

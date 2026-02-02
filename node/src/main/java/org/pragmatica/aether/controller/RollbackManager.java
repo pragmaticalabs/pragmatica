@@ -6,11 +6,11 @@ import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
-import org.pragmatica.aether.slice.kvstore.AetherKey.BlueprintKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.PreviousVersionKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.aether.slice.kvstore.AetherValue.BlueprintValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.PreviousVersionValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -19,8 +19,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.Result;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
@@ -65,6 +64,130 @@ public interface RollbackManager {
      */
     void resetRollbackCount(ArtifactBase artifactBase);
 
+    // --- Nested types ---
+    /**
+     * Immutable rollback state for a single artifact.
+     * All state transitions return new instances.
+     */
+    record RollbackState(ArtifactBase artifactBase,
+                         Option<Version> previousVersion,
+                         Version currentVersion,
+                         int rollbackCount,
+                         long lastRollbackTimestamp,
+                         Option<Version> lastRolledBackFrom,
+                         Option<Version> lastRolledBackTo) {
+        /**
+         * Create initial state for first deployment (no previous version).
+         */
+        public static RollbackState initial(ArtifactBase artifactBase, Version currentVersion) {
+            return new RollbackState(artifactBase, Option.none(), currentVersion, 0, 0, Option.none(), Option.none());
+        }
+
+        /**
+         * Create state from KVStore data.
+         */
+        public static RollbackState fromKVStore(ArtifactBase artifactBase,
+                                                Version previousVersion,
+                                                Version currentVersion) {
+            return new RollbackState(artifactBase,
+                                     Option.some(previousVersion),
+                                     currentVersion,
+                                     0,
+                                     0,
+                                     Option.none(),
+                                     Option.none());
+        }
+
+        /**
+         * Create new state with version change tracked.
+         * The current version becomes the previous version.
+         */
+        public RollbackState withVersionChange(Version newVersion) {
+            return new RollbackState(artifactBase,
+                                     Option.some(currentVersion),
+                                     newVersion,
+                                     rollbackCount,
+                                     lastRollbackTimestamp,
+                                     lastRolledBackFrom,
+                                     lastRolledBackTo);
+        }
+
+        /**
+         * Create new state after rollback completed.
+         * Clears previous version (next deployment will set it again).
+         */
+        public RollbackState withRollbackCompleted(Version failedVersion, Version targetVersion, long timestamp) {
+            return new RollbackState(artifactBase,
+                                     Option.none(),
+                                     targetVersion,
+                                     rollbackCount + 1,
+                                     timestamp,
+                                     Option.some(failedVersion),
+                                     Option.some(targetVersion));
+        }
+
+        /**
+         * Create new state with counters reset.
+         */
+        public RollbackState withReset() {
+            return new RollbackState(artifactBase, previousVersion, currentVersion, 0, 0, Option.none(), Option.none());
+        }
+
+        /**
+         * Create new state from KVStore update (preserves rollback counters).
+         */
+        public RollbackState withKVStoreUpdate(Version previous, Version current) {
+            return new RollbackState(artifactBase,
+                                     Option.some(previous),
+                                     current,
+                                     rollbackCount,
+                                     lastRollbackTimestamp,
+                                     lastRolledBackFrom,
+                                     lastRolledBackTo);
+        }
+
+        /**
+         * Check if rollback is allowed and return decision if so.
+         */
+        public Result<RollbackDecision> canRollback(RollbackConfig config, long currentTime) {
+            if (previousVersion.isEmpty()) {
+                return RollbackError.General.NO_PREVIOUS_VERSION.result();
+            }
+            var cooldownMs = config.cooldownSeconds() * 1000L;
+            if (lastRollbackTimestamp > 0 && (currentTime - lastRollbackTimestamp) < cooldownMs) {
+                return RollbackError.General.COOLDOWN_ACTIVE.result();
+            }
+            if (rollbackCount >= config.maxRollbacks()) {
+                return RollbackError.General.MAX_ROLLBACKS_EXCEEDED.result();
+            }
+            return Result.success(RollbackDecision.rollbackDecision(previousVersion.unwrap(),
+                                                                    currentVersion,
+                                                                    rollbackCount + 1));
+        }
+
+        /**
+         * Convert to stats record.
+         */
+        public RollbackStats toStats() {
+            return new RollbackStats(artifactBase,
+                                     rollbackCount,
+                                     lastRollbackTimestamp,
+                                     lastRolledBackFrom,
+                                     lastRolledBackTo);
+        }
+    }
+
+    /**
+     * Validated rollback decision. Created only when all preconditions are met.
+     */
+    record RollbackDecision(Version targetVersion,
+                            Version failedVersion,
+                            int rollbackNumber) {
+        public static RollbackDecision rollbackDecision(Version target, Version failed, int num) {
+            return new RollbackDecision(target, failed, num);
+        }
+    }
+
     /**
      * Rollback error types.
      */
@@ -102,11 +225,243 @@ public interface RollbackManager {
                          Option<Version> lastRolledBackFrom,
                          Option<Version> lastRolledBackTo) {}
 
+    /**
+     * Create a rollback manager with local record implementation.
+     */
     static RollbackManager rollbackManager(NodeId self,
                                            RollbackConfig config,
                                            ClusterNode<KVCommand<AetherKey>> cluster,
                                            KVStore<AetherKey, AetherValue> kvStore) {
-        return new RollbackManagerImpl(self, config, cluster, kvStore);
+        record rollbackManager(NodeId self,
+                               RollbackConfig config,
+                               ClusterNode<KVCommand<AetherKey>> cluster,
+                               KVStore<AetherKey, AetherValue> kvStore,
+                               AtomicBoolean isLeader,
+                               ConcurrentHashMap<ArtifactBase, RollbackState> rollbackStates,
+                               Logger log) implements RollbackManager {
+            @Override
+            public void onLeaderChange(LeaderChange leaderChange) {
+                var wasLeader = isLeader.getAndSet(leaderChange.localNodeIsLeader());
+                if (leaderChange.localNodeIsLeader() && !wasLeader) {
+                    log.info("Node {} became leader, RollbackManager activated", self);
+                    loadPreviousVersionsFromKvStore();
+                } else if (!leaderChange.localNodeIsLeader() && wasLeader) {
+                    log.info("Node {} is no longer leader, RollbackManager deactivated", self);
+                }
+            }
+
+            @Override
+            public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
+                var key = valuePut.cause()
+                                  .key();
+                var value = valuePut.cause()
+                                    .value();
+                switch (key) {
+                    case SliceTargetKey sliceTargetKey when value instanceof SliceTargetValue sliceTargetValue ->
+                    trackVersionChange(sliceTargetKey.artifactBase(), sliceTargetValue);
+                    case PreviousVersionKey previousVersionKey when value instanceof PreviousVersionValue previousVersionValue ->
+                    updateLocalPreviousVersion(previousVersionKey.artifactBase(), previousVersionValue);
+                    default -> {}
+                }
+            }
+
+            @Override
+            public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
+                if (!config.enabled()) {
+                    log.debug("Rollback disabled, ignoring AllInstancesFailed for {}", event.artifact());
+                    return;
+                }
+                if (!config.triggerOnAllInstancesFailed()) {
+                    log.debug("Rollback on AllInstancesFailed disabled, ignoring event for {}", event.artifact());
+                    return;
+                }
+                if (!isLeader.get()) {
+                    log.debug("Not leader, skipping rollback decision for {}", event.artifact());
+                    return;
+                }
+                var artifactBase = event.artifact()
+                                        .base();
+                Option.option(rollbackStates.get(artifactBase))
+                      .onPresent(state -> initiateRollback(event.artifact(),
+                                                           state,
+                                                           event.requestId()))
+                      .onEmpty(() -> log.warn("[requestId={}] No previous version tracked for {}, cannot rollback",
+                                              event.requestId(),
+                                              event.artifact()));
+            }
+
+            @Override
+            public Option<RollbackStats> getStats(ArtifactBase artifactBase) {
+                return Option.option(rollbackStates.get(artifactBase))
+                             .map(RollbackState::toStats);
+            }
+
+            @Override
+            public void resetRollbackCount(ArtifactBase artifactBase) {
+                rollbackStates.computeIfPresent(artifactBase,
+                                                (_, state) -> {
+                                                    log.info("Rollback count reset for {}", artifactBase);
+                                                    return state.withReset();
+                                                });
+            }
+
+            @SuppressWarnings("rawtypes")
+            private void loadPreviousVersionsFromKvStore() {
+                // Use raw forEach to avoid ClassCastException - KV store may contain LeaderKey entries
+                ((Map) kvStore.snapshot()).forEach((key, value) -> {
+                                                       if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue) {
+                                                           loadPreviousVersionEntry(aetherKey, aetherValue);
+                                                       }
+                                                   });
+                log.debug("Loaded {} previous version entries from KVStore", rollbackStates.size());
+            }
+
+            private void loadPreviousVersionEntry(AetherKey key, AetherValue value) {
+                if (key instanceof PreviousVersionKey previousVersionKey &&
+                value instanceof PreviousVersionValue previousVersionValue) {
+                    updateLocalPreviousVersion(previousVersionKey.artifactBase(), previousVersionValue);
+                }
+            }
+
+            private void updateLocalPreviousVersion(ArtifactBase artifactBase, PreviousVersionValue value) {
+                rollbackStates.compute(artifactBase,
+                                       (ab, existing) -> Option.option(existing)
+                                                               .fold(() -> RollbackState.fromKVStore(ab,
+                                                                                                     value.previousVersion(),
+                                                                                                     value.currentVersion()),
+                                                                     state -> state.withKVStoreUpdate(value.previousVersion(),
+                                                                                                      value.currentVersion())));
+            }
+
+            private void trackVersionChange(ArtifactBase artifactBase, SliceTargetValue sliceTargetValue) {
+                if (!isLeader.get()) {
+                    return;
+                }
+                var currentVersion = sliceTargetValue.currentVersion();
+                rollbackStates.compute(artifactBase,
+                                       (ab, existing) -> Option.option(existing)
+                                                               .fold(() -> {
+                                                                         log.debug("First deployment of {}, no previous version to track",
+                                                                                   artifactBase);
+                                                                         return RollbackState.initial(ab, currentVersion);
+                                                                     },
+                                                                     state -> computeVersionChange(state,
+                                                                                                   artifactBase,
+                                                                                                   currentVersion)));
+            }
+
+            private RollbackState computeVersionChange(RollbackState state,
+                                                       ArtifactBase artifactBase,
+                                                       Version newVersion) {
+                if (state.currentVersion()
+                         .equals(newVersion)) {
+                    return state;
+                }
+                var previousVersion = state.currentVersion();
+                log.info("Version change detected for {}: {} -> {}",
+                         artifactBase,
+                         previousVersion,
+                         newVersion);
+                storePreviousVersion(artifactBase, previousVersion, newVersion);
+                return state.withVersionChange(newVersion);
+            }
+
+            private void storePreviousVersion(ArtifactBase artifactBase,
+                                              Version previousVersion,
+                                              Version currentVersion) {
+                var key = PreviousVersionKey.previousVersionKey(artifactBase);
+                var value = PreviousVersionValue.previousVersionValue(artifactBase, previousVersion, currentVersion);
+                var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+                cluster.apply(List.of(command))
+                       .onSuccess(_ -> log.debug("Stored previous version {} for {} in KVStore",
+                                                 previousVersion,
+                                                 artifactBase))
+                       .onFailure(cause -> log.error("Failed to store previous version for {}: {}",
+                                                     artifactBase,
+                                                     cause.message()));
+            }
+
+            private void initiateRollback(Artifact failedArtifact, RollbackState state, String requestId) {
+                var now = System.currentTimeMillis();
+                state.canRollback(config, now)
+                     .onFailure(cause -> logRollbackSkipped(cause, requestId, failedArtifact))
+                     .onSuccess(decision -> executeRollback(failedArtifact, decision, requestId));
+            }
+
+            private void logRollbackSkipped(Cause cause, String requestId, Artifact artifact) {
+                switch (cause) {
+                    case RollbackError.General.NO_PREVIOUS_VERSION ->
+                    log.warn("[requestId={}] No previous version available for {}, cannot rollback", requestId, artifact);
+                    case RollbackError.General.COOLDOWN_ACTIVE ->
+                    log.warn("[requestId={}] Rollback cooldown active for {}. Skipping rollback.", requestId, artifact);
+                    case RollbackError.General.MAX_ROLLBACKS_EXCEEDED ->
+                    log.error("[requestId={}] CRITICAL: Max rollbacks ({}) exceeded for {}. Manual intervention required.",
+                              requestId,
+                              config.maxRollbacks(),
+                              artifact);
+                    default ->
+                    log.warn("[requestId={}] Rollback skipped for {}: {}", requestId, artifact, cause.message());
+                }
+            }
+
+            private void executeRollback(Artifact failedArtifact, RollbackDecision decision, String requestId) {
+                var rollbackArtifact = Artifact.artifact(failedArtifact.base(), decision.targetVersion());
+                log.warn("[requestId={}] INITIATING ROLLBACK: {} -> {} (rollback #{} of max {})",
+                         requestId,
+                         failedArtifact,
+                         rollbackArtifact,
+                         decision.rollbackNumber(),
+                         config.maxRollbacks());
+                updateSliceTargetForRollback(rollbackArtifact, decision, requestId);
+            }
+
+            private void updateSliceTargetForRollback(Artifact rollbackArtifact,
+                                                      RollbackDecision decision,
+                                                      String requestId) {
+                var artifactBase = rollbackArtifact.base();
+                var existingTarget = kvStore.snapshot()
+                                            .entrySet()
+                                            .stream()
+                                            .filter(e -> e.getKey() instanceof SliceTargetKey stk &&
+                stk.artifactBase()
+                   .equals(artifactBase))
+                                            .findFirst();
+                var instanceCount = existingTarget.map(e -> ((SliceTargetValue) e.getValue()).targetInstances())
+                                                  .orElse(1);
+                var key = SliceTargetKey.sliceTargetKey(artifactBase);
+                var value = SliceTargetValue.sliceTargetValue(decision.targetVersion(), instanceCount);
+                var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
+                // Capture values needed for state update
+                var failedVersion = decision.failedVersion();
+                var targetVersion = decision.targetVersion();
+                cluster.apply(List.of(command))
+                       .onSuccess(_ -> {
+                                      var timestamp = System.currentTimeMillis();
+                                      rollbackStates.computeIfPresent(artifactBase,
+                                                                      (_, state) -> state.withRollbackCompleted(failedVersion,
+                                                                                                                targetVersion,
+                                                                                                                timestamp));
+                                      log.info("[requestId={}] ROLLBACK INITIATED: SliceTarget updated to {} with {} instances",
+                                               requestId,
+                                               rollbackArtifact,
+                                               instanceCount);
+                                  })
+                       .onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update slice target for {}: {}",
+                                                     requestId,
+                                                     rollbackArtifact,
+                                                     cause.message()));
+            }
+        }
+        var manager = new rollbackManager(self,
+                                          config,
+                                          cluster,
+                                          kvStore,
+                                          new AtomicBoolean(false),
+                                          new ConcurrentHashMap<>(),
+                                          LoggerFactory.getLogger(RollbackManager.class));
+        // Initialize state from KVStore
+        manager.loadPreviousVersionsFromKvStore();
+        return manager;
     }
 
     /**
@@ -114,280 +469,6 @@ public interface RollbackManager {
      */
     static RollbackManager disabled() {
         return new NoOpRollbackManager();
-    }
-}
-
-class RollbackManagerImpl implements RollbackManager {
-    private static final Logger log = LoggerFactory.getLogger(RollbackManagerImpl.class);
-
-    private final NodeId self;
-    private final RollbackConfig config;
-    private final ClusterNode<KVCommand<AetherKey>> cluster;
-    private final KVStore<AetherKey, AetherValue> kvStore;
-
-    private final AtomicBoolean isLeader = new AtomicBoolean(false);
-    private final Map<ArtifactBase, RollbackState> rollbackStates = new ConcurrentHashMap<>();
-
-    RollbackManagerImpl(NodeId self,
-                        RollbackConfig config,
-                        ClusterNode<KVCommand<AetherKey>> cluster,
-                        KVStore<AetherKey, AetherValue> kvStore) {
-        this.self = self;
-        this.config = config;
-        this.cluster = cluster;
-        this.kvStore = kvStore;
-        loadPreviousVersionsFromKvStore();
-    }
-
-    @Override
-    public void onLeaderChange(LeaderChange leaderChange) {
-        var wasLeader = isLeader.getAndSet(leaderChange.localNodeIsLeader());
-        if (leaderChange.localNodeIsLeader() && !wasLeader) {
-            log.info("Node {} became leader, RollbackManager activated", self);
-            loadPreviousVersionsFromKvStore();
-        } else if (!leaderChange.localNodeIsLeader() && wasLeader) {
-            log.info("Node {} is no longer leader, RollbackManager deactivated", self);
-        }
-    }
-
-    @Override
-    public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-        var key = valuePut.cause()
-                          .key();
-        var value = valuePut.cause()
-                            .value();
-        switch (key) {
-            case BlueprintKey blueprintKey when value instanceof BlueprintValue _ ->
-            trackVersionChange(blueprintKey.artifact());
-            case PreviousVersionKey previousVersionKey when value instanceof PreviousVersionValue previousVersionValue ->
-            updateLocalPreviousVersion(previousVersionKey.artifactBase(), previousVersionValue);
-            default -> {}
-        }
-    }
-
-    @Override
-    public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
-        if (!config.enabled()) {
-            log.debug("Rollback disabled, ignoring AllInstancesFailed for {}", event.artifact());
-            return;
-        }
-        if (!config.triggerOnAllInstancesFailed()) {
-            log.debug("Rollback on AllInstancesFailed disabled, ignoring event for {}", event.artifact());
-            return;
-        }
-        if (!isLeader.get()) {
-            log.debug("Not leader, skipping rollback decision for {}", event.artifact());
-            return;
-        }
-        var artifactBase = event.artifact()
-                                .base();
-        Option.option(rollbackStates.get(artifactBase))
-              .onPresent(state -> initiateRollback(event.artifact(),
-                                                   state,
-                                                   event.requestId()))
-              .onEmpty(() -> log.warn("[requestId={}] No previous version tracked for {}, cannot rollback",
-                                      event.requestId(),
-                                      event.artifact()));
-    }
-
-    @Override
-    public Option<RollbackStats> getStats(ArtifactBase artifactBase) {
-        return Option.option(rollbackStates.get(artifactBase))
-                     .map(state -> new RollbackStats(artifactBase,
-                                                     state.rollbackCount,
-                                                     state.lastRollbackTimestamp,
-                                                     state.lastRolledBackFrom,
-                                                     state.lastRolledBackTo));
-    }
-
-    @Override
-    public void resetRollbackCount(ArtifactBase artifactBase) {
-        Option.option(rollbackStates.get(artifactBase))
-              .onPresent(state -> {
-                             state.rollbackCount = 0;
-                             state.lastRollbackTimestamp = 0;
-                             state.lastRolledBackFrom = Option.none();
-                             state.lastRolledBackTo = Option.none();
-                             log.info("Rollback count reset for {}", artifactBase);
-                         });
-    }
-
-    private void loadPreviousVersionsFromKvStore() {
-        kvStore.snapshot()
-               .forEach(this::loadPreviousVersionEntry);
-        log.debug("Loaded {} previous version entries from KVStore", rollbackStates.size());
-    }
-
-    private void loadPreviousVersionEntry(AetherKey key, AetherValue value) {
-        if (key instanceof PreviousVersionKey previousVersionKey &&
-        value instanceof PreviousVersionValue previousVersionValue) {
-            updateLocalPreviousVersion(previousVersionKey.artifactBase(), previousVersionValue);
-        }
-    }
-
-    private void updateLocalPreviousVersion(ArtifactBase artifactBase, PreviousVersionValue value) {
-        rollbackStates.compute(artifactBase, (_, existing) -> computePreviousVersionState(existing, value));
-    }
-
-    private RollbackState computePreviousVersionState(RollbackState existing, PreviousVersionValue value) {
-        return Option.option(existing)
-                     .fold(() -> new RollbackState(Option.some(value.previousVersion()),
-                                                   value.currentVersion()),
-                           state -> {
-                               state.previousVersion = Option.some(value.previousVersion());
-                               state.currentVersion = value.currentVersion();
-                               return state;
-                           });
-    }
-
-    private void trackVersionChange(Artifact artifact) {
-        if (!isLeader.get()) {
-            return;
-        }
-        var artifactBase = artifact.base();
-        var currentVersion = artifact.version();
-        rollbackStates.compute(artifactBase,
-                               (_, existing) -> computeVersionChangeState(existing,
-                                                                          artifact,
-                                                                          artifactBase,
-                                                                          currentVersion));
-    }
-
-    private RollbackState computeVersionChangeState(RollbackState existing,
-                                                    Artifact artifact,
-                                                    ArtifactBase artifactBase,
-                                                    Version currentVersion) {
-        return Option.option(existing)
-                     .fold(() -> {
-                               // First deployment, no previous version yet
-        log.debug("First deployment of {}, no previous version to track", artifact);
-                               return new RollbackState(Option.none(),
-                                                        currentVersion);
-                           },
-                           state -> {
-                               if (!state.currentVersion.equals(currentVersion)) {
-                                   // Version changed, store previous version in KVStore
-        var previousVersion = state.currentVersion;
-                                   log.info("Version change detected for {}: {} -> {}",
-                                            artifactBase,
-                                            previousVersion,
-                                            currentVersion);
-                                   storePreviousVersion(artifactBase, previousVersion, currentVersion);
-                                   state.previousVersion = Option.some(previousVersion);
-                                   state.currentVersion = currentVersion;
-                               }
-                               return state;
-                           });
-    }
-
-    private void storePreviousVersion(ArtifactBase artifactBase, Version previousVersion, Version currentVersion) {
-        var key = PreviousVersionKey.previousVersionKey(artifactBase);
-        var value = PreviousVersionValue.previousVersionValue(artifactBase, previousVersion, currentVersion);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-        cluster.apply(List.of(command))
-               .onSuccess(_ -> log.debug("Stored previous version {} for {} in KVStore", previousVersion, artifactBase))
-               .onFailure(cause -> log.error("Failed to store previous version for {}: {}",
-                                             artifactBase,
-                                             cause.message()));
-    }
-
-    private void initiateRollback(Artifact failedArtifact, RollbackState state, String requestId) {
-        // Check if previous version exists
-        if (state.previousVersion.isEmpty()) {
-            log.warn("[requestId={}] No previous version available for {}, cannot rollback", requestId, failedArtifact);
-            return;
-        }
-        var previousVersion = state.previousVersion.unwrap();
-        // Check cooldown
-        var now = System.currentTimeMillis();
-        var cooldownMs = config.cooldownSeconds() * 1000L;
-        if (state.lastRollbackTimestamp > 0 && (now - state.lastRollbackTimestamp) < cooldownMs) {
-            var remainingSeconds = (cooldownMs - (now - state.lastRollbackTimestamp)) / 1000;
-            log.warn("[requestId={}] Rollback cooldown active for {}, {} seconds remaining. Skipping rollback.",
-                     requestId,
-                     failedArtifact,
-                     remainingSeconds);
-            return;
-        }
-        // Check max rollbacks
-        if (state.rollbackCount >= config.maxRollbacks()) {
-            log.error("[requestId={}] CRITICAL: Max rollbacks ({}) exceeded for {}. Manual intervention required.",
-                      requestId,
-                      config.maxRollbacks(),
-                      failedArtifact);
-            return;
-        }
-        // Perform rollback
-        var rollbackArtifact = Artifact.artifact(failedArtifact.base(), previousVersion);
-        log.warn("[requestId={}] INITIATING ROLLBACK: {} -> {} (rollback #{} of max {})",
-                 requestId,
-                 failedArtifact,
-                 rollbackArtifact,
-                 state.rollbackCount + 1,
-                 config.maxRollbacks());
-        updateBlueprintForRollback(rollbackArtifact, state, failedArtifact.version(), previousVersion, requestId);
-    }
-
-    private void updateBlueprintForRollback(Artifact rollbackArtifact,
-                                            RollbackState state,
-                                            Version failedVersion,
-                                            Version previousVersion,
-                                            String requestId) {
-        // Get current instance count from existing blueprint
-        var existingBlueprint = kvStore.snapshot()
-                                       .entrySet()
-                                       .stream()
-                                       .filter(e -> e.getKey() instanceof BlueprintKey bk &&
-        bk.artifact()
-          .base()
-          .equals(rollbackArtifact.base()))
-                                       .findFirst();
-        var instanceCount = existingBlueprint.map(e -> ((BlueprintValue) e.getValue()).instanceCount())
-                                             .orElse(1L);
-        var key = new BlueprintKey(rollbackArtifact);
-        var value = new BlueprintValue(instanceCount);
-        var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
-        cluster.apply(List.of(command))
-               .onSuccess(_ -> {
-                              state.rollbackCount++;
-                              state.lastRollbackTimestamp = System.currentTimeMillis();
-                              state.lastRolledBackFrom = Option.some(failedVersion);
-                              state.lastRolledBackTo = Option.some(previousVersion);
-                              // Update current version to the rollback version
-        state.currentVersion = previousVersion;
-                              // Previous version becomes the one before that (if any)
-        // For simplicity, we clear it - next deployment will set it again
-        state.previousVersion = Option.none();
-                              log.info("[requestId={}] ROLLBACK INITIATED: Blueprint updated to {} with {} instances",
-                                       requestId,
-                                       rollbackArtifact,
-                                       instanceCount);
-                          })
-               .onFailure(cause -> log.error("[requestId={}] ROLLBACK FAILED: Could not update blueprint for {}: {}",
-                                             requestId,
-                                             rollbackArtifact,
-                                             cause.message()));
-    }
-
-    /**
-     * Mutable state for rollback tracking per artifact.
-     */
-    private static class RollbackState {
-        Option<Version> previousVersion;
-        Version currentVersion;
-        int rollbackCount;
-        long lastRollbackTimestamp;
-        Option<Version> lastRolledBackFrom;
-        Option<Version> lastRolledBackTo;
-
-        RollbackState(Option<Version> previousVersion, Version currentVersion) {
-            this.previousVersion = previousVersion;
-            this.currentVersion = currentVersion;
-            this.rollbackCount = 0;
-            this.lastRollbackTimestamp = 0;
-            this.lastRolledBackFrom = Option.none();
-            this.lastRolledBackTo = Option.none();
-        }
     }
 }
 

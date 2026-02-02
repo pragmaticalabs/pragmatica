@@ -48,6 +48,7 @@ key components:
     - Deterministically selects a leader node for special operations
     - Detects leader changes and notifies cluster components
     - Ensures consistent leadership view across the cluster
+    - Supports two modes: local election (immediate) or consensus-based (committed)
 
 ### Key Interactions
 
@@ -72,6 +73,47 @@ key components:
 
 The architecture emphasizes resilience, correctness, and performance while maintaining a clean separation of concerns
 between the consensus protocol, application logic, and network communication.
+
+## Leader Election Protocol
+
+Leader election can operate in two modes:
+
+### Local Election (Default)
+
+Leader is computed locally based on topology view:
+1. On topology change, each node computes leader as first node in sorted topology
+2. LeaderChange notification sent immediately via synchronous `router.route()`
+3. Simple and fast, but `isLeader()` may return true before notification delivered
+
+**Use when:** Low latency is critical, race conditions are acceptable
+
+### Consensus-Based Election
+
+Leader is agreed through consensus protocol:
+1. On topology change, proposal is submitted via `LeaderProposalHandler`
+2. Proposal includes `LeaderKey` and `LeaderValue` with monotonic `viewSequence`
+3. After consensus commit, `onLeaderCommitted()` updates local state
+4. LeaderChange notification sent asynchronously via `router.routeAsync()`
+
+**Use when:** Strong consistency required, all nodes must agree on leader
+
+### Key Types
+
+```
+LeaderKey (singleton) - Well-known key for leader election
+LeaderValue {
+    leader: NodeId,       // Elected leader
+    viewSequence: long,   // Monotonic counter for consistency
+    electedAt: long       // Timestamp
+}
+```
+
+### Race Condition Prevention
+
+The `viewSequence` prevents stale proposals from overwriting newer elections:
+- Each proposal increments `viewSequence`
+- `onLeaderCommitted()` rejects if `committedViewSequence < currentViewSequence`
+- Ensures leadership follows consensus order, not arrival order
 
 ## Diagrams
 

@@ -85,14 +85,14 @@ class AetherNodeIT {
     }
 
     @Test
-    void cluster_starts_and_stops_successfully() {
+    void start_succeeds_forCluster() {
         // Just verify setUp/tearDown work - nodes are started in @BeforeEach
         assertThat(nodes).hasSize(CLUSTER_SIZE);
         nodes.forEach(node -> assertThat(node.self()).isNotNull());
     }
 
     @Test
-    void nodes_reach_consensus_on_slice_state() {
+    void apply_reachesConsensus_forSliceState() {
         var testArtifact = artifact("org.test:test-slice:1.0.0").unwrap();
         var targetNode = nodes.getFirst().self();
         var key = new SliceNodeKey(testArtifact, targetNode);
@@ -102,7 +102,8 @@ class AetherNodeIT {
         nodes.getFirst()
              .apply(List.of(new KVCommand.Put<>(key, value)))
              .await(AWAIT_TIMEOUT)
-             .onFailure(cause -> fail("Failed to put: " + cause.message()));
+             .onFailure(cause -> fail("Failed to put: " + cause.message()))
+             .onSuccess(_ -> log.debug("Put succeeded"));
 
         log.info("Put slice state {} for {} on node {}", SliceState.LOADING, testArtifact, targetNode);
 
@@ -124,7 +125,7 @@ class AetherNodeIT {
     }
 
     @Test
-    void multiple_puts_from_different_nodes_are_replicated() {
+    void apply_replicates_forMultiplePutsFromDifferentNodes() {
         var artifacts = List.of(
                 artifact("org.test:slice-a:1.0.0").unwrap(),
                 artifact("org.test:slice-b:1.0.0").unwrap(),
@@ -144,7 +145,8 @@ class AetherNodeIT {
 
         Promise.allOf(putPromises)
                .await(AWAIT_TIMEOUT)
-               .onFailure(cause -> fail("Failed to put values: " + cause.message()));
+               .onFailure(cause -> fail("Failed to put values: " + cause.message()))
+               .onSuccess(_ -> log.debug("All puts succeeded"));
 
         // Wait for all nodes to have all values
         await().atMost(AWAIT_DURATION)
@@ -160,7 +162,7 @@ class AetherNodeIT {
     }
 
     @Test
-    void state_transitions_are_consistent() {
+    void apply_maintainsConsistency_forStateTransitions() {
         var testArtifact = artifact("org.test:lifecycle-slice:1.0.0").unwrap();
         var targetNode = nodes.getFirst().self();
         var key = new SliceNodeKey(testArtifact, targetNode);
@@ -174,7 +176,8 @@ class AetherNodeIT {
             nodes.getFirst()
                  .apply(List.of(new KVCommand.Put<>(key, value)))
                  .await(AWAIT_TIMEOUT)
-                 .onFailure(cause -> fail("Failed to put state " + state + ": " + cause.message()));
+                 .onFailure(cause -> fail("Failed to put state " + state + ": " + cause.message()))
+                 .onSuccess(_ -> log.debug("State transition to {} succeeded", state));
 
             log.info("Transitioned to state: {}", state);
 
@@ -196,7 +199,7 @@ class AetherNodeIT {
     }
 
     @Test
-    void remove_operation_is_replicated() {
+    void apply_replicates_forRemoveOperation() {
         var testArtifact = artifact("org.test:remove-slice:1.0.0").unwrap();
         var targetNode = nodes.getFirst().self();
         var key = new SliceNodeKey(testArtifact, targetNode);
@@ -205,7 +208,9 @@ class AetherNodeIT {
         // First put
         nodes.getFirst()
              .apply(List.of(new KVCommand.Put<>(key, value)))
-             .await(AWAIT_TIMEOUT);
+             .await(AWAIT_TIMEOUT)
+             .onFailure(cause -> fail("Failed to put: " + cause.message()))
+             .onSuccess(_ -> log.debug("Put succeeded"));
 
         await().atMost(AWAIT_DURATION)
                .until(() -> nodes.stream().allMatch(n -> n.kvStore().get(key).isPresent()));
@@ -215,7 +220,9 @@ class AetherNodeIT {
         // Now remove
         nodes.get(1)  // Remove from different node
              .apply(List.of(new KVCommand.Remove<>(key)))
-             .await(AWAIT_TIMEOUT);
+             .await(AWAIT_TIMEOUT)
+             .onFailure(cause -> fail("Failed to remove: " + cause.message()))
+             .onSuccess(_ -> log.debug("Remove succeeded"));
 
         // Verify removal replicated to all nodes
         await().atMost(AWAIT_DURATION)
@@ -232,7 +239,7 @@ class AetherNodeIT {
     }
 
     @Test
-    void metrics_collector_collects_local_metrics() {
+    void metricsCollector_collectsLocalMetrics() {
         // Each node should have its own metrics
         for (var node : nodes) {
             var localMetrics = node.metricsCollector().collectLocal();
@@ -255,7 +262,7 @@ class AetherNodeIT {
     }
 
     @Test
-    void all_nodes_have_metrics_collector_and_control_loop() {
+    void node_hasMetricsCollectorAndControlLoop() {
         // Verify components are wired correctly
         for (var node : nodes) {
             assertThat(node.metricsCollector())
@@ -271,7 +278,7 @@ class AetherNodeIT {
     }
 
     @Test
-    void nodes_have_slice_invoker_and_invocation_handler() {
+    void node_hasSliceInvokerAndInvocationHandler() {
         // Verify invocation components are wired correctly
         for (var node : nodes) {
             assertThat(node.sliceInvoker())

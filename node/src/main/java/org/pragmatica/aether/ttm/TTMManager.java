@@ -7,13 +7,20 @@ import org.pragmatica.aether.ttm.error.TTMError;
 import org.pragmatica.aether.ttm.model.TTMForecast;
 import org.pragmatica.aether.ttm.model.TTMPredictor;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.messaging.MessageReceiver;
 
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Manages TTM lifecycle, leader awareness, and periodic evaluation.
@@ -83,55 +90,203 @@ public interface TTMManager {
                                             MinuteAggregator aggregator,
                                             Supplier<ControllerConfig> controllerConfigSupplier) {
         var analyzer = ForecastAnalyzer.forecastAnalyzer(config);
-        return new TTMManagerImpl(config, predictor, analyzer, aggregator, controllerConfigSupplier);
+        var scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+                                                                       var thread = new Thread(r, "ttm-manager");
+                                                                       thread.setDaemon(true);
+                                                                       return thread;
+                                                                   });
+        return new ttmManager(config,
+                              predictor,
+                              analyzer,
+                              aggregator,
+                              controllerConfigSupplier,
+                              scheduler,
+                              new AtomicReference<>(),
+                              new AtomicReference<>(),
+                              new AtomicReference<>(TTMState.STOPPED),
+                              new CopyOnWriteArrayList<>());
     }
 
     /**
      * Create a no-op TTM manager (for when TTM is disabled).
      */
     static TTMManager noOp(TTMConfig config) {
-        return new NoOpTTMManager(config);
-    }
-}
-
-/**
- * No-op implementation for when TTM is disabled.
- */
-final class NoOpTTMManager implements TTMManager {
-    private final TTMConfig config;
-
-    NoOpTTMManager(TTMConfig config) {
-        this.config = config;
+        return new noOpTTMManager(config);
     }
 
-    @Override
-    public void onLeaderChange(LeaderChange leaderChange) {}
+    /**
+     * No-op implementation for when TTM is disabled.
+     */
+    record noOpTTMManager(TTMConfig config) implements TTMManager {
+        @Override
+        public void onLeaderChange(LeaderChange leaderChange) {}
 
-    @Override
-    public Option<TTMForecast> currentForecast() {
-        return Option.empty();
+        @Override
+        public Option<TTMForecast> currentForecast() {
+            return Option.empty();
+        }
+
+        @Override
+        public TTMState state() {
+            return TTMState.STOPPED;
+        }
+
+        @Override
+        public void onForecast(Consumer<TTMForecast> callback) {}
+
+        @Override
+        public boolean isEnabled() {
+            return false;
+        }
+
+        @Override
+        public Unit stop() {
+            return Unit.unit();
+        }
     }
 
-    @Override
-    public TTMState state() {
-        return TTMState.STOPPED;
-    }
+    /**
+     * Implementation of TTMManager.
+     */
+    record ttmManager(TTMConfig config,
+                      TTMPredictor predictor,
+                      ForecastAnalyzer analyzer,
+                      MinuteAggregator aggregator,
+                      Supplier<ControllerConfig> controllerConfigSupplier,
+                      ScheduledExecutorService scheduler,
+                      AtomicReference<ScheduledFuture<?>> evaluationTask,
+                      AtomicReference<TTMForecast> currentForecastRef,
+                      AtomicReference<TTMState> stateRef,
+                      CopyOnWriteArrayList<Consumer<TTMForecast>> callbacks) implements TTMManager {
+        private static final Logger log = LoggerFactory.getLogger(ttmManager.class);
 
-    @Override
-    public void onForecast(Consumer<TTMForecast> callback) {}
+        @Override
+        public void onLeaderChange(LeaderChange leaderChange) {
+            if (leaderChange.localNodeIsLeader()) {
+                log.info("Node became leader, starting TTM evaluation");
+                startEvaluation();
+            } else {
+                log.info("Node is no longer leader, stopping TTM evaluation");
+                stopEvaluation();
+            }
+        }
 
-    @Override
-    public TTMConfig config() {
-        return config;
-    }
+        @Override
+        public Option<TTMForecast> currentForecast() {
+            return Option.option(currentForecastRef.get());
+        }
 
-    @Override
-    public boolean isEnabled() {
-        return false;
-    }
+        @Override
+        public TTMState state() {
+            return stateRef.get();
+        }
 
-    @Override
-    public Unit stop() {
-        return Unit.unit();
+        @Override
+        public void onForecast(Consumer<TTMForecast> callback) {
+            callbacks.add(callback);
+        }
+
+        @Override
+        public boolean isEnabled() {
+            return true;
+        }
+
+        @Override
+        public Unit stop() {
+            stopEvaluation();
+            predictor.close();
+            scheduler.shutdown();
+            awaitSchedulerTermination();
+            return Unit.unit();
+        }
+
+        private void awaitSchedulerTermination() {
+            Result.lift(e -> new TTMError.InferenceFailed("Scheduler termination interrupted"),
+                        () -> {
+                            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                                scheduler.shutdownNow();
+                            }
+                            return Unit.unit();
+                        })
+                  .onFailure(cause -> {
+                      scheduler.shutdownNow();
+                      Thread.currentThread()
+                            .interrupt();
+                  });
+        }
+
+        private void startEvaluation() {
+            stopEvaluation();
+            stateRef.set(TTMState.RUNNING);
+            var task = scheduler.scheduleAtFixedRate(this::runEvaluation,
+                                                     config.evaluationIntervalMs(),
+                                                     config.evaluationIntervalMs(),
+                                                     TimeUnit.MILLISECONDS);
+            evaluationTask.set(task);
+            log.info("TTM evaluation started with interval {}ms", config.evaluationIntervalMs());
+        }
+
+        private void stopEvaluation() {
+            stateRef.set(TTMState.STOPPED);
+            var existing = evaluationTask.getAndSet(null);
+            if (existing != null) {
+                existing.cancel(false);
+                log.info("TTM evaluation stopped");
+            }
+        }
+
+        private void runEvaluation() {
+            evaluateAsync().onFailure(this::handleEvaluationError);
+        }
+
+        private Promise<Unit> evaluateAsync() {
+            int available = aggregator.aggregateCount();
+            int required = config.inputWindowMinutes();
+            if (available < required / 2) {
+                log.debug("Insufficient data for TTM: {} minutes available, {} required", available, required);
+                return Promise.unitPromise();
+            }
+            float[][] input = aggregator.toTTMInput(required);
+            return predictor.predict(input)
+                            .map(this::processPredictionAndReturn);
+        }
+
+        private Unit processPredictionAndReturn(float[] predictions) {
+            processPrediction(predictions);
+            return Unit.unit();
+        }
+
+        private void handleEvaluationError(Cause cause) {
+            log.error("TTM evaluation error: {}", cause.message());
+            stateRef.set(TTMState.ERROR);
+        }
+
+        private void processPrediction(float[] predictions) {
+            var recentHistory = aggregator.recent(config.inputWindowMinutes());
+            var controllerConfig = controllerConfigSupplier.get();
+            var forecast = analyzer.analyze(predictions, predictor.lastConfidence(), recentHistory, controllerConfig);
+            currentForecastRef.set(forecast);
+            log.debug("TTM forecast: recommendation={}, confidence={}",
+                      forecast.recommendation()
+                              .getClass()
+                              .getSimpleName(),
+                      forecast.confidence());
+            notifyCallbacks(forecast);
+            stateRef.set(TTMState.RUNNING);
+        }
+
+        private void notifyCallbacks(TTMForecast forecast) {
+            callbacks.forEach(callback -> safeInvokeCallback(callback, forecast));
+        }
+
+        private void safeInvokeCallback(Consumer<TTMForecast> callback, TTMForecast forecast) {
+            Result.lift(e -> new TTMError.InferenceFailed("Callback error: " + e.getMessage()),
+                        () -> {
+                            callback.accept(forecast);
+                            return Unit.unit();
+                        })
+                  .onFailure(cause -> log.warn("Forecast callback error: {}",
+                                               cause.message()));
+        }
     }
 }

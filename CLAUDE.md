@@ -9,7 +9,7 @@ Do NOT write code directly - delegate to `jbct-coder` agent.
 
 ## Project Overview
 
-**Pragmatica Aether** (v0.8.1) - AI-driven distributed runtime for Java with predictive scaling and seamless multi-cloud deployment.
+**Pragmatica Aether** (v0.8.2) - AI-driven distributed runtime for Java with predictive scaling and seamless multi-cloud deployment.
 
 **Key Principle:** Every inter-slice call will **EVENTUALLY SUCCEED** if the cluster is alive. Slices are NOT prepared for communication errors - runtime handles retries, failover, recovery. Design slices to be idempotent.
 
@@ -25,7 +25,7 @@ Do NOT write code directly - delegate to `jbct-coder` agent.
 | `aether-config/` | Configuration types |
 | `forge/` | Simulator CLI with dashboard for load/chaos testing |
 | `cli/` | Command-line interface |
-| `examples/` | Example slices (`ecommerce/`, `order-demo/`) |
+| `examples/` | Example slices (`ecommerce/`) |
 | `infra-slices/` | Infrastructure slices (cache, pubsub, rate limiter, etc.) |
 
 ## Core Concepts
@@ -178,7 +178,44 @@ mvn test -Dtest=ClassName  # Specific test class
 mvn test -pl module-name   # Specific module
 ```
 
-**Important:** Run `mvn install -DskipTests` before testing forge module. Forge tests depend on locally installed artifacts from other modules.
+**Forge module structure:**
+- `forge/forge-core` - main sources, unit tests, shaded jar
+- `forge/forge-tests` - integration tests (failsafe)
+
+```bash
+mvn test -pl forge/forge-core           # Unit tests (43 tests)
+mvn verify -pl forge/forge-tests        # Integration tests (90 tests)
+```
+
+**Important:** Run `mvn install -DskipTests` before testing forge. Forge tests depend on locally installed artifacts.
+
+## Scripts
+
+Convenience scripts in `script/` directory (auto-build if JAR missing):
+
+| Script | Purpose |
+|--------|---------|
+| `./script/aether.sh` | CLI for cluster management (status, deploy, scale, blueprint) |
+| `./script/aether-node.sh` | Start a cluster node |
+| `./script/aether-forge.sh` | Start Forge simulator with dashboard |
+| `./script/demo-cluster.sh` | Multi-node cluster demo (start/stop/deploy/logs) |
+
+### Quick Examples
+
+```bash
+# Start Forge with blueprint and load testing
+./script/aether-forge.sh --blueprint examples/url-shortener/target/blueprint.toml \
+  --load-config examples/url-shortener/load-config.toml --auto-start
+
+# Start 5-node real cluster
+./script/demo-cluster.sh start
+./script/demo-cluster.sh deploy
+./script/demo-cluster.sh status
+
+# CLI operations
+./script/aether.sh status
+./script/aether.sh --connect localhost:8081 slices
+```
 
 ## Parallel Releases with Circular Dependencies
 
@@ -222,7 +259,9 @@ This breaks the circular dependency chain while preserving functionality.
 
 ### Communication
 - `node/.../invoke/SliceInvoker.java` - Inter-slice calls
-- `node/.../api/ManagementServer.java` - HTTP API
+- `node/.../http/AppHttpServer.java` - Application HTTP routing and forwarding
+- `node/.../http/HttpRouteRegistry.java` - Route discovery from KVStore
+- `node/.../api/ManagementServer.java` - Management HTTP API
 - `cluster/.../kvstore/KVStore.java`
 
 ### CLI & Tools
@@ -239,6 +278,37 @@ cause.promise()             // Cause → Promise<T>
 result.unwrap()             // Result<T> → T (throws on failure)
 ```
 
+## Message Patterns
+
+### Sync vs Async Routing
+
+```java
+// Sync: handler completes before caller continues
+router.route(message);
+
+// Async: decoupled execution, prevents blocking
+router.routeAsync(() -> message);
+```
+
+**When to use async:**
+- Reaction messages (Handler A triggers Handler B)
+- Non-critical notifications
+- Avoiding deep call stacks
+
+**When to use sync:**
+- Critical coordination (quorum disappearance)
+- Order-dependent sequences
+- Handler result needed immediately
+
+### Leader Election Modes
+
+| Mode | Notification | Use Case |
+|------|-------------|----------|
+| Local | Immediate (sync) | Low latency, race OK |
+| Consensus | After commit (async) | Strong consistency |
+
+See [docs/contributors/consensus.md](docs/contributors/consensus.md) for details.
+
 ## Documentation
 
 | Topic | Location |
@@ -246,6 +316,7 @@ result.unwrap()             // Result<T> → T (throws on failure)
 | **Future Work** | [docs/internal/progress/development-priorities.md](docs/internal/progress/development-priorities.md) |
 | Architecture | [docs/contributors/architecture.md](docs/contributors/architecture.md) |
 | Slice Lifecycle | [docs/contributors/slice-lifecycle.md](docs/contributors/slice-lifecycle.md) |
+| HTTP Routing | [docs/contributors/http-routing.md](docs/contributors/http-routing.md) |
 | Metrics & Control | [docs/contributors/metrics-control.md](docs/contributors/metrics-control.md) |
 | TTM Integration | [docs/contributors/ttm-integration.md](docs/contributors/ttm-integration.md) |
 | Consensus | [docs/contributors/consensus.md](docs/contributors/consensus.md) |

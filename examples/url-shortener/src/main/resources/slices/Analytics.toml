@@ -1,0 +1,15 @@
+# Slice configuration for Analytics
+# This file is read by the annotation processor and blueprint generator
+
+[blueprint]
+# Number of instances to deploy
+instances = 3
+
+# Request timeout in milliseconds
+# timeout_ms = 30000
+
+# Memory allocation in MB
+# memory_mb = 256
+
+# Load balancing strategy: round_robin, least_connections, consistent_hash, random
+# load_balancing = "round_robin"

@@ -421,6 +421,11 @@ class DeploymentMetricsCollectorTest {
         }
 
         @Override
+        public java.util.Set<NodeId> connectedPeers() {
+            return java.util.Set.of();
+        }
+
+        @Override
         public Option<Server> server() {
             return Option.empty();
         }

@@ -157,7 +157,7 @@ public interface BlueprintExpander {
         var allArtifacts = collectAllArtifacts(explicitSlices.keySet(), allDependencies);
         var sorted = topologicalSort(allArtifacts, allDependencies);
         return Result.allOf(sorted.stream()
-                                  .map(artifact -> createResolvedSlice(artifact, explicitSlices))
+                                  .map(artifact -> createResolvedSlice(artifact, explicitSlices, allDependencies))
                                   .toList());
     }
 
@@ -201,14 +201,17 @@ public interface BlueprintExpander {
     }
 
     /**
-     * Create ResolvedSlice from artifact and explicit slices map.
+     * Create ResolvedSlice from artifact, explicit slices map, and dependencies map.
      */
     private static Result<ResolvedSlice> createResolvedSlice(Artifact artifact,
-                                                             Map<Artifact, SliceSpec> explicitSlices) {
+                                                             Map<Artifact, SliceSpec> explicitSlices,
+                                                             Map<Artifact, Set<Artifact>> allDeps) {
+        var deps = allDeps.getOrDefault(artifact, Set.of());
         return Option.option(explicitSlices.get(artifact))
-                     .fold(() -> ResolvedSlice.resolvedSlice(artifact, 1, true),
+                     .fold(() -> ResolvedSlice.resolvedSlice(artifact, 1, true, deps),
                            spec -> ResolvedSlice.resolvedSlice(artifact,
                                                                spec.instances(),
-                                                               false));
+                                                               false,
+                                                               deps));
     }
 }

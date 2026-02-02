@@ -78,6 +78,11 @@ public final class SliceRequestContext implements RequestContext {
     }
 
     @Override
+    public String requestPath() {
+        return httpContext.path();
+    }
+
+    @Override
     public String requestId() {
         return httpContext.requestId();
     }
