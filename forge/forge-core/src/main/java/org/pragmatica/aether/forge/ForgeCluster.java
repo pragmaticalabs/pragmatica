@@ -3,7 +3,6 @@ package org.pragmatica.aether.forge;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
-import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
@@ -40,7 +39,7 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import static org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider.furySerializerFactoryProvider;
+import static org.pragmatica.aether.node.AetherNodeConfig.defaultSliceActionConfig;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
@@ -248,8 +247,10 @@ public final class ForgeCluster {
                                    .filter(NodeStartResult::succeeded)
                                    .toList();
         if (failed.isEmpty()) {
-            log.info("Forge cluster started with {} nodes", initialClusterSize);
-            return Promise.success(Unit.unit());
+            log.info("All nodes started, waiting for cluster stabilization...");
+            return Promise.promise(timeSpan(2).seconds(),
+                                   () -> Result.success(Unit.unit()))
+                          .onSuccess(_ -> log.info("Forge cluster started with {} nodes", initialClusterSize));
         }
         // Log all failures with details
         for (var f : failed) {
@@ -369,15 +370,17 @@ public final class ForgeCluster {
         log.info("{} node {}", graceful
                               ? "Stopping"
                               : "Force-killing", nodeIdStr);
+        // Remove from tracking IMMEDIATELY so getAvailableAppHttpPorts() won't return this port
+        // This prevents load generator from sending requests to the dying node
+        nodes.remove(nodeIdStr);
+        nodeInfos.remove(nodeIdStr);
+        var slot = slotsByNodeId.remove(nodeIdStr);
         return node.stop()
                    .timeout(timeout)
                    .recover(_ -> Unit.unit())
                    .map(_ -> {
-                            nodes.remove(nodeIdStr);
-                            nodeInfos.remove(nodeIdStr);
-                            // Release slot back to pool
-        var slot = slotsByNodeId.remove(nodeIdStr);
-                            if (slot != null) {
+                            // Release slot back to pool only after stop completes (for reuse by new nodes)
+        if (slot != null) {
                                 availableSlots.offer(slot);
                             }
                             return Unit.unit();
@@ -389,6 +392,7 @@ public final class ForgeCluster {
     /**
      * Trigger auto-healing if enabled and cluster is below target size.
      * Called after a node is killed to maintain target cluster size.
+     * Includes a stabilization delay to allow leader election and reconciliation to complete.
      */
     private void triggerAutoHeal() {
         if (!autoHealEnabled) {
@@ -397,13 +401,17 @@ public final class ForgeCluster {
         var currentSize = nodes.size();
         var deficit = targetClusterSize - currentSize;
         if (deficit > 0) {
-            log.info("AUTO-HEAL: Cluster size {} below target {}, starting {} replacement node(s)",
+            log.info("AUTO-HEAL: Cluster size {} below target {}, scheduling {} replacement node(s) after stabilization",
                      currentSize,
                      targetClusterSize,
                      deficit);
-            for (int i = 0; i < deficit; i++) {
-                attemptNodeStart(0);
-            }
+            // Delay AUTO-HEAL to allow cluster stabilization (leader election, reconciliation)
+            SharedScheduler.schedule(() -> {
+                                         for (int i = 0; i < deficit; i++) {
+                                             attemptNodeStart(0);
+                                         }
+                                     },
+                                     AUTO_HEAL_RETRY_DELAY);
         }
     }
 
@@ -516,6 +524,18 @@ public final class ForgeCluster {
         return baseAppHttpPort;
     }
 
+    /**
+     * Get the app HTTP ports of all currently active nodes.
+     * Used for load balancing across available nodes.
+     */
+    public List<Integer> getAvailableAppHttpPorts() {
+        return slotsByNodeId.values()
+                            .stream()
+                            .map(slot -> baseAppHttpPort + slot)
+                            .sorted()
+                            .toList();
+    }
+
     private AetherNode createNode(NodeId nodeId, int port, int mgmtPort, int appHttpPort, List<NodeInfo> coreNodes) {
         var topology = new TopologyConfig(nodeId,
                                           coreNodes.size(),
@@ -525,7 +545,7 @@ public final class ForgeCluster {
         // Use forgeDefaults() for controller config - disables CPU-based scaling in simulation
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
-                                          SliceActionConfig.defaultConfiguration(furySerializerFactoryProvider()),
+                                          defaultSliceActionConfig(),
                                           org.pragmatica.aether.config.SliceConfig.defaults(),
                                           mgmtPort,
                                           DHTConfig.FULL,
@@ -609,7 +629,9 @@ public final class ForgeCluster {
         var node = nodes.values()
                         .iterator()
                         .next();
-        var kvSnapshot = node.kvStore()
+        // Use raw Map to avoid ClassCastException - KV store contains both AetherKey and LeaderKey entries
+        @SuppressWarnings("rawtypes")
+        Map kvSnapshot = node.kvStore()
                              .snapshot();
         // Group slice instances by artifact
         var slicesByArtifact = new java.util.HashMap<String, List<SliceInstanceStatus>>();

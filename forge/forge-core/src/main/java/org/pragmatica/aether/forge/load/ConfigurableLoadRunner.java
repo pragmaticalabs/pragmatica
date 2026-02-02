@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -60,10 +61,11 @@ public final class ConfigurableLoadRunner {
         STOPPING
     }
 
-    private final int port;
+    private final Supplier<List<Integer>> portSupplier;
     private final ForgeMetrics metrics;
     private final EntryPointMetrics entryPointMetrics;
     private final HttpClient httpClient;
+    private final AtomicInteger portRoundRobin = new AtomicInteger(0);
 
     private final AtomicReference<State> state = new AtomicReference<>(State.IDLE);
     private final AtomicReference<LoadConfig> currentConfig = new AtomicReference<>(LoadConfig.empty());
@@ -74,8 +76,10 @@ public final class ConfigurableLoadRunner {
 
     private final AtomicReference<ScheduledExecutorService> scheduler = new AtomicReference<>();
 
-    private ConfigurableLoadRunner(int port, ForgeMetrics metrics, EntryPointMetrics entryPointMetrics) {
-        this.port = port;
+    private ConfigurableLoadRunner(Supplier<List<Integer>> portSupplier,
+                                   ForgeMetrics metrics,
+                                   EntryPointMetrics entryPointMetrics) {
+        this.portSupplier = portSupplier;
         this.metrics = metrics;
         this.entryPointMetrics = entryPointMetrics;
         this.httpClient = HttpClient.newBuilder()
@@ -87,7 +91,26 @@ public final class ConfigurableLoadRunner {
     public static ConfigurableLoadRunner configurableLoadRunner(int port,
                                                                 ForgeMetrics metrics,
                                                                 EntryPointMetrics entryPointMetrics) {
-        return new ConfigurableLoadRunner(port, metrics, entryPointMetrics);
+        return new ConfigurableLoadRunner(() -> List.of(port), metrics, entryPointMetrics);
+    }
+
+    public static ConfigurableLoadRunner configurableLoadRunner(Supplier<List<Integer>> portSupplier,
+                                                                ForgeMetrics metrics,
+                                                                EntryPointMetrics entryPointMetrics) {
+        return new ConfigurableLoadRunner(portSupplier, metrics, entryPointMetrics);
+    }
+
+    /**
+     * Select next port using round-robin across available ports.
+     */
+    private int selectPort() {
+        var ports = portSupplier.get();
+        if (ports.isEmpty()) {
+            log.warn("No ports available from supplier, using default 8070");
+            return 8070;
+        }
+        var index = (portRoundRobin.getAndIncrement() & 0x7FFFFFFF) % ports.size();
+        return ports.get(index);
     }
 
     /**
@@ -304,7 +327,7 @@ public final class ConfigurableLoadRunner {
                                                         pathProcessors,
                                                         pathTemplateProcessor,
                                                         bodyProcessor,
-                                                        port,
+                                                        this::selectPort,
                                                         httpClient,
                                                         metrics,
                                                         entryPointMetrics,
@@ -383,7 +406,7 @@ public final class ConfigurableLoadRunner {
                                 Map<String, TemplateProcessor> pathProcessors,
                                 Option<TemplateProcessor> pathTemplateProcessor,
                                 Option<TemplateProcessor> bodyProcessor,
-                                int port,
+                                java.util.function.Supplier<Integer> portSupplier,
                                 HttpClient httpClient,
                                 ForgeMetrics metrics,
                                 EntryPointMetrics entryPointMetrics,
@@ -402,7 +425,7 @@ public final class ConfigurableLoadRunner {
                                          Map<String, TemplateProcessor> pathProcessors,
                                          Option<TemplateProcessor> pathTemplateProcessor,
                                          Option<TemplateProcessor> bodyProcessor,
-                                         int port,
+                                         java.util.function.Supplier<Integer> portSupplier,
                                          HttpClient httpClient,
                                          ForgeMetrics metrics,
                                          EntryPointMetrics entryPointMetrics,
@@ -413,7 +436,7 @@ public final class ConfigurableLoadRunner {
                                     pathProcessors,
                                     pathTemplateProcessor,
                                     bodyProcessor,
-                                    port,
+                                    portSupplier,
                                     httpClient,
                                     metrics,
                                     entryPointMetrics,
@@ -533,7 +556,7 @@ public final class ConfigurableLoadRunner {
                          ? target.httpMethod()
                                  .or(() -> inferMethod(path, body))
                          : "POST";
-            var uri = URI.create("http://localhost:" + port + path);
+            var uri = URI.create("http://localhost:" + portSupplier.get() + path);
             var requestBuilder = HttpRequest.newBuilder()
                                             .uri(uri)
                                             .timeout(REQUEST_TIMEOUT);
@@ -564,6 +587,7 @@ public final class ConfigurableLoadRunner {
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
                 recordSuccess(latencyNanos);
             } else {
+                log.warn("HTTP {} from {}: {}", response.statusCode(), response.uri(), response.body());
                 recordFailure(latencyNanos);
             }
         }

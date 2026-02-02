@@ -143,7 +143,7 @@ public final class ForgeServer {
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         // Load generators send to app HTTP port where slice routes are registered
         loadGenerator = LoadGenerator.loadGenerator(forgeConfig.appHttpPort(), metrics, entryPointMetrics);
-        configurableLoadRunner = ConfigurableLoadRunner.configurableLoadRunner(forgeConfig.appHttpPort(),
+        configurableLoadRunner = ConfigurableLoadRunner.configurableLoadRunner(cluster::getAvailableAppHttpPorts,
                                                                                metrics,
                                                                                entryPointMetrics);
         apiHandler = ForgeApiHandler.forgeApiHandler(cluster, loadGenerator, metrics, configurableLoadRunner);
