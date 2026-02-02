@@ -1,0 +1,794 @@
+package org.pragmatica.aether.http;
+
+import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.http.adapter.SliceRouter;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardRequest;
+import org.pragmatica.aether.http.forward.HttpForwardMessage.HttpForwardResponse;
+import org.pragmatica.aether.http.handler.HttpRequestContext;
+import org.pragmatica.aether.http.handler.HttpResponseData;
+import org.pragmatica.aether.http.security.SecurityValidator;
+import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.HttpRouteKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValueRemove;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.net.ClusterNetwork;
+import org.pragmatica.http.CommonContentType;
+import org.pragmatica.http.routing.HttpStatus;
+import org.pragmatica.http.routing.ProblemDetail;
+import org.pragmatica.http.server.HttpServer;
+import org.pragmatica.http.server.HttpServerConfig;
+import org.pragmatica.http.server.RequestContext;
+import org.pragmatica.http.server.ResponseWriter;
+import org.pragmatica.json.JsonMapper;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+import org.pragmatica.messaging.MessageReceiver;
+import org.pragmatica.net.tcp.TlsConfig;
+import org.pragmatica.serialization.Deserializer;
+import org.pragmatica.serialization.Serializer;
+import org.pragmatica.utility.KSUID;
+
+import java.nio.charset.StandardCharsets;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Unit.unit;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
+
+/**
+ * Application HTTP server for cluster-wide HTTP routing.
+ *
+ * <p>Handles HTTP requests by:
+ * <ol>
+ *   <li>Looking up routes locally via HttpRoutePublisher</li>
+ *   <li>If not local, forwarding to remote nodes via HttpForwardRequest/Response</li>
+ * </ol>
+ *
+ * <p>Separate from ManagementServer for security isolation.
+ */
+public interface AppHttpServer {
+    Promise<Unit> start();
+
+    Promise<Unit> stop();
+
+    Option<Integer> boundPort();
+
+    /**
+     * Handle KV-Store updates to rebuild router when routes change.
+     */
+    @MessageReceiver
+    void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
+
+    /**
+     * Handle KV-Store removals to rebuild router when routes change.
+     */
+    @MessageReceiver
+    void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
+
+    /**
+     * Handle incoming HTTP forward request from another node.
+     */
+    @MessageReceiver
+    void onHttpForwardRequest(HttpForwardRequest request);
+
+    /**
+     * Handle HTTP forward response from another node.
+     */
+    @MessageReceiver
+    void onHttpForwardResponse(HttpForwardResponse response);
+
+    /**
+     * Trigger router rebuild (called when local slices deploy/undeploy).
+     */
+    void rebuildRouter();
+
+    static AppHttpServer appHttpServer(AppHttpConfig config,
+                                       NodeId selfNodeId,
+                                       HttpRouteRegistry routeRegistry,
+                                       Option<HttpRoutePublisher> httpRoutePublisher,
+                                       Option<ClusterNetwork> clusterNetwork,
+                                       Option<Serializer> serializer,
+                                       Option<Deserializer> deserializer,
+                                       Option<TlsConfig> tls) {
+        return new AppHttpServerImpl(config,
+                                     selfNodeId,
+                                     routeRegistry,
+                                     httpRoutePublisher,
+                                     clusterNetwork,
+                                     serializer,
+                                     deserializer,
+                                     tls);
+    }
+
+    /**
+     * @deprecated Use full factory method with all parameters.
+     */
+    @Deprecated
+    static AppHttpServer appHttpServer(AppHttpConfig config,
+                                       HttpRouteRegistry routeRegistry,
+                                       Option<org.pragmatica.aether.invoke.SliceInvoker> sliceInvoker,
+                                       Option<HttpRoutePublisher> httpRoutePublisher,
+                                       Option<TlsConfig> tls) {
+        // Legacy factory - creates server without HTTP forwarding support
+        return new AppHttpServerImpl(config,
+                                     null,
+                                     routeRegistry,
+                                     httpRoutePublisher,
+                                     Option.none(),
+                                     Option.none(),
+                                     Option.none(),
+                                     tls);
+    }
+}
+
+class AppHttpServerImpl implements AppHttpServer {
+    private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
+    private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
+
+    private final AppHttpConfig config;
+    private final NodeId selfNodeId;
+    private final HttpRouteRegistry routeRegistry;
+    private final Option<HttpRoutePublisher> httpRoutePublisher;
+    private final Option<ClusterNetwork> clusterNetwork;
+    private final Option<Serializer> serializer;
+    private final Option<Deserializer> deserializer;
+    private final SecurityValidator securityValidator;
+    private final Option<TlsConfig> tls;
+    private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
+    private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
+
+    // Pending HTTP forward requests awaiting responses
+    private final Map<String, PendingForward> pendingForwards = new ConcurrentHashMap<>();
+
+    // Round-robin counter per route for load balancing
+    private final Map<HttpRouteKey, AtomicInteger> roundRobinCounters = new ConcurrentHashMap<>();
+
+    record PendingForward(Promise<HttpResponseData> promise,
+                          long createdAtMs,
+                          String requestId,
+                          Runnable onFailure) {}
+
+    AppHttpServerImpl(AppHttpConfig config,
+                      NodeId selfNodeId,
+                      HttpRouteRegistry routeRegistry,
+                      Option<HttpRoutePublisher> httpRoutePublisher,
+                      Option<ClusterNetwork> clusterNetwork,
+                      Option<Serializer> serializer,
+                      Option<Deserializer> deserializer,
+                      Option<TlsConfig> tls) {
+        this.config = config;
+        this.selfNodeId = selfNodeId;
+        this.routeRegistry = routeRegistry;
+        this.httpRoutePublisher = httpRoutePublisher;
+        this.clusterNetwork = clusterNetwork;
+        this.serializer = serializer;
+        this.deserializer = deserializer;
+        this.securityValidator = config.securityEnabled()
+                                 ? SecurityValidator.apiKeyValidator(config.apiKeys())
+                                 : SecurityValidator.noOpValidator();
+        this.tls = tls;
+    }
+
+    @Override
+    public Promise<Unit> start() {
+        if (!config.enabled()) {
+            log.info("App HTTP server is disabled");
+            return Promise.success(unit());
+        }
+        log.info("Starting App HTTP server on port {}", config.port());
+        rebuildRouter();
+        var serverConfig = buildServerConfig();
+        return HttpServer.httpServer(serverConfig, this::handleRequest)
+                         .map(server -> {
+                                  serverRef.set(server);
+                                  log.info("App HTTP server started on port {}",
+                                           server.port());
+                                  return unit();
+                              })
+                         .onFailure(cause -> log.error("Failed to start App HTTP server on port {}: {}",
+                                                       config.port(),
+                                                       cause.message()));
+    }
+
+    private HttpServerConfig buildServerConfig() {
+        var serverConfig = HttpServerConfig.httpServerConfig("app-http",
+                                                             config.port())
+                                           .withMaxContentLength(MAX_CONTENT_LENGTH);
+        return tls.fold(() -> serverConfig, serverConfig::withTls);
+    }
+
+    @Override
+    public Promise<Unit> stop() {
+        return Option.option(serverRef.get())
+                     .fold(() -> Promise.success(unit()),
+                           server -> server.stop()
+                                           .onSuccessRun(() -> log.info("App HTTP server stopped")));
+    }
+
+    @Override
+    public Option<Integer> boundPort() {
+        return Option.option(serverRef.get())
+                     .map(HttpServer::port);
+    }
+
+    // ================== Router Rebuild ==================
+    @Override
+    public void rebuildRouter() {
+        var localRoutes = httpRoutePublisher.map(HttpRoutePublisher::allLocalRoutes)
+                                            .or(Set.of());
+        var remoteRoutes = routeRegistry.allRoutes()
+                                        .stream()
+                                        .filter(route -> !localRoutes.contains(route.toKey()))
+                                        .toList();
+        var newTable = RouteTable.routeTable(localRoutes, remoteRoutes);
+        routeTableRef.set(newTable);
+        log.info("Router rebuilt: {} local routes, {} remote routes", localRoutes.size(), remoteRoutes.size());
+    }
+
+    @Override
+    public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
+        if (valuePut.cause()
+                    .key() instanceof HttpRouteKey) {
+            log.debug("HttpRouteKey added, rebuilding router");
+            rebuildRouter();
+        }
+    }
+
+    @Override
+    public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
+        if (valueRemove.cause()
+                       .key() instanceof HttpRouteKey) {
+            log.debug("HttpRouteKey removed, rebuilding router");
+            rebuildRouter();
+        }
+    }
+
+    // ================== Request Handling ==================
+    private void handleRequest(RequestContext request, ResponseWriter response) {
+        var method = request.method()
+                            .name();
+        var path = request.path();
+        var requestId = request.requestId();
+        log.debug("Received {} {} [{}]", method, path, requestId);
+        var routeTable = routeTableRef.get();
+        var normalizedPath = normalizePath(path);
+        // Try local route first
+        if (httpRoutePublisher.isPresent()) {
+            var localRouteOpt = findMatchingLocalRoute(routeTable.localRoutes(), method, normalizedPath);
+            if (localRouteOpt.isPresent()) {
+                handleLocalRoute(request, response, localRouteOpt.unwrap(), requestId);
+                return;
+            }
+        }
+        // Try remote route
+        var remoteRouteOpt = findMatchingRemoteRoute(routeTable.remoteRoutes(), method, normalizedPath);
+        if (remoteRouteOpt.isPresent()) {
+            handleRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
+            return;
+        }
+        // No route found
+        log.warn("No route found for {} {} [{}]", method, path, requestId);
+        sendProblem(response, HttpStatus.NOT_FOUND, "No route found for " + method + " " + path, path, requestId);
+    }
+
+    private Option<HttpRouteKey> findMatchingLocalRoute(Set<HttpRouteKey> localRoutes,
+                                                        String method,
+                                                        String normalizedPath) {
+        return Option.option(localRoutes.stream()
+                                        .filter(key -> key.httpMethod()
+                                                          .equalsIgnoreCase(method))
+                                        .filter(key -> pathMatchesPrefix(normalizedPath,
+                                                                         key.pathPrefix()))
+                                        .findFirst()
+                                        .orElse(null));
+    }
+
+    private Option<HttpRouteRegistry.RouteInfo> findMatchingRemoteRoute(List<HttpRouteRegistry.RouteInfo> remoteRoutes,
+                                                                        String method,
+                                                                        String normalizedPath) {
+        return Option.option(remoteRoutes.stream()
+                                         .filter(route -> route.httpMethod()
+                                                               .equalsIgnoreCase(method))
+                                         .filter(route -> pathMatchesPrefix(normalizedPath,
+                                                                            route.pathPrefix()))
+                                         .findFirst()
+                                         .orElse(null));
+    }
+
+    private boolean pathMatchesPrefix(String normalizedPath, String pathPrefix) {
+        var normalizedPrefix = normalizePath(pathPrefix);
+        return normalizedPath.equals(normalizedPrefix) ||
+        (normalizedPath.length() > normalizedPrefix.length() &&
+        normalizedPath.startsWith(normalizedPrefix));
+    }
+
+    private String normalizePath(String path) {
+        if (path == null || path.isBlank()) {
+            return "/";
+        }
+        var normalized = path.strip();
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
+        if (!normalized.endsWith("/")) {
+            normalized = normalized + "/";
+        }
+        return normalized;
+    }
+
+    // ================== Local Route Handling ==================
+    private void handleLocalRoute(RequestContext request,
+                                  ResponseWriter response,
+                                  HttpRouteKey routeKey,
+                                  String requestId) {
+        log.debug("Handling local route {} {} [{}]", routeKey.httpMethod(), routeKey.pathPrefix(), requestId);
+        httpRoutePublisher.flatMap(pub -> pub.findLocalRouter(routeKey.httpMethod(),
+                                                              routeKey.pathPrefix()))
+                          .onEmpty(() -> {
+                                       log.error("Local router not found for route {} [{}]", routeKey, requestId);
+                                       sendProblem(response,
+                                                   HttpStatus.INTERNAL_SERVER_ERROR,
+                                                   "Local router not found",
+                                                   request.path(),
+                                                   requestId);
+                                   })
+                          .onPresent(router -> invokeLocalRouter(request, response, router, requestId));
+    }
+
+    private void invokeLocalRouter(RequestContext request,
+                                   ResponseWriter response,
+                                   SliceRouter router,
+                                   String requestId) {
+        var context = toHttpRequestContext(request, requestId);
+        router.handle(context)
+              .onSuccess(responseData -> sendResponse(response, responseData, requestId))
+              .onFailure(cause -> {
+                             log.error("Local route handling failed [{}]: {}",
+                                       requestId,
+                                       cause.message());
+                             sendProblem(response,
+                                         HttpStatus.INTERNAL_SERVER_ERROR,
+                                         "Request processing failed: " + cause.message(),
+                                         request.path(),
+                                         requestId);
+                         });
+    }
+
+    private HttpRequestContext toHttpRequestContext(RequestContext request, String requestId) {
+        return HttpRequestContext.httpRequestContext(request.path(),
+                                                     request.method()
+                                                            .name(),
+                                                     request.queryParams()
+                                                            .asMap(),
+                                                     request.headers()
+                                                            .asMap(),
+                                                     request.body(),
+                                                     requestId);
+    }
+
+    // ================== Remote Route Handling ==================
+    private void handleRemoteRoute(RequestContext request,
+                                   ResponseWriter response,
+                                   HttpRouteRegistry.RouteInfo route,
+                                   String requestId) {
+        log.debug("Handling remote route {} {} -> {} nodes [{}]",
+                  route.httpMethod(),
+                  route.pathPrefix(),
+                  route.nodes()
+                       .size(),
+                  requestId);
+        // Check prerequisites
+        if (clusterNetwork.isEmpty() || serializer.isEmpty() || deserializer.isEmpty()) {
+            log.error("HTTP forwarding not configured [{}]", requestId);
+            sendProblem(response,
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "HTTP forwarding not available",
+                        request.path(),
+                        requestId);
+            return;
+        }
+        // Filter to connected nodes only
+        var connectedNodes = filterConnectedNodes(route.nodes());
+        if (connectedNodes.isEmpty()) {
+            log.warn("No connected nodes available for route {} {} [{}]",
+                     route.httpMethod(),
+                     route.pathPrefix(),
+                     requestId);
+            sendProblem(response,
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "No available nodes for route",
+                        request.path(),
+                        requestId);
+            return;
+        }
+        // Start forwarding with retry support
+        forwardRequestWithRetry(request,
+                                response,
+                                connectedNodes,
+                                Set.of(),
+                                route.toKey(),
+                                requestId,
+                                config.forwardMaxRetries());
+    }
+
+    private List<NodeId> filterConnectedNodes(Set<NodeId> nodes) {
+        if (clusterNetwork.isEmpty()) {
+            return List.of();
+        }
+        var connected = clusterNetwork.unwrap()
+                                      .connectedPeers();
+        return nodes.stream()
+                    .filter(connected::contains)
+                    .toList();
+    }
+
+    private NodeId selectNodeRoundRobin(HttpRouteKey routeKey, List<NodeId> nodes) {
+        var counter = roundRobinCounters.computeIfAbsent(routeKey, _ -> new AtomicInteger(0));
+        var index = Math.abs(counter.getAndIncrement() % nodes.size());
+        return nodes.get(index);
+    }
+
+    private NodeId selectNodeFromCandidates(HttpRouteKey routeKey, List<NodeId> candidates) {
+        // Use round-robin selection from candidates list
+        var counter = roundRobinCounters.computeIfAbsent(routeKey, _ -> new AtomicInteger(0));
+        var index = Math.abs(counter.getAndIncrement() % candidates.size());
+        return candidates.get(index);
+    }
+
+    private void forwardRequestWithRetry(RequestContext request,
+                                         ResponseWriter response,
+                                         List<NodeId> availableNodes,
+                                         Set<NodeId> triedNodes,
+                                         HttpRouteKey routeKey,
+                                         String requestId,
+                                         int retriesRemaining) {
+        // Filter out already tried nodes
+        var candidates = availableNodes.stream()
+                                       .filter(n -> !triedNodes.contains(n))
+                                       .toList();
+        if (candidates.isEmpty()) {
+            log.error("No more nodes to try for {} {} [{}] after {} attempts",
+                      routeKey.httpMethod(),
+                      routeKey.pathPrefix(),
+                      requestId,
+                      config.forwardMaxRetries() + 1 - retriesRemaining);
+            sendProblem(response,
+                        HttpStatus.GATEWAY_TIMEOUT,
+                        "All nodes failed or unavailable",
+                        request.path(),
+                        requestId);
+            return;
+        }
+        // Select next node (round-robin from candidates)
+        var targetNode = selectNodeFromCandidates(routeKey, candidates);
+        var newTriedNodes = new HashSet<>(triedNodes);
+        newTriedNodes.add(targetNode);
+        // Forward with retry callback
+        forwardRequestInternal(request,
+                               response,
+                               targetNode,
+                               requestId,
+                               () -> {
+                                   if (retriesRemaining > 0) {
+                                       log.info("Retrying request [{}], {} retries remaining",
+                                                requestId,
+                                                retriesRemaining);
+                                       forwardRequestWithRetry(request,
+                                                               response,
+                                                               availableNodes,
+                                                               newTriedNodes,
+                                                               routeKey,
+                                                               requestId,
+                                                               retriesRemaining - 1);
+                                   } else {
+                                       log.error("All retries exhausted for [{}]", requestId);
+                                       sendProblem(response,
+                                                   HttpStatus.GATEWAY_TIMEOUT,
+                                                   "Request failed after all retries",
+                                                   request.path(),
+                                                   requestId);
+                                   }
+                               });
+    }
+
+    private void forwardRequestInternal(RequestContext request,
+                                        ResponseWriter response,
+                                        NodeId targetNode,
+                                        String requestId,
+                                        Runnable onFailure) {
+        var network = clusterNetwork.unwrap();
+        var ser = serializer.unwrap();
+        var correlationId = KSUID.ksuid()
+                                 .toString();
+        var context = toHttpRequestContext(request, requestId);
+        // Serialize the request context
+        byte[] requestData;
+        try{
+            requestData = ser.encode(context);
+        } catch (Exception e) {
+            log.error("Failed to serialize request [{}]: {}", requestId, e.getMessage());
+            sendProblem(response,
+                        HttpStatus.INTERNAL_SERVER_ERROR,
+                        "Request serialization failed",
+                        request.path(),
+                        requestId);
+            return;
+        }
+        // Create pending forward entry with onFailure callback
+        var promise = Promise.<HttpResponseData>promise();
+        var pending = new PendingForward(promise, System.currentTimeMillis(), requestId, onFailure);
+        pendingForwards.put(correlationId, pending);
+        // Set up timeout
+        promise.timeout(timeSpan(config.forwardTimeoutMs()).millis())
+               .onResult(_ -> pendingForwards.remove(correlationId));
+        // Send forward request
+        var forwardRequest = new HttpForwardRequest(selfNodeId, correlationId, requestId, requestData);
+        network.send(targetNode, forwardRequest);
+        log.debug("Forwarded request to {} [{}] correlationId={}", targetNode, requestId, correlationId);
+        // Handle response
+        promise.onSuccess(responseData -> sendResponse(response, responseData, requestId))
+               .onFailure(cause -> handleForwardFailure(response,
+                                                        request.path(),
+                                                        requestId,
+                                                        targetNode,
+                                                        onFailure));
+    }
+
+    private void handleForwardFailure(ResponseWriter response,
+                                      String path,
+                                      String requestId,
+                                      NodeId targetNode,
+                                      Runnable onFailure) {
+        log.warn("Forward request failed [{}] to {}, attempting retry", requestId, targetNode);
+        onFailure.run();
+    }
+
+    // ================== Forward Message Handlers ==================
+    @Override
+    public void onHttpForwardRequest(HttpForwardRequest request) {
+        log.debug("Received HttpForwardRequest [{}] correlationId={}", request.requestId(), request.correlationId());
+        if (deserializer.isEmpty() || serializer.isEmpty() || clusterNetwork.isEmpty()) {
+            log.error("Cannot handle forward request - missing dependencies");
+            return;
+        }
+        var des = deserializer.unwrap();
+        var ser = serializer.unwrap();
+        var network = clusterNetwork.unwrap();
+        // Deserialize the request context
+        HttpRequestContext context;
+        try{
+            context = des.decode(request.requestData());
+        } catch (Exception e) {
+            log.error("Failed to deserialize forward request [{}]: {}", request.requestId(), e.getMessage());
+            sendForwardError(network, request, "Deserialization failed: " + e.getMessage());
+            return;
+        }
+        // Find local router for this request
+        var method = context.method();
+        var path = context.path();
+        var normalizedPath = normalizePath(path);
+        var routerOpt = httpRoutePublisher.flatMap(pub -> {
+                                                       var localRoutes = pub.allLocalRoutes();
+                                                       return findMatchingLocalRoute(localRoutes, method, normalizedPath)
+        .flatMap(key -> pub.findLocalRouter(key.httpMethod(), key.pathPrefix()));
+                                                   });
+        if (routerOpt.isEmpty()) {
+            log.warn("No local router for forwarded request {} {} [{}]", method, path, request.requestId());
+            sendForwardError(network, request, "Route not found locally");
+            return;
+        }
+        // Handle the request locally
+        routerOpt.unwrap()
+                 .handle(context)
+                 .onSuccess(responseData -> sendForwardSuccess(network, request, ser, responseData))
+                 .onFailure(cause -> sendForwardError(network,
+                                                      request,
+                                                      cause.message()));
+    }
+
+    private void sendForwardSuccess(ClusterNetwork network,
+                                    HttpForwardRequest request,
+                                    Serializer ser,
+                                    HttpResponseData responseData) {
+        try{
+            var payload = ser.encode(responseData);
+            var forwardResponse = new HttpForwardResponse(selfNodeId,
+                                                          request.correlationId(),
+                                                          request.requestId(),
+                                                          true,
+                                                          payload);
+            network.send(request.sender(), forwardResponse);
+            log.debug("Sent forward success response [{}]", request.requestId());
+        } catch (Exception e) {
+            log.error("Failed to serialize forward response [{}]: {}", request.requestId(), e.getMessage());
+            sendForwardError(network, request, "Response serialization failed");
+        }
+    }
+
+    private void sendForwardError(ClusterNetwork network,
+                                  HttpForwardRequest request,
+                                  String errorMessage) {
+        var forwardResponse = new HttpForwardResponse(selfNodeId,
+                                                      request.correlationId(),
+                                                      request.requestId(),
+                                                      false,
+                                                      errorMessage.getBytes(StandardCharsets.UTF_8));
+        network.send(request.sender(), forwardResponse);
+        log.debug("Sent forward error response [{}]: {}", request.requestId(), errorMessage);
+    }
+
+    @Override
+    public void onHttpForwardResponse(HttpForwardResponse response) {
+        log.debug("Received HttpForwardResponse [{}] correlationId={} success={}",
+                  response.requestId(),
+                  response.correlationId(),
+                  response.success());
+        var pending = pendingForwards.remove(response.correlationId());
+        if (pending == null) {
+            log.warn("Received forward response for unknown correlationId: {}", response.correlationId());
+            return;
+        }
+        if (response.success()) {
+            handleSuccessfulForwardResponse(pending, response);
+        } else {
+            handleFailedForwardResponse(pending, response);
+        }
+    }
+
+    private void handleSuccessfulForwardResponse(PendingForward pending, HttpForwardResponse response) {
+        if (deserializer.isEmpty()) {
+            pending.promise()
+                   .fail(Causes.cause("Deserializer not available"));
+            return;
+        }
+        try{
+            HttpResponseData responseData = deserializer.unwrap()
+                                                        .decode(response.payload());
+            pending.promise()
+                   .succeed(responseData);
+            log.debug("Completed forward request [{}]", pending.requestId());
+        } catch (Exception e) {
+            log.error("Failed to deserialize forward response [{}]: {}", pending.requestId(), e.getMessage());
+            pending.promise()
+                   .fail(Causes.cause("Response deserialization failed: " + e.getMessage()));
+        }
+    }
+
+    private void handleFailedForwardResponse(PendingForward pending, HttpForwardResponse response) {
+        var errorMessage = new String(response.payload(), StandardCharsets.UTF_8);
+        log.warn("Forward request failed [{}]: {}", pending.requestId(), errorMessage);
+        pending.promise()
+               .fail(Causes.cause("Remote processing failed: " + errorMessage));
+    }
+
+    // ================== Response Helpers ==================
+    private static final JsonMapper JSON_MAPPER = JsonMapper.defaultJsonMapper();
+    private static final org.pragmatica.http.ContentType CONTENT_TYPE_PROBLEM = org.pragmatica.http.ContentType.contentType("application/problem+json",
+                                                                                                                            org.pragmatica.http.ContentCategory.JSON);
+    private static final Map<Integer, org.pragmatica.http.HttpStatus> STATUS_MAP = Map.ofEntries(Map.entry(200,
+                                                                                                           org.pragmatica.http.HttpStatus.OK),
+                                                                                                 Map.entry(201,
+                                                                                                           org.pragmatica.http.HttpStatus.CREATED),
+                                                                                                 Map.entry(202,
+                                                                                                           org.pragmatica.http.HttpStatus.ACCEPTED),
+                                                                                                 Map.entry(204,
+                                                                                                           org.pragmatica.http.HttpStatus.NO_CONTENT),
+                                                                                                 Map.entry(301,
+                                                                                                           org.pragmatica.http.HttpStatus.MOVED_PERMANENTLY),
+                                                                                                 Map.entry(302,
+                                                                                                           org.pragmatica.http.HttpStatus.FOUND),
+                                                                                                 Map.entry(304,
+                                                                                                           org.pragmatica.http.HttpStatus.NOT_MODIFIED),
+                                                                                                 Map.entry(307,
+                                                                                                           org.pragmatica.http.HttpStatus.TEMPORARY_REDIRECT),
+                                                                                                 Map.entry(308,
+                                                                                                           org.pragmatica.http.HttpStatus.PERMANENT_REDIRECT),
+                                                                                                 Map.entry(400,
+                                                                                                           org.pragmatica.http.HttpStatus.BAD_REQUEST),
+                                                                                                 Map.entry(401,
+                                                                                                           org.pragmatica.http.HttpStatus.UNAUTHORIZED),
+                                                                                                 Map.entry(403,
+                                                                                                           org.pragmatica.http.HttpStatus.FORBIDDEN),
+                                                                                                 Map.entry(404,
+                                                                                                           org.pragmatica.http.HttpStatus.NOT_FOUND),
+                                                                                                 Map.entry(405,
+                                                                                                           org.pragmatica.http.HttpStatus.METHOD_NOT_ALLOWED),
+                                                                                                 Map.entry(409,
+                                                                                                           org.pragmatica.http.HttpStatus.CONFLICT),
+                                                                                                 Map.entry(422,
+                                                                                                           org.pragmatica.http.HttpStatus.UNPROCESSABLE_ENTITY),
+                                                                                                 Map.entry(429,
+                                                                                                           org.pragmatica.http.HttpStatus.TOO_MANY_REQUESTS),
+                                                                                                 Map.entry(500,
+                                                                                                           org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR),
+                                                                                                 Map.entry(501,
+                                                                                                           org.pragmatica.http.HttpStatus.NOT_IMPLEMENTED),
+                                                                                                 Map.entry(502,
+                                                                                                           org.pragmatica.http.HttpStatus.BAD_GATEWAY),
+                                                                                                 Map.entry(503,
+                                                                                                           org.pragmatica.http.HttpStatus.SERVICE_UNAVAILABLE),
+                                                                                                 Map.entry(504,
+                                                                                                           org.pragmatica.http.HttpStatus.GATEWAY_TIMEOUT));
+
+    private void sendProblem(ResponseWriter response,
+                             HttpStatus status,
+                             String detail,
+                             String instance,
+                             String requestId) {
+        var problem = ProblemDetail.problemDetail(status, detail, instance, requestId);
+        JSON_MAPPER.writeAsString(problem)
+                   .onSuccess(json -> response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                                              .write(toServerStatus(status.code()),
+                                                     json.getBytes(StandardCharsets.UTF_8),
+                                                     CONTENT_TYPE_PROBLEM))
+                   .onFailure(cause -> {
+                                  log.error("Failed to serialize ProblemDetail: {}",
+                                            cause.message());
+                                  sendPlainError(response, status, requestId);
+                              });
+    }
+
+    private void sendResponse(ResponseWriter response, HttpResponseData responseData, String requestId) {
+        if (responseData.statusCode() >= 400) {
+            log.warn("HTTP error response [{}]: {} body={}",
+                     requestId,
+                     responseData.statusCode(),
+                     new String(responseData.body(), StandardCharsets.UTF_8));
+        } else {
+            log.debug("Sending response [{}]: {} {}", requestId, responseData.statusCode(), responseData.headers());
+        }
+        var writer = response.header(ResponseWriter.X_REQUEST_ID, requestId);
+        for (var entry : responseData.headers()
+                                     .entrySet()) {
+            writer = writer.header(entry.getKey(), entry.getValue());
+        }
+        var contentType = Option.option(responseData.headers()
+                                                    .get("Content-Type"))
+                                .map(ct -> org.pragmatica.http.ContentType.contentType(ct,
+                                                                                       org.pragmatica.http.ContentCategory.JSON))
+                                .or(CommonContentType.APPLICATION_JSON);
+        writer.write(toServerStatus(responseData.statusCode()), responseData.body(), contentType);
+    }
+
+    private void sendPlainError(ResponseWriter response, HttpStatus status, String requestId) {
+        var content = "{\"error\":\"" + status.message() + "\"}";
+        response.header(ResponseWriter.X_REQUEST_ID, requestId)
+                .write(toServerStatus(status.code()),
+                       content.getBytes(StandardCharsets.UTF_8),
+                       CommonContentType.APPLICATION_JSON);
+    }
+
+    private static org.pragmatica.http.HttpStatus toServerStatus(int code) {
+        return Option.option(STATUS_MAP.get(code))
+                     .or(org.pragmatica.http.HttpStatus.INTERNAL_SERVER_ERROR);
+    }
+
+    // ================== Route Table ==================
+    /**
+     * Snapshot of current route state for thread-safe access.
+     */
+    record RouteTable(Set<HttpRouteKey> localRoutes,
+                      List<HttpRouteRegistry.RouteInfo> remoteRoutes) {
+        static RouteTable empty() {
+            return new RouteTable(Set.of(), List.of());
+        }
+
+        static RouteTable routeTable(Set<HttpRouteKey> localRoutes,
+                                     List<HttpRouteRegistry.RouteInfo> remoteRoutes) {
+            return new RouteTable(Set.copyOf(localRoutes), List.copyOf(remoteRoutes));
+        }
+    }
+}

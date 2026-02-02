@@ -1,0 +1,197 @@
+package org.pragmatica.node;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Tag;
+import org.junit.jupiter.api.Test;
+import org.pragmatica.consensus.rabia.ProtocolConfig;
+import org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey;
+import org.pragmatica.consensus.net.NodeInfo;
+import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.cluster.node.rabia.CustomClasses;
+import org.pragmatica.cluster.node.rabia.RabiaNode;
+import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStore;
+import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.messaging.MessageRouter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
+
+import static org.awaitility.Awaitility.await;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
+import static org.pragmatica.consensus.NodeId.nodeId;
+import static org.pragmatica.cluster.node.rabia.NodeConfig.nodeConfig;
+import static org.pragmatica.cluster.node.rabia.RabiaNode.rabiaNode;
+import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
+import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
+import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
+
+@Disabled("Flaky test - passes individually but fails with other tests due to resource contention")
+class RabiaNodeNettyIT {
+    private static final Logger log = LoggerFactory.getLogger(RabiaNodeNettyIT.class);
+
+    private static final int CLUSTER_SIZE = 5;
+    private static final int BASE_PORT = 13040;
+    private static final List<NodeInfo> NODES = List.of(
+            new NodeInfo(nodeId("node-1").unwrap(), nodeAddress("localhost", BASE_PORT).unwrap()),
+            new NodeInfo(nodeId("node-2").unwrap(), nodeAddress("localhost", BASE_PORT + 1).unwrap()),
+            new NodeInfo(nodeId("node-3").unwrap(), nodeAddress("localhost", BASE_PORT + 2).unwrap()),
+            new NodeInfo(nodeId("node-4").unwrap(), nodeAddress("localhost", BASE_PORT + 3).unwrap()),
+            new NodeInfo(nodeId("node-5").unwrap(), nodeAddress("localhost", BASE_PORT + 4).unwrap()));
+    private static final TimeSpan RECONCILE_INTERVAL = TimeSpan.timeSpan(5).seconds();
+    private static final TimeSpan PING_INTERVAL = TimeSpan.timeSpan(100).seconds();
+    private static final TimeSpan AWAIT_TIMEOUT = TimeSpan.timeSpan(10).seconds();
+    private static final Duration AWAIT_DURATION = Duration.ofSeconds(10);
+
+    private final List<RabiaNode<KVCommand<StringKey>>> nodes = new ArrayList<>();
+    private final List<KVStore<StringKey, String>> stores = new ArrayList<>();
+    private final List<MessageRouter> routers = new ArrayList<>();
+
+    @BeforeEach
+    void setUp() {
+        var protocolConfig = ProtocolConfig.testConfig();
+        var serializer = furySerializer(CustomClasses::configure, StringKey::register);
+        var deserializer = furyDeserializer(CustomClasses::configure, StringKey::register);
+        var configuredNodes = NODES.subList(0, CLUSTER_SIZE);
+
+        for (int i = 0; i < CLUSTER_SIZE; i++) {
+            var topologyConfig = new TopologyConfig(NODES.get(i).id(),
+                                                    CLUSTER_SIZE,
+                                                    RECONCILE_INTERVAL,
+                                                    PING_INTERVAL,
+                                                    configuredNodes);
+            var delegateRouter = MessageRouter.DelegateRouter.delegate();
+
+            routers.add(delegateRouter);
+            var store = new KVStore<StringKey, String>(delegateRouter, serializer, deserializer);
+
+            stores.add(store);
+
+            rabiaNode(nodeConfig(protocolConfig, topologyConfig),
+                      delegateRouter, store, serializer, deserializer)
+                .onFailure(cause -> fail("Failed to create RabiaNode: " + cause.message()))
+                .onSuccess(node -> {
+                    // Wire the router with all entries
+                    RabiaNode.buildAndWireRouter(delegateRouter, node.routeEntries())
+                             .onFailure(cause -> fail("Failed to build router: " + cause.message()));
+                    nodes.add(node);
+                });
+        }
+        // Start all nodes
+        var promises = nodes.stream()
+                            .map(ClusterNode::start)
+                            .toList();
+
+        Promise.allOf(promises)
+               .await(AWAIT_TIMEOUT)
+               .onFailureRun(() -> fail("Failed to start all nodes within timeout"))
+               .onSuccess(_ -> log.info("All nodes started successfully"));
+    }
+
+    @AfterEach
+    void tearDown() {
+        nodes.forEach(node -> node.stop().await(AWAIT_TIMEOUT));
+    }
+
+    //    @Disabled("Serializer crash")
+    @Test
+    void happyPath_allNodesAgreeOnPutGetRemove() {
+        // Put values via each node
+        var list = new ArrayList<Promise<List<Object>>>();
+
+        for (int i = 0; i < CLUSTER_SIZE; i++) {
+            var key = key("key-" + i);
+            var value = "value-" + i;
+
+            list.add(nodes.get(i)
+                          .apply(List.of(new KVCommand.Put<>(key, value))));
+        }
+
+        Promise.allOf(list)
+               .await(AWAIT_TIMEOUT)
+               .onFailure(v -> fail("Failed to put values to state machine within timeout: " + v))
+               .onSuccess(_ -> log.info("All nodes have been put successfully"));
+
+        for (int i = 0; i < CLUSTER_SIZE; i++) {
+            var store = stores.get(i);
+
+            log.info("Store {}, content {}", i, store.snapshot());
+        }
+
+        // Await all nodes have all keys
+        for (int i = 0; i < CLUSTER_SIZE; i++) {
+            var key = key("key-" + i);
+            var value = "value-" + i;
+
+            await().atMost(AWAIT_DURATION)
+                   .until(() -> stores.stream()
+                                      .allMatch(
+                                              store -> value.equals(store.snapshot().get(key))));
+        }
+
+        // Remove a key via one node
+        nodes.getFirst()
+             .apply(List.of(new KVCommand.Remove<>(key("key-0"))))
+             .await(AWAIT_TIMEOUT);
+
+        // Await all nodes have removed the key
+        await().atMost(AWAIT_DURATION)
+               .until(() -> stores.stream().noneMatch(store -> store.snapshot().containsKey(key("key-0"))));
+    }
+
+    @Disabled("May have issues with restarting node on the same port")
+    @Test
+    void nodeCrashAndRecovery_catchesUpWithCluster() {
+        // Put initial value
+        nodes.getFirst()
+             .apply(List.of(new KVCommand.Put<>(key("crash-key"), "v0"))).await(AWAIT_TIMEOUT);
+
+        await().atMost(AWAIT_DURATION)
+               .until(() -> stores.stream().allMatch(store -> "v0".equals(store.snapshot().get(key("crash-key")))));
+
+        // Stop node 1 (index 1)
+        nodes.get(1)
+             .stop()
+             .await(AWAIT_TIMEOUT);
+
+        // Put new values while node 1 is down
+        for (int i = 1; i <= 3; i++) {
+            var key = key("crash-key-" + i);
+            var value = "v" + i;
+
+            nodes.getFirst()
+                 .apply(List.of(new KVCommand.Put<>(key, value))).await(AWAIT_TIMEOUT);
+        }
+        // Await all live nodes have the new values
+        for (int i = 1; i <= 3; i++) {
+            var key = key("crash-key-" + i);
+            var value = "v" + i;
+
+            await().atMost(AWAIT_DURATION)
+                   .until(() -> stores.stream()
+                                      .filter(s -> !nodes.get(stores.indexOf(s))
+                                                         .self()
+                                                         .id()
+                                                         .equals(nodes.get(1).self().id()))
+                                      .allMatch(store -> value.equals(store.snapshot().get(key))));
+        }
+        // Restart node 1
+        nodes.get(1).start().await(AWAIT_TIMEOUT);
+        // Await node 1 catches up
+        for (int i = 1; i <= 3; i++) {
+            var key = key("crash-key-" + i);
+            var value = "v" + i;
+
+            await().atMost(AWAIT_DURATION)
+                   .until(() -> value.equals(stores.get(1).snapshot().get(key)));
+        }
+    }
+} 

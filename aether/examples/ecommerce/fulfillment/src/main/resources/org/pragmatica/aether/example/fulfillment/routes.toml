@@ -1,0 +1,11 @@
+prefix = "/api/v1/fulfillment"
+
+[routes]
+calculateShipping = "POST /shipping/calculate"
+createShipment = "POST /shipments"
+trackShipment = "POST /shipments/track"
+
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*"]
+HTTP_400 = ["*Invalid*", "*Unavailable*"]

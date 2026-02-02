@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Aether Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <h1 id="header-title">AETHER</h1>
+            <div class="header-stats">
+                <span class="stat"><span class="stat-label">Uptime:</span><span id="uptime" class="stat-value">0:00</span></span>
+                <span class="stat"><span class="stat-label">Nodes:</span><span id="node-count" class="stat-value">0</span></span>
+                <span class="stat"><span class="stat-label">Slices:</span><span id="slice-count" class="stat-value">0</span></span>
+            </div>
+        </header>
+
+        <!-- Navigation Tabs -->
+        <nav class="nav-tabs">
+            <button class="nav-tab active" data-page="overview">Overview</button>
+            <button class="nav-tab" data-page="config">Configuration</button>
+            <button class="nav-tab" data-page="alerts">Alerts</button>
+            <button class="nav-tab" data-page="cluster">Cluster</button>
+        </nav>
+
+        <!-- Page: Overview -->
+        <div id="page-overview" class="page active">
+            <!-- Main Grid -->
+            <div class="main-grid">
+                <!-- Left Column -->
+                <div class="left-column">
+                    <!-- Nodes Panel -->
+                    <div class="panel">
+                        <h2>Cluster Nodes</h2>
+                        <div id="nodes-list" class="nodes-list">
+                            <div class="node-item placeholder">Waiting for cluster...</div>
+                        </div>
+                    </div>
+
+                    <!-- Metrics Panel -->
+                    <div class="panel">
+                        <h2>Metrics</h2>
+                        <div class="metrics-row">
+                            <div class="metric-card">
+                                <div class="metric-value" id="requests-per-sec">0</div>
+                                <div class="metric-label">req/s</div>
+                            </div>
+                            <div class="metric-card success">
+                                <div class="metric-value" id="success-rate">100%</div>
+                                <div class="metric-label">success</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-value" id="avg-latency">0ms</div>
+                                <div class="metric-label">latency</div>
+                            </div>
+                        </div>
+                        <div class="chart-row">
+                            <div class="chart-container"><canvas id="success-chart"></canvas></div>
+                            <div class="chart-container"><canvas id="throughput-chart"></canvas></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Column -->
+                <div class="right-column">
+                    <!-- Entry Points Panel -->
+                    <div class="panel">
+                        <h2>Entry Points</h2>
+                        <div class="entrypoints-table">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th>Entry Point</th>
+                                        <th>Total</th>
+                                        <th>Success</th>
+                                        <th>Avg</th>
+                                        <th>P99</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="entrypoints-body">
+                                    <tr><td colspan="5" class="placeholder">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- Timeline Panel -->
+                    <div class="panel">
+                        <h2>Events</h2>
+                        <div id="timeline" class="timeline">
+                            <div class="timeline-event">
+                                <span class="event-time">--:--</span>
+                                <span class="event-type">READY</span>
+                                <span class="event-message">Waiting...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dynamic Control Panel (injected from /api/panel/chaos) -->
+            <div id="control-panel-container"></div>
+        </div>
+
+        <!-- Page: Configuration -->
+        <div id="page-config" class="page">
+            <div class="config-grid">
+                <!-- Controller Config -->
+                <div class="panel">
+                    <h2>Controller Configuration</h2>
+                    <div id="controller-config" class="config-content">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                    <div class="panel-actions">
+                        <button id="btn-refresh-controller" class="btn btn-secondary btn-small">Refresh</button>
+                    </div>
+                </div>
+
+                <!-- TTM Status -->
+                <div class="panel">
+                    <h2>TTM (Predictive Scaling)</h2>
+                    <div id="ttm-status" class="config-content">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                    <div class="panel-actions">
+                        <button id="btn-refresh-ttm" class="btn btn-secondary btn-small">Refresh</button>
+                    </div>
+                </div>
+
+                <!-- Thresholds -->
+                <div class="panel">
+                    <h2>Alert Thresholds</h2>
+                    <div id="thresholds-config" class="config-content">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                    <div class="panel-actions">
+                        <button id="btn-refresh-thresholds" class="btn btn-secondary btn-small">Refresh</button>
+                    </div>
+                </div>
+
+                <!-- Controller Status -->
+                <div class="panel">
+                    <h2>Controller Status</h2>
+                    <div id="controller-status" class="config-content">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                    <div class="panel-actions">
+                        <button id="btn-refresh-controller-status" class="btn btn-secondary btn-small">Refresh</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Page: Alerts -->
+        <div id="page-alerts" class="page">
+            <div class="alerts-grid">
+                <!-- Active Alerts -->
+                <div class="panel panel-wide">
+                    <h2>Active Alerts</h2>
+                    <div id="active-alerts" class="alerts-content">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                    <div class="panel-actions">
+                        <button id="btn-clear-alerts" class="btn btn-warning btn-small">Clear All</button>
+                        <button id="btn-refresh-alerts" class="btn btn-secondary btn-small">Refresh</button>
+                    </div>
+                </div>
+
+                <!-- Alert History -->
+                <div class="panel panel-wide">
+                    <h2>Alert History</h2>
+                    <div id="alert-history" class="alerts-content">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Page: Cluster -->
+        <div id="page-cluster" class="page">
+            <div class="cluster-grid">
+                <!-- Health -->
+                <div class="panel">
+                    <h2>Cluster Health</h2>
+                    <div id="cluster-health" class="config-content">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                    <div class="panel-actions">
+                        <button id="btn-refresh-health" class="btn btn-secondary btn-small">Refresh</button>
+                    </div>
+                </div>
+
+                <!-- Comprehensive Metrics -->
+                <div class="panel">
+                    <h2>Comprehensive Metrics</h2>
+                    <div id="comprehensive-metrics" class="config-content">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                    <div class="panel-actions">
+                        <button id="btn-refresh-metrics" class="btn btn-secondary btn-small">Refresh</button>
+                    </div>
+                </div>
+
+                <!-- Slices Status -->
+                <div class="panel panel-wide">
+                    <h2>Slices Status</h2>
+                    <div id="slices-status" class="slices-content">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                    <div class="panel-actions">
+                        <button id="btn-refresh-slices" class="btn btn-secondary btn-small">Refresh</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Node Selection Modal (used by chaos panel when present) -->
+    <div id="node-modal" class="modal hidden">
+        <div class="modal-content">
+            <h3>Select Node</h3>
+            <div id="node-list" class="node-list"></div>
+            <button id="modal-cancel" class="btn btn-secondary">Cancel</button>
+        </div>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html>

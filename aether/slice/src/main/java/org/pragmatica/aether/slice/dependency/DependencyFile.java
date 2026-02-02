@@ -1,0 +1,238 @@
+package org.pragmatica.aether.slice.dependency;
+
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
+
+import java.io.BufferedReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * Parsed dependency file with shared, infra, and slice sections.
+ * <p>
+ * File format:
+ * <pre>
+ * # Comment line
+ *
+ * [shared]
+ * # Libraries shared across all slices
+ * org.pragmatica-lite:core:^0.8.0
+ * org.example:order-domain:^1.0.0
+ *
+ * [infra]
+ * # Infrastructure services (shared instances via InfraStore)
+ * org.pragmatica-lite.aether:infra-cache:^0.7.0
+ * org.pragmatica-lite.aether:infra-database:^0.7.0
+ *
+ * [slices]
+ * # Other slices this slice depends on
+ * org.example:inventory-service:^1.0.0
+ * org.example:pricing-service:^1.0.0
+ * </pre>
+ * <p>
+ * The [infra] section is for infrastructure service dependencies. JARs are loaded
+ * into SharedLibraryClassLoader like [shared], but instances are shared via InfraStore.
+ * Infra services control their own sharing strategy (singleton, factory, etc.).
+ * <p>
+ * For backward compatibility, lines without any section header are treated as slice dependencies.
+ *
+ * @param shared List of shared library dependencies
+ * @param infra  List of infrastructure service dependencies
+ * @param slices List of slice dependencies
+ */
+public record DependencyFile(List<ArtifactDependency> shared,
+                             List<ArtifactDependency> infra,
+                             List<ArtifactDependency> slices) {
+    private enum Section {
+        NONE,
+        // No section yet (for backward compatibility)
+        SHARED,
+        // [shared] section
+        INFRA,
+        // [infra] section
+        SLICES
+    }
+
+    /**
+     * Parse dependency file content.
+     *
+     * @param content The file content as string
+     * @return Parsed dependency file or error
+     */
+    public static Result<DependencyFile> dependencyFile(String content) {
+        var shared = new ArrayList<ArtifactDependency>();
+        var infra = new ArrayList<ArtifactDependency>();
+        var slices = new ArrayList<ArtifactDependency>();
+        var currentSection = Section.NONE;
+        var lines = content.split("\n");
+        for (var line : lines) {
+            var trimmed = line.trim();
+            // Skip empty lines and comments
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                continue;
+            }
+            // Check for section headers
+            if (trimmed.equals("[shared]")) {
+                currentSection = Section.SHARED;
+                continue;
+            }
+            if (trimmed.equals("[infra]")) {
+                currentSection = Section.INFRA;
+                continue;
+            }
+            if (trimmed.equals("[slices]")) {
+                currentSection = Section.SLICES;
+                continue;
+            }
+            // Unknown section header
+            if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+                return UNKNOWN_SECTION.apply(trimmed)
+                                      .result();
+            }
+            // Parse dependency line - skip empty/comment lines, fail on real errors
+            var parseResult = ArtifactDependency.artifactDependency(trimmed);
+            // Capture the section for the lambda
+            final var sectionRef = currentSection;
+            // Use AtomicReference as a holder to capture error from lambda
+            var errorHolder = new java.util.concurrent.atomic.AtomicReference<Cause>();
+            var skipFlag = new java.util.concurrent.atomic.AtomicBoolean(false);
+            parseResult.onSuccess(dependency -> {
+                                      switch (sectionRef) {
+                case SHARED -> shared.add(dependency);
+                case INFRA -> infra.add(dependency);
+                case SLICES, NONE -> slices.add(dependency);
+            }
+                                  })
+                       .onFailure(cause -> {
+                                      // Skip known non-error cases
+            if (cause == ArtifactDependency.EMPTY_LINE ||
+            cause == ArtifactDependency.COMMENT_LINE ||
+            cause == ArtifactDependency.SECTION_HEADER) {
+                                          skipFlag.set(true);
+                                      } else {
+                                          errorHolder.set(cause);
+                                      }
+                                  });
+            if (skipFlag.get()) {
+                continue;
+            }
+            if (errorHolder.get() != null) {
+                return errorHolder.get()
+                                  .result();
+            }
+        }
+        var result = new DependencyFile(List.copyOf(shared), List.copyOf(infra), List.copyOf(slices));
+        return result.validateNoFrameworkDependencies();
+    }
+
+    /**
+     * Validate that framework dependencies (slice-api, infra-api) are not declared.
+     * These are provided by the runtime and should never be in slice dependency files.
+     */
+    private Result<DependencyFile> validateNoFrameworkDependencies() {
+        return findFrameworkDependency()
+        .fold(() -> Result.success(this),
+              dep -> FRAMEWORK_DEPENDENCY_ERROR.apply(dep)
+                                               .result());
+    }
+
+    private Option<String> findFrameworkDependency() {
+        for (var dep : shared) {
+            if (isFrameworkArtifact(dep)) {
+                return Option.some("[shared] " + dep.asString());
+            }
+        }
+        for (var dep : infra) {
+            if (isFrameworkArtifact(dep)) {
+                return Option.some("[infra] " + dep.asString());
+            }
+        }
+        return Option.none();
+    }
+
+    private static boolean isFrameworkArtifact(ArtifactDependency dep) {
+        return AETHER_GROUP.equals(dep.groupId()) && FRAMEWORK_ARTIFACTS.contains(dep.artifactId());
+    }
+
+    private static final String AETHER_GROUP = "org.pragmatica-lite.aether";
+    private static final java.util.Set<String> FRAMEWORK_ARTIFACTS = java.util.Set.of("slice-api",
+                                                                                      "infra-api",
+                                                                                      "slice-annotations");
+    private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. "
+                                                                                            + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
+
+    /**
+     * Parse dependency file from input stream.
+     *
+     * @param inputStream The input stream to read from
+     * @return Parsed dependency file or error
+     */
+    public static Result<DependencyFile> dependencyFile(InputStream inputStream) {
+        return Result.lift(Causes::fromThrowable,
+                           () -> {
+                               try (var reader = new BufferedReader(new InputStreamReader(inputStream))) {
+                                   var content = new StringBuilder();
+                                   String line;
+                                   while ((line = reader.readLine()) != null) {
+                                       content.append(line)
+                                              .append("\n");
+                                   }
+                                   return content.toString();
+                               }
+                           })
+                     .flatMap(DependencyFile::dependencyFile);
+    }
+
+    /**
+     * Load dependency file from classloader resource.
+     *
+     * @param sliceClassName Fully qualified class name of the slice
+     * @param classLoader    ClassLoader to load resource from
+     * @return Parsed dependency file, empty if no file exists
+     */
+    public static Result<DependencyFile> load(String sliceClassName, ClassLoader classLoader) {
+        var resourcePath = "META-INF/dependencies/" + sliceClassName;
+        var resource = classLoader.getResourceAsStream(resourcePath);
+        if (resource == null) {
+            // No dependencies file means no dependencies - this is valid
+            return Result.success(new DependencyFile(List.of(), List.of(), List.of()));
+        }
+        return dependencyFile(resource);
+    }
+
+    /**
+     * Check if this file has any shared dependencies.
+     */
+    public boolean hasSharedDependencies() {
+        return ! shared.isEmpty();
+    }
+
+    /**
+     * Check if this file has any infra dependencies.
+     */
+    public boolean hasInfraDependencies() {
+        return ! infra.isEmpty();
+    }
+
+    /**
+     * Check if this file has any slice dependencies.
+     */
+    public boolean hasSliceDependencies() {
+        return ! slices.isEmpty();
+    }
+
+    /**
+     * Check if this is an empty dependency file.
+     */
+    public boolean isEmpty() {
+        return shared.isEmpty() && infra.isEmpty() && slices.isEmpty();
+    }
+
+    // Error constants
+    private static final Fn1<Cause, String> UNKNOWN_SECTION = Causes.forOneValue("Unknown section in dependency file: %s. Valid sections: [shared], [infra], [slices]");
+}

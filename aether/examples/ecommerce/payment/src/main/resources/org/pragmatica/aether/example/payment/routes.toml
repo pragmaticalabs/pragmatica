@@ -1,0 +1,11 @@
+prefix = "/api/v1/payment"
+
+[routes]
+processPayment = "POST /process"
+processRefund = "POST /refund"
+
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*"]
+HTTP_400 = ["*Invalid*", "*Insufficient*"]
+HTTP_402 = ["*Declined*", "*Failed*"]

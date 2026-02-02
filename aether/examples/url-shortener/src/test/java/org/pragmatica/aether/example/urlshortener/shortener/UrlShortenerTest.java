@@ -1,0 +1,231 @@
+package org.pragmatica.aether.example.urlshortener.shortener;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
+import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.example.urlshortener.analytics.Analytics;
+import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ResolveRequest;
+import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ShortenRequest;
+import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.UrlError;
+import org.pragmatica.aether.infra.cache.CacheService;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.fail;
+
+class UrlShortenerTest {
+    private CacheService cache;
+    private Analytics analytics;
+    private UrlShortener urlShortener;
+
+    @BeforeEach
+    void setup() {
+        cache = CacheService.cacheService();
+        analytics = Analytics.analytics(cache);
+        urlShortener = UrlShortener.urlShortener(cache, analytics);
+    }
+
+    @Nested
+    class ShortenRequestValidation {
+        @Test
+        void shortenRequest_succeeds_forValidHttpUrl() {
+            ShortenRequest.shortenRequest("http://example.com")
+                          .onFailureRun(() -> fail("Expected success"))
+                          .onSuccess(req -> assertThat(req.url()).isEqualTo("http://example.com"));
+        }
+
+        @Test
+        void shortenRequest_succeeds_forValidHttpsUrl() {
+            ShortenRequest.shortenRequest("https://example.com/path?query=value")
+                          .onFailureRun(() -> fail("Expected success"))
+                          .onSuccess(req -> assertThat(req.url()).isEqualTo("https://example.com/path?query=value"));
+        }
+
+        @Test
+        void shortenRequest_fails_forEmptyUrl() {
+            ShortenRequest.shortenRequest("")
+                          .onSuccessRun(() -> fail("Expected failure"));
+        }
+
+        @Test
+        void shortenRequest_fails_forNullUrl() {
+            ShortenRequest.shortenRequest(null)
+                          .onSuccessRun(() -> fail("Expected failure"));
+        }
+
+        @Test
+        void shortenRequest_fails_forInvalidUrl() {
+            ShortenRequest.shortenRequest("not-a-url")
+                          .onSuccessRun(() -> fail("Expected failure"));
+        }
+
+        @Test
+        void shortenRequest_fails_forFtpUrl() {
+            ShortenRequest.shortenRequest("ftp://files.example.com")
+                          .onSuccessRun(() -> fail("Expected failure"));
+        }
+    }
+
+    @Nested
+    class ResolveRequestValidation {
+        @Test
+        void resolveRequest_succeeds_forValidCode() {
+            ResolveRequest.resolveRequest("abc1234")
+                          .onFailureRun(() -> fail("Expected success"))
+                          .onSuccess(req -> assertThat(req.shortCode()).isEqualTo("abc1234"));
+        }
+
+        @Test
+        void resolveRequest_succeeds_forSixCharCode() {
+            ResolveRequest.resolveRequest("AbC123")
+                          .onFailureRun(() -> fail("Expected success"))
+                          .onSuccess(req -> assertThat(req.shortCode()).isEqualTo("AbC123"));
+        }
+
+        @Test
+        void resolveRequest_succeeds_forEightCharCode() {
+            ResolveRequest.resolveRequest("AbCd1234")
+                          .onFailureRun(() -> fail("Expected success"))
+                          .onSuccess(req -> assertThat(req.shortCode()).isEqualTo("AbCd1234"));
+        }
+
+        @Test
+        void resolveRequest_fails_forEmptyCode() {
+            ResolveRequest.resolveRequest("")
+                          .onSuccessRun(() -> fail("Expected failure"));
+        }
+
+        @Test
+        void resolveRequest_fails_forTooShortCode() {
+            ResolveRequest.resolveRequest("abc12")
+                          .onSuccessRun(() -> fail("Expected failure"));
+        }
+
+        @Test
+        void resolveRequest_fails_forTooLongCode() {
+            ResolveRequest.resolveRequest("abc123456")
+                          .onSuccessRun(() -> fail("Expected failure"));
+        }
+
+        @Test
+        void resolveRequest_fails_forInvalidCharacters() {
+            ResolveRequest.resolveRequest("abc-123")
+                          .onSuccessRun(() -> fail("Expected failure"));
+        }
+    }
+
+    @Nested
+    class ShortenOperation {
+        @Test
+        void shorten_succeeds_forValidUrl() {
+            var request = new ShortenRequest("https://example.com/long/path");
+
+            urlShortener.shorten(request)
+                        .await()
+                        .onFailureRun(() -> fail("Expected success"))
+                        .onSuccess(response -> {
+                            assertThat(response.shortCode()).hasSize(7);
+                            assertThat(response.shortCode()).matches("[A-Za-z0-9]+");
+                            assertThat(response.originalUrl()).isEqualTo("https://example.com/long/path");
+                        });
+        }
+
+        @Test
+        void shorten_returnsSameCode_forDuplicateUrl() {
+            var request = new ShortenRequest("https://example.com/duplicate");
+
+            var firstCode = urlShortener.shorten(request)
+                                        .await()
+                                        .unwrap()
+                                        .shortCode();
+
+            urlShortener.shorten(request)
+                        .await()
+                        .onFailureRun(() -> fail("Expected success"))
+                        .onSuccess(response -> assertThat(response.shortCode()).isEqualTo(firstCode));
+        }
+
+        @Test
+        void shorten_returnsDifferentCodes_forDifferentUrls() {
+            var request1 = new ShortenRequest("https://example.com/path1");
+            var request2 = new ShortenRequest("https://example.com/path2");
+
+            var code1 = urlShortener.shorten(request1)
+                                    .await()
+                                    .unwrap()
+                                    .shortCode();
+
+            var code2 = urlShortener.shorten(request2)
+                                    .await()
+                                    .unwrap()
+                                    .shortCode();
+
+            assertThat(code1).isNotEqualTo(code2);
+        }
+    }
+
+    @Nested
+    class ResolveOperation {
+        @Test
+        void resolve_succeeds_forExistingCode() {
+            var url = "https://example.com/to-resolve";
+            var shortenedCode = urlShortener.shorten(new ShortenRequest(url))
+                                            .await()
+                                            .unwrap()
+                                            .shortCode();
+
+            urlShortener.resolve(new ResolveRequest(shortenedCode))
+                        .await()
+                        .onFailureRun(() -> fail("Expected success"))
+                        .onSuccess(response -> {
+                            assertThat(response.shortCode()).isEqualTo(shortenedCode);
+                            assertThat(response.originalUrl()).isEqualTo(url);
+                        });
+        }
+
+        @Test
+        void resolve_fails_forNonexistentCode() {
+            urlShortener.resolve(new ResolveRequest("NoExist"))
+                        .await()
+                        .onSuccessRun(() -> fail("Expected failure"))
+                        .onFailure(cause -> assertThat(cause).isInstanceOf(UrlError.NotFound.class));
+        }
+
+        @Test
+        void resolve_recordsClick_forExistingCode() {
+            var url = "https://example.com/track-clicks";
+            var shortenedCode = urlShortener.shorten(new ShortenRequest(url))
+                                            .await()
+                                            .unwrap()
+                                            .shortCode();
+
+            // Resolve multiple times
+            urlShortener.resolve(new ResolveRequest(shortenedCode)).await();
+            urlShortener.resolve(new ResolveRequest(shortenedCode)).await();
+            urlShortener.resolve(new ResolveRequest(shortenedCode)).await();
+
+            // Check analytics
+            analytics.getStats(new Analytics.GetStatsRequest(shortenedCode))
+                     .await()
+                     .onFailureRun(() -> fail("Expected success"))
+                     .onSuccess(stats -> assertThat(stats.clickCount()).isEqualTo(3));
+        }
+    }
+
+    @Nested
+    class RoundTrip {
+        @Test
+        void shortenThenResolve_returnsOriginalUrl() {
+            var originalUrl = "https://github.com/pragmatica-lite/aether";
+
+            var shortCode = urlShortener.shorten(new ShortenRequest(originalUrl))
+                                        .await()
+                                        .unwrap()
+                                        .shortCode();
+
+            urlShortener.resolve(new ResolveRequest(shortCode))
+                        .await()
+                        .onFailureRun(() -> fail("Expected success"))
+                        .onSuccess(response -> assertThat(response.originalUrl()).isEqualTo(originalUrl));
+        }
+    }
+}

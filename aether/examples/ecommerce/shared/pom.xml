@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite.aether</groupId>
+        <artifactId>ecommerce</artifactId>
+        <version>0.8.2</version>
+        <relativePath>../pom.xml</relativePath>
+    </parent>
+
+    <groupId>org.pragmatica-lite.aether.example</groupId>
+    <artifactId>shared</artifactId>
+    <name>Example Slice - Shared Types</name>
+    <description>Shared value objects for e-commerce domain</description>
+
+    <dependencies>
+        <!-- core, utility inherited from parent with provided scope -->
+    </dependencies>
+</project>

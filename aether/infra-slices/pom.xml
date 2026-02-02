@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite.aether</groupId>
+        <artifactId>aether</artifactId>
+        <version>0.8.2</version>
+    </parent>
+
+    <artifactId>infra-slices</artifactId>
+    <packaging>pom</packaging>
+    <description>Infrastructure slices for Aether runtime</description>
+
+    <modules>
+        <module>infra-cache</module>
+        <module>infra-database</module>
+        <module>infra-blob</module>
+        <module>infra-secrets</module>
+        <module>infra-outbox</module>
+        <module>infra-statemachine</module>
+        <module>infra-aspect</module>
+        <module>infra-config</module>
+        <module>infra-streaming</module>
+        <module>infra-http</module>
+        <module>infra-server</module>
+        <module>infra-feature</module>
+        <module>infra-lock</module>
+        <module>infra-pubsub</module>
+        <module>infra-ratelimit</module>
+        <module>infra-scheduler</module>
+    </modules>
+</project>

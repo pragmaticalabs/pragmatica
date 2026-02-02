@@ -1,0 +1,11 @@
+# Load generation configuration for URL Shortener demo
+# Run with: forge --load-config load-config.toml
+
+[[load]]
+name = "shorten-urls"
+target = "POST /api/v1/urls/"
+rate = "100/s"
+duration = "5m"
+
+[load.body]
+url = "https://example.com/page/${random:######}"

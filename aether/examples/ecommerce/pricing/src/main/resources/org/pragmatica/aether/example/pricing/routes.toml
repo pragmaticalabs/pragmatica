@@ -1,0 +1,11 @@
+prefix = "/api/v1/pricing"
+
+[routes]
+calculatePrice = "POST /calculate"
+applyDiscount = "POST /discount"
+calculateTax = "POST /tax"
+
+[errors]
+default = 500
+HTTP_404 = ["*NotFound*"]
+HTTP_400 = ["*Invalid*"]

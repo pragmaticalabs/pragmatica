@@ -1,0 +1,3 @@
+# Slice dependencies (one artifact per line)
+org.pragmatica-lite.aether:infra-cache
+org.pragmatica.aether.example:url-shortener:Analytics

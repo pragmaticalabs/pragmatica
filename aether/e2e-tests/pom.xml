@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite.aether</groupId>
+        <artifactId>aether</artifactId>
+        <version>0.8.2</version>
+    </parent>
+
+    <artifactId>e2e-tests</artifactId>
+    <name>Aether E2E Tests</name>
+    <description>End-to-end tests for Aether distributed runtime using Testcontainers</description>
+
+    <properties>
+        <testcontainers.version>1.20.4</testcontainers.version>
+        <awaitility.version>4.2.2</awaitility.version>
+        <skipE2ETests>true</skipE2ETests>
+    </properties>
+
+    <dependencies>
+        <!-- Testcontainers -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>testcontainers</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>${testcontainers.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- JUnit 5 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-api</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Assertions -->
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.awaitility</groupId>
+            <artifactId>awaitility</artifactId>
+            <version>${awaitility.version}</version>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Pragmatica Lite Core -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>core</artifactId>
+            <scope>test</scope>
+        </dependency>
+
+        <!-- Logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.tinylog</groupId>
+            <artifactId>slf4j-tinylog</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.tinylog</groupId>
+            <artifactId>tinylog-impl</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <!-- Prepare test artifacts with correct manifests for rolling update tests -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-dependency-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>copy-test-slice-artifact</id>
+                        <phase>pre-integration-test</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>org.pragmatica-lite.aether.example</groupId>
+                                    <artifactId>inventory</artifactId>
+                                    <version>${project.version}</version>
+                                    <type>jar</type>
+                                    <destFileName>inventory-base.jar</destFileName>
+                                </artifactItem>
+                                <artifactItem>
+                                    <groupId>org.pragmatica-lite.aether.example</groupId>
+                                    <artifactId>shared</artifactId>
+                                    <version>${project.version}</version>
+                                    <type>jar</type>
+                                    <destFileName>shared-base.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                            <outputDirectory>${project.build.directory}/test-artifacts</outputDirectory>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>repackage-test-artifacts</id>
+                        <phase>pre-integration-test</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <!-- Extract shared classes to temp dir -->
+                                <mkdir dir="${project.build.directory}/test-artifacts/shared-classes"/>
+                                <unzip src="${project.build.directory}/test-artifacts/shared-base.jar"
+                                       dest="${project.build.directory}/test-artifacts/shared-classes">
+                                    <patternset>
+                                        <include name="**/*.class"/>
+                                    </patternset>
+                                </unzip>
+
+                                <!-- Create v1 JAR with updated manifest -->
+                                <copy file="${project.build.directory}/test-artifacts/inventory-base.jar"
+                                      tofile="${project.build.directory}/test-artifacts/inventory-0.0.1-test.jar"/>
+                                <mkdir dir="${project.build.directory}/test-artifacts/manifest-v1"/>
+                                <echo file="${project.build.directory}/test-artifacts/manifest-v1/MANIFEST.MF">Manifest-Version: 1.0
+Slice-Artifact: org.pragmatica-lite.aether.example:inventory:0.0.1-test
+Slice-Class: org.pragmatica.aether.example.inventory.InventoryServiceFactory
+</echo>
+                                <jar destfile="${project.build.directory}/test-artifacts/inventory-0.0.1-test.jar"
+                                     update="true"
+                                     manifest="${project.build.directory}/test-artifacts/manifest-v1/MANIFEST.MF"/>
+                                <!-- Add shared classes to v1 JAR -->
+                                <jar destfile="${project.build.directory}/test-artifacts/inventory-0.0.1-test.jar"
+                                     update="true">
+                                    <fileset dir="${project.build.directory}/test-artifacts/shared-classes"/>
+                                </jar>
+
+                                <!-- Create v2 JAR with updated manifest -->
+                                <copy file="${project.build.directory}/test-artifacts/inventory-base.jar"
+                                      tofile="${project.build.directory}/test-artifacts/inventory-0.0.2-test.jar"/>
+                                <mkdir dir="${project.build.directory}/test-artifacts/manifest-v2"/>
+                                <echo file="${project.build.directory}/test-artifacts/manifest-v2/MANIFEST.MF">Manifest-Version: 1.0
+Slice-Artifact: org.pragmatica-lite.aether.example:inventory:0.0.2-test
+Slice-Class: org.pragmatica.aether.example.inventory.InventoryServiceFactory
+</echo>
+                                <jar destfile="${project.build.directory}/test-artifacts/inventory-0.0.2-test.jar"
+                                     update="true"
+                                     manifest="${project.build.directory}/test-artifacts/manifest-v2/MANIFEST.MF"/>
+                                <!-- Add shared classes to v2 JAR -->
+                                <jar destfile="${project.build.directory}/test-artifacts/inventory-0.0.2-test.jar"
+                                     update="true">
+                                    <fileset dir="${project.build.directory}/test-artifacts/shared-classes"/>
+                                </jar>
+                            </target>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-install-plugin</artifactId>
+                <version>3.1.1</version>
+                <executions>
+                    <execution>
+                        <id>install-test-artifact-v1</id>
+                        <phase>pre-integration-test</phase>
+                        <goals>
+                            <goal>install-file</goal>
+                        </goals>
+                        <configuration>
+                            <file>${project.build.directory}/test-artifacts/inventory-0.0.1-test.jar</file>
+                            <groupId>org.pragmatica-lite.aether.example</groupId>
+                            <artifactId>inventory</artifactId>
+                            <version>0.0.1-test</version>
+                            <packaging>jar</packaging>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>install-test-artifact-v2</id>
+                        <phase>pre-integration-test</phase>
+                        <goals>
+                            <goal>install-file</goal>
+                        </goals>
+                        <configuration>
+                            <file>${project.build.directory}/test-artifacts/inventory-0.0.2-test.jar</file>
+                            <groupId>org.pragmatica-lite.aether.example</groupId>
+                            <artifactId>inventory</artifactId>
+                            <version>0.0.2-test</version>
+                            <packaging>jar</packaging>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- Skip regular tests, use failsafe for E2E -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <skipTests>true</skipTests>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <version>3.5.2</version>
+                <configuration>
+                    <skipTests>${skipE2ETests}</skipTests>
+                    <includes>
+                        <include>**/*E2ETest.java</include>
+                    </includes>
+                    <!-- Each test class in own JVM to ensure Docker/network isolation -->
+                    <forkCount>1</forkCount>
+                    <reuseForks>false</reuseForks>
+                    <systemPropertyVariables>
+                        <project.basedir>${maven.multiModuleProjectDirectory}</project.basedir>
+                    </systemPropertyVariables>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
