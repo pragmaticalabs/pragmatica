@@ -2,6 +2,8 @@ package org.pragmatica.cluster.node.rabia;
 
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
+import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.cluster.state.kvstore.StructuredKey;
@@ -221,13 +223,19 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                               additionalHandlers);
         var consensus = new RabiaEngine<>(topologyManager, network, stateMachine, config.protocol(), metrics);
         // Create leader manager - for consensus mode, we wire the proposal handler
+        // Extract expected cluster members for deterministic leader selection
+        var expectedCluster = config.topology()
+                                    .coreNodes()
+                                    .stream()
+                                    .map(info -> info.id())
+                                    .toList();
         LeaderManager leaderManager;
         if (useConsensusLeaderElection) {
             // Consensus-based leader election: submit proposals through consensus
             LeaderManager.LeaderProposalHandler proposalHandler = (candidate, viewSequence) -> {
-                log.info("Submitting leader proposal: candidate={}, viewSequence={}", candidate, viewSequence);
+                log.info("Submitting leader proposal: candidate={}", candidate);
                 var key = LeaderKey.INSTANCE;
-                var value = LeaderValue.leaderValue(candidate, viewSequence);
+                var value = LeaderValue.leaderValue(candidate);
                 var command = new KVCommand.Put<>(key, value);
                 return consensus.apply(List.of((C) command))
                                 .mapToUnit();
@@ -235,7 +243,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
             leaderManager = LeaderManager.leaderManager(config.topology()
                                                               .self(),
                                                         delegateRouter,
-                                                        proposalHandler);
+                                                        proposalHandler,
+                                                        expectedCluster);
         } else {
             // Local election mode: backward compatible
             leaderManager = LeaderManager.leaderManager(config.topology()
@@ -293,6 +302,9 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         // which requires the consensus engine to be active.
         allEntries.add(route(QuorumStateNotification.class, consensus::quorumState));
         allEntries.add(route(QuorumStateNotification.class, leaderManager::watchQuorumState));
+        // NOTE: Leader election commit handling (ValuePut<LeaderKey, LeaderValue> -> onLeaderCommitted)
+        // is done by AetherNode.handleLeaderCommit(), not here. RabiaNode only provides the consensus
+        // infrastructure; the application layer (AetherNode) wires the leader commit notifications.
         record rabiaNode<C extends Command>(NodeConfig config,
                                             StateMachine<C> stateMachine,
                                             ClusterNetwork network,

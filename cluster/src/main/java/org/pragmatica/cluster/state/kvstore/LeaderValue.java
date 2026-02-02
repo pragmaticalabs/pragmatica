@@ -3,13 +3,12 @@ package org.pragmatica.cluster.state.kvstore;
 import org.pragmatica.consensus.NodeId;
 
 /**
- * Leader election value with view sequence for consistency.
- * The viewSequence is a monotonic counter to reject stale proposals.
+ * Leader election value containing only the elected leader.
+ * Consensus protocol handles ordering - no need for viewSequence or timestamp.
+ * Keeping only leader ensures identical commands from all nodes get the same BatchId.
  */
-public record LeaderValue(NodeId leader,
-                          long viewSequence,
-                          long electedAt) {
-    public static LeaderValue leaderValue(NodeId leader, long viewSequence) {
-        return new LeaderValue(leader, viewSequence, System.currentTimeMillis());
+public record LeaderValue(NodeId leader) {
+    public static LeaderValue leaderValue(NodeId leader) {
+        return new LeaderValue(leader);
     }
 }

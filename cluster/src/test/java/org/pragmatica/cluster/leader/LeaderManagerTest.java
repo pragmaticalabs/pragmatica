@@ -130,24 +130,36 @@ class LeaderManagerTest {
         }
 
         @Test
-        void onTopologyChange_nodesAddedThenQuorum_submitsProposal() {
+        void onTopologyChange_nodesAddedThenQuorum_submitsProposal() throws InterruptedException {
+            // Create LeaderManager with node-a as self (min node submits proposals)
+            var minNode = nodes.getFirst();
+            var localRouter = MessageRouter.mutable();
+            var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
+            LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> {
+                localProposals.add(new LeaderProposal(candidate, viewSequence));
+                return Promise.unitPromise();
+            };
+            var localLeaderManager = LeaderManager.leaderManager(minNode, localRouter, handler);
+            localRouter.addRoute(NodeAdded.class, localLeaderManager::nodeAdded);
+            localRouter.addRoute(QuorumStateNotification.class, localLeaderManager::watchQuorumState);
+
             // Add nodes
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
                 list.add(nodeId);
                 var topology = list.stream().sorted().toList();
-                router.route(nodeAdded(nodeId, topology));
+                localRouter.route(nodeAdded(nodeId, topology));
             }
 
-            // Establish quorum - this should trigger a proposal (not immediate notification)
-            router.route(QuorumStateNotification.ESTABLISHED);
+            // Establish quorum - this schedules a proposal with PROPOSAL_RETRY_DELAY (500ms)
+            localRouter.route(QuorumStateNotification.ESTABLISHED);
 
-            // No immediate notification in consensus mode (waits for commit)
-            assertThat(watcher.collected()).isEmpty();
+            // Wait for scheduled proposal (500ms delay + margin)
+            Thread.sleep(600);
 
-            // But proposal should have been submitted
-            assertThat(proposals).hasSize(1);
-            assertThat(proposals.getFirst().candidate()).isEqualTo(nodes.getFirst()); // node-a
+            // Proposal should have been submitted by min node
+            assertThat(localProposals).hasSize(1);
+            assertThat(localProposals.getFirst().candidate()).isEqualTo(minNode);
         }
 
         @Test
@@ -166,7 +178,7 @@ class LeaderManagerTest {
 
             // Simulate consensus commit
             var expectedLeader = nodes.getFirst(); // node-a
-            leaderManager.onLeaderCommitted(expectedLeader, 1);
+            leaderManager.onLeaderCommitted(expectedLeader);
 
             // Wait for async notification (routeAsync uses Promise.async)
             Thread.sleep(100);
@@ -179,7 +191,7 @@ class LeaderManagerTest {
         }
 
         @Test
-        void onLeaderCommitted_rejectsStaleViewSequence() throws InterruptedException {
+        void onLeaderCommitted_skipsNotificationWhenLeaderUnchanged() throws InterruptedException {
             // Setup cluster
             var list = new ArrayList<NodeId>();
             for (var nodeId : nodes) {
@@ -189,15 +201,15 @@ class LeaderManagerTest {
             }
             router.route(QuorumStateNotification.ESTABLISHED);
 
-            // Commit with viewSequence 5
-            leaderManager.onLeaderCommitted(nodes.getFirst(), 5);
+            // First commit
+            leaderManager.onLeaderCommitted(nodes.getFirst());
             Thread.sleep(50);
 
-            // Try to commit with older viewSequence (should be rejected)
-            leaderManager.onLeaderCommitted(self, 3);
+            // Second commit with same leader (should skip notification)
+            leaderManager.onLeaderCommitted(nodes.getFirst());
             Thread.sleep(50);
 
-            // Only one notification (the first commit)
+            // Only one notification (duplicate skipped)
             assertThat(watcher.collected()).hasSize(1);
             var notification = (LeaderChange) watcher.collected().getFirst();
             assertThat(notification.leaderId()).isEqualTo(Option.some(nodes.getFirst()));
@@ -215,7 +227,7 @@ class LeaderManagerTest {
             router.route(QuorumStateNotification.ESTABLISHED);
 
             // Commit leader and wait for async notification to complete
-            leaderManager.onLeaderCommitted(nodes.getFirst(), 1);
+            leaderManager.onLeaderCommitted(nodes.getFirst());
             Thread.sleep(50);
 
             // Clear watcher to check quorum disappearance
