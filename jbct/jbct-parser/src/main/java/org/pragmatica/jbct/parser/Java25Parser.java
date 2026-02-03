@@ -2050,13 +2050,13 @@ public final class Java25Parser {
             var errorLoc = furthestFailure.or(location());
             var expected = furthestExpected.filter(s -> !s.isEmpty())
                                            .or(result.expected.or("valid input"));
-            return Result.failure(new ParseError(errorLoc, "expected " + expected));
+            return new ParseError(errorLoc, "expected " + expected).result();
         }
         var trailingTrivia = skipWhitespace();
         // Capture trailing trivia
         if (!isAtEnd()) {
             var errorLoc = furthestFailure.or(location());
-            return Result.failure(new ParseError(errorLoc, "unexpected input"));
+            return new ParseError(errorLoc, "unexpected input").result();
         }
         // Attach trailing trivia to root node
         var rootNode = attachTrailingTrivia(result.node.unwrap(), trailingTrivia);

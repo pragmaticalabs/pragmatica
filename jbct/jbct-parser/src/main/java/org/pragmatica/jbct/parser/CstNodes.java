@@ -47,28 +47,15 @@ public final class CstNodes {
      * Find all descendants matching a rule type.
      */
     public static List<CstNode> findAll(CstNode root, Class<? extends RuleId> ruleClass) {
-        var results = new ArrayList<CstNode>();
-        walk(root,
-             node -> {
-                 if (isRule(node, ruleClass)) {
-                     results.add(node);
-                 }
-             });
-        return results;
+        return findAll(root, node -> isRule(node, ruleClass));
     }
 
     /**
      * Find all descendants matching a predicate.
      */
     public static List<CstNode> findAll(CstNode root, Predicate<CstNode> predicate) {
-        var results = new ArrayList<CstNode>();
-        walk(root,
-             node -> {
-                 if (predicate.test(node)) {
-                     results.add(node);
-                 }
-             });
-        return results;
+        return stream(root).filter(predicate)
+                           .toList();
     }
 
     /**
