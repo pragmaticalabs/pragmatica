@@ -30,14 +30,14 @@ import tools.jackson.databind.jsontype.TypeSerializer;
 /// Jackson serializer for Option<T> types.
 /// Serializes Option as null-like: null for None, or the wrapped value for Some<T>
 public class OptionSerializer extends ValueSerializer<Option<?>> {
-    private final JavaType valueType;
-    private final ValueSerializer<Object> valueSerializer;
+    private final Option<JavaType> valueType;
+    private final Option<ValueSerializer<Object>> valueSerializer;
 
     public OptionSerializer() {
-        this(null, null);
+        this(Option.none(), Option.none());
     }
 
-    private OptionSerializer(JavaType valueType, ValueSerializer<Object> valueSerializer) {
+    private OptionSerializer(Option<JavaType> valueType, Option<ValueSerializer<Object>> valueSerializer) {
         this.valueType = valueType;
         this.valueSerializer = valueSerializer;
     }
@@ -45,29 +45,26 @@ public class OptionSerializer extends ValueSerializer<Option<?>> {
     @Override
     public void serialize(Option<?> value, JsonGenerator gen, SerializationContext provider) throws JacksonException {
         switch (value) {
-            case Option.Some<?> some -> {
-                if (valueSerializer != null) {
-                    valueSerializer.serialize(some.value(), gen, provider);
-                } else {
-                    gen.writePOJO(some.value());
-                }
-            }
+            case Option.Some<?> some -> valueSerializer
+                .onPresent(ser -> ser.serialize(some.value(), gen, provider))
+                .onEmpty(() -> gen.writePOJO(some.value()));
             case Option.None<?> ignored -> gen.writeNull();
         }
     }
 
     @Override
     public ValueSerializer<?> createContextual(SerializationContext prov, BeanProperty property) {
-        if (property == null) {
-            return this;
-        }
-        JavaType type = property.getType();
-        if (type.hasContentType()) {
-            JavaType contentType = type.getContentType();
-            ValueSerializer<Object> ser = prov.findValueSerializer(contentType);
-            return new OptionSerializer(contentType, ser);
-        }
-        return this;
+        return Option.option(property)
+                     .map(BeanProperty::getType)
+                     .filter(JavaType::hasContentType)
+                     .map(type -> createContextualSerializer(prov, type))
+                     .or(this);
+    }
+
+    private OptionSerializer createContextualSerializer(SerializationContext prov, JavaType type) {
+        var contentType = type.getContentType();
+        var ser = prov.findValueSerializer(contentType);
+        return new OptionSerializer(Option.option(contentType), Option.option(ser));
     }
 
     @Override
