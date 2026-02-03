@@ -323,7 +323,7 @@ class ManagementApiIT {
                 org.pragmatica.consensus.rabia.ProtocolConfig.testConfig(),
                 org.pragmatica.aether.slice.SliceActionConfig.defaultConfiguration(
                         org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider.furySerializerFactoryProvider()),
-                org.pragmatica.aether.config.SliceConfig.defaults(),
+                org.pragmatica.aether.config.SliceConfig.defaultConfig(),
                 managementPort,
                 org.pragmatica.dht.DHTConfig.FULL,
                 Option.empty(),

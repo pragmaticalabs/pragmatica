@@ -152,7 +152,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                                                                     // External dependencies use default config
             var entry = new SliceEntry(depArtifact,
                                        depManifest,
-                                       SliceConfig.defaults(),
+                                       SliceConfig.defaultConfig(),
                                        true);
                                                                     graph.put(depArtifact, entry);
                                                                     try{
@@ -165,7 +165,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                                                    graph.put(depArtifact,
                                                              new SliceEntry(depArtifact,
                                                                             null,
-                                                                            SliceConfig.defaults(),
+                                                                            SliceConfig.defaultConfig(),
                                                                             true));
                                                    getLog().debug("No manifest found for dependency: " + depArtifact);
                                                });
@@ -176,20 +176,20 @@ public class GenerateBlueprintMojo extends AbstractMojo {
         var configFile = manifest.configFile();
         if (configFile == null || configFile.isEmpty()) {
             getLog().info("No config file specified for slice: " + manifest.sliceName() + " - using defaults");
-            return SliceConfig.defaults();
+            return SliceConfig.defaultConfig();
         }
         var configPath = classesDirectory.toPath()
                                          .resolve(configFile);
         if (!Files.exists(configPath)) {
             getLog().info("Config file not found for slice " + manifest.sliceName() + " (" + configFile
                           + ") - using defaults");
-            return SliceConfig.defaults();
+            return SliceConfig.defaultConfig();
         }
         return SliceConfig.load(configPath)
                           .onFailure(cause -> getLog().warn("Failed to load config for slice " + manifest.sliceName()
                                                             + ": " + cause.message() + " - using defaults"))
                           .onSuccess(_ -> getLog().debug("Loaded config for slice: " + manifest.sliceName()))
-                          .or(SliceConfig.defaults());
+                          .or(SliceConfig.defaultConfig());
     }
 
     private Option<SliceManifest> loadManifestFromDependency(String groupArtifact, String version) {

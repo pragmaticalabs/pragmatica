@@ -64,7 +64,7 @@ public record AetherConfig(ClusterConfig cluster,
                                 ? some(KubernetesConfig.defaults())
                                 : none(),
                                 TTMConfig.disabled(),
-                                SliceConfig.defaults(),
+                                SliceConfig.defaultConfig(),
                                 AppHttpConfig.defaults());
     }
 
@@ -211,7 +211,7 @@ public record AetherConfig(ClusterConfig cluster,
                            : TTMConfig.disabled();
             var finalSlice = sliceConfig != null
                              ? sliceConfig
-                             : SliceConfig.defaults();
+                             : SliceConfig.defaultConfig();
             var finalAppHttp = appHttpConfig != null
                                ? appHttpConfig
                                : AppHttpConfig.defaults();

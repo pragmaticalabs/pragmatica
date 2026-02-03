@@ -529,7 +529,7 @@ public final class ForgeCluster {
         var config = new AetherNodeConfig(topology,
                                           ProtocolConfig.testConfig(),
                                           defaultSliceActionConfig(),
-                                          org.pragmatica.aether.config.SliceConfig.defaults(),
+                                          org.pragmatica.aether.config.SliceConfig.defaultConfig(),
                                           mgmtPort,
                                           DHTConfig.FULL,
                                           Option.empty(),

@@ -11,7 +11,7 @@ class SliceConfigTest {
 
     @Test
     void defaults_returnsLocalRepository() {
-        var config = SliceConfig.defaults();
+        var config = SliceConfig.defaultConfig();
 
         assertThat(config.repositories()).containsExactly(RepositoryType.LOCAL);
     }
@@ -76,7 +76,7 @@ class SliceConfigTest {
 
     @Test
     void withRepositories_createsNewConfigWithNewTypes() {
-        var original = SliceConfig.defaults();
+        var original = SliceConfig.defaultConfig();
         var updated = original.withRepositories(List.of(RepositoryType.BUILTIN));
 
         assertThat(original.repositories()).containsExactly(RepositoryType.LOCAL);
