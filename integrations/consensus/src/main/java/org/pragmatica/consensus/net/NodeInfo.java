@@ -20,4 +20,9 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.net.tcp.NodeAddress;
 
 /// Node information: ID and address.
-public record NodeInfo(NodeId id, NodeAddress address) {}
+public record NodeInfo(NodeId id, NodeAddress address) {
+    /// Factory method for creating NodeInfo.
+    public static NodeInfo nodeInfo(NodeId id, NodeAddress address) {
+        return new NodeInfo(id, address);
+    }
+}
