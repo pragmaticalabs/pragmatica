@@ -5,6 +5,7 @@ import org.pragmatica.jbct.format.FormattingError;
 import org.pragmatica.jbct.parser.Java25Parser;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.shared.SourceFile;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.util.List;
@@ -53,9 +54,9 @@ public class CstFormatter {
             return result.node()
                          .toResult(FormattingError.parseFailed(source.fileName(), 1, 1, "Parse error"));
         }
-        return result.diagnostics()
-                     .stream()
-                     .findFirst()
+        return Option.option(result.diagnostics())
+                     .filter(list -> !list.isEmpty())
+                     .map(List::getFirst)
                      .map(d -> FormattingError.parseFailed(source.fileName(),
                                                           d.span()
                                                            .start()
@@ -64,7 +65,7 @@ public class CstFormatter {
                                                            .start()
                                                            .column(),
                                                           d.message()))
-                     .orElse(FormattingError.parseFailed(source.fileName(), 1, 1, "Parse error"))
+                     .or(FormattingError.parseFailed(source.fileName(), 1, 1, "Parse error"))
                      .result();
     }
 

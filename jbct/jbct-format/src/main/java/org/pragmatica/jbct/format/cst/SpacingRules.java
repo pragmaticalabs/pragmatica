@@ -82,8 +82,7 @@ final class SpacingRules {
                                                                                                                                                                                    firstChar) || checkDotRules(ctx,
                                                                                                                                                                                                                text,
                                                                                                                                                                                                                firstChar) || checkAnnotationRules(ctx,
-                                                                                                                                                                                                                                                  firstChar) || checkMethodReferenceRule(ctx,
-                                                                                                                                                                                                                                                                                         text) || checkAngleBracketRules(ctx,
+                                                                                                                                                                                                                                                  firstChar) || checkAngleBracketRules(ctx,
                                                                                                                                                                                                                                                                                                                          text,
                                                                                                                                                                                                                                                                                                                          firstChar) || checkBinaryOperatorRules(ctx,
                                                                                                                                                                                                                                                                                                                                                                 text,
@@ -208,12 +207,7 @@ final class SpacingRules {
             return false;
         }
         // Space after ... (varargs): Object... args
-        if (ctx.lastChar() == '.' && ctx.prevChar() == '.' && Character.isLetter(firstChar)) {
-            return true;
-        }
-        return ctx.lastChar() == '.' && !text.equals("...")
-               ? false
-               : false;
+        return ctx.lastChar() == '.' && ctx.prevChar() == '.' && Character.isLetter(firstChar);
     }
 
     private static boolean checkAnnotationRules(SpacingContext ctx, char firstChar) {
@@ -225,10 +219,7 @@ final class SpacingRules {
         return firstChar == '@' && ctx.lastChar() == ')';
     }
 
-    private static boolean checkMethodReferenceRule(SpacingContext ctx, String text) {
-        // No space before or after '::'
-        return false;
-    }
+    // Method reference rule removed - handled by mustNotHaveSpaceBefore veto
 
     private static boolean checkAngleBracketRules(SpacingContext ctx, String text, char firstChar) {
         if (!text.equals("<") && !text.equals(">")) {
