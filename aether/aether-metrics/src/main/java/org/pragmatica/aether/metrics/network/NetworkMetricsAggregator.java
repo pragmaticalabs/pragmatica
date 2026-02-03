@@ -22,7 +22,7 @@ public final class NetworkMetricsAggregator {
      * Register a handler for aggregation.
      */
     public void register(NetworkMetricsHandler handler) {
-        if (handler != null && !handlers.contains(handler)) {
+        if (!handlers.contains(handler)) {
             handlers.add(handler);
         }
     }

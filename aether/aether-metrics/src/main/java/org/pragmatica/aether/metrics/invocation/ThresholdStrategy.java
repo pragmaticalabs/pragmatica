@@ -234,8 +234,8 @@ public sealed interface ThresholdStrategy {
         @Override
         public boolean isSlow(MethodName method, long durationNs) {
             return Option.option(methodThresholdsNs.get(method))
-                         .fold(() -> fallback.isSlow(method, durationNs),
-                               explicit -> durationNs > explicit);
+                         .map(explicit -> durationNs > explicit)
+                         .or(() -> fallback.isSlow(method, durationNs));
         }
 
         @Override

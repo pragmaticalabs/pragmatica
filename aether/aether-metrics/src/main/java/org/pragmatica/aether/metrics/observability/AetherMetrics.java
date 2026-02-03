@@ -51,7 +51,7 @@ public interface AetherMetrics {
      * Create Aether metrics from an observability registry.
      */
     static AetherMetrics aetherMetrics(ObservabilityRegistry registry) {
-        record aetherMetrics(ObservabilityRegistry registry) implements AetherMetrics {
+        record AetherMetricsRecord(ObservabilityRegistry registry) implements AetherMetrics {
             @Override
             public PromiseMetrics sliceInvocation(String artifact, String method) {
                 return registry.combined("aether.slice.invocation", "artifact", artifact, "method", method);
@@ -117,6 +117,6 @@ public interface AetherMetrics {
                 return registry.counter("aether.rolling_update.rolled_back");
             }
         }
-        return new aetherMetrics(registry);
+        return new AetherMetricsRecord(registry);
     }
 }
