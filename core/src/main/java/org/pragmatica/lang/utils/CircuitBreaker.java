@@ -68,11 +68,11 @@ public interface CircuitBreaker {
         HALF_OPEN
     }
 
-    static CircuitBreaker create(int failureThreshold,
-                                 TimeSpan resetTimeout,
-                                 int testAttempts,
-                                 Predicate<Cause> shouldTrip,
-                                 org.pragmatica.lang.utils.TimeSource timeSource) {
+    static CircuitBreaker circuitBreaker(int failureThreshold,
+                                         TimeSpan resetTimeout,
+                                         int testAttempts,
+                                         Predicate<Cause> shouldTrip,
+                                         org.pragmatica.lang.utils.TimeSource timeSource) {
         record circuitBreaker(int failureThreshold,
                               TimeSpan resetTimeout,
                               int testAttempts,
@@ -170,7 +170,7 @@ public interface CircuitBreaker {
         return new circuitBreaker(failureThreshold,
                                   resetTimeout,
                                   testAttempts,
-                                  FluentPredicate.from(shouldTrip),
+                                  FluentPredicate.fluentPredicate(shouldTrip),
                                   new AtomicReference<>(State.CLOSED),
                                   new AtomicLong(0),
                                   new AtomicLong(timeSource.nanoTime()),
@@ -191,11 +191,20 @@ public interface CircuitBreaker {
     ///
     /// @return A new builder
     static StageFailureThreshold builder() {
-        return failureThreshold -> resetTimeout -> testAttempts -> shouldTrip -> timeSource -> create(failureThreshold,
-                                                                                                      resetTimeout,
-                                                                                                      testAttempts,
-                                                                                                      shouldTrip,
-                                                                                                      timeSource);
+        return failureThreshold -> resetTimeout -> testAttempts -> shouldTrip -> timeSource -> circuitBreaker(failureThreshold,
+                                                                                                              resetTimeout,
+                                                                                                              testAttempts,
+                                                                                                              shouldTrip,
+                                                                                                              timeSource);
+    }
+
+    @Deprecated(forRemoval = true)
+    static CircuitBreaker create(int failureThreshold,
+                                 TimeSpan resetTimeout,
+                                 int testAttempts,
+                                 Predicate<Cause> shouldTrip,
+                                 org.pragmatica.lang.utils.TimeSource timeSource) {
+        return circuitBreaker(failureThreshold, resetTimeout, testAttempts, shouldTrip, timeSource);
     }
 
     interface StageFailureThreshold {

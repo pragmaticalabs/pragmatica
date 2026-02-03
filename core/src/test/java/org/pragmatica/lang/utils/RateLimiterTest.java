@@ -185,7 +185,7 @@ class RateLimiterTest {
 
     @Test
     void shouldCreateSimpleRateLimiter() {
-        var simpleLimiter = RateLimiter.create(10, timeSpan(1).seconds());
+        var simpleLimiter = RateLimiter.rateLimiter(10, timeSpan(1).seconds());
 
         for (int i = 0; i < 10; i++) {
             simpleLimiter.execute(() -> Promise.success("OK"))

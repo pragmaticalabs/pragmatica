@@ -47,7 +47,10 @@ public final class JarInstaller {
     public static Path defaultInstallPath() {
         return Option.option(System.getProperty("user.home"))
                      .map(userHome -> Path.of(userHome, DEFAULT_INSTALL_DIR, LIB_DIR, JAR_NAME))
-                     .or(() -> Path.of(System.getProperty("java.io.tmpdir"), DEFAULT_INSTALL_DIR, LIB_DIR, JAR_NAME));
+                     .or(() -> Path.of(System.getProperty("java.io.tmpdir"),
+                                       DEFAULT_INSTALL_DIR,
+                                       LIB_DIR,
+                                       JAR_NAME));
     }
 
     /**
@@ -103,7 +106,7 @@ public final class JarInstaller {
     }
 
     private Result<Path> downloadFromUri(URI uri) {
-        try {
+        try{
             var tempFile = Files.createTempFile("jbct-download-", ".jar");
             var request = HttpRequest.newBuilder()
                                      .uri(uri)
@@ -111,11 +114,13 @@ public final class JarInstaller {
                                      .timeout(Duration.ofMinutes(5))
                                      .GET()
                                      .build();
-            return http.send(request, HttpResponse.BodyHandlers.ofFile(tempFile))
+            return http.send(request,
+                             HttpResponse.BodyHandlers.ofFile(tempFile))
                        .await()
                        .flatMap(response -> handleDownloadResponse(response, tempFile));
         } catch (Exception e) {
-            return Causes.cause("Download failed: " + e.getMessage()).result();
+            return Causes.cause("Download failed: " + e.getMessage())
+                         .result();
         }
     }
 
@@ -128,7 +133,7 @@ public final class JarInstaller {
     }
 
     private void cleanupTempFile(Path tempFile) {
-        try {
+        try{
             Files.deleteIfExists(tempFile);
         } catch (IOException cleanupError) {
             LOG.debug("Failed to cleanup temp file {}: {}", tempFile, cleanupError.getMessage());

@@ -111,7 +111,7 @@ public final class ControllerRoutes implements RouteSource {
                                      config.evaluationIntervalMs(),
                                      config.confidenceThreshold(),
                                      forecast.isPresent(),
-                                     forecast.or((TtmForecast) null));
+                                     forecast);
     }
 
     private TtmForecast toTtmForecast(TTMForecast f) {

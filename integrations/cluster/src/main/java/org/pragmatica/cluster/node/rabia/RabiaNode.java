@@ -233,7 +233,7 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         if (useConsensusLeaderElection) {
             // Consensus-based leader election: submit proposals through consensus
             LeaderManager.LeaderProposalHandler proposalHandler =
-                (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate);
+            (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate);
             leaderManager = LeaderManager.leaderManager(config.topology()
                                                               .self(),
                                                         delegateRouter,

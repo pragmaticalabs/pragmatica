@@ -290,8 +290,8 @@ final class NettyHttpServer implements HttpServer {
             var decoder = new QueryStringDecoder(request.uri());
             var path = decoder.path();
             // Netty validates the HTTP method before we receive it, so this will always succeed
-            var method = HttpMethod.from(request.method()
-                                                .name())
+            var method = HttpMethod.httpMethod(request.method()
+                                                      .name())
                                    .fold(_ -> HttpMethod.GET, v -> v);
             // Parse headers
             var headerMap = new HashMap<String, List<String>>();

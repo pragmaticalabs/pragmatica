@@ -67,7 +67,8 @@ public class UpgradeCommand implements Callable<Integer> {
                                      System.err.println("Error: " + cause.message());
                                      System.err.println("Please download manually from GitHub.");
                                  })
-                      .map(url -> performUpgrade(url, release.version()))
+                      .map(url -> performUpgrade(url,
+                                                 release.version()))
                       .or(1);
     }
 
@@ -107,7 +108,8 @@ public class UpgradeCommand implements Callable<Integer> {
     private Result<String> downloadRelease(GitHubReleaseChecker.ReleaseInfo release) {
         return release.downloadUrl()
                       .toResult(Causes.cause("No downloadable JAR found in release"))
-                      .flatMap(url -> downloadAndInstall(url, release.version()));
+                      .flatMap(url -> downloadAndInstall(url,
+                                                         release.version()));
     }
 
     private Result<String> downloadAndInstall(String url, String version) {

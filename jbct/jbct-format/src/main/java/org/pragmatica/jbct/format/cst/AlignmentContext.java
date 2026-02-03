@@ -14,7 +14,7 @@ import java.util.Deque;
  */
 final class AlignmentContext {
     private final Deque<Integer> lambdaAlignStack = new ArrayDeque<>();
-    private int chainColumn = -1;
+    private int chainColumn = - 1;
     private boolean inBreakingChain = false;
 
     /**
@@ -64,7 +64,7 @@ final class AlignmentContext {
      */
     int lambdaColumn() {
         return lambdaAlignStack.isEmpty()
-               ? -1
+               ? - 1
                : lambdaAlignStack.peek();
     }
 

@@ -53,10 +53,15 @@ public interface RateLimiter {
     /// @param period Time period for rate calculation
     ///
     /// @return A new rate limiter
-    static RateLimiter create(int rate, TimeSpan period) {
+    static RateLimiter rateLimiter(int rate, TimeSpan period) {
         return builder().rate(rate)
                       .period(period)
                       .withDefaultTimeSource();
+    }
+
+    @Deprecated(forRemoval = true)
+    static RateLimiter create(int rate, TimeSpan period) {
+        return rateLimiter(rate, period);
     }
 
     /// Create a rate limiter builder.

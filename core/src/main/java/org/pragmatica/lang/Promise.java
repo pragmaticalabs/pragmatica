@@ -2175,22 +2175,22 @@ public interface Promise<T> {
 enum AsyncExecutor {
     INSTANCE;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-
     void runAsync(Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
         executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable));
     }
-
     void runAsync(TimeSpan delay, Runnable runnable) {
         var snapshot = ContextPropagation.INSTANCE.capture();
-        executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot, () -> {
-            try {
-                Thread.sleep(delay.duration());
-            } catch (InterruptedException e) {
-                // Ignore
-            }
-            runnable.run();
-        }));
+        executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot,
+                                                                  () -> {
+                                                                      try{
+                                                                          Thread.sleep(delay.duration());
+                                                                      } catch (InterruptedException e) {
+                                                                          Thread.currentThread()
+                                                                                .interrupt();
+                                                                      }
+                                                                      runnable.run();
+                                                                  }));
     }
 }
 

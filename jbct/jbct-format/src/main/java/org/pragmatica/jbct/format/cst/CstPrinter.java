@@ -884,7 +884,7 @@ public class CstPrinter {
                 }
                 position[0] += t.text()
                                 .length();
-                yield -1;
+                yield - 1;
             }
             case CstNode.Token tok -> {
                 if (".".equals(tok.text())) {
@@ -892,7 +892,7 @@ public class CstPrinter {
                 }
                 position[0] += tok.text()
                                   .length();
-                yield -1;
+                yield - 1;
             }
             case CstNode.NonTerminal nt -> {
                 for (var child : children(nt)) {
@@ -901,12 +901,12 @@ public class CstPrinter {
                         yield result;
                     }
                 }
-                yield -1;
+                yield - 1;
             }
             case CstNode.Error err -> {
                 position[0] += err.skippedText()
                                   .length();
-                yield -1;
+                yield - 1;
             }
         };
     }
@@ -1250,7 +1250,7 @@ public class CstPrinter {
         // When TypeParams is present, decide whether to put return type on same line or next line
         var children = children(methodDecl);
         // Find TypeParams index (-1 if not present)
-        int typeParamsIndex = -1;
+        int typeParamsIndex = - 1;
         for (int i = 0; i < children.size(); i++) {
             if (children.get(i)
                         .rule() instanceof RuleId.TypeParams) {
@@ -1258,7 +1258,7 @@ public class CstPrinter {
                 break;
             }
         }
-        if (typeParamsIndex == -1) {
+        if (typeParamsIndex == - 1) {
             // No type params - just print normally
             printChildren(methodDecl);
             return;

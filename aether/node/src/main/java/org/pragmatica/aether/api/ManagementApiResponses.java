@@ -1,9 +1,9 @@
 package org.pragmatica.aether.api;
 
+import org.pragmatica.lang.Option;
+
 import java.util.List;
 import java.util.Map;
-
-import org.jspecify.annotations.Nullable;
 
 /**
  * Typed response records for all Management API endpoints.
@@ -185,7 +185,7 @@ public sealed interface ManagementApiResponses {
                           double durationMs,
                           long timestampNs,
                           boolean success,
-                          @Nullable String error) {}
+                          Option<String> error) {}
 
     sealed interface StrategyResponse {
         record Fixed(String type, long thresholdMs) implements StrategyResponse {}
@@ -224,7 +224,7 @@ public sealed interface ManagementApiResponses {
                              long evaluationIntervalMs,
                              double confidenceThreshold,
                              boolean hasForecast,
-                             @Nullable TtmForecast lastForecast) {}
+                             Option<TtmForecast> lastForecast) {}
 
     record TtmForecast(long timestamp,
                        double confidence,

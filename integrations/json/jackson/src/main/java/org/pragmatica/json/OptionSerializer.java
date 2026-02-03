@@ -45,9 +45,10 @@ public class OptionSerializer extends ValueSerializer<Option<?>> {
     @Override
     public void serialize(Option<?> value, JsonGenerator gen, SerializationContext provider) throws JacksonException {
         switch (value) {
-            case Option.Some<?> some -> valueSerializer
-                .onPresent(ser -> ser.serialize(some.value(), gen, provider))
-                .onEmpty(() -> gen.writePOJO(some.value()));
+            case Option.Some<?> some -> valueSerializer.onPresent(ser -> ser.serialize(some.value(),
+                                                                                       gen,
+                                                                                       provider))
+                                                       .onEmpty(() -> gen.writePOJO(some.value()));
             case Option.None<?> ignored -> gen.writeNull();
         }
     }

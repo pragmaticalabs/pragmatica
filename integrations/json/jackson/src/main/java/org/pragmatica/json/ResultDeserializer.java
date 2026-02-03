@@ -56,8 +56,10 @@ public class ResultDeserializer extends ValueDeserializer<Result<?>> {
         return parsed.isSuccess()
                      .toResult(cause)
                      .flatMap(successFlag -> successFlag
-                                             ? success(parsed.value().or((Object) null))
-                                             : DeserializedCause.deserializedCause(parsed.errorMessage().or("Unknown error"))
+                                             ? success(parsed.value()
+                                                             .or((Object) null))
+                                             : DeserializedCause.deserializedCause(parsed.errorMessage()
+                                                                                         .or("Unknown error"))
                                                                 .result());
     }
 
@@ -112,12 +114,14 @@ public class ResultDeserializer extends ValueDeserializer<Result<?>> {
     @Override
     public ValueDeserializer<?> createContextual(DeserializationContext ctxt, BeanProperty property) {
         return option(property).map(BeanProperty::getType)
-                               .filter(JavaType::hasContentType)
-                               .map(type -> createContextualDeserializer(ctxt, property, type))
-                               .or(this);
+                     .filter(JavaType::hasContentType)
+                     .map(type -> createContextualDeserializer(ctxt, property, type))
+                     .or(this);
     }
 
-    private ResultDeserializer createContextualDeserializer(DeserializationContext ctxt, BeanProperty property, JavaType type) {
+    private ResultDeserializer createContextualDeserializer(DeserializationContext ctxt,
+                                                            BeanProperty property,
+                                                            JavaType type) {
         var contentType = type.getContentType();
         var deser = ctxt.findContextualValueDeserializer(contentType, property);
         return new ResultDeserializer(option(contentType), option(deser));

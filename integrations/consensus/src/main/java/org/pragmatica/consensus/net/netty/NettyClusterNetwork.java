@@ -265,7 +265,9 @@ public class NettyClusterNetwork implements ClusterNetwork {
 
     private Promise<Unit> onStop() {
         var serverInstance = server.get();
-        var serverName = serverInstance != null ? serverInstance.name() : "unknown";
+        var serverName = serverInstance != null
+                         ? serverInstance.name()
+                         : "unknown";
         log.info("Stopping {}: closing peer connections", serverName);
         var promises = new ArrayList<Promise<Unit>>();
         for (var link : peerLinks.values()) {

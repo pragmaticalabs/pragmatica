@@ -37,8 +37,13 @@ public record HttpResult<T>(int statusCode, HttpHeaders headers, T body) {
     /// @param <T> Body type
     ///
     /// @return HttpResult wrapping the response
-    public static <T> HttpResult<T> from(HttpResponse<T> response) {
+    public static <T> HttpResult<T> httpResult(HttpResponse<T> response) {
         return new HttpResult<>(response.statusCode(), response.headers(), response.body());
+    }
+
+    @Deprecated(forRemoval = true)
+    public static <T> HttpResult<T> from(HttpResponse<T> response) {
+        return httpResult(response);
     }
 
     /// Checks if the response indicates success (2xx status code).

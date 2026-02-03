@@ -74,7 +74,8 @@ public class LintCommand implements Callable<Integer> {
             System.out.println("Found " + filesToProcess.size() + " Java file(s) to lint.");
         }
         var allDiagnostics = new ArrayList<Diagnostic>();
-        var counters = new int[4]; // 0=errors, 1=warnings, 2=infos, 3=parseErrors
+        var counters = new int[4];
+        // 0=errors, 1=warnings, 2=infos, 3=parseErrors
         for (var file : filesToProcess) {
             processFile(file, linter, allDiagnostics, counters);
         }
@@ -83,10 +84,10 @@ public class LintCommand implements Callable<Integer> {
         // Print summary
         printSummary(filesToProcess.size(), counters[0], counters[1], counters[2], counters[3]);
         // Return appropriate exit code
-        if (counters[3] > 0 || counters[0] > 0) {
+        if (counters[3]> 0 || counters[0]> 0) {
             return 2;
         }
-        if (failOnWarning && counters[1] > 0) {
+        if (failOnWarning && counters[1]> 0) {
             return 1;
         }
         return 0;
@@ -123,9 +124,9 @@ public class LintCommand implements Callable<Integer> {
                                  }
                              })
                   .onFailure(cause -> {
-                                 counters[3]++;
-                                 System.err.println("  ✗ " + file + ": " + cause.message());
-                             });
+                      counters[3]++;
+                      System.err.println("  ✗ " + file + ": " + cause.message());
+                  });
     }
 
     private void printResults(List<Diagnostic> diagnostics) {

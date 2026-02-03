@@ -18,6 +18,7 @@
 package org.pragmatica.http;
 
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse.BodyHandler;
@@ -53,11 +54,13 @@ public interface HttpOperations {
     }
 
     /// Sends an HTTP request discarding the response body.
+    /// Returns HttpResult<Unit> for JBCT compliance.
     ///
     /// @param request HTTP request to send
     ///
-    /// @return Promise of HttpResult with Void body
-    default Promise<HttpResult<Void>> sendDiscarding(HttpRequest request) {
-        return send(request, java.net.http.HttpResponse.BodyHandlers.discarding());
+    /// @return Promise of HttpResult with Unit body
+    default Promise<HttpResult<Unit>> sendDiscarding(HttpRequest request) {
+        return send(request, java.net.http.HttpResponse.BodyHandlers.discarding())
+        .map(result -> new HttpResult<>(result.statusCode(), result.headers(), Unit.unit()));
     }
 }

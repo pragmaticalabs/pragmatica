@@ -57,16 +57,14 @@ public record SliceManifest(String sliceName,
      * Load a slice manifest from a .manifest file.
      */
     public static Result<SliceManifest> load(Path manifestPath) {
-        return lift(Causes::fromThrowable, () -> Files.newInputStream(manifestPath))
-            .flatMap(SliceManifest::load);
+        return lift(Causes::fromThrowable, () -> Files.newInputStream(manifestPath)).flatMap(SliceManifest::load);
     }
 
     /**
      * Load a slice manifest from an input stream.
      */
     public static Result<SliceManifest> load(InputStream input) {
-        return lift(Causes::fromThrowable, () -> loadProperties(input))
-            .flatMap(SliceManifest::fromProperties);
+        return lift(Causes::fromThrowable, () -> loadProperties(input)).flatMap(SliceManifest::fromProperties);
     }
 
     private static Properties loadProperties(InputStream input) throws java.io.IOException {
@@ -126,9 +124,9 @@ public record SliceManifest(String sliceName,
 
     private static List<SliceDependency> buildDependencyList(Properties props, int count) {
         return java.util.stream.IntStream.range(0, count)
-                                         .mapToObj(i -> parseDependency(props, i))
-                                         .flatMap(Option::stream)
-                                         .toList();
+                   .mapToObj(i -> parseDependency(props, i))
+                   .flatMap(Option::stream)
+                   .toList();
     }
 
     private static Option<SliceDependency> parseDependency(Properties props, int index) {
@@ -137,9 +135,11 @@ public record SliceManifest(String sliceName,
         return Option.option(interfaceName)
                      .filter(s -> !s.isEmpty())
                      .map(name -> SliceDependency.sliceDependency(name,
-                                                                   props.getProperty(prefix + "artifact", ""),
-                                                                   props.getProperty(prefix + "version", ""),
-                                                                   Boolean.parseBoolean(props.getProperty(prefix + "external", "false"))));
+                                                                  props.getProperty(prefix + "artifact", ""),
+                                                                  props.getProperty(prefix + "version", ""),
+                                                                  Boolean.parseBoolean(props.getProperty(prefix
+                                                                                                         + "external",
+                                                                                                         "false"))));
     }
 
     private static List<String> parseList(String value) {
@@ -208,14 +208,16 @@ public record SliceManifest(String sliceName,
         }
         var baseClassPath = basePath + ".class";
         var innerClasses = findInnerClasses(baseFile, classesDir);
-        return Stream.concat(Stream.of(baseClassPath), innerClasses.stream())
+        return Stream.concat(Stream.of(baseClassPath),
+                             innerClasses.stream())
                      .toList();
     }
 
     private static List<String> findInnerClasses(Path baseFile, Path classesDir) {
-        return lift(Causes::fromThrowable, () -> listInnerClassPaths(baseFile, classesDir))
-            .onFailure(cause -> LOG.debug("Failed to list inner classes: {}", cause.message()))
-            .or(List.of());
+        return lift(Causes::fromThrowable,
+                    () -> listInnerClassPaths(baseFile, classesDir)).onFailure(cause -> LOG.debug("Failed to list inner classes: {}",
+                                                                                                  cause.message()))
+                   .or(List.of());
     }
 
     private static List<String> listInnerClassPaths(Path baseFile, Path classesDir) throws java.io.IOException {

@@ -90,9 +90,8 @@ public interface StaticFileRouteSource extends RouteSource {
         return ctx -> {
             var requestPath = ctx.requestPath();
             var relativePath = extractRelativePath(requestPath, urlPrefix);
-            return validatePath(relativePath)
-                .async()
-                .flatMap(validPath -> loadResource(classpathPrefix, validPath, ctx));
+            return validatePath(relativePath).async()
+                               .flatMap(validPath -> loadResource(classpathPrefix, validPath, ctx));
         };
     }
 

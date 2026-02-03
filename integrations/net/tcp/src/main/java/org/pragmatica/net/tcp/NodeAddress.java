@@ -45,10 +45,11 @@ public record NodeAddress(String host, int port) {
                      .toResult(BLANK_HOST)
                      .flatMap(sa -> {
                                   // Prefer getHostAddress() for consistent IP representation; fall back to getHostString() for unresolved
-                                  var host = Option.option(sa.getAddress())
-                                                   .map(InetAddress::getHostAddress)
-                                                   .or(sa::getHostString);
-                                  return nodeAddress(host, sa.getPort());
+        var host = Option.option(sa.getAddress())
+                         .map(InetAddress::getHostAddress)
+                         .or(sa::getHostString);
+                                  return nodeAddress(host,
+                                                     sa.getPort());
                               });
     }
 }

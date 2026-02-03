@@ -44,7 +44,12 @@ public interface FluentPredicate<T> extends Predicate<T> {
         return ifFalse(value, _ -> runnable.run());
     }
 
-    static <T> FluentPredicate<T> from(Predicate<T> predicate) {
+    static <T> FluentPredicate<T> fluentPredicate(Predicate<T> predicate) {
         return predicate::test;
+    }
+
+    @Deprecated(forRemoval = true)
+    static <T> FluentPredicate<T> from(Predicate<T> predicate) {
+        return fluentPredicate(predicate);
     }
 }

@@ -52,20 +52,26 @@ public class CstFormatter {
         var result = parser.parseWithDiagnostics(source.content());
         if (result.isSuccess()) {
             return result.node()
-                         .toResult(FormattingError.parseFailed(source.fileName(), 1, 1, "Parse error"));
+                         .toResult(FormattingError.parseFailed(source.fileName(),
+                                                               1,
+                                                               1,
+                                                               "Parse error"));
         }
         return Option.option(result.diagnostics())
                      .filter(list -> !list.isEmpty())
                      .map(List::getFirst)
                      .map(d -> FormattingError.parseFailed(source.fileName(),
-                                                          d.span()
-                                                           .start()
-                                                           .line(),
-                                                          d.span()
-                                                           .start()
-                                                           .column(),
-                                                          d.message()))
-                     .or(FormattingError.parseFailed(source.fileName(), 1, 1, "Parse error"))
+                                                           d.span()
+                                                            .start()
+                                                            .line(),
+                                                           d.span()
+                                                            .start()
+                                                            .column(),
+                                                           d.message()))
+                     .or(FormattingError.parseFailed(source.fileName(),
+                                                     1,
+                                                     1,
+                                                     "Parse error"))
                      .result();
     }
 

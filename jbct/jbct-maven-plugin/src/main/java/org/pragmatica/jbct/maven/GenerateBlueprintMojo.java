@@ -143,8 +143,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                     continue;
                 }
                 // UNRESOLVED dependency not in graph - skip and warn
-                getLog().warn("Skipping UNRESOLVED dependency: " + dep.artifact()
-                              + " - not found in local graph");
+                getLog().warn("Skipping UNRESOLVED dependency: " + dep.artifact() + " - not found in local graph");
                 continue;
             }
             loadManifestFromDependency(dep.artifact(),
@@ -273,7 +272,7 @@ public class GenerateBlueprintMojo extends AbstractMojo {
                                            .findFirst()
                                            .orElse(null);
                         if (depArtifact == null) {
-                            continue; // Skip unresolved deps not in graph
+                            continue;
                         }
                     } else {
                         depArtifact = dep.artifact() + ":" + dep.version();

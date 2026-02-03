@@ -5,7 +5,6 @@ import org.pragmatica.jbct.lint.LintContext;
 import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
-
 import org.pragmatica.lang.Option;
 
 import java.util.Set;
@@ -124,10 +123,13 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
             return Stream.empty();
         }
         // Extract the verb from method name
-        return extractVerb(methodName)
-            .filter(verb -> ZONE_2_VERBS.contains(verb.toLowerCase()))
-            .map(verb -> createDiagnostic(method, methodName, verb, suggestZone3Verb(verb.toLowerCase()), ctx))
-            .stream();
+        return extractVerb(methodName).filter(verb -> ZONE_2_VERBS.contains(verb.toLowerCase()))
+                          .map(verb -> createDiagnostic(method,
+                                                        methodName,
+                                                        verb,
+                                                        suggestZone3Verb(verb.toLowerCase()),
+                                                        ctx))
+                          .stream();
     }
 
     private Option<String> extractVerb(String methodName) {

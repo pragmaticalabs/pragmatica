@@ -67,8 +67,7 @@ public final class GitHubReleaseChecker {
      * @return Option with new version info if available
      */
     public Result<Option<ReleaseInfo>> checkForUpdate(String currentVersion) {
-        return checkLatestRelease()
-               .map(release -> filterNewerRelease(release, currentVersion));
+        return checkLatestRelease().map(release -> filterNewerRelease(release, currentVersion));
     }
 
     private Option<ReleaseInfo> filterNewerRelease(ReleaseInfo release, String currentVersion) {

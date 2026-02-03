@@ -129,14 +129,17 @@ public interface RequestContext {
         private final JsonCodec jsonCodec;
         private final String requestId;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders = io.netty.handler.codec.http.DefaultHttpHeadersFactory.headersFactory()
-                                                                            .withCombiningHeaders(true)
-                                                                            .newHeaders();
+                                                                                 .withCombiningHeaders(true)
+                                                                                 .newHeaders();
 
         private java.util.function.Supplier<List<String>> pathParamsSupplier = Utils.lazy(() -> pathParamsSupplier = Utils.value(initPathParams()));
         private java.util.function.Supplier<Map<String, List<String>>> queryParamsSupplier = Utils.lazy(() -> queryParamsSupplier = Utils.value(initQueryParams()));
         private java.util.function.Supplier<Map<String, String>> headersSupplier = Utils.lazy(() -> headersSupplier = Utils.value(initRequestHeaders()));
 
-        private RequestContextImpl(io.netty.handler.codec.http.FullHttpRequest request, Route<?> route, JsonCodec jsonCodec, String requestId) {
+        private RequestContextImpl(io.netty.handler.codec.http.FullHttpRequest request,
+                                   Route<?> route,
+                                   JsonCodec jsonCodec,
+                                   String requestId) {
             this.request = request;
             this.route = route;
             this.jsonCodec = jsonCodec;

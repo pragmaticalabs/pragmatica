@@ -40,7 +40,10 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
             var weightedViolations = calculateWeightedViolations(violations);
             var score = calculateCategoryScore(weightedViolations, checkpoints);
             breakdown.put(category,
-                          ScoreResult.CategoryScore.categoryScore(score, checkpoints, violations.size(), weightedViolations));
+                          ScoreResult.CategoryScore.categoryScore(score,
+                                                                  checkpoints,
+                                                                  violations.size(),
+                                                                  weightedViolations));
         }
         var overall = calculateOverallScore(breakdown);
         return ScoreResult.scoreResult(overall, breakdown, filesAnalyzed);

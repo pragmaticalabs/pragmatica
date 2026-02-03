@@ -67,11 +67,11 @@ public interface QueryParameter<T> {
 
             @Override
             public Result<Option<Integer>> parse(List<String> values) {
-                return firstValue(values)
-                    .map(value -> Result.lift(_ -> new InvalidParameter("Invalid integer query param '" + name + "': " + value),
-                                              () -> Integer.parseInt(value)))
-                    .fold(() -> Result.success(Option.none()),
-                          result -> result.map(Option::some));
+                return firstValue(values).map(value -> Result.lift(_ -> new InvalidParameter("Invalid integer query param '" + name
+                                                                                             + "': " + value),
+                                                                   () -> Integer.parseInt(value)))
+                                 .fold(() -> Result.success(Option.none()),
+                                       result -> result.map(Option::some));
             }
         };
     }
@@ -90,11 +90,11 @@ public interface QueryParameter<T> {
 
             @Override
             public Result<Option<Long>> parse(List<String> values) {
-                return firstValue(values)
-                    .map(value -> Result.lift(_ -> new InvalidParameter("Invalid long query param '" + name + "': " + value),
-                                              () -> Long.parseLong(value)))
-                    .fold(() -> Result.success(Option.none()),
-                          result -> result.map(Option::some));
+                return firstValue(values).map(value -> Result.lift(_ -> new InvalidParameter("Invalid long query param '" + name
+                                                                                             + "': " + value),
+                                                                   () -> Long.parseLong(value)))
+                                 .fold(() -> Result.success(Option.none()),
+                                       result -> result.map(Option::some));
             }
         };
     }
@@ -114,10 +114,9 @@ public interface QueryParameter<T> {
 
             @Override
             public Result<Option<Boolean>> parse(List<String> values) {
-                return firstValue(values)
-                    .map(value -> parseBooleanValue(name, value))
-                    .fold(() -> Result.success(Option.none()),
-                          result -> result.map(Option::some));
+                return firstValue(values).map(value -> parseBooleanValue(name, value))
+                                 .fold(() -> Result.success(Option.none()),
+                                       result -> result.map(Option::some));
             }
         };
     }
@@ -147,11 +146,11 @@ public interface QueryParameter<T> {
 
             @Override
             public Result<Option<Double>> parse(List<String> values) {
-                return firstValue(values)
-                    .map(value -> Result.lift(_ -> new InvalidParameter("Invalid double query param '" + name + "': " + value),
-                                              () -> Double.parseDouble(value)))
-                    .fold(() -> Result.success(Option.none()),
-                          result -> result.map(Option::some));
+                return firstValue(values).map(value -> Result.lift(_ -> new InvalidParameter("Invalid double query param '" + name
+                                                                                             + "': " + value),
+                                                                   () -> Double.parseDouble(value)))
+                                 .fold(() -> Result.success(Option.none()),
+                                       result -> result.map(Option::some));
             }
         };
     }
@@ -170,11 +169,11 @@ public interface QueryParameter<T> {
 
             @Override
             public Result<Option<BigDecimal>> parse(List<String> values) {
-                return firstValue(values)
-                    .map(value -> Result.lift(_ -> new InvalidParameter("Invalid decimal query param '" + name + "': " + value),
-                                              () -> new BigDecimal(value)))
-                    .fold(() -> Result.success(Option.none()),
-                          result -> result.map(Option::some));
+                return firstValue(values).map(value -> Result.lift(_ -> new InvalidParameter("Invalid decimal query param '" + name
+                                                                                             + "': " + value),
+                                                                   () -> new BigDecimal(value)))
+                                 .fold(() -> Result.success(Option.none()),
+                                       result -> result.map(Option::some));
             }
         };
     }
@@ -194,11 +193,11 @@ public interface QueryParameter<T> {
 
             @Override
             public Result<Option<LocalDate>> parse(List<String> values) {
-                return firstValue(values)
-                    .map(value -> Result.lift(_ -> new InvalidParameter("Invalid local date query param '" + name + "': " + value),
-                                              () -> LocalDate.parse(value)))
-                    .fold(() -> Result.success(Option.none()),
-                          result -> result.map(Option::some));
+                return firstValue(values).map(value -> Result.lift(_ -> new InvalidParameter("Invalid local date query param '" + name
+                                                                                             + "': " + value),
+                                                                   () -> LocalDate.parse(value)))
+                                 .fold(() -> Result.success(Option.none()),
+                                       result -> result.map(Option::some));
             }
         };
     }
@@ -218,12 +217,11 @@ public interface QueryParameter<T> {
 
             @Override
             public Result<Option<LocalDateTime>> parse(List<String> values) {
-                return firstValue(values)
-                    .map(value -> Result.lift(_ -> new InvalidParameter("Invalid local date-time query param '" + name
-                                                                        + "': " + value),
-                                              () -> LocalDateTime.parse(value)))
-                    .fold(() -> Result.success(Option.none()),
-                          result -> result.map(Option::some));
+                return firstValue(values).map(value -> Result.lift(_ -> new InvalidParameter("Invalid local date-time query param '" + name
+                                                                                             + "': " + value),
+                                                                   () -> LocalDateTime.parse(value)))
+                                 .fold(() -> Result.success(Option.none()),
+                                       result -> result.map(Option::some));
             }
         };
     }

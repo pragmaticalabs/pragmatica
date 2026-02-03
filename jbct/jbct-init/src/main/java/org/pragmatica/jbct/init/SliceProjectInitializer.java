@@ -147,8 +147,7 @@ public final class SliceProjectInitializer {
     }
 
     private Result<List<Path>> combineWithDependencyManifest(List<List<Path>> fileLists) {
-        return createDependencyManifest()
-                   .map(manifest -> combineFileLists(fileLists, manifest));
+        return createDependencyManifest().map(manifest -> combineFileLists(fileLists, manifest));
     }
 
     private List<Path> combineFileLists(List<List<Path>> fileLists, Path manifest) {

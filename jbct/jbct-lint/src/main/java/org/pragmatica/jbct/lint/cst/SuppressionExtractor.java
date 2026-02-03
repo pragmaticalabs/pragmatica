@@ -68,11 +68,11 @@ public final class SuppressionExtractor {
             }
             // Find the scope (declaration that this annotation applies to)
             findAnnotatedDeclaration(root, annotation)
-                .onPresent(scopeNode -> {
-                               var startLine = startLine(scopeNode);
-                               var endLine = endLine(scopeNode);
-                               suppressions.add(Suppression.suppression(ruleIds, startLine, endLine));
-                           });
+            .onPresent(scopeNode -> {
+                           var startLine = startLine(scopeNode);
+                           var endLine = endLine(scopeNode);
+                           suppressions.add(Suppression.suppression(ruleIds, startLine, endLine));
+                       });
         }
         return suppressions;
     }

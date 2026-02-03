@@ -50,9 +50,10 @@ public class ResultSerializer extends ValueSerializer<Result<?>> {
             case Result.Success<?> success -> {
                 gen.writeBooleanProperty("success", true);
                 gen.writeName("value");
-                valueSerializer
-                    .onPresent(ser -> ser.serialize(success.value(), gen, provider))
-                    .onEmpty(() -> gen.writePOJO(success.value()));
+                valueSerializer.onPresent(ser -> ser.serialize(success.value(),
+                                                               gen,
+                                                               provider))
+                               .onEmpty(() -> gen.writePOJO(success.value()));
             }
             case Result.Failure<?> failure -> {
                 gen.writeBooleanProperty("success", false);

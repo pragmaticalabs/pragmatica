@@ -94,8 +94,7 @@ class DnsChannelInitializer extends ChannelInitializer<DatagramChannel> {
 }
 
 record Request(DomainName domainName, Promise<DomainAddress> promise, int requestId) {
-    private static final ResolverError.RequestIdExhausted REQUEST_ID_EXHAUSTED =
-        new ResolverError.RequestIdExhausted("Unable to generate request id (too many requests in progress)");
+    private static final ResolverError.RequestIdExhausted REQUEST_ID_EXHAUSTED = new ResolverError.RequestIdExhausted("Unable to generate request id (too many requests in progress)");
 
     static ResolverError.RequestIdExhausted exhausted() {
         return REQUEST_ID_EXHAUSTED;
@@ -185,17 +184,16 @@ record DnsClientImpl(Bootstrap bootstrap,
     }
 
     private void fireRequest(Promise<DomainAddress> promise, DomainName domainName, InetSocketAddress serverAddress) {
-        computeRequest(promise, domainName)
-            .onPresent(request -> {
-                           bootstrap().bind(0)
-                                      .syncUninterruptibly()
-                                      .channel()
-                                      .writeAndFlush(buildQuery(serverAddress, request));
-                           // Setup guard timeout
-                           promise.async(QUERY_TIMEOUT,
-                                         pending -> pending.fail(new RequestTimeout("No response from server in 10 seconds")));
-                       })
-            .onEmpty(() -> promise.fail(Request.exhausted()));
+        computeRequest(promise, domainName).onPresent(request -> {
+                                                          bootstrap().bind(0)
+                                                                   .syncUninterruptibly()
+                                                                   .channel()
+                                                                   .writeAndFlush(buildQuery(serverAddress, request));
+                                                          // Setup guard timeout
+        promise.async(QUERY_TIMEOUT,
+                      pending -> pending.fail(new RequestTimeout("No response from server in 10 seconds")));
+                                                      })
+                      .onEmpty(() -> promise.fail(Request.exhausted()));
     }
 
     private DatagramDnsQuery buildQuery(InetSocketAddress serverAddress, Request request) {

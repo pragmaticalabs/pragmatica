@@ -68,7 +68,7 @@ final class DefaultRetryAspectFactory implements RetryAspectFactory {
 
         @SuppressWarnings("unchecked")
         private Object invokeWithRetry(Method method, Object[] args) {
-            var retry = Retry.create()
+            var retry = Retry.retry()
                              .attempts(config.maxAttempts())
                              .strategy(config.backoffStrategy());
             return retry.execute(() -> {

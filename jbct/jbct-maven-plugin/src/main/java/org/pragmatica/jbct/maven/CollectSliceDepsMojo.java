@@ -102,10 +102,8 @@ public class CollectSliceDepsMojo extends AbstractMojo {
                 var baseArtifact = props.getProperty("base.artifact");
                 String groupId;
                 if (baseArtifact != null && baseArtifact.contains(":")) {
-                    var parts = baseArtifact.split(":", -1);
-                    if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank()
-                        || parts[0].contains(" ") || parts[1].contains(" ")
-                        || parts[0].contains("/") || parts[1].contains("/")) {
+                    var parts = baseArtifact.split(":", - 1);
+                    if (parts.length != 2 || parts[0].isBlank() || parts[1].isBlank() || parts[0].contains(" ") || parts[1].contains(" ") || parts[0].contains("/") || parts[1].contains("/")) {
                         getLog().warn("Invalid base.artifact format in " + jarFile.getName() + " (" + entryName
                                       + "): expected 'groupId:artifactId', got '" + baseArtifact + "'");
                         continue;

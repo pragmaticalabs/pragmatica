@@ -51,8 +51,7 @@ public final class SliceProjectValidator {
         if (!Files.exists(pomFile)) {
             return PartialResult.error("pom.xml not found in project directory");
         }
-        return readFile(pomFile)
-               .fold(cause -> pomReadError(cause), this::checkPomContent);
+        return readFile(pomFile).fold(cause -> pomReadError(cause), this::checkPomContent);
     }
 
     private static PartialResult pomReadError(Cause cause) {
@@ -88,12 +87,12 @@ public final class SliceProjectValidator {
             }
             var errors = new ArrayList<String>();
             for (var manifestFile : manifestFiles) {
-                loadProperties(manifestFile)
-                    .onFailure(cause -> errors.add("Failed to read " + manifestFile.getFileName() + ": " + cause.message()))
-                    .onSuccess(props -> {
-                                   checkRequired(props, "slice.interface", errors);
-                                   checkRequired(props, "slice.artifactId", errors);
-                               });
+                loadProperties(manifestFile).onFailure(cause -> errors.add("Failed to read " + manifestFile.getFileName()
+                                                                           + ": " + cause.message()))
+                              .onSuccess(props -> {
+                                             checkRequired(props, "slice.interface", errors);
+                                             checkRequired(props, "slice.artifactId", errors);
+                                         });
             }
             return PartialResult.partialResult(errors, List.of());
         } catch (Exception e) {
@@ -116,8 +115,7 @@ public final class SliceProjectValidator {
         if (!Files.exists(manifestFile)) {
             return PartialResult.warning("MANIFEST.MF not found - will be created during packaging");
         }
-        return loadManifest(manifestFile)
-               .fold(cause -> manifestReadError(cause), this::checkManifestAttributes);
+        return loadManifest(manifestFile).fold(cause -> manifestReadError(cause), this::checkManifestAttributes);
     }
 
     private static PartialResult manifestReadError(Cause cause) {

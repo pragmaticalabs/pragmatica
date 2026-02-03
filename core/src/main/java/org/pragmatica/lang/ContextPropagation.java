@@ -55,8 +55,8 @@ public interface ContextPropagation {
      * Falls back to NoOp if no implementation is found.
      */
     ContextPropagation INSTANCE = ServiceLoader.load(ContextPropagation.class)
-                                                .findFirst()
-                                                .orElseGet(NoOp::new);
+                                              .findFirst()
+                                              .orElseGet(NoOp::new);
 
     /**
      * Capture the current context for propagation.

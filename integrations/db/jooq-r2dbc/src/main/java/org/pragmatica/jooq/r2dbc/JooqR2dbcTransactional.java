@@ -20,7 +20,7 @@ package org.pragmatica.jooq.r2dbc;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.r2dbc.R2dbcError;
 import org.pragmatica.r2dbc.ReactiveOperations;
 
@@ -76,21 +76,21 @@ public interface JooqR2dbcTransactional {
                                                                   .onResult(_ -> closeConnection(conn)));
     }
 
-    private static Promise<Void> beginTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
-        return ReactiveOperations.fromPublisher(conn.beginTransaction(), errorMapper);
+    private static Promise<Unit> beginTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
+        return ReactiveOperations.fromVoidPublisher(conn.beginTransaction(), errorMapper);
     }
 
-    private static Promise<Void> commitTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
-        return ReactiveOperations.fromPublisher(conn.commitTransaction(), errorMapper);
+    private static Promise<Unit> commitTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
+        return ReactiveOperations.fromVoidPublisher(conn.commitTransaction(), errorMapper);
     }
 
     private static void rollbackTransaction(Connection conn) {
-        ReactiveOperations.fromPublisher(conn.rollbackTransaction())
+        ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction())
                           .await();
     }
 
     private static void closeConnection(Connection conn) {
-        ReactiveOperations.fromPublisher(conn.close())
+        ReactiveOperations.fromVoidPublisher(conn.close())
                           .await();
     }
 }

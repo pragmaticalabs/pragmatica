@@ -55,7 +55,7 @@ public final class CstNodes {
      */
     public static List<CstNode> findAll(CstNode root, Predicate<CstNode> predicate) {
         return stream(root).filter(predicate)
-                           .toList();
+                     .toList();
     }
 
     /**
@@ -85,8 +85,7 @@ public final class CstNodes {
      * Find ancestor matching a rule type.
      */
     public static Option<CstNode> findAncestor(CstNode root, CstNode target, Class<? extends RuleId> ruleClass) {
-        return findAncestorPath(root, target)
-                   .flatMap(path -> findAncestorInPath(path, ruleClass));
+        return findAncestorPath(root, target).flatMap(path -> findAncestorInPath(path, ruleClass));
     }
 
     private static Option<CstNode> findAncestorInPath(List<CstNode> path, Class<? extends RuleId> ruleClass) {

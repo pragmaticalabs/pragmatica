@@ -513,7 +513,8 @@ public class FactoryClassGenerator {
         out.println("    public static Promise<Slice> " + methodName + "Slice(Aspect<" + sliceName + "> aspect,");
         out.println("                                              SliceInvokerFacade invoker) {");
         // Generate local adapter record
-        out.println("        record " + sliceRecordName + "(" + sliceName + " delegate) implements Slice, " + sliceName + " {");
+        out.println("        record " + sliceRecordName + "(" + sliceName + " delegate) implements Slice, " + sliceName
+                    + " {");
         out.println("            @Override");
         out.println("            public List<SliceMethod<?, ?>> methods() {");
         out.println("                return List.of(");
@@ -540,7 +541,8 @@ public class FactoryClassGenerator {
         for (var method : methods) {
             out.println();
             out.println("            @Override");
-            out.println("            public " + method.returnType() + " " + method.name() + "(" + method.parameterType() + " " + method.parameterName() + ") {");
+            out.println("            public " + method.returnType() + " " + method.name() + "(" + method.parameterType()
+                        + " " + method.parameterName() + ") {");
             out.println("                return delegate." + method.name() + "(" + method.parameterName() + ");");
             out.println("            }");
         }

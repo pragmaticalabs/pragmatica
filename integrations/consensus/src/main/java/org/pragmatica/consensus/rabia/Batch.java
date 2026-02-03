@@ -79,11 +79,11 @@ public record Batch<C extends Command>(BatchId id,
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
-        if (!(o instanceof Batch<?> batch)) return false;
+        if (! (o instanceof Batch<?> batch)) return false;
         return id.equals(batch.id);
     }
 
     public boolean isNotEmpty() {
-        return !commands.isEmpty();
+        return ! commands.isEmpty();
     }
 }

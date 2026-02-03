@@ -102,7 +102,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 ///     });
 ///
 /// // Client side: safe to retry
-/// var retry = Retry.create().attempts(3).strategy(BackoffStrategy.exponential()...);
+/// var retry = Retry.retry().attempts(3).strategy(BackoffStrategy.exponential()...);
 ///
 /// retry.execute(() -> paymentService.processPayment(requestId, request));
 /// }</pre>

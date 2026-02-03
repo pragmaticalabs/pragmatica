@@ -242,20 +242,18 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private ArtifactInfo toSliceArtifactInfo(Artifact artifact) {
         // Read slice artifact from manifest (has correct naming: groupId:artifactId-sliceName)
-        return readFirstSliceManifest(artifact)
-                   .flatMap(props -> {
-                                var sliceArtifactId = props.getProperty("slice.artifactId");
-                                var baseArtifact = props.getProperty("base.artifact");
-                                if (sliceArtifactId != null && baseArtifact != null && baseArtifact.contains(":")) {
-                                    var groupId = baseArtifact.split(":")[0];
-                                    return java.util.Optional.of(new ArtifactInfo(groupId,
-                                                                                  sliceArtifactId,
-                                                                                  toSemverRange(artifact.getVersion())));
-                                }
-                                return java.util.Optional.<ArtifactInfo>empty();
-                            })
-                   // Fallback to Maven artifact
-                   .orElseGet(() -> toArtifactInfo(artifact));
+        return readFirstSliceManifest(artifact).flatMap(props -> {
+                                                            var sliceArtifactId = props.getProperty("slice.artifactId");
+                                                            var baseArtifact = props.getProperty("base.artifact");
+                                                            if (sliceArtifactId != null && baseArtifact != null && baseArtifact.contains(":")) {
+                                                                var groupId = baseArtifact.split(":") [0];
+                                                                return java.util.Optional.of(new ArtifactInfo(groupId,
+                                                                                                              sliceArtifactId,
+                                                                                                              toSemverRange(artifact.getVersion())));
+                                                            }
+                                                            return java.util.Optional.<ArtifactInfo>empty();
+                                                        })
+                                     .orElseGet(() -> toArtifactInfo(artifact));
     }
 
     private String toSemverRange(String version) {
@@ -449,21 +447,22 @@ public class PackageSlicesMojo extends AbstractMojo {
     private void addServiceFile(JarArchiver archiver, SliceManifest manifest)
     throws MojoExecutionException {
         var serviceFile = new File(classesDirectory,
-            "META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory");
+                                   "META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory");
         if (!serviceFile.exists()) {
             return;
         }
-        try {
+        try{
             var routesClass = manifest.slicePackage() + "." + manifest.sliceName() + "Routes";
             var lines = Files.readAllLines(serviceFile.toPath());
             var filteredLines = lines.stream()
-                                     .filter(line -> line.trim().equals(routesClass))
+                                     .filter(line -> line.trim()
+                                                         .equals(routesClass))
                                      .toList();
             if (!filteredLines.isEmpty()) {
                 var tempService = Files.createTempFile("service-", ".txt");
                 Files.writeString(tempService, String.join("\n", filteredLines));
                 archiver.addFile(tempService.toFile(),
-                    "META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory");
+                                 "META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory");
                 getLog().debug("Added service file entry for: " + routesClass);
             }
         } catch (IOException e) {

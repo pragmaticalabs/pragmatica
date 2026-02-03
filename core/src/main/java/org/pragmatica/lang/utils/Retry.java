@@ -50,7 +50,7 @@ public interface Retry {
     <T> Promise<T> execute(Supplier<Promise<T>> operation);
 
     /// Create Retry with specified maximal number of attempts and delay calculation strategy.
-    static RetryStageMaxAttempts create() {
+    static RetryStageMaxAttempts retry() {
         record retry(int maxAttempts, BackoffStrategy backoffStrategy) implements Retry {
             @Override
             public <T> Promise<T> execute(Supplier<Promise<T>> operation) {
@@ -87,6 +87,11 @@ public interface Retry {
             private static final Logger log = LoggerFactory.getLogger(Retry.class);
         }
         return maxAttempts -> backoffStrategy -> new retry(maxAttempts, backoffStrategy);
+    }
+
+    @Deprecated(forRemoval = true)
+    static RetryStageMaxAttempts create() {
+        return retry();
     }
 
     interface RetryStageMaxAttempts {

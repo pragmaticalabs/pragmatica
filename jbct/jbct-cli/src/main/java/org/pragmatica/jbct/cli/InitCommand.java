@@ -83,11 +83,12 @@ public class InitCommand implements Callable<Integer> {
         }
         // Determine project directory
         projectDir = org.pragmatica.lang.Option.option(projectDir)
-                                               .map(Path::toAbsolutePath)
-                                               .or(() -> Path.of(System.getProperty("user.dir")));
+                        .map(Path::toAbsolutePath)
+                        .or(() -> Path.of(System.getProperty("user.dir")));
         // Determine artifact ID from directory name if not specified
         artifactId = org.pragmatica.lang.Option.option(artifactId)
-                                               .or(() -> projectDir.getFileName().toString());
+                        .or(() -> projectDir.getFileName()
+                                            .toString());
         var projectCreated = false;
         var aiToolsInstalled = false;
         // Create project structure unless --ai-only
@@ -174,24 +175,25 @@ public class InitCommand implements Callable<Integer> {
     }
 
     private boolean hasVersionOverrides() {
-        return org.pragmatica.lang.Option.option(pragmaticaVersion).isPresent()
-               || org.pragmatica.lang.Option.option(aetherVersion).isPresent()
-               || org.pragmatica.lang.Option.option(jbctVersion).isPresent();
+        return org.pragmatica.lang.Option.option(pragmaticaVersion)
+                  .isPresent() || org.pragmatica.lang.Option.option(aetherVersion)
+                                     .isPresent() || org.pragmatica.lang.Option.option(jbctVersion)
+                                                        .isPresent();
     }
 
     private String effectivePragmaticaVersion() {
         return org.pragmatica.lang.Option.option(pragmaticaVersion)
-                                         .or(GitHubVersionResolver::defaultPragmaticaVersion);
+                  .or(GitHubVersionResolver::defaultPragmaticaVersion);
     }
 
     private String effectiveAetherVersion() {
         return org.pragmatica.lang.Option.option(aetherVersion)
-                                         .or(GitHubVersionResolver::defaultAetherVersion);
+                  .or(GitHubVersionResolver::defaultAetherVersion);
     }
 
     private String effectiveJbctVersion() {
         return org.pragmatica.lang.Option.option(jbctVersion)
-                                         .or(GitHubVersionResolver::defaultJbctVersion);
+                  .or(GitHubVersionResolver::defaultJbctVersion);
     }
 
     private boolean initSliceProject() {
@@ -225,12 +227,12 @@ public class InitCommand implements Callable<Integer> {
 
     private static boolean isValidPackageName(String packageName) {
         return org.pragmatica.lang.Option.option(packageName)
-                                         .filter(s -> !s.isBlank())
-                                         .filter(s -> !s.startsWith(".") && !s.endsWith("."))
-                                         .filter(s -> !s.contains(".."))
-                                         .map(s -> s.split("\\."))
-                                         .filter(InitCommand::allValidIdentifiers)
-                                         .isPresent();
+                  .filter(s -> !s.isBlank())
+                  .filter(s -> !s.startsWith(".") && !s.endsWith("."))
+                  .filter(s -> !s.contains(".."))
+                  .map(s -> s.split("\\."))
+                  .filter(InitCommand::allValidIdentifiers)
+                  .isPresent();
     }
 
     private static boolean allValidIdentifiers(String[] segments) {
@@ -244,11 +246,11 @@ public class InitCommand implements Callable<Integer> {
 
     private static boolean isValidJavaIdentifier(String identifier) {
         return org.pragmatica.lang.Option.option(identifier)
-                                         .filter(s -> !s.isEmpty())
-                                         .filter(s -> Character.isJavaIdentifierStart(s.charAt(0)))
-                                         .filter(InitCommand::allCharsValidIdentifierParts)
-                                         .filter(s -> !isJavaKeyword(s))
-                                         .isPresent();
+                  .filter(s -> !s.isEmpty())
+                  .filter(s -> Character.isJavaIdentifierStart(s.charAt(0)))
+                  .filter(InitCommand::allCharsValidIdentifierParts)
+                  .filter(s -> !isJavaKeyword(s))
+                  .isPresent();
     }
 
     private static boolean allCharsValidIdentifierParts(String identifier) {

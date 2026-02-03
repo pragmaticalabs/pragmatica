@@ -171,7 +171,8 @@ public final class GitHubVersionResolver {
         var matcher = TAG_PATTERN.matcher(body);
         return matcher.find()
                ? Result.success(matcher.group(1))
-               : Causes.cause("Could not parse version from GitHub response").result();
+               : Causes.cause("Could not parse version from GitHub response")
+                       .result();
     }
 
     private Properties loadCache() {

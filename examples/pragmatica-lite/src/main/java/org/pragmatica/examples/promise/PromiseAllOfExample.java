@@ -24,6 +24,6 @@ public class PromiseAllOfExample {
     }
 
     private static Promise<String> performAnotherOperation() {
-        return null;
+        return Promise.success("Alternative result");
     }
 }

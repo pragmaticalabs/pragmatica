@@ -119,7 +119,8 @@ public sealed interface JdbcError extends Cause {
             case SQLTransactionRollbackException e -> new TransactionRollback(e.getMessage());
             case SQLException e -> Option.option(e.getSQLState())
                                          .filter(s -> s.startsWith("08"))
-                                         .map(_ -> (JdbcError) connectionFailed(e.getMessage(), e))
+                                         .map(_ -> (JdbcError) connectionFailed(e.getMessage(),
+                                                                                e))
                                          .or(() -> databaseFailure(e));
             default -> databaseFailure(throwable);
         };
@@ -138,8 +139,10 @@ public sealed interface JdbcError extends Cause {
             case SQLTransactionRollbackException e -> new TransactionRollback(e.getMessage());
             case SQLException e -> Option.option(e.getSQLState())
                                          .filter(s -> s.startsWith("08"))
-                                         .map(_ -> (JdbcError) connectionFailed(e.getMessage(), e))
-                                         .or(() -> new QueryFailed(sql, e.getMessage()));
+                                         .map(_ -> (JdbcError) connectionFailed(e.getMessage(),
+                                                                                e))
+                                         .or(() -> new QueryFailed(sql,
+                                                                   e.getMessage()));
             default -> databaseFailure(throwable);
         };
     }
