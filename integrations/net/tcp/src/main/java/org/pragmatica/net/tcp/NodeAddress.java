@@ -17,10 +17,12 @@
 package org.pragmatica.net.tcp;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 
 /// Network node address (host and port).
@@ -39,14 +41,14 @@ public record NodeAddress(String host, int port) {
     }
 
     public static Result<NodeAddress> nodeAddress(InetSocketAddress socketAddress) {
-        if (socketAddress == null) {
-            return BLANK_HOST.result();
-        }
-        // Prefer getHostAddress() for consistent IP representation; fall back to getHostString() for unresolved
-        var address = socketAddress.getAddress();
-        var host = address != null
-                   ? address.getHostAddress()
-                   : socketAddress.getHostString();
-        return nodeAddress(host, socketAddress.getPort());
+        return Option.option(socketAddress)
+                     .toResult(BLANK_HOST)
+                     .flatMap(sa -> {
+                                  // Prefer getHostAddress() for consistent IP representation; fall back to getHostString() for unresolved
+                                  var host = Option.option(sa.getAddress())
+                                                   .map(InetAddress::getHostAddress)
+                                                   .or(sa::getHostString);
+                                  return nodeAddress(host, sa.getPort());
+                              });
     }
 }
