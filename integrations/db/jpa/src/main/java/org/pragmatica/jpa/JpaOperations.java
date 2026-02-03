@@ -142,6 +142,6 @@ public interface JpaOperations {
     ///
     /// @return JpaOperations wrapper
     static JpaOperations jpaOperations(EntityManager em) {
-        return new JpaOperationsImpl(em);
+        return new EntityManagerJpaOperations(em);
     }
 }

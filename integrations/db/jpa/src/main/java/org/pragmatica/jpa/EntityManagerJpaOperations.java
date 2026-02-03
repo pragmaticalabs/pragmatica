@@ -29,7 +29,7 @@ import jakarta.persistence.Query;
 import jakarta.persistence.TypedQuery;
 
 /// Implementation of JpaOperations wrapping EntityManager operations.
-record JpaOperationsImpl(EntityManager em) implements JpaOperations {
+record EntityManagerJpaOperations(EntityManager em) implements JpaOperations {
     @Override
     public <T> Promise<T> querySingle(Fn1<JpaError, Throwable> errorMapper, TypedQuery<T> query) {
         return Promise.lift(errorMapper, query::getSingleResult);
