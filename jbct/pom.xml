@@ -42,7 +42,11 @@
     </developers>
 
     <modules>
+        <module>jbct-parser</module>
         <module>jbct-core</module>
+        <module>jbct-format</module>
+        <module>jbct-lint</module>
+        <module>jbct-init</module>
         <module>jbct-cli</module>
         <module>jbct-maven-plugin</module>
         <module>slice-processor</module>
@@ -80,7 +84,27 @@
             <!-- Internal modules -->
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-parser</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
                 <artifactId>jbct-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-format</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-lint</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>jbct-init</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

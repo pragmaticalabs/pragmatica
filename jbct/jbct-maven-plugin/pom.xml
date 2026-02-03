@@ -23,6 +23,18 @@
             <artifactId>jbct-core</artifactId>
         </dependency>
 
+        <!-- Formatter module -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-format</artifactId>
+        </dependency>
+
+        <!-- Linter module -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-lint</artifactId>
+        </dependency>
+
         <!-- Maven Plugin API -->
         <dependency>
             <groupId>org.apache.maven</groupId>
