@@ -21,6 +21,7 @@ import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.aether.forge.api.SimulatorRoutes.InventoryState;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
@@ -176,10 +177,9 @@ public final class ChaosRoutes {
 
     private static ActiveChaosEventInfo toEventInfo(ActiveChaosEvent event) {
         ChaosEvent chaosEvent = event.event();
-        String durationStr = chaosEvent.duration() != null
-                             ? chaosEvent.duration()
-                                         .toSeconds() + "s"
-                             : "indefinite";
+        String durationStr = chaosEvent.duration()
+                                       .map(d -> d.toSeconds() + "s")
+                                       .or("indefinite");
         return new ActiveChaosEventInfo(event.eventId(),
                                         chaosEvent.type(),
                                         chaosEvent.description(),
@@ -221,41 +221,42 @@ public final class ChaosRoutes {
     }
 
     private static Result<ChaosEvent> parseChaosEvent(InjectRequest request, Duration duration) {
+        var optDuration = Option.option(duration);
         String type = request.type() != null
                       ? request.type()
                                .toUpperCase()
                       : "";
         return switch (type) {
             case "NODE_KILL" -> ChaosEvent.NodeKill.kill(request.nodeId(),
-                                                         duration)
+                                                         optDuration)
                                           .map(e -> e);
             case "LATENCY_SPIKE" -> ChaosEvent.LatencySpike.addLatency(request.nodeId(),
                                                                        request.latencyMs() != null
                                                                        ? request.latencyMs()
                                                                        : 500,
-                                                                       duration)
+                                                                       optDuration)
                                               .map(e -> e);
             case "SLICE_CRASH" -> ChaosEvent.SliceCrash.crashSlice(request.artifact(),
-                                                                   request.nodeId(),
-                                                                   duration)
+                                                                   Option.option(request.nodeId()),
+                                                                   optDuration)
                                             .map(e -> e);
-            case "INVOCATION_FAILURE" -> ChaosEvent.InvocationFailure.forSlice(request.artifact(),
+            case "INVOCATION_FAILURE" -> ChaosEvent.InvocationFailure.forSlice(Option.option(request.artifact()),
                                                                                request.failureRate() != null
                                                                                ? request.failureRate()
                                                                                : 0.5,
-                                                                               duration)
+                                                                               optDuration)
                                                    .map(e -> e);
             case "CPU_SPIKE" -> ChaosEvent.CpuSpike.onNode(request.nodeId(),
                                                            request.level() != null
                                                            ? request.level()
                                                            : 0.8,
-                                                           duration)
+                                                           optDuration)
                                           .map(e -> e);
             case "MEMORY_PRESSURE" -> ChaosEvent.MemoryPressure.onNode(request.nodeId(),
                                                                        request.level() != null
                                                                        ? request.level()
                                                                        : 0.9,
-                                                                       duration)
+                                                                       optDuration)
                                                 .map(e -> e);
             default -> UNKNOWN_CHAOS_TYPE.apply(type)
                                          .result();

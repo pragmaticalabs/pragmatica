@@ -67,7 +67,7 @@ public enum SimulatorMode {
             return Result.success(BackendSimulation.NoOp.INSTANCE);
         }
         return BackendSimulation.LatencySimulation.withSpikes(10, 5, 0.01, 100)
-                                .map(sim -> sim);
+                                .map(sim -> (BackendSimulation) sim);
     }
     /**
      * Create a SimulatorConfig for this mode based on a template config.

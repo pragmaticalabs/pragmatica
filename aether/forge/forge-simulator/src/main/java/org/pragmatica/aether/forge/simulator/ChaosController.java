@@ -92,15 +92,14 @@ public final class ChaosController {
             return ChaosError.ExecutionFailed.INSTANCE.promise();
         }
         // Schedule removal after duration, track the future for cancellation
-        if (event.duration() != null && !event.duration()
-                                              .isZero() && !event.duration()
-                                                                 .isNegative()) {
-            var future = scheduler.schedule(() -> stopChaos(eventId),
-                                            event.duration()
-                                                 .toMillis(),
-                                            TimeUnit.MILLISECONDS);
-            scheduledTasks.put(eventId, future);
-        }
+        event.duration()
+             .filter(d -> !d.isZero() && !d.isNegative())
+             .onPresent(d -> {
+                 var future = scheduler.schedule(() -> stopChaos(eventId),
+                                                 d.toMillis(),
+                                                 TimeUnit.MILLISECONDS);
+                 scheduledTasks.put(eventId, future);
+             });
         return Promise.success(eventId);
     }
 
@@ -188,15 +187,15 @@ public final class ChaosController {
                                    ChaosEvent event,
                                    Instant startedAt) {
         public String toJson() {
+            var durationStr = event.duration()
+                                   .map(d -> d.toSeconds() + "s")
+                                   .or("indefinite");
             return String.format("{\"eventId\":\"%s\",\"type\":\"%s\",\"description\":\"%s\",\"startedAt\":\"%s\",\"duration\":\"%s\"}",
                                  eventId,
                                  event.type(),
                                  event.description(),
                                  startedAt,
-                                 event.duration() != null
-                                 ? event.duration()
-                                        .toSeconds() + "s"
-                                 : "indefinite");
+                                 durationStr);
         }
     }
 
