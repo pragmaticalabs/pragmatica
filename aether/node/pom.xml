@@ -95,6 +95,28 @@
             <version>${project.version}</version>
         </dependency>
 
+        <!-- Split node modules -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-invoke</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-metrics</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-deployment</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-control</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
         <!-- Observability -->
         <dependency>
             <groupId>org.pragmatica-lite</groupId>
