@@ -6,6 +6,8 @@ import org.pragmatica.jbct.lint.cst.CstLintRule;
 import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.parser.Java25Parser.RuleId;
 
+import org.pragmatica.lang.Option;
+
 import java.util.Set;
 import java.util.stream.Stream;
 
@@ -122,15 +124,13 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
             return Stream.empty();
         }
         // Extract the verb from method name
-        var verb = extractVerb(methodName);
-        if (verb != null && ZONE_2_VERBS.contains(verb.toLowerCase())) {
-            var suggestedVerb = suggestZone3Verb(verb.toLowerCase());
-            return Stream.of(createDiagnostic(method, methodName, verb, suggestedVerb, ctx));
-        }
-        return Stream.empty();
+        return extractVerb(methodName)
+            .filter(verb -> ZONE_2_VERBS.contains(verb.toLowerCase()))
+            .map(verb -> createDiagnostic(method, methodName, verb, suggestZone3Verb(verb.toLowerCase()), ctx))
+            .stream();
     }
 
-    private String extractVerb(String methodName) {
+    private Option<String> extractVerb(String methodName) {
         // Find the first word (verb) in camelCase name
         var sb = new StringBuilder();
         for (var c : methodName.toCharArray()) {
@@ -140,8 +140,8 @@ public class CstZoneThreeVerbsRule implements CstLintRule {
             sb.append(c);
         }
         return sb.isEmpty()
-               ? null
-               : sb.toString();
+               ? Option.none()
+               : Option.some(sb.toString());
     }
 
     private String suggestZone3Verb(String zone2Verb) {

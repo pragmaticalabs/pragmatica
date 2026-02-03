@@ -116,12 +116,15 @@ public class CstZoneMixingRule implements CstLintRule {
     }
 
     private Option<String> extractVerb(String methodName) {
-        if (methodName == null || methodName.isEmpty()) {
-            return Option.none();
-        }
+        return Option.option(methodName)
+                     .filter(name -> !name.isEmpty())
+                     .flatMap(this::extractFirstWord);
+    }
+
+    private Option<String> extractFirstWord(String name) {
         // Extract first word from camelCase
         var sb = new StringBuilder();
-        for (var c : methodName.toCharArray()) {
+        for (var c : name.toCharArray()) {
             if (Character.isUpperCase(c) && !sb.isEmpty()) {
                 break;
             }
