@@ -102,12 +102,11 @@ public interface NodeDeploymentManager {
             private static final Fn1<Cause, SliceNodeKey> UNLOAD_FAILED = Causes.forOneValue("Failed to unload slice {}");
 
             private Option<SliceStore.LoadedSlice> findLoadedSlice(Artifact artifact) {
-                return Option.option(sliceStore.loaded()
-                                               .stream()
-                                               .filter(ls -> ls.artifact()
-                                                               .equals(artifact))
-                                               .findFirst()
-                                               .orElse(null));
+                return Option.from(sliceStore.loaded()
+                                             .stream()
+                                             .filter(ls -> ls.artifact()
+                                                             .equals(artifact))
+                                             .findFirst());
             }
 
             public void whenOurKeyMatches(AetherKey key, Consumer<SliceNodeKey> action) {
@@ -290,20 +289,16 @@ public interface NodeDeploymentManager {
                           artifact,
                           httpRoutePublisher.isPresent(),
                           sliceInvokerFacade.isPresent());
-                if (httpRoutePublisher.isEmpty()) {
-                    log.warn("Cannot publish HTTP routes for {}: httpRoutePublisher is not configured", artifact);
-                    return Promise.unitPromise();
-                }
-                if (sliceInvokerFacade.isEmpty()) {
-                    log.warn("Cannot publish HTTP routes for {}: sliceInvokerFacade is not configured", artifact);
-                    return Promise.unitPromise();
-                }
-                var loadedSlice = findLoadedSlice(artifact);
-                if (loadedSlice.isEmpty()) {
-                    log.warn("Cannot publish HTTP routes for {}: slice not found in SliceStore", artifact);
-                    return Promise.unitPromise();
-                }
-                var ls = loadedSlice.unwrap();
+                return httpRoutePublisher.flatMap(publisher -> sliceInvokerFacade.flatMap(
+                                                 facade -> findLoadedSlice(artifact).map(
+                                                     ls -> doPublishHttpRoutes(artifact, publisher, facade, ls))))
+                                         .or(Promise.unitPromise());
+            }
+
+            private Promise<Unit> doPublishHttpRoutes(Artifact artifact,
+                                                      HttpRoutePublisher publisher,
+                                                      SliceInvokerFacade facade,
+                                                      SliceStore.LoadedSlice ls) {
                 var classLoader = ls.slice()
                                     .getClass()
                                     .getClassLoader();
@@ -311,14 +306,10 @@ public interface NodeDeploymentManager {
                           artifact,
                           classLoader.getClass()
                                      .getName());
-                return httpRoutePublisher.unwrap()
-                                         .publishRoutes(artifact,
-                                                        classLoader,
-                                                        ls.slice(),
-                                                        sliceInvokerFacade.unwrap())
-                                         .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}",
-                                                                      artifact,
-                                                                      cause.message()));
+                return publisher.publishRoutes(artifact, classLoader, ls.slice(), facade)
+                                .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}",
+                                                             artifact,
+                                                             cause.message()));
             }
 
             private Promise<Unit> registerSliceForInvocation(SliceNodeKey sliceKey) {
