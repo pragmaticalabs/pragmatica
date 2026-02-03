@@ -29,7 +29,7 @@ public record NodeConfig(String heap,
                               DEFAULT_METRICS_INTERVAL,
                               DEFAULT_RECONCILIATION,
                               env == Environment.KUBERNETES
-                              ? ResourcesConfig.defaults()
+                              ? ResourcesConfig.defaultConfig()
                               : null);
     }
 

@@ -555,7 +555,8 @@ class AppHttpServerImpl implements AppHttpServer {
         var pending = new PendingForward(promise, System.currentTimeMillis(), requestId, targetNode, onFailure);
         pendingForwards.put(correlationId, pending);
         // Add to secondary index for fast lookup on node departure
-        pendingForwardsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet())
+        pendingForwardsByNode.computeIfAbsent(targetNode,
+                                              _ -> ConcurrentHashMap.newKeySet())
                              .add(correlationId);
         // Set up timeout
         promise.timeout(timeSpan(config.forwardTimeoutMs()).millis())

@@ -218,8 +218,14 @@ public final class ForgeCluster {
             nodes.put(nodeIdStr, node);
             // Wrap start() to capture success/failure with node context
             startPromises.add(node.start()
-                                  .map(_ -> new NodeStartResult(nodeIdStr, port, mgmtPort, Option.none()))
-                                  .recover(cause -> new NodeStartResult(nodeIdStr, port, mgmtPort, Option.some(cause))));
+                                  .map(_ -> new NodeStartResult(nodeIdStr,
+                                                                port,
+                                                                mgmtPort,
+                                                                Option.none()))
+                                  .recover(cause -> new NodeStartResult(nodeIdStr,
+                                                                        port,
+                                                                        mgmtPort,
+                                                                        Option.some(cause))));
         }
         return Promise.allOf(startPromises)
                       .flatMap(this::handleStartResults);
@@ -250,11 +256,12 @@ public final class ForgeCluster {
         }
         // Log all failures with details
         for (var f : failed) {
-            f.failure().onPresent(cause -> log.error("Node {} failed to start on port {} (mgmt: {}): {}",
-                                                     f.nodeId(),
-                                                     f.port(),
-                                                     f.mgmtPort(),
-                                                     cause.message()));
+            f.failure()
+             .onPresent(cause -> log.error("Node {} failed to start on port {} (mgmt: {}): {}",
+                                           f.nodeId(),
+                                           f.port(),
+                                           f.mgmtPort(),
+                                           cause.message()));
         }
         log.error("Cluster startup failed: {} of {} nodes failed to start", failed.size(), initialClusterSize);
         // Stop successfully started nodes
@@ -270,7 +277,7 @@ public final class ForgeCluster {
                       .onSuccess(this::clearClusterStateOnFailure)
                       .flatMap(_ -> failed.getFirst()
                                           .failure()
-                                          .<Promise<Unit>>map(Cause::promise)
+                                          .<Promise<Unit>> map(Cause::promise)
                                           .or(Promise.success(Unit.unit())));
     }
 
@@ -534,7 +541,7 @@ public final class ForgeCluster {
                                           DHTConfig.FULL,
                                           Option.empty(),
                                           org.pragmatica.aether.config.TTMConfig.disabled(),
-                                          RollbackConfig.defaults(),
+                                          RollbackConfig.defaultConfig(),
                                           AppHttpConfig.enabledOnPort(appHttpPort),
                                           ControllerConfig.forgeDefaults());
         return AetherNode.aetherNode(config)

@@ -32,7 +32,7 @@ class ServerConfigTest {
         assertThat(config.port()).isEqualTo(8080);
         assertThat(config.tls().isEmpty()).isTrue();
         assertThat(config.clientTls().isEmpty()).isTrue();
-        assertThat(config.socketOptions()).isEqualTo(SocketOptions.defaults());
+        assertThat(config.socketOptions()).isEqualTo(SocketOptions.defaultConfig());
     }
 
     @Test

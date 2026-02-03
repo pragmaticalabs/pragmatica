@@ -12,7 +12,7 @@ public record KubernetesConfig(String namespace,
     public static final String DEFAULT_NAMESPACE = "aether";
     public static final String DEFAULT_SERVICE_TYPE = "ClusterIP";
 
-    public static KubernetesConfig defaults() {
+    public static KubernetesConfig defaultConfig() {
         return new KubernetesConfig(DEFAULT_NAMESPACE, DEFAULT_SERVICE_TYPE, "");
     }
 

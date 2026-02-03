@@ -86,16 +86,19 @@ public record StartupConfig(Option<Path> forgeConfig,
     }
 
     private static Result<Option<Path>> validatePath(Option<String> pathStr, String name) {
-        return pathStr.map(s -> validateSinglePath(Path.of(s), name))
+        return pathStr.map(s -> validateSinglePath(Path.of(s),
+                                                   name))
                       .or(Result.success(Option.none()));
     }
 
     private static Result<Option<Path>> validateSinglePath(Path path, String name) {
         if (!Files.exists(path)) {
-            return StartupError.fileNotFound(name, path).result();
+            return StartupError.fileNotFound(name, path)
+                               .result();
         }
         if (!Files.isReadable(path)) {
-            return StartupError.fileNotReadable(name, path).result();
+            return StartupError.fileNotReadable(name, path)
+                               .result();
         }
         return Result.success(Option.some(path));
     }

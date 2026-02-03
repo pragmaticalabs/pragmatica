@@ -37,7 +37,7 @@ public record AppHttpConfig(boolean enabled,
         }
     }
 
-    public static AppHttpConfig defaults() {
+    public static AppHttpConfig defaultConfig() {
         return new AppHttpConfig(false,
                                  DEFAULT_APP_HTTP_PORT,
                                  Set.of(),

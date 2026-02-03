@@ -130,7 +130,7 @@ public interface ControlLoop {
                            cluster,
                            TimeSpan.timeSpan(5)
                                    .seconds(),
-                           ControllerConfig.defaults());
+                           ControllerConfig.defaultConfig());
     }
 
     /**
@@ -141,7 +141,7 @@ public interface ControlLoop {
                                    MetricsCollector metricsCollector,
                                    ClusterNode<KVCommand<AetherKey>> cluster,
                                    TimeSpan interval) {
-        return controlLoop(self, controller, metricsCollector, cluster, interval, ControllerConfig.defaults());
+        return controlLoop(self, controller, metricsCollector, cluster, interval, ControllerConfig.defaultConfig());
     }
 
     /**
@@ -159,7 +159,7 @@ public interface ControlLoop {
                            cluster,
                            TimeSpan.timeSpan(5)
                                    .seconds(),
-                           ControllerConfig.defaults());
+                           ControllerConfig.defaultConfig());
     }
 
     static ControlLoop controlLoop(NodeId self,

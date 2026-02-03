@@ -344,10 +344,10 @@ public interface RollbackManager {
                                                                                                   artifactBase,
                                                                                                   currentVersion))
                                                                .or(() -> {
-                                                                   log.debug("First deployment of {}, no previous version to track",
-                                                                             artifactBase);
-                                                                   return RollbackState.initial(ab, currentVersion);
-                                                               }));
+                                                                       log.debug("First deployment of {}, no previous version to track",
+                                                                                 artifactBase);
+                                                                       return RollbackState.initial(ab, currentVersion);
+                                                                   }));
             }
 
             private RollbackState computeVersionChange(RollbackState state,
@@ -476,25 +476,19 @@ public interface RollbackManager {
      */
     enum Disabled implements RollbackManager {
         INSTANCE;
-
         private static final Logger log = LoggerFactory.getLogger(RollbackManager.class);
-
         @Override
         public void onLeaderChange(LeaderChange leaderChange) {}
-
         @Override
         public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
-
         @Override
         public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
             log.debug("Rollback disabled, ignoring AllInstancesFailed for {}", event.artifact());
         }
-
         @Override
         public Option<RollbackStats> getStats(ArtifactBase artifactBase) {
             return Option.none();
         }
-
         @Override
         public void resetRollbackCount(ArtifactBase artifactBase) {}
     }

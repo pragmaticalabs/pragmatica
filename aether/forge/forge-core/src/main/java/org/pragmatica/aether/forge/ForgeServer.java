@@ -85,7 +85,7 @@ public final class ForgeServer {
                                        .map(ForgeConfig::load)
                                        .map(r -> r.onFailure(c -> log.error("Failed to load forge config: {}",
                                                                             c.message()))
-                                                  .or(ForgeConfig.defaults()))
+                                                  .or(ForgeConfig.defaultConfig()))
                                        .or(createDefaultForgeConfig(startupConfig));
         printBanner(forgeConfig, startupConfig);
         var server = new ForgeServer(startupConfig, forgeConfig);
@@ -107,7 +107,7 @@ public final class ForgeServer {
         return ForgeConfig.forgeConfig(startupConfig.clusterSize(),
                                        ForgeConfig.DEFAULT_MANAGEMENT_PORT,
                                        startupConfig.port())
-                          .or(ForgeConfig.defaults());
+                          .or(ForgeConfig.defaultConfig());
     }
 
     private static void printBanner(ForgeConfig forgeConfig, StartupConfig startupConfig) {

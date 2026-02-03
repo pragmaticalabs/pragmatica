@@ -11,7 +11,7 @@ public record ResourcesConfig(String cpuRequest,
                               String cpuLimit,
                               String memoryRequest,
                               String memoryLimit) {
-    public static ResourcesConfig defaults() {
+    public static ResourcesConfig defaultConfig() {
         return new ResourcesConfig("500m", "2", "1Gi", "2Gi");
     }
 

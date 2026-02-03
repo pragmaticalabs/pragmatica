@@ -123,7 +123,6 @@ public sealed interface RollingUpdateError extends Cause {
      */
     enum NotLeader implements RollingUpdateError {
         INSTANCE;
-
         @Override
         public String message() {
             return "Rolling update operations can only be performed by the leader node";

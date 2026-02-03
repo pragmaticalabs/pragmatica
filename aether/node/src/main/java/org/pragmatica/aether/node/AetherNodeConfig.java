@@ -115,9 +115,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     artifactRepoConfig,
                                     Option.empty(),
                                     TTMConfig.disabled(),
-                                    RollbackConfig.defaults(),
+                                    RollbackConfig.defaultConfig(),
                                     AppHttpConfig.disabled(),
-                                    ControllerConfig.defaults());
+                                    ControllerConfig.defaultConfig());
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -135,9 +135,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     DHTConfig.FULL,
                                     Option.empty(),
                                     TTMConfig.disabled(),
-                                    RollbackConfig.defaults(),
+                                    RollbackConfig.defaultConfig(),
                                     AppHttpConfig.disabled(),
-                                    ControllerConfig.defaults());
+                                    ControllerConfig.defaultConfig());
     }
 
     /**
@@ -158,7 +158,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     DHTConfig.FULL,
                                     Option.empty(),
                                     TTMConfig.disabled(),
-                                    RollbackConfig.defaults(),
+                                    RollbackConfig.defaultConfig(),
                                     AppHttpConfig.disabled(),
                                     ControllerConfig.forgeDefaults());
     }

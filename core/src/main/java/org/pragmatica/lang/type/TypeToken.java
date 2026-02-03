@@ -31,7 +31,7 @@ public abstract class TypeToken<T> implements Comparable<TypeToken<T>> {
         token = parameterizedType.getActualTypeArguments() [0];
     }
 
-    public static <T> TypeToken<T> of(Class<T> clazz) {
+    public static <T> TypeToken<T> typeToken(Class<T> clazz) {
         return new TypeToken<>(clazz) {};
     }
 

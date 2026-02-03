@@ -234,7 +234,7 @@ public interface Route<T> extends RouteSource {
         <B> BodyBuilder<R, B> withBody(TypeToken<B> type);
 
         default <B> BodyBuilder<R, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
 
         // Query parameters only (1-5)
@@ -296,7 +296,7 @@ public interface Route<T> extends RouteSource {
         <B> PathBodyBuilder1<R, P1, B> withBody(TypeToken<B> type);
 
         default <B> PathBodyBuilder1<R, P1, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
 
         <Q1> PathQueryBuilder1_1<R, P1, Q1> withQuery(QueryParameter<Q1> q1);
@@ -327,7 +327,7 @@ public interface Route<T> extends RouteSource {
         <B> PathBodyBuilder2<R, P1, P2, B> withBody(TypeToken<B> type);
 
         default <B> PathBodyBuilder2<R, P1, P2, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
 
         <Q1> PathQueryBuilder2_1<R, P1, P2, Q1> withQuery(QueryParameter<Q1> q1);
@@ -353,7 +353,7 @@ public interface Route<T> extends RouteSource {
         <B> PathBodyBuilder3<R, P1, P2, P3, B> withBody(TypeToken<B> type);
 
         default <B> PathBodyBuilder3<R, P1, P2, P3, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
 
         <Q1> PathQueryBuilder3_1<R, P1, P2, P3, Q1> withQuery(QueryParameter<Q1> q1);
@@ -375,7 +375,7 @@ public interface Route<T> extends RouteSource {
         <B> PathBodyBuilder4<R, P1, P2, P3, P4, B> withBody(TypeToken<B> type);
 
         default <B> PathBodyBuilder4<R, P1, P2, P3, P4, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
 
         <Q1> PathQueryBuilder4_1<R, P1, P2, P3, P4, Q1> withQuery(QueryParameter<Q1> q1);
@@ -425,7 +425,7 @@ public interface Route<T> extends RouteSource {
         <B> QueryBodyBuilder1<R, Q1, B> withBody(TypeToken<B> type);
 
         default <B> QueryBodyBuilder1<R, Q1, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
     }
 
@@ -443,7 +443,7 @@ public interface Route<T> extends RouteSource {
         <B> QueryBodyBuilder2<R, Q1, Q2, B> withBody(TypeToken<B> type);
 
         default <B> QueryBodyBuilder2<R, Q1, Q2, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
     }
 
@@ -461,7 +461,7 @@ public interface Route<T> extends RouteSource {
         <B> QueryBodyBuilder3<R, Q1, Q2, Q3, B> withBody(TypeToken<B> type);
 
         default <B> QueryBodyBuilder3<R, Q1, Q2, Q3, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
     }
 
@@ -479,7 +479,7 @@ public interface Route<T> extends RouteSource {
         <B> QueryBodyBuilder4<R, Q1, Q2, Q3, Q4, B> withBody(TypeToken<B> type);
 
         default <B> QueryBodyBuilder4<R, Q1, Q2, Q3, Q4, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
     }
 
@@ -615,7 +615,7 @@ public interface Route<T> extends RouteSource {
         <B> PathQueryBodyBuilder1_1<R, P1, Q1, B> withBody(TypeToken<B> type);
 
         default <B> PathQueryBodyBuilder1_1<R, P1, Q1, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
     }
 
@@ -633,7 +633,7 @@ public interface Route<T> extends RouteSource {
         <B> PathQueryBodyBuilder1_2<R, P1, Q1, Q2, B> withBody(TypeToken<B> type);
 
         default <B> PathQueryBodyBuilder1_2<R, P1, Q1, Q2, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
     }
 
@@ -676,7 +676,7 @@ public interface Route<T> extends RouteSource {
         <B> PathQueryBodyBuilder2_1<R, P1, P2, Q1, B> withBody(TypeToken<B> type);
 
         default <B> PathQueryBodyBuilder2_1<R, P1, P2, Q1, B> withBody(Class<B> type) {
-            return withBody(TypeToken.of(type));
+            return withBody(TypeToken.typeToken(type));
         }
     }
 

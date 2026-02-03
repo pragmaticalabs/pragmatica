@@ -277,7 +277,6 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     timeoutMs,
                                     rollingUpdateManager);
     }
-
 }
 
 class SliceInvokerImpl implements SliceInvoker {
@@ -449,7 +448,8 @@ class SliceInvokerImpl implements SliceInvoker {
         var targetNode = endpoint.nodeId();
         var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), requestId, targetNode);
         pendingInvocations.put(correlationId, pending);
-        pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet())
+        pendingInvocationsByNode.computeIfAbsent(targetNode,
+                                                 _ -> ConcurrentHashMap.newKeySet())
                                 .add(correlationId);
         pendingPromise.timeout(timeSpan(timeoutMs).millis())
                       .onResult(_ -> removePendingInvocation(correlationId, targetNode));
@@ -558,7 +558,8 @@ class SliceInvokerImpl implements SliceInvoker {
         var pendingPromise = Promise.<Object>promise();
         var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), ctx.requestId, targetNode);
         pendingInvocations.put(correlationId, pending);
-        pendingInvocationsByNode.computeIfAbsent(targetNode, _ -> ConcurrentHashMap.newKeySet())
+        pendingInvocationsByNode.computeIfAbsent(targetNode,
+                                                 _ -> ConcurrentHashMap.newKeySet())
                                 .add(correlationId);
         pendingPromise.timeout(timeSpan(timeoutMs).millis())
                       .onResult(_ -> removePendingInvocation(correlationId, targetNode));
@@ -574,10 +575,7 @@ class SliceInvokerImpl implements SliceInvoker {
                       ctx.attemptCount() + 1);
         }
         pendingPromise.onSuccess(result -> promise.succeed((R) result))
-                      .onFailure(cause -> handleFailoverFailure(promise,
-                                                                ctx,
-                                                                targetNode,
-                                                                cause));
+                      .onFailure(cause -> handleFailoverFailure(promise, ctx, targetNode, cause));
     }
 
     private <R> void handleFailoverFailure(Promise<R> promise, FailoverContext<R> ctx, NodeId failedNode, Cause cause) {
@@ -618,7 +616,9 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                             ctx.lastError,
                                                                             ctx.attemptedNodes);
         publishFailureEvent(event);
-        promise.fail(new SliceInvokerError.AllInstancesFailedError(ctx.slice, ctx.method, ctx.attemptedNodes.size() + " nodes attempted"));
+        promise.fail(new SliceInvokerError.AllInstancesFailedError(ctx.slice,
+                                                                   ctx.method,
+                                                                   ctx.attemptedNodes.size() + " nodes attempted"));
     }
 
     private <R> void handleMaxRetriesExceeded(Promise<R> promise, FailoverContext<R> ctx) {
@@ -691,7 +691,8 @@ class SliceInvokerImpl implements SliceInvoker {
                                       response.requestId(),
                                       response.correlationId()))
               .onPresent(pending -> {
-                             removeFromNodeIndex(response.correlationId(), pending.targetNode());
+                             removeFromNodeIndex(response.correlationId(),
+                                                 pending.targetNode());
                              handlePendingResponse(pending, response);
                          });
     }

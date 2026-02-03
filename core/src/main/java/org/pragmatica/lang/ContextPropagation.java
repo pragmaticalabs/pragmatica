@@ -70,8 +70,14 @@ public interface ContextPropagation {
      *
      * @param snapshot the captured context (from capture())
      * @param action   the action to run with restored context
+     * @return Unit for composition
      */
-    void runWith(Object snapshot, Runnable action);
+    Unit runWith(Object snapshot, Runnable action);
+
+    /**
+     * Sentinel object representing empty context (no-op).
+     */
+    Object EMPTY_CONTEXT = new Object();
 
     /**
      * No-op implementation when no context propagation is configured.
@@ -80,12 +86,13 @@ public interface ContextPropagation {
     class NoOp implements ContextPropagation {
         @Override
         public Object capture() {
-            return null;
+            return EMPTY_CONTEXT;
         }
 
         @Override
-        public void runWith(Object snapshot, Runnable action) {
+        public Unit runWith(Object snapshot, Runnable action) {
             action.run();
+            return Unit.unit();
         }
     }
 }

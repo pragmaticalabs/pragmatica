@@ -289,9 +289,10 @@ public interface NodeDeploymentManager {
                           artifact,
                           httpRoutePublisher.isPresent(),
                           sliceInvokerFacade.isPresent());
-                return httpRoutePublisher.flatMap(publisher -> sliceInvokerFacade.flatMap(
-                                                 facade -> findLoadedSlice(artifact).map(
-                                                     ls -> doPublishHttpRoutes(artifact, publisher, facade, ls))))
+                return httpRoutePublisher.flatMap(publisher -> sliceInvokerFacade.flatMap(facade -> findLoadedSlice(artifact).map(ls -> doPublishHttpRoutes(artifact,
+                                                                                                                                                            publisher,
+                                                                                                                                                            facade,
+                                                                                                                                                            ls))))
                                          .or(Promise.unitPromise());
             }
 
@@ -306,7 +307,10 @@ public interface NodeDeploymentManager {
                           artifact,
                           classLoader.getClass()
                                      .getName());
-                return publisher.publishRoutes(artifact, classLoader, ls.slice(), facade)
+                return publisher.publishRoutes(artifact,
+                                               classLoader,
+                                               ls.slice(),
+                                               facade)
                                 .onFailure(cause -> log.warn("Failed to publish HTTP routes for {}: {}",
                                                              artifact,
                                                              cause.message()));

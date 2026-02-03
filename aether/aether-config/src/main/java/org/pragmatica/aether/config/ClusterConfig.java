@@ -15,7 +15,7 @@ public record ClusterConfig(Environment environment,
      * Create cluster config with environment defaults.
      */
     public static ClusterConfig forEnvironment(Environment env) {
-        return new ClusterConfig(env, env.defaultNodes(), env.defaultTls(), PortsConfig.defaults());
+        return new ClusterConfig(env, env.defaultNodes(), env.defaultTls(), PortsConfig.defaultConfig());
     }
 
     /**

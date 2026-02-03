@@ -47,8 +47,8 @@ class AetherConfigTest {
     }
 
     @Test
-    void defaults_createsDockerConfig() {
-        var config = AetherConfig.defaults();
+    void defaultConfig_createsDockerConfig() {
+        var config = AetherConfig.defaultConfig();
 
         assertThat(config.environment()).isEqualTo(Environment.DOCKER);
     }

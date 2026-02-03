@@ -688,18 +688,19 @@ public class AetherCli implements Runnable {
                 System.out.println("─".repeat(60));
                 // Extract blueprints from JSON (simple parsing)
                 var blueprintsStart = json.indexOf("\"blueprints\":");
-                if (blueprintsStart == -1) {
+                if (blueprintsStart == - 1) {
                     System.out.println("No blueprints found");
                     return;
                 }
                 var arrayStart = json.indexOf('[', blueprintsStart);
                 var arrayEnd = json.lastIndexOf(']');
-                if (arrayStart == -1 || arrayEnd == -1 || arrayEnd <= arrayStart) {
+                if (arrayStart == - 1 || arrayEnd == - 1 || arrayEnd <= arrayStart) {
                     System.out.println("No blueprints found");
                     return;
                 }
                 var blueprintsArray = json.substring(arrayStart + 1, arrayEnd);
-                if (blueprintsArray.trim().isEmpty()) {
+                if (blueprintsArray.trim()
+                                   .isEmpty()) {
                     System.out.println("No blueprints found");
                     return;
                 }
@@ -765,10 +766,10 @@ public class AetherCli implements Runnable {
                 System.out.println("─".repeat(80));
                 // Parse slices array
                 var slicesStart = json.indexOf("\"slices\":");
-                if (slicesStart != -1) {
+                if (slicesStart != - 1) {
                     var arrayStart = json.indexOf('[', slicesStart);
                     var arrayEnd = findMatchingBracket(json, arrayStart);
-                    if (arrayStart != -1 && arrayEnd != -1) {
+                    if (arrayStart != - 1 && arrayEnd != - 1) {
                         var slicesArray = json.substring(arrayStart + 1, arrayEnd);
                         parseAndPrintSlices(slicesArray);
                     }
@@ -797,7 +798,9 @@ public class AetherCli implements Runnable {
                 var artifact = extractJsonString(json, "artifact");
                 var instances = extractJsonNumber(json, "instances");
                 var isDep = json.contains("\"isDependency\":true");
-                var type = isDep ? "dependency" : "primary";
+                var type = isDep
+                           ? "dependency"
+                           : "primary";
                 System.out.printf("%-50s %10s %12s%n", artifact, instances, type);
             }
         }
@@ -819,7 +822,8 @@ public class AetherCli implements Runnable {
                     System.out.print("Are you sure you want to delete blueprint '" + blueprintId + "'? (y/N) ");
                     try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
                         var line = reader.readLine();
-                        if (line == null || !line.trim().equalsIgnoreCase("y")) {
+                        if (line == null || !line.trim()
+                                                 .equalsIgnoreCase("y")) {
                             System.out.println("Cancelled.");
                             return 0;
                         }
@@ -878,10 +882,10 @@ public class AetherCli implements Runnable {
                 System.out.println("─".repeat(90));
                 // Parse slices array
                 var slicesStart = json.indexOf("\"slices\":");
-                if (slicesStart != -1) {
+                if (slicesStart != - 1) {
                     var arrayStart = json.indexOf('[', slicesStart);
                     var arrayEnd = findMatchingBracket(json, arrayStart);
-                    if (arrayStart != -1 && arrayEnd != -1) {
+                    if (arrayStart != - 1 && arrayEnd != - 1) {
                         var slicesArray = json.substring(arrayStart + 1, arrayEnd);
                         parseAndPrintStatusSlices(slicesArray);
                     }
@@ -959,14 +963,14 @@ public class AetherCli implements Runnable {
                 var result = new java.util.ArrayList<String>();
                 var keyPattern = "\"" + key + "\":";
                 var start = json.indexOf(keyPattern);
-                if (start == -1) return result;
+                if (start == - 1) return result;
                 var arrayStart = json.indexOf('[', start);
                 var arrayEnd = findMatchingBracket(json, arrayStart);
-                if (arrayStart == -1 || arrayEnd == -1) return result;
+                if (arrayStart == - 1 || arrayEnd == - 1) return result;
                 var arrayContent = json.substring(arrayStart + 1, arrayEnd);
                 // Parse string elements
                 var inString = false;
-                var stringStart = -1;
+                var stringStart = - 1;
                 for (int i = 0; i < arrayContent.length(); i++) {
                     var c = arrayContent.charAt(i);
                     if (c == '"' && (i == 0 || arrayContent.charAt(i - 1) != '\\')) {
@@ -987,17 +991,17 @@ public class AetherCli implements Runnable {
         private static String extractJsonString(String json, String key) {
             var pattern = "\"" + key + "\":\"";
             var start = json.indexOf(pattern);
-            if (start == -1) return "";
+            if (start == - 1) return "";
             start += pattern.length();
             var end = json.indexOf("\"", start);
-            if (end == -1) return "";
+            if (end == - 1) return "";
             return json.substring(start, end);
         }
 
         private static String extractJsonNumber(String json, String key) {
             var pattern = "\"" + key + "\":";
             var start = json.indexOf(pattern);
-            if (start == -1) return "0";
+            if (start == - 1) return "0";
             start += pattern.length();
             var end = start;
             while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-')) {
@@ -1008,9 +1012,11 @@ public class AetherCli implements Runnable {
         }
 
         private static int findMatchingBracket(String json, int openIndex) {
-            if (openIndex == -1 || openIndex >= json.length()) return -1;
+            if (openIndex == - 1 || openIndex >= json.length()) return - 1;
             var openChar = json.charAt(openIndex);
-            var closeChar = openChar == '[' ? ']' : '}';
+            var closeChar = openChar == '['
+                            ? ']'
+                            : '}';
             var depth = 1;
             var inString = false;
             for (int i = openIndex + 1; i < json.length(); i++) {
@@ -1018,14 +1024,13 @@ public class AetherCli implements Runnable {
                 if (c == '"' && (i == 0 || json.charAt(i - 1) != '\\')) {
                     inString = !inString;
                 } else if (!inString) {
-                    if (c == openChar) depth++;
-                    else if (c == closeChar) {
+                    if (c == openChar) depth++;else if (c == closeChar) {
                         depth--;
                         if (depth == 0) return i;
                     }
                 }
             }
-            return -1;
+            return - 1;
         }
     }
 

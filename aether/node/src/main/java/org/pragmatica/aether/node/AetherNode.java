@@ -434,22 +434,27 @@ public interface AetherNode {
                 var clusterPort = config.topology()
                                         .coreNodes()
                                         .stream()
-                                        .filter(n -> n.id().equals(self()))
+                                        .filter(n -> n.id()
+                                                      .equals(self()))
                                         .findFirst()
-                                        .map(n -> n.address().port())
+                                        .map(n -> n.address()
+                                                   .port())
                                         .orElse(0);
                 var mgmtPort = config.managementPort();
-                var appHttpPort = config.appHttp().enabled() ? config.appHttp().port() : 0;
-                var peerCount = config.topology().coreNodes().size();
+                var appHttpPort = config.appHttp()
+                                        .enabled()
+                                  ? config.appHttp()
+                                          .port()
+                                  : 0;
+                var peerCount = config.topology()
+                                      .coreNodes()
+                                      .size();
                 var ttmEnabled = ttmManager.isEnabled();
-                var tlsEnabled = config.tls().isPresent();
-
-                log.info("{}",
-                         "+-----------------------------------------------------------------+");
-                log.info("{}",
-                         "|                     AETHER NODE v" + VERSION + "                       |");
-                log.info("{}",
-                         "+-----------------------------------------------------------------+");
+                var tlsEnabled = config.tls()
+                                       .isPresent();
+                log.info("{}", "+-----------------------------------------------------------------+");
+                log.info("{}", "|                     AETHER NODE v" + VERSION + "                       |");
+                log.info("{}", "+-----------------------------------------------------------------+");
                 log.info("|  Node ID:        {}", pad(nodeId, 46) + "|");
                 log.info("|  Cluster Port:   {}", pad(String.valueOf(clusterPort), 46) + "|");
                 if (mgmtPort > 0) {
@@ -463,10 +468,13 @@ public interface AetherNode {
                     log.info("|  App HTTP:       {}", pad("disabled", 46) + "|");
                 }
                 log.info("|  Peers:          {}", pad(peerCount + " configured", 46) + "|");
-                log.info("|  TTM:            {}", pad(ttmEnabled ? "enabled" : "disabled", 46) + "|");
-                log.info("|  TLS:            {}", pad(tlsEnabled ? "enabled" : "disabled", 46) + "|");
-                log.info("{}",
-                         "+-----------------------------------------------------------------+");
+                log.info("|  TTM:            {}", pad(ttmEnabled
+                                                      ? "enabled"
+                                                      : "disabled", 46) + "|");
+                log.info("|  TLS:            {}", pad(tlsEnabled
+                                                      ? "enabled"
+                                                      : "disabled", 46) + "|");
+                log.info("{}", "+-----------------------------------------------------------------+");
             }
 
             private static String pad(String value, int width) {
@@ -890,10 +898,8 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
                                               deploymentMetricsScheduler::onTopologyChange));
         // AppHttpServer topology change notifications (for immediate retry on node departure)
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                              appHttpServer::onNodeRemoved));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
-                                              appHttpServer::onNodeDown));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class, appHttpServer::onNodeRemoved));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, appHttpServer::onNodeDown));
         // Invocation messages
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));

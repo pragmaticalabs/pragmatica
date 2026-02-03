@@ -94,7 +94,7 @@ public sealed interface LoadRoutes {
 
     private static Route<RampLoadResponse> rampRoute(LoadGenerator loadGenerator) {
         return Route.<RampLoadResponse> post("/ramp")
-                    .withBody(TypeToken.of(RampRequest.class))
+                    .withBody(TypeToken.typeToken(RampRequest.class))
                     .toJson(req -> ramp(loadGenerator, req));
     }
 
@@ -126,7 +126,8 @@ public sealed interface LoadRoutes {
                                    .requestsPerSecond() + "/s",
                                   t.duration()
                                    .map(Object::toString)
-                                   .fold(() -> null, s -> s));
+                                   .fold(() -> null,
+                                         s -> s));
     }
 
     private static Promise<LoadConfigUploadResponse> uploadConfig(ConfigurableLoadRunner runner, String toml) {

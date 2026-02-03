@@ -9,8 +9,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 class TTMConfigTest {
 
     @Test
-    void defaults_providesValidConfig() {
-        var config = TTMConfig.defaults();
+    void defaultConfig_providesValidConfig() {
+        var config = TTMConfig.defaultConfig();
 
         assertThat(config.enabled()).isFalse(); // Disabled by default - requires explicit opt-in
         assertThat(config.inputWindowMinutes()).isEqualTo(60);
@@ -100,7 +100,7 @@ class TTMConfigTest {
 
     @Test
     void withModelPath_returnsNewConfigWithUpdatedPath() {
-        var original = TTMConfig.defaults();
+        var original = TTMConfig.defaultConfig();
         var updated = original.withModelPath("new/model.onnx");
 
         assertThat(updated.modelPath()).isEqualTo("new/model.onnx");
@@ -109,7 +109,7 @@ class TTMConfigTest {
 
     @Test
     void withEnabled_returnsNewConfigWithUpdatedEnabled() {
-        var original = TTMConfig.defaults();
+        var original = TTMConfig.defaultConfig();
         var updated = original.withEnabled(false);
 
         assertThat(updated.enabled()).isFalse();

@@ -24,8 +24,8 @@ import static org.junit.jupiter.api.Assertions.fail;
 class SocketOptionsTest {
 
     @Test
-    void defaults_has_standard_values() {
-        var options = SocketOptions.defaults();
+    void defaultConfig_has_standard_values() {
+        var options = SocketOptions.defaultConfig();
 
         assertThat(options.soBacklog()).isEqualTo(128);
         assertThat(options.soKeepalive()).isTrue();

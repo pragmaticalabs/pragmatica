@@ -56,9 +56,7 @@ public interface DecisionTreeController extends ClusterController {
      * Create a decision tree controller with full configuration.
      */
     static DecisionTreeController decisionTreeController(ControllerConfig config) {
-        return new ControllerState(config,
-                                   new ConcurrentHashMap<>(),
-                                   System.currentTimeMillis());
+        return new ControllerState(config, new ConcurrentHashMap<>(), System.currentTimeMillis());
     }
 
     /**

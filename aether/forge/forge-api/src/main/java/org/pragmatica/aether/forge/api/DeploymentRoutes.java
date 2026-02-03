@@ -111,7 +111,7 @@ public sealed interface DeploymentRoutes {
                                                        JdkHttpOperations http,
                                                        Consumer<EventLogEntry> eventLogger) {
         return Route.<ProxyResponse> post("/api/blueprint")
-                    .withBody(TypeToken.of(String.class))
+                    .withBody(TypeToken.typeToken(String.class))
                     .toJson(body -> proxyBlueprint(cluster, http, eventLogger, body));
     }
 

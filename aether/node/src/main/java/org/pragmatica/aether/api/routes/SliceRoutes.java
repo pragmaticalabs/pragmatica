@@ -77,8 +77,8 @@ public final class SliceRoutes implements RouteSource {
                               .to(ctx -> handleBlueprint(ctx.bodyAsString()))
                               .asJson(),
                          // Blueprint management routes
-                         Route.<BlueprintListResponse> get("/api/blueprints")
-                              .toJson(this::buildBlueprintListResponse),
+        Route.<BlueprintListResponse> get("/api/blueprints")
+             .toJson(this::buildBlueprintListResponse),
                          Route.<BlueprintDetailResponse> get("/api/blueprint/{id}")
                               .to(ctx -> ctx.pathParam(0)
                                             .async()
@@ -180,8 +180,10 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private BlueprintSummary toBlueprintSummary(ExpandedBlueprint blueprint) {
-        return new BlueprintSummary(blueprint.id().asString(),
-                                    blueprint.loadOrder().size());
+        return new BlueprintSummary(blueprint.id()
+                                             .asString(),
+                                    blueprint.loadOrder()
+                                             .size());
     }
 
     private Promise<BlueprintDetailResponse> handleGetBlueprint(String id) {
@@ -202,9 +204,11 @@ public final class SliceRoutes implements RouteSource {
         var dependencies = blueprint.loadOrder()
                                     .stream()
                                     .filter(ResolvedSlice::isDependency)
-                                    .map(s -> s.artifact().asString())
+                                    .map(s -> s.artifact()
+                                               .asString())
                                     .toList();
-        return new BlueprintDetailResponse(blueprint.id().asString(),
+        return new BlueprintDetailResponse(blueprint.id()
+                                                    .asString(),
                                            slices,
                                            dependencies);
     }
@@ -214,7 +218,8 @@ public final class SliceRoutes implements RouteSource {
                         .stream()
                         .map(Artifact::asString)
                         .toList();
-        return new BlueprintSliceInfo(slice.artifact().asString(),
+        return new BlueprintSliceInfo(slice.artifact()
+                                           .asString(),
                                       slice.instances(),
                                       slice.isDependency(),
                                       deps);
@@ -237,7 +242,8 @@ public final class SliceRoutes implements RouteSource {
                                      .map(slice -> computeSliceStatus(node, slice))
                                      .toList();
         var overallStatus = computeOverallStatus(sliceStatuses);
-        return new BlueprintStatusResponse(blueprint.id().asString(),
+        return new BlueprintStatusResponse(blueprint.id()
+                                                    .asString(),
                                            overallStatus,
                                            sliceStatuses);
     }
@@ -247,22 +253,17 @@ public final class SliceRoutes implements RouteSource {
         var targetInstances = slice.instances();
         var activeInstances = countActiveInstances(node, artifact);
         var status = determineSliceDeploymentStatus(targetInstances, activeInstances);
-        return new BlueprintSliceStatus(artifact.asString(),
-                                        targetInstances,
-                                        activeInstances,
-                                        status);
+        return new BlueprintSliceStatus(artifact.asString(), targetInstances, activeInstances, status);
     }
 
     private int countActiveInstances(AetherNode node, Artifact artifact) {
         return (int) node.kvStore()
-                         .snapshot()
-                         .entrySet()
-                         .stream()
-                         .filter(entry -> entry.getKey() instanceof SliceNodeKey key
-                                          && key.artifact().equals(artifact)
-                                          && entry.getValue() instanceof SliceNodeValue value
-                                          && value.state() == SliceState.ACTIVE)
-                         .count();
+                        .snapshot()
+                        .entrySet()
+                        .stream()
+                        .filter(entry -> entry.getKey() instanceof SliceNodeKey key && key.artifact()
+                                                                                          .equals(artifact) && entry.getValue() instanceof SliceNodeValue value && value.state() == SliceState.ACTIVE)
+                        .count();
     }
 
     private String determineSliceDeploymentStatus(int target, int active) {
@@ -278,11 +279,14 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private String computeOverallStatus(List<BlueprintSliceStatus> sliceStatuses) {
-        var hasPending = sliceStatuses.stream().anyMatch(s -> "PENDING".equals(s.status()));
-        var hasDeploying = sliceStatuses.stream().anyMatch(s -> "DEPLOYING".equals(s.status()));
-        var hasScalingDown = sliceStatuses.stream().anyMatch(s -> "SCALING_DOWN".equals(s.status()));
-        var allDeployed = sliceStatuses.stream().allMatch(s -> "DEPLOYED".equals(s.status()));
-
+        var hasPending = sliceStatuses.stream()
+                                      .anyMatch(s -> "PENDING".equals(s.status()));
+        var hasDeploying = sliceStatuses.stream()
+                                        .anyMatch(s -> "DEPLOYING".equals(s.status()));
+        var hasScalingDown = sliceStatuses.stream()
+                                          .anyMatch(s -> "SCALING_DOWN".equals(s.status()));
+        var allDeployed = sliceStatuses.stream()
+                                       .allMatch(s -> "DEPLOYED".equals(s.status()));
         if (allDeployed) {
             return "DEPLOYED";
         } else if (hasPending) {
@@ -308,15 +312,16 @@ public final class SliceRoutes implements RouteSource {
         return Promise.success(nodeSupplier.get()
                                            .blueprintService()
                                            .validate(body)
-                                           .fold(
-                                               cause -> new BlueprintValidationResponse(false,
-                                                                                        "",
-                                                                                        0,
-                                                                                        List.of(cause.message())),
-                                               blueprint -> new BlueprintValidationResponse(true,
-                                                                                            blueprint.id().asString(),
-                                                                                            blueprint.slices().size(),
-                                                                                            List.of())));
+                                           .fold(cause -> new BlueprintValidationResponse(false,
+                                                                                          "",
+                                                                                          0,
+                                                                                          List.of(cause.message())),
+                                                 blueprint -> new BlueprintValidationResponse(true,
+                                                                                              blueprint.id()
+                                                                                                       .asString(),
+                                                                                              blueprint.slices()
+                                                                                                       .size(),
+                                                                                              List.of())));
     }
 
     private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances) {

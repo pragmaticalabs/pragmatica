@@ -10,7 +10,7 @@ public record DockerConfig(String network,
     public static final String DEFAULT_NETWORK = "aether-network";
     public static final String DEFAULT_IMAGE = "ghcr.io/siy/aether-node:latest";
 
-    public static DockerConfig defaults() {
+    public static DockerConfig defaultConfig() {
         return new DockerConfig(DEFAULT_NETWORK, DEFAULT_IMAGE);
     }
 

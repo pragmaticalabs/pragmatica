@@ -55,8 +55,9 @@ public record ControllerConfig(double cpuScaleUpThreshold,
      * <p>This is a semantic factory variant (not following {@code typeName()} pattern)
      * because it represents a named configuration profile rather than generic construction.
      * See also: {@link #forgeDefaults()}, {@link #controllerConfig(double, double, double, long)}.
+     * @deprecated Use {@link #defaultConfig()} instead.
      */
-    public static ControllerConfig defaults() {
+    public static ControllerConfig defaultConfig() {
         return DEFAULT;
     }
 

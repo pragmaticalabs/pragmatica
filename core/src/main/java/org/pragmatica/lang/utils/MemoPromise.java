@@ -134,150 +134,150 @@ public interface MemoPromise<K, V> {
         }
         return Result.success(new BoundedMemoPromise<>(computation, maxSize));
     }
-}
 
-final class UnboundedMemoPromise<K, V> implements MemoPromise<K, V> {
-    private final ConcurrentHashMap<K, Promise<V>> cache = new ConcurrentHashMap<>();
-    private final Fn1<Promise<V>, K> computation;
-    private final AtomicLong hits = new AtomicLong();
-    private final AtomicLong misses = new AtomicLong();
+    final class UnboundedMemoPromise<K, V> implements MemoPromise<K, V> {
+        private final ConcurrentHashMap<K, Promise<V>> cache = new ConcurrentHashMap<>();
+        private final Fn1<Promise<V>, K> computation;
+        private final AtomicLong hits = new AtomicLong();
+        private final AtomicLong misses = new AtomicLong();
 
-    UnboundedMemoPromise(Fn1<Promise<V>, K> computation) {
-        this.computation = computation;
-    }
-
-    @Override
-    public Promise<V> get(K key) {
-        Objects.requireNonNull(key, "key must not be null");
-        var cached = cache.get(key);
-        if (cached != null) {
-            hits.incrementAndGet();
-            return cached;
+        UnboundedMemoPromise(Fn1<Promise<V>, K> computation) {
+            this.computation = computation;
         }
-        // Create promise first, then put it into the cache
-        // This avoids recursive update issues with ConcurrentHashMap
-        misses.incrementAndGet();
-        var promise = computation.apply(key);
-        var existing = cache.putIfAbsent(key, promise);
-        if (existing != null) {
-            // Another thread inserted first, use their promise
-            hits.incrementAndGet();
-            misses.decrementAndGet();
-            return existing;
-        }
-        // Attach failure handler after insertion to avoid recursive updates
-        promise.onResult(result -> result.onFailure(_ -> cache.remove(key, promise)));
-        return promise;
-    }
 
-    @Override
-    public Unit invalidate(K key) {
-        cache.remove(key);
-        return Unit.unit();
-    }
-
-    @Override
-    public Unit invalidateAll() {
-        cache.clear();
-        return Unit.unit();
-    }
-
-    @Override
-    public long hitCount() {
-        return hits.get();
-    }
-
-    @Override
-    public long missCount() {
-        return misses.get();
-    }
-
-    @Override
-    public int size() {
-        return cache.size();
-    }
-}
-
-final class BoundedMemoPromise<K, V> implements MemoPromise<K, V> {
-    private final Map<K, Promise<V>> cache;
-    private final Fn1<Promise<V>, K> computation;
-    private final AtomicLong hits = new AtomicLong();
-    private final AtomicLong misses = new AtomicLong();
-
-    BoundedMemoPromise(Fn1<Promise<V>, K> computation, int maxSize) {
-        this.computation = computation;
-        // LinkedHashMap with access-order for LRU, wrapped for thread safety
-        this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<K, Promise<V>> eldest) {
-                                                     return size() > maxSize;
-                                                 }
-        });
-    }
-
-    @Override
-    public Promise<V> get(K key) {
-        Objects.requireNonNull(key, "key must not be null");
-        Promise<V> cached;
-        synchronized (cache) {
-            cached = cache.get(key);
-        }
-        if (cached != null) {
-            hits.incrementAndGet();
-            return cached;
-        }
-        // Create promise outside synchronized block to avoid holding lock during computation
-        misses.incrementAndGet();
-        var promise = computation.apply(key);
-        Promise<V> existing;
-        synchronized (cache) {
-            existing = cache.putIfAbsent(key, promise);
-        }
-        if (existing != null) {
-            // Another thread inserted first, use their promise
-            hits.incrementAndGet();
-            misses.decrementAndGet();
-            return existing;
-        }
-        // Attach failure handler after insertion
-        promise.onResult(result -> result.onFailure(_ -> {
-            synchronized (cache) {
-                cache.remove(key, promise);
+        @Override
+        public Promise<V> get(K key) {
+            Objects.requireNonNull(key, "key must not be null");
+            var cached = cache.get(key);
+            if (cached != null) {
+                hits.incrementAndGet();
+                return cached;
             }
-        }));
-        return promise;
-    }
+            // Create promise first, then put it into the cache
+            // This avoids recursive update issues with ConcurrentHashMap
+            misses.incrementAndGet();
+            var promise = computation.apply(key);
+            var existing = cache.putIfAbsent(key, promise);
+            if (existing != null) {
+                // Another thread inserted first, use their promise
+                hits.incrementAndGet();
+                misses.decrementAndGet();
+                return existing;
+            }
+            // Attach failure handler after insertion to avoid recursive updates
+            promise.onResult(result -> result.onFailure(_ -> cache.remove(key, promise)));
+            return promise;
+        }
 
-    @Override
-    public Unit invalidate(K key) {
-        synchronized (cache) {
+        @Override
+        public Unit invalidate(K key) {
             cache.remove(key);
+            return Unit.unit();
         }
-        return Unit.unit();
-    }
 
-    @Override
-    public Unit invalidateAll() {
-        synchronized (cache) {
+        @Override
+        public Unit invalidateAll() {
             cache.clear();
+            return Unit.unit();
         }
-        return Unit.unit();
-    }
 
-    @Override
-    public long hitCount() {
-        return hits.get();
-    }
+        @Override
+        public long hitCount() {
+            return hits.get();
+        }
 
-    @Override
-    public long missCount() {
-        return misses.get();
-    }
+        @Override
+        public long missCount() {
+            return misses.get();
+        }
 
-    @Override
-    public int size() {
-        synchronized (cache) {
+        @Override
+        public int size() {
             return cache.size();
+        }
+    }
+
+    final class BoundedMemoPromise<K, V> implements MemoPromise<K, V> {
+        private final Map<K, Promise<V>> cache;
+        private final Fn1<Promise<V>, K> computation;
+        private final AtomicLong hits = new AtomicLong();
+        private final AtomicLong misses = new AtomicLong();
+
+        BoundedMemoPromise(Fn1<Promise<V>, K> computation, int maxSize) {
+            this.computation = computation;
+            // LinkedHashMap with access-order for LRU, wrapped for thread safety
+            this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<K, Promise<V>> eldest) {
+                                                         return size() > maxSize;
+                                                     }
+            });
+        }
+
+        @Override
+        public Promise<V> get(K key) {
+            Objects.requireNonNull(key, "key must not be null");
+            Promise<V> cached;
+            synchronized (cache) {
+                cached = cache.get(key);
+            }
+            if (cached != null) {
+                hits.incrementAndGet();
+                return cached;
+            }
+            // Create promise outside synchronized block to avoid holding lock during computation
+            misses.incrementAndGet();
+            var promise = computation.apply(key);
+            Promise<V> existing;
+            synchronized (cache) {
+                existing = cache.putIfAbsent(key, promise);
+            }
+            if (existing != null) {
+                // Another thread inserted first, use their promise
+                hits.incrementAndGet();
+                misses.decrementAndGet();
+                return existing;
+            }
+            // Attach failure handler after insertion
+            promise.onResult(result -> result.onFailure(_ -> {
+                synchronized (cache) {
+                    cache.remove(key, promise);
+                }
+            }));
+            return promise;
+        }
+
+        @Override
+        public Unit invalidate(K key) {
+            synchronized (cache) {
+                cache.remove(key);
+            }
+            return Unit.unit();
+        }
+
+        @Override
+        public Unit invalidateAll() {
+            synchronized (cache) {
+                cache.clear();
+            }
+            return Unit.unit();
+        }
+
+        @Override
+        public long hitCount() {
+            return hits.get();
+        }
+
+        @Override
+        public long missCount() {
+            return misses.get();
+        }
+
+        @Override
+        public int size() {
+            synchronized (cache) {
+                return cache.size();
+            }
         }
     }
 }

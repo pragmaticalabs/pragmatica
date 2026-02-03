@@ -14,7 +14,7 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Option;
 import org.pragmatica.http.routing.JsonCodec;
 import org.pragmatica.http.routing.JsonCodecAdapter;
-import org.pragmatica.http.routing.RequestContextImpl;
+import org.pragmatica.http.routing.RequestContext.RequestContextImpl;
 import org.pragmatica.http.routing.RequestRouter;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.server.RequestContext;

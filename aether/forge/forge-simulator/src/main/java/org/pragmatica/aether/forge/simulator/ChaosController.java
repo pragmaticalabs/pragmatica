@@ -95,11 +95,11 @@ public final class ChaosController {
         event.duration()
              .filter(d -> !d.isZero() && !d.isNegative())
              .onPresent(d -> {
-                 var future = scheduler.schedule(() -> stopChaos(eventId),
-                                                 d.toMillis(),
-                                                 TimeUnit.MILLISECONDS);
-                 scheduledTasks.put(eventId, future);
-             });
+                            var future = scheduler.schedule(() -> stopChaos(eventId),
+                                                            d.toMillis(),
+                                                            TimeUnit.MILLISECONDS);
+                            scheduledTasks.put(eventId, future);
+                        });
         return Promise.success(eventId);
     }
 

@@ -208,8 +208,7 @@ class InvocationHandlerImpl implements InvocationHandler {
                       request.method());
         }
         // Run within request ID scope for chain propagation
-        InvocationContext.runWithRequestId(request.requestId(),
-                                           () -> processInvokeRequest(request));
+        InvocationContext.runWithRequestId(request.requestId(), () -> processInvokeRequest(request));
     }
 
     private void processInvokeRequest(InvokeRequest request) {

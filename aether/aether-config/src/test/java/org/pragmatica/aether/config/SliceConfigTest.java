@@ -10,7 +10,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SliceConfigTest {
 
     @Test
-    void defaults_returnsLocalRepository() {
+    void defaultConfig_returnsLocalRepository() {
         var config = SliceConfig.defaultConfig();
 
         assertThat(config.repositories()).containsExactly(RepositoryType.LOCAL);

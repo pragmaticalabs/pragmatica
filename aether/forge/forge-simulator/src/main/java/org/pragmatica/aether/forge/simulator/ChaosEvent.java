@@ -55,7 +55,8 @@ public sealed interface ChaosEvent {
         }
 
         public static Result<NodeKill> killFor(String nodeId, long seconds) {
-            return kill(nodeId, Option.some(Duration.ofSeconds(seconds)));
+            return kill(nodeId,
+                        Option.some(Duration.ofSeconds(seconds)));
         }
 
         public static Result<NodeKill> killPermanent(String nodeId) {
@@ -90,7 +91,9 @@ public sealed interface ChaosEvent {
             return "Network partition between " + group1 + " and " + group2;
         }
 
-        public static Result<NetworkPartition> between(Set<String> group1, Set<String> group2, Option<Duration> duration) {
+        public static Result<NetworkPartition> between(Set<String> group1,
+                                                       Set<String> group2,
+                                                       Option<Duration> duration) {
             if (group1 == null || group1.isEmpty()) {
                 return GROUP1_EMPTY.result();
             }
@@ -223,7 +226,9 @@ public sealed interface ChaosEvent {
             return String.format("Inject %.0f%% failure rate for %s", failureRate * 100, target);
         }
 
-        public static Result<InvocationFailure> forSlice(Option<String> artifact, double rate, Option<Duration> duration) {
+        public static Result<InvocationFailure> forSlice(Option<String> artifact,
+                                                         double rate,
+                                                         Option<Duration> duration) {
             if (rate < 0 || rate > 1) {
                 return FAILURE_RATE_OUT_OF_RANGE.result();
             }
@@ -252,7 +257,10 @@ public sealed interface ChaosEvent {
             return descriptionText.or(name);
         }
 
-        public static Result<CustomChaos> custom(String name, Option<String> descriptionText, Runnable action, Option<Duration> duration) {
+        public static Result<CustomChaos> custom(String name,
+                                                 Option<String> descriptionText,
+                                                 Runnable action,
+                                                 Option<Duration> duration) {
             if (name == null || name.isBlank()) {
                 return NAME_REQUIRED.result();
             }

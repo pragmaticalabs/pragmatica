@@ -127,4 +127,69 @@ public interface JsonMapper {
         /// @return JsonMapper instance
         JsonMapper build();
     }
+
+    /// Implementation of JsonMapper interface wrapping Jackson 3.0 JsonMapper.
+    record JsonMapperImpl(tools.jackson.databind.json.JsonMapper mapper) implements JsonMapper {
+        @Override
+        public <T> Result<String> writeAsString(T value) {
+            return Result.lift(JsonError::fromException, () -> mapper.writeValueAsString(value));
+        }
+
+        @Override
+        public <T> Result<byte[]> writeAsBytes(T value) {
+            return Result.lift(JsonError::fromException, () -> mapper.writeValueAsBytes(value));
+        }
+
+        @Override
+        public <T> Result<T> readString(String json, Class<T> type) {
+            return Result.lift(JsonError::fromException, () -> mapper.readValue(json, type));
+        }
+
+        @Override
+        public <T> Result<T> readBytes(byte[] json, Class<T> type) {
+            return Result.lift(JsonError::fromException, () -> mapper.readValue(json, type));
+        }
+
+        @Override
+        public <T> Result<T> readString(String json, TypeToken<T> typeToken) {
+            return Result.lift(JsonError::fromException, () -> mapper.readValue(json, toTypeReference(typeToken)));
+        }
+
+        @Override
+        public <T> Result<T> readBytes(byte[] json, TypeToken<T> typeToken) {
+            return Result.lift(JsonError::fromException, () -> mapper.readValue(json, toTypeReference(typeToken)));
+        }
+
+        /// Converts TypeToken to Jackson TypeReference.
+        private static <T> tools.jackson.core.type.TypeReference<T> toTypeReference(TypeToken<T> typeToken) {
+            return new tools.jackson.core.type.TypeReference<>() {
+                @Override
+                public java.lang.reflect.Type getType() {
+                    return typeToken.token();
+                }
+            };
+        }
+
+        static final class BuilderImpl implements JsonMapperBuilder {
+            private final java.util.List<Consumer<Builder>> configurators = new java.util.ArrayList<>();
+
+            @Override
+            public JsonMapperBuilder withPragmaticaTypes() {
+                return configure(builder -> builder.addModule(new PragmaticaModule()));
+            }
+
+            @Override
+            public JsonMapperBuilder configure(Consumer<Builder> configurator) {
+                configurators.add(configurator);
+                return this;
+            }
+
+            @Override
+            public JsonMapper build() {
+                var builder = tools.jackson.databind.json.JsonMapper.builder();
+                configurators.forEach(c -> c.accept(builder));
+                return new JsonMapperImpl(builder.build());
+            }
+        }
+    }
 }
