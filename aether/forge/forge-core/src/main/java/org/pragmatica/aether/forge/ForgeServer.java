@@ -159,7 +159,7 @@ public final class ForgeServer {
                    System.exit(1);
                });
         // Wait for cluster to stabilize
-        Thread.sleep(2000);
+        TimeSpan.timeSpan(2).seconds().sleep();
         // Start metrics collection
         metricsScheduler = Executors.newSingleThreadScheduledExecutor();
         metricsScheduler.scheduleAtFixedRate(metrics::snapshot, 500, 500, TimeUnit.MILLISECONDS);
@@ -209,7 +209,7 @@ public final class ForgeServer {
                 log.info("Blueprint deployed successfully");
                 apiHandler.addEvent("BLUEPRINT_DEPLOYED", "Blueprint deployed from " + blueprintPath.getFileName());
                 // Wait for deployment to propagate
-                Thread.sleep(1000);
+                TimeSpan.timeSpan(1).seconds().sleep();
             } else {
                 log.error("Failed to deploy blueprint: {} - {}", response.statusCode(), response.body());
             }

@@ -89,6 +89,17 @@ public sealed interface TimeSpan extends Comparable<TimeSpan> {
         return Long.compare(nanos(), o.nanos());
     }
 
+    /// Sleep for this time span duration.
+    /// <p>
+    /// If interrupted, restores the interrupt flag and returns immediately.
+    default void sleep() {
+        try {
+            Thread.sleep(millis());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     default TimeSpan randomize(double scale) {
         var random = (long)((Math.random() - 0.5) * 2.0 * scale * nanos());
         return TimeSpan.timeSpan(random + nanos())

@@ -334,7 +334,7 @@ public interface NodeDeploymentManager {
                                                               m.returnType()))
                                       .collect(Collectors.toList());
                 var serializerFactory = serializerProvider.createFactory(typeTokens);
-                var sliceBridge = SliceBridgeImpl.sliceBridge(artifact, slice, serializerFactory);
+                var sliceBridge = SliceBridgeImpl.sliceBridgeImpl(artifact, slice, serializerFactory);
                 invocationHandler.registerSlice(artifact, sliceBridge);
                 log.debug("Registered slice {} for invocation", artifact);
                 return Unit.unit();

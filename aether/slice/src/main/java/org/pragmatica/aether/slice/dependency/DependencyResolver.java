@@ -314,7 +314,7 @@ public interface DependencyResolver {
                                               SliceInvokerFacade invokerFacade,
                                               SerializerFactory serializerFactory) {
         return resolve(artifact, repository, registry, sharedLibraryLoader, invokerFacade)
-        .map(slice -> SliceBridgeImpl.sliceBridge(artifact, slice, serializerFactory));
+        .map(slice -> SliceBridgeImpl.sliceBridgeImpl(artifact, slice, serializerFactory));
     }
 
     /**

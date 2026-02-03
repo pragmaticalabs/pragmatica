@@ -35,6 +35,9 @@ import java.util.Map;
  *   <li>Serialize response to byte[]</li>
  *   <li>Return serialized response</li>
  * </ol>
+ * <p>
+ * Note: This implementation is in a separate module from SliceBridge (slice-api) due to
+ * classloader isolation requirements. The factory method follows JBCT naming convention.
  *
  * @see SliceBridge
  * @see Slice
@@ -58,9 +61,9 @@ public record SliceBridgeImpl(Artifact artifact,
      * @param serializerFactory Factory for serialization
      * @return SliceBridgeImpl wrapping the slice
      */
-    public static SliceBridgeImpl sliceBridge(Artifact artifact,
-                                              Slice slice,
-                                              SerializerFactory serializerFactory) {
+    public static SliceBridgeImpl sliceBridgeImpl(Artifact artifact,
+                                                  Slice slice,
+                                                  SerializerFactory serializerFactory) {
         var methodMap = slice.methods()
                              .stream()
                              .collect(java.util.stream.Collectors.toMap(m -> m.name()
@@ -69,6 +72,16 @@ public record SliceBridgeImpl(Artifact artifact,
                                                                                                 m.parameterType(),
                                                                                                 m.returnType())));
         return new SliceBridgeImpl(artifact, slice, Map.copyOf(methodMap), serializerFactory);
+    }
+
+    /**
+     * @deprecated Use {@link #sliceBridgeImpl(Artifact, Slice, SerializerFactory)} instead.
+     */
+    @Deprecated
+    public static SliceBridgeImpl sliceBridge(Artifact artifact,
+                                              Slice slice,
+                                              SerializerFactory serializerFactory) {
+        return sliceBridgeImpl(artifact, slice, serializerFactory);
     }
 
     @Override
