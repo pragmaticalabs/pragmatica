@@ -441,18 +441,12 @@ public final class ForgeCluster {
      * Get the current leader node ID from consensus.
      */
     public Option<String> currentLeader() {
-        if (nodes.isEmpty()) {
-            return Option.none();
-        }
-        // Query actual leader from any node's consensus layer
-        return nodes.values()
-                    .stream()
-                    .findFirst()
-                    .flatMap(node -> node.leader()
-                                         .toOptional())
-                    .map(nodeId -> nodeId.id())
-                    .map(Option::option)
-                    .orElse(Option.none());
+        return Option.option(nodes.values()
+                                  .stream()
+                                  .findFirst()
+                                  .orElse(null))
+                     .flatMap(AetherNode::leader)
+                     .map(NodeId::id);
     }
 
     /**

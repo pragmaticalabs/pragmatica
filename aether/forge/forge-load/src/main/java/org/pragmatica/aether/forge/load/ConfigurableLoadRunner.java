@@ -299,10 +299,8 @@ public final class ConfigurableLoadRunner {
      * Get metrics for a specific target.
      */
     public Option<TargetMetrics> targetMetrics(String targetName) {
-        var runner = activeRunners.get(targetName);
-        return runner != null
-               ? some(runner.getTargetMetrics())
-               : none();
+        return Option.option(activeRunners.get(targetName))
+                     .map(TargetRunner::getTargetMetrics);
     }
 
     /**
