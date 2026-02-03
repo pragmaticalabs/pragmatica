@@ -79,20 +79,19 @@ public final class RequestRouter {
     }
 
     private Option<Route<?>> findMatchingSpacerRoute(List<Route<?>> candidates, String inputPath) {
-        return option(candidates.stream()
-                                .filter(route -> !route.spacers()
-                                                       .isEmpty())
-                                .filter(route -> routeMatchesPath(route, inputPath))
-                                .findFirst()
-                                .orElse(null));
+        return Option.from(candidates.stream()
+                                     .filter(route -> !route.spacers()
+                                                            .isEmpty())
+                                     .filter(route -> routeMatchesPath(route, inputPath))
+                                     .findFirst());
     }
 
     private Option<Route<?>> findFallbackRoute(List<Route<?>> candidates) {
-        return option(candidates.stream()
-                                .filter(route -> route.spacers()
-                                                      .isEmpty())
-                                .findFirst()
-                                .orElse(candidates.getFirst()));
+        var noSpacerRoute = candidates.stream()
+                                      .filter(route -> route.spacers()
+                                                            .isEmpty())
+                                      .findFirst();
+        return Option.some(noSpacerRoute.orElse(candidates.getFirst()));
     }
 
     /**
