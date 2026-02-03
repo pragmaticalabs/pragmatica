@@ -164,14 +164,14 @@ public final class GitHubVersionResolver {
         return http.sendString(request)
                    .await()
                    .flatMap(HttpResult::toResult)
-                   .flatMap(body -> {
-                                var matcher = TAG_PATTERN.matcher(body);
-                                if (matcher.find()) {
-                                    return Result.success(matcher.group(1));
-                                }
-                                return Causes.cause("Could not parse version from GitHub response")
-                                             .result();
-                            });
+                   .flatMap(this::extractVersionFromResponse);
+    }
+
+    private Result<String> extractVersionFromResponse(String body) {
+        var matcher = TAG_PATTERN.matcher(body);
+        return matcher.find()
+               ? Result.success(matcher.group(1))
+               : Causes.cause("Could not parse version from GitHub response").result();
     }
 
     private Properties loadCache() {

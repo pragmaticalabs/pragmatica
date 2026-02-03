@@ -1,5 +1,6 @@
 package org.pragmatica.jbct.init;
 
+import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -51,8 +52,11 @@ public final class SliceProjectValidator {
             return PartialResult.error("pom.xml not found in project directory");
         }
         return readFile(pomFile)
-        .fold(cause -> PartialResult.error("Failed to read pom.xml: " + cause.message()),
-              content -> checkPomContent(content));
+               .fold(cause -> pomReadError(cause), this::checkPomContent);
+    }
+
+    private static PartialResult pomReadError(Cause cause) {
+        return PartialResult.error("Failed to read pom.xml: " + cause.message());
     }
 
     private PartialResult checkPomContent(String content) {
@@ -113,8 +117,11 @@ public final class SliceProjectValidator {
             return PartialResult.warning("MANIFEST.MF not found - will be created during packaging");
         }
         return loadManifest(manifestFile)
-        .fold(cause -> PartialResult.error("Failed to read MANIFEST.MF: " + cause.message()),
-              this::checkManifestAttributes);
+               .fold(cause -> manifestReadError(cause), this::checkManifestAttributes);
+    }
+
+    private static PartialResult manifestReadError(Cause cause) {
+        return PartialResult.error("Failed to read MANIFEST.MF: " + cause.message());
     }
 
     private PartialResult checkManifestAttributes(Manifest manifest) {

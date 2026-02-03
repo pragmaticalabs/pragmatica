@@ -103,7 +103,7 @@ public final class JarInstaller {
     }
 
     private Result<Path> downloadFromUri(URI uri) {
-        try{
+        try {
             var tempFile = Files.createTempFile("jbct-download-", ".jar");
             var request = HttpRequest.newBuilder()
                                      .uri(uri)
@@ -111,27 +111,27 @@ public final class JarInstaller {
                                      .timeout(Duration.ofMinutes(5))
                                      .GET()
                                      .build();
-            return http.send(request,
-                             HttpResponse.BodyHandlers.ofFile(tempFile))
+            return http.send(request, HttpResponse.BodyHandlers.ofFile(tempFile))
                        .await()
-                       .flatMap(response -> {
-                                    if (response.isSuccess()) {
-                                        return Result.success(response.body());
-                                    } else {
-                                        // Best-effort cleanup of temp file on failure
-            try{
-                                            Files.deleteIfExists(tempFile);
-                                        } catch (IOException cleanupError) {
-                                            LOG.debug("Failed to cleanup temp file {}: {}",
-                                                      tempFile,
-                                                      cleanupError.getMessage());
-                                        }
-                                        return response.toResult();
-                                    }
-                                });
+                       .flatMap(response -> handleDownloadResponse(response, tempFile));
         } catch (Exception e) {
-            return Causes.cause("Download failed: " + e.getMessage())
-                         .result();
+            return Causes.cause("Download failed: " + e.getMessage()).result();
+        }
+    }
+
+    private Result<Path> handleDownloadResponse(org.pragmatica.http.HttpResult<Path> response, Path tempFile) {
+        if (response.isSuccess()) {
+            return Result.success(response.body());
+        }
+        cleanupTempFile(tempFile);
+        return response.toResult();
+    }
+
+    private void cleanupTempFile(Path tempFile) {
+        try {
+            Files.deleteIfExists(tempFile);
+        } catch (IOException cleanupError) {
+            LOG.debug("Failed to cleanup temp file {}: {}", tempFile, cleanupError.getMessage());
         }
     }
 

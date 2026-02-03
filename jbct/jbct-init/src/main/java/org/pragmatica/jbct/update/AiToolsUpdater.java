@@ -56,9 +56,8 @@ public final class AiToolsUpdater {
 
     private Option<String> checkIfUpdateNeeded(String latestSha) {
         var currentSha = getCurrentVersion();
-        return currentSha.filter(sha -> sha.equals(latestSha))
-                         .map(_ -> Option.<String>none())
-                         .or(() -> Option.option(latestSha));
+        var isUpToDate = currentSha.filter(sha -> sha.equals(latestSha)).isPresent();
+        return isUpToDate ? Option.none() : Option.some(latestSha);
     }
 
     /**

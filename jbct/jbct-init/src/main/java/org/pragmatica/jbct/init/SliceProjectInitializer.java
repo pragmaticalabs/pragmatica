@@ -260,21 +260,21 @@ public final class SliceProjectInitializer {
     }
 
     private Option<String> getInlineTemplate(String templateName) {
-        return Option.option(switch (templateName) {
-            case "pom.xml.template" -> SLICE_POM_TEMPLATE;
-            case "jbct.toml.template" -> JBCT_TOML_TEMPLATE;
-            case "gitignore.template" -> GITIGNORE_TEMPLATE;
-            case "CLAUDE.md" -> CLAUDE_MD_TEMPLATE;
-            case "Slice.java.template" -> SLICE_INTERFACE_TEMPLATE;
-            case "SliceTest.java.template" -> SLICE_TEST_TEMPLATE;
-            case "tinylog.properties.template" -> TINYLOG_PROPERTIES_TEMPLATE;
-            case "deploy-forge.sh.template" -> DEPLOY_FORGE_TEMPLATE;
-            case "deploy-test.sh.template" -> DEPLOY_TEST_TEMPLATE;
-            case "deploy-prod.sh.template" -> DEPLOY_PROD_TEMPLATE;
-            case "generate-blueprint.sh.template" -> GENERATE_BLUEPRINT_TEMPLATE;
-            case "slice.toml.template" -> SLICE_CONFIG_TEMPLATE;
-            default -> null;
-        });
+        return switch (templateName) {
+            case "pom.xml.template" -> Option.some(SLICE_POM_TEMPLATE);
+            case "jbct.toml.template" -> Option.some(JBCT_TOML_TEMPLATE);
+            case "gitignore.template" -> Option.some(GITIGNORE_TEMPLATE);
+            case "CLAUDE.md" -> Option.some(CLAUDE_MD_TEMPLATE);
+            case "Slice.java.template" -> Option.some(SLICE_INTERFACE_TEMPLATE);
+            case "SliceTest.java.template" -> Option.some(SLICE_TEST_TEMPLATE);
+            case "tinylog.properties.template" -> Option.some(TINYLOG_PROPERTIES_TEMPLATE);
+            case "deploy-forge.sh.template" -> Option.some(DEPLOY_FORGE_TEMPLATE);
+            case "deploy-test.sh.template" -> Option.some(DEPLOY_TEST_TEMPLATE);
+            case "deploy-prod.sh.template" -> Option.some(DEPLOY_PROD_TEMPLATE);
+            case "generate-blueprint.sh.template" -> Option.some(GENERATE_BLUEPRINT_TEMPLATE);
+            case "slice.toml.template" -> Option.some(SLICE_CONFIG_TEMPLATE);
+            default -> Option.none();
+        };
     }
 
     private String substituteVariables(String content) {

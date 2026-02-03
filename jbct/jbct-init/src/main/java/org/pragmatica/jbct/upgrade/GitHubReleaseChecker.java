@@ -68,12 +68,13 @@ public final class GitHubReleaseChecker {
      */
     public Result<Option<ReleaseInfo>> checkForUpdate(String currentVersion) {
         return checkLatestRelease()
-        .map(release -> {
-                 if (isNewerVersion(currentVersion, release.version())) {
-                     return Option.option(release);
-                 }
-                 return Option.none();
-             });
+               .map(release -> filterNewerRelease(release, currentVersion));
+    }
+
+    private Option<ReleaseInfo> filterNewerRelease(ReleaseInfo release, String currentVersion) {
+        return isNewerVersion(currentVersion, release.version())
+               ? Option.some(release)
+               : Option.none();
     }
 
     private Result<ReleaseInfo> handleResponse(HttpResult<String> response) {
