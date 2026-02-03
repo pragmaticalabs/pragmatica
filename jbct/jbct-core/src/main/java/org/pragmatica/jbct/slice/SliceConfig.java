@@ -19,16 +19,23 @@ public record SliceConfig(BlueprintConfig blueprint) {
             return new BlueprintConfig(instances);
         }
 
-        public static BlueprintConfig defaults() {
+        public static BlueprintConfig defaultConfig() {
             return blueprintConfig(3);
         }
     }
 
     /**
+     * Factory method for creating SliceConfig.
+     */
+    public static SliceConfig sliceConfig(BlueprintConfig blueprint) {
+        return new SliceConfig(blueprint);
+    }
+
+    /**
      * Default configuration when no config file exists.
      */
-    public static SliceConfig defaults() {
-        return new SliceConfig(BlueprintConfig.defaults());
+    public static SliceConfig defaultConfig() {
+        return sliceConfig(BlueprintConfig.defaultConfig());
     }
 
     /**
@@ -43,6 +50,6 @@ public record SliceConfig(BlueprintConfig blueprint) {
         var instances = toml.getInt("blueprint", "instances")
                             .or(3);
         var blueprint = BlueprintConfig.blueprintConfig(instances);
-        return new SliceConfig(blueprint);
+        return sliceConfig(blueprint);
     }
 }

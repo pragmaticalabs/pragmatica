@@ -5,8 +5,10 @@ import java.util.Map;
 /**
  * Maps lint rule IDs to scoring categories.
  */
-public final class RuleCategoryMapping {
-    private static final Map<String, ScoreCategory> MAPPING = Map.ofEntries(// Return Types (25%)
+public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
+    record unused() implements RuleCategoryMapping {}
+
+    Map<String, ScoreCategory> MAPPING = Map.ofEntries(// Return Types (25%)
     Map.entry("JBCT-RET-01", ScoreCategory.RETURN_TYPES),
     // Four Return Kinds
     Map.entry("JBCT-RET-02", ScoreCategory.RETURN_TYPES),
@@ -75,13 +77,11 @@ public final class RuleCategoryMapping {
     // Logger parameters
     Map.entry("JBCT-PARSE-01", ScoreCategory.FACTORY_METHODS));
 
-    private RuleCategoryMapping() {}
-
-    public static ScoreCategory categoryFor(String ruleId) {
+    static ScoreCategory categoryFor(String ruleId) {
         return MAPPING.getOrDefault(ruleId, ScoreCategory.PATTERN_PURITY);
     }
 
-    public static Map<String, ScoreCategory> mapping() {
+    static Map<String, ScoreCategory> mapping() {
         return MAPPING;
     }
 }
