@@ -121,8 +121,8 @@ public sealed interface RollingUpdateError extends Cause {
     /**
      * Not the leader node.
      */
-    record NotLeader() implements RollingUpdateError {
-        public static final NotLeader INSTANCE = new NotLeader();
+    enum NotLeader implements RollingUpdateError {
+        INSTANCE;
 
         @Override
         public String message() {

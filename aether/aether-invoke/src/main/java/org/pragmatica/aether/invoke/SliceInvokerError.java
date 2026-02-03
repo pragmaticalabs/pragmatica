@@ -67,4 +67,14 @@ public sealed interface SliceInvokerError extends Cause {
             return "Timeout after " + timeoutMs + "ms waiting for " + artifact + ":" + method;
         }
     }
+
+    /**
+     * Error received from remote invocation (error message only, context not available).
+     */
+    record RemoteInvocationError(String errorMessage) implements SliceInvokerError {
+        @Override
+        public String message() {
+            return "Remote invocation failed: " + errorMessage;
+        }
+    }
 }

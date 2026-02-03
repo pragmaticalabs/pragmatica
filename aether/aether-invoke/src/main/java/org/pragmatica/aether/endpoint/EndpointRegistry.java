@@ -236,17 +236,17 @@ public interface EndpointRegistry {
                 // Scale routing to available instances
                 return routing.scaleToInstances(newEndpoints.size(),
                                                 oldEndpoints.size())
-                              .fold(() -> fallbackToOld(routing,
-                                                        newEndpoints.size(),
-                                                        oldEndpoints.size(),
-                                                        oldEndpoints,
-                                                        artifactBase,
-                                                        methodName),
-                                    scaled -> weightedRoundRobin(scaled,
-                                                                 newEndpoints,
-                                                                 oldEndpoints,
-                                                                 artifactBase,
-                                                                 methodName));
+                              .flatMap(scaled -> weightedRoundRobin(scaled,
+                                                                    newEndpoints,
+                                                                    oldEndpoints,
+                                                                    artifactBase,
+                                                                    methodName))
+                              .orElse(() -> fallbackToOld(routing,
+                                                          newEndpoints.size(),
+                                                          oldEndpoints.size(),
+                                                          oldEndpoints,
+                                                          artifactBase,
+                                                          methodName));
             }
 
             @Override
