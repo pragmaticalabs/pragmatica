@@ -62,18 +62,38 @@ public interface JooqR2dbcTransactional {
                                           SQLDialect dialect,
                                           Fn1<R2dbcError, Throwable> errorMapper,
                                           Fn2<Promise<R>, DSLContext, Connection> operation) {
-        return ReactiveOperations.<Connection> fromPublisher(connectionFactory.create(),
-                                                             errorMapper)
-                                 .flatMap(conn -> beginTransaction(conn, errorMapper).flatMap(_ -> {
-                                                                                                  var dsl = DSL.using(conn,
-                                                                                                                      dialect);
-                                                                                                  return operation.apply(dsl,
-                                                                                                                         conn);
-                                                                                              })
-                                                                  .flatMap(result -> commitTransaction(conn, errorMapper)
-        .map(_ -> result))
-                                                                  .onFailure(_ -> rollbackTransaction(conn))
-                                                                  .onResult(_ -> closeConnection(conn)));
+        return acquireConnection(connectionFactory, errorMapper)
+               .flatMap(conn -> executeWithConnection(conn, dialect, errorMapper, operation));
+    }
+
+    private static Promise<Connection> acquireConnection(ConnectionFactory factory,
+                                                         Fn1<R2dbcError, Throwable> errorMapper) {
+        return ReactiveOperations.fromPublisher(factory.create(), errorMapper);
+    }
+
+    private static <R> Promise<R> executeWithConnection(Connection conn,
+                                                        SQLDialect dialect,
+                                                        Fn1<R2dbcError, Throwable> errorMapper,
+                                                        Fn2<Promise<R>, DSLContext, Connection> operation) {
+        return beginTransaction(conn, errorMapper)
+               .flatMap(_ -> executeOperation(conn, dialect, operation))
+               .flatMap(result -> commitAndReturn(conn, errorMapper, result))
+               .onFailure(_ -> rollbackTransaction(conn))
+               .onResult(_ -> closeConnection(conn));
+    }
+
+    private static <R> Promise<R> executeOperation(Connection conn,
+                                                   SQLDialect dialect,
+                                                   Fn2<Promise<R>, DSLContext, Connection> operation) {
+        var dsl = DSL.using(conn, dialect);
+        return operation.apply(dsl, conn);
+    }
+
+    private static <R> Promise<R> commitAndReturn(Connection conn,
+                                                  Fn1<R2dbcError, Throwable> errorMapper,
+                                                  R result) {
+        return commitTransaction(conn, errorMapper)
+               .map(_ -> result);
     }
 
     private static Promise<Unit> beginTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {

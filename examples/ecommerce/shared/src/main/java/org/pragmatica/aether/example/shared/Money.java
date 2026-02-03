@@ -85,17 +85,16 @@ public record Money(BigDecimal amount, Currency currency) {
                             currency));
     }
 
-    public Money multiply(BigDecimal factor) {
-        return new Money(amount.multiply(factor)
-                               .setScale(2, RoundingMode.HALF_UP),
-                         currency);
+    public Result<Money> multiply(BigDecimal factor) {
+        var result = amount.multiply(factor)
+                           .setScale(2, RoundingMode.HALF_UP);
+        return money(result, currency);
     }
 
-    public Money percentage(int percent) {
-        return multiply(BigDecimal.valueOf(percent)
-                                  .divide(BigDecimal.valueOf(100),
-                                          4,
-                                          RoundingMode.HALF_UP));
+    public Result<Money> percentage(int percent) {
+        var factor = BigDecimal.valueOf(percent)
+                               .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP);
+        return multiply(factor);
     }
 
     public boolean isZero() {

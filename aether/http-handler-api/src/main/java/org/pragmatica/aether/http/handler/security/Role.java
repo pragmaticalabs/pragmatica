@@ -1,6 +1,7 @@
 package org.pragmatica.aether.http.handler.security;
 
-import java.util.Objects;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 
 /**
  * Role for authorization checks.
@@ -11,6 +12,23 @@ import java.util.Objects;
  * @param value the role name
  */
 public record Role(String value) {
+    /// Validation errors for Role.
+    public sealed interface RoleError extends Cause {
+        record NullValue() implements RoleError {
+            @Override
+            public String message() {
+                return "Role value cannot be null";
+            }
+        }
+
+        record BlankValue() implements RoleError {
+            @Override
+            public String message() {
+                return "Role cannot be blank";
+            }
+        }
+    }
+
     /**
      * Common role: administrator with full access.
      */
@@ -27,19 +45,18 @@ public record Role(String value) {
     public static final Role SERVICE = new Role("service");
 
     /**
-     * Canonical constructor with validation.
+     * Create role from name with validation.
+     *
+     * @param value the role name
+     * @return Result containing valid Role or validation error
      */
-    public Role {
-        Objects.requireNonNull(value, "role value");
-        if (value.isBlank()) {
-            throw new IllegalArgumentException("Role cannot be blank");
+    public static Result<Role> role(String value) {
+        if (value == null) {
+            return new RoleError.NullValue().result();
         }
-    }
-
-    /**
-     * Create role from name.
-     */
-    public static Role role(String value) {
-        return new Role(value);
+        if (value.isBlank()) {
+            return new RoleError.BlankValue().result();
+        }
+        return Result.success(new Role(value));
     }
 }

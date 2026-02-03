@@ -2,9 +2,7 @@ package org.pragmatica.aether.http.handler.security;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
-import org.pragmatica.lang.utils.Causes;
 
-import java.util.Objects;
 import java.util.regex.Pattern;
 
 /**
@@ -18,14 +16,20 @@ import java.util.regex.Pattern;
 public record ApiKey(String value) {
     private static final Pattern VALID_KEY = Pattern.compile("^[a-zA-Z0-9_-]{8,64}$");
 
-    /**
-     * Canonical constructor with validation.
-     */
-    public ApiKey {
-        Objects.requireNonNull(value, "api key value");
-        if (!VALID_KEY.matcher(value)
-                      .matches()) {
-            throw new IllegalArgumentException("Invalid API key format: must be 8-64 alphanumeric characters with _ or -");
+    /// Validation errors for ApiKey.
+    public sealed interface ApiKeyError extends Cause {
+        record NullValue() implements ApiKeyError {
+            @Override
+            public String message() {
+                return "API key value cannot be null";
+            }
+        }
+
+        record InvalidFormat(String value) implements ApiKeyError {
+            @Override
+            public String message() {
+                return "Invalid API key format: must be 8-64 alphanumeric characters with _ or -";
+            }
         }
     }
 
@@ -36,7 +40,14 @@ public record ApiKey(String value) {
      * @return Result containing valid ApiKey or failure
      */
     public static Result<ApiKey> apiKey(String value) {
-        return Result.lift(Causes::fromThrowable, () -> new ApiKey(value));
+        if (value == null) {
+            return new ApiKeyError.NullValue().result();
+        }
+        if (!VALID_KEY.matcher(value)
+                      .matches()) {
+            return new ApiKeyError.InvalidFormat(value).result();
+        }
+        return Result.success(new ApiKey(value));
     }
 
     /**

@@ -58,11 +58,9 @@ public interface PricingService {
                           Money shippingCost,
                           Money total) {
         public record LinePrice(ProductId productId, Money unitPrice, int quantity, Money lineTotal) {
-            public static LinePrice linePrice(ProductId productId, Money unitPrice, int quantity) {
-                return new LinePrice(productId,
-                                     unitPrice,
-                                     quantity,
-                                     unitPrice.multiply(BigDecimal.valueOf(quantity)));
+            public static Result<LinePrice> linePrice(ProductId productId, Money unitPrice, int quantity) {
+                return unitPrice.multiply(BigDecimal.valueOf(quantity))
+                                .map(lineTotal -> new LinePrice(productId, unitPrice, quantity, lineTotal));
             }
         }
 
@@ -201,12 +199,13 @@ public interface PricingService {
                               Set<String> loyalCustomers) implements PricingService {
             @Override
             public Promise<PriceBreakdown> calculatePrice(CalculatePriceRequest request) {
-                var linePrices = calculateLinePrices(request.items());
-                return calculateSubtotal(linePrices).map(subtotal -> PriceBreakdown.builder()
-                                                                                   .linePrices(linePrices)
-                                                                                   .subtotal(subtotal))
-                                        .flatMap(PriceBreakdown.Builder::build)
-                                        .async();
+                return calculateLinePrices(request.items())
+                       .flatMap(linePrices -> calculateSubtotal(linePrices)
+                                              .map(subtotal -> PriceBreakdown.builder()
+                                                                             .linePrices(linePrices)
+                                                                             .subtotal(subtotal)))
+                       .flatMap(PriceBreakdown.Builder::build)
+                       .async();
             }
 
             @Override
@@ -223,17 +222,23 @@ public interface PricingService {
                                    .state()
                                    .toUpperCase();
                 var rate = taxRates.getOrDefault(state, BigDecimal.valueOf(0.08));
-                var taxAmount = request.subtotal()
-                                       .percentage((int)(rate.doubleValue() * 100));
-                return Promise.success(TaxResult.taxResult(taxAmount, rate, state));
+                return request.subtotal()
+                              .percentage((int) (rate.doubleValue() * 100))
+                              .map(taxAmount -> TaxResult.taxResult(taxAmount, rate, state))
+                              .async();
             }
 
-            private Map<ProductId, PriceBreakdown.LinePrice> calculateLinePrices(List<LineItem> items) {
-                return items.stream()
-                            .collect(Collectors.toMap(LineItem::productId, this::calculateLinePrice));
+            private Result<Map<ProductId, PriceBreakdown.LinePrice>> calculateLinePrices(List<LineItem> items) {
+                var results = items.stream()
+                                   .map(this::calculateLinePrice)
+                                   .toList();
+                return Result.allOf(results)
+                             .map(linePrices -> linePrices.stream()
+                                                         .collect(Collectors.toMap(PriceBreakdown.LinePrice::productId,
+                                                                                   lp -> lp)));
             }
 
-            private PriceBreakdown.LinePrice calculateLinePrice(LineItem item) {
+            private Result<PriceBreakdown.LinePrice> calculateLinePrice(LineItem item) {
                 var unitPrice = productPrices.getOrDefault(item.productId(), Money.ZERO_USD);
                 return PriceBreakdown.LinePrice.linePrice(item.productId(),
                                                           unitPrice,
@@ -269,9 +274,10 @@ public interface PricingService {
                 return Option.option(discountCodes.get(code.toUpperCase()))
                              .toResult(new PricingError.InvalidDiscountCode(code))
                              .flatMap(discount -> validateMinimumPurchase(discount, subtotal))
-                             .map(discount -> DiscountResult.percentOff(discount.percentOff(),
-                                                                        subtotal.percentage(discount.percentOff()),
-                                                                        code))
+                             .flatMap(discount -> subtotal.percentage(discount.percentOff())
+                                                          .map(amount -> DiscountResult.percentOff(discount.percentOff(),
+                                                                                                   amount,
+                                                                                                   code)))
                              .async();
             }
 
@@ -287,14 +293,18 @@ public interface PricingService {
                 if (request.subtotal()
                            .amount()
                            .compareTo(BigDecimal.valueOf(500)) >= 0) {
-                    return Promise.success(DiscountResult.bulkDiscount(request.subtotal()
-                                                                              .percentage(10)));
+                    return request.subtotal()
+                                  .percentage(10)
+                                  .map(DiscountResult::bulkDiscount)
+                                  .async();
                 }
                 // Loyalty discount: 5% off for loyal customers
                 if (loyalCustomers.contains(request.customerId()
                                                    .value())) {
-                    return Promise.success(DiscountResult.loyaltyDiscount(request.subtotal()
-                                                                                 .percentage(5)));
+                    return request.subtotal()
+                                  .percentage(5)
+                                  .map(DiscountResult::loyaltyDiscount)
+                                  .async();
                 }
                 return Promise.success(DiscountResult.noDiscount());
             }

@@ -75,19 +75,31 @@ public interface SliceRouter {
 
             @Override
             public Promise<HttpResponseData> handle(HttpRequestContext request) {
-                return parseMethod(request.method()).map(method -> requestRouter.findRoute(method,
-                                                                                           request.path())
-                                                                                .map(route -> handleRoute(route, request))
-                                                                                .or(() -> Promise.success(notFound(request))))
+                return parseMethod(request.method()).map(method -> findAndHandleRoute(method, request))
                                   .or(() -> Promise.success(methodNotAllowed(request)));
+            }
+
+            private Promise<HttpResponseData> findAndHandleRoute(HttpMethod method, HttpRequestContext request) {
+                return requestRouter.findRoute(method,
+                                               request.path())
+                                    .map(route -> handleRoute(route, request))
+                                    .or(() -> Promise.success(notFound(request)));
             }
 
             private Promise<HttpResponseData> handleRoute(Route<?> route, HttpRequestContext request) {
                 var context = SliceRequestContext.sliceRequestContext(request, route, jsonMapper);
                 return invokeHandler(route, context)
-                .<HttpResponseData>fold(result -> Promise.success(result.fold(cause -> errorToResponse(cause, request),
-                                                                              value -> successToResponse(value,
-                                                                                                         route.contentType()))));
+                .map(result -> resultToResponse(result, route.contentType(), request));
+            }
+
+            private HttpResponseData resultToResponse(Object result,
+                                                      ContentType contentType,
+                                                      HttpRequestContext request) {
+                return switch (result) {
+                    case org.pragmatica.lang.Result.Success<?> success -> successToResponse(success.value(), contentType);
+                    case org.pragmatica.lang.Result.Failure failure -> errorToResponse(failure.cause(), request);
+                    default -> successToResponse(result, contentType);
+                };
             }
 
             @SuppressWarnings("unchecked")

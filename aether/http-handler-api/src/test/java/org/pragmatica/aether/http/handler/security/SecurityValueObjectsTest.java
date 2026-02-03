@@ -8,79 +8,91 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SecurityValueObjectsTest {
     @Nested
     class PrincipalTests {
         @Test
-        void principal_createsWithValue() {
-            var principal = Principal.principal("test-user");
-            assertThat(principal.value()).isEqualTo("test-user");
+        void principal_validValue_createsSuccessfully() {
+            Principal.principal("test-user")
+                     .onFailureRun(Assertions::fail)
+                     .onSuccess(principal -> assertThat(principal.value()).isEqualTo("test-user"));
         }
 
         @Test
-        void principal_rejectsNull() {
-            assertThatThrownBy(() -> Principal.principal(null))
-                .isInstanceOf(NullPointerException.class);
+        void principal_nullValue_returnsFailure() {
+            var result = Principal.principal(null);
+            assertThat(result.isFailure()).isTrue();
         }
 
         @Test
-        void principal_rejectsBlank() {
-            assertThatThrownBy(() -> Principal.principal("   "))
-                .isInstanceOf(IllegalArgumentException.class);
+        void principal_blankValue_returnsFailure() {
+            var result = Principal.principal("   ");
+            assertThat(result.isFailure()).isTrue();
         }
 
         @Test
-        void apiKeyPrincipal_prefixesValue() {
-            var principal = Principal.apiKeyPrincipal("my-key");
-            assertThat(principal.value()).isEqualTo("api-key:my-key");
-            assertThat(principal.isApiKey()).isTrue();
+        void apiKeyPrincipal_validKey_prefixesValue() {
+            Principal.apiKeyPrincipal("my-key")
+                     .onFailureRun(Assertions::fail)
+                     .onSuccess(principal -> {
+                         assertThat(principal.value()).isEqualTo("api-key:my-key");
+                         assertThat(principal.isApiKey()).isTrue();
+                     });
         }
 
         @Test
-        void userPrincipal_prefixesValue() {
-            var principal = Principal.userPrincipal("user-123");
-            assertThat(principal.value()).isEqualTo("user:user-123");
-            assertThat(principal.isUser()).isTrue();
+        void userPrincipal_validUser_prefixesValue() {
+            Principal.userPrincipal("user-123")
+                     .onFailureRun(Assertions::fail)
+                     .onSuccess(principal -> {
+                         assertThat(principal.value()).isEqualTo("user:user-123");
+                         assertThat(principal.isUser()).isTrue();
+                     });
         }
 
         @Test
-        void servicePrincipal_prefixesValue() {
-            var principal = Principal.servicePrincipal("order-service");
-            assertThat(principal.value()).isEqualTo("service:order-service");
-            assertThat(principal.isService()).isTrue();
+        void servicePrincipal_validService_prefixesValue() {
+            Principal.servicePrincipal("order-service")
+                     .onFailureRun(Assertions::fail)
+                     .onSuccess(principal -> {
+                         assertThat(principal.value()).isEqualTo("service:order-service");
+                         assertThat(principal.isService()).isTrue();
+                     });
         }
 
         @Test
-        void anonymous_isIdentifiable() {
+        void anonymous_constantPrincipal_isIdentifiable() {
             assertThat(Principal.ANONYMOUS.isAnonymous()).isTrue();
-            assertThat(Principal.principal("test").isAnonymous()).isFalse();
+            Principal.principal("test")
+                     .onFailureRun(Assertions::fail)
+                     .onSuccess(principal -> assertThat(principal.isAnonymous()).isFalse());
         }
     }
 
     @Nested
     class RoleTests {
         @Test
-        void role_createsWithValue() {
-            var role = Role.role("admin");
-            assertThat(role.value()).isEqualTo("admin");
+        void role_validValue_createsSuccessfully() {
+            Role.role("admin")
+                .onFailureRun(Assertions::fail)
+                .onSuccess(role -> assertThat(role.value()).isEqualTo("admin"));
         }
 
         @Test
-        void role_rejectsNull() {
-            assertThatThrownBy(() -> Role.role(null))
-                .isInstanceOf(NullPointerException.class);
+        void role_nullValue_returnsFailure() {
+            var result = Role.role(null);
+            assertThat(result.isFailure()).isTrue();
         }
 
         @Test
-        void role_rejectsBlank() {
-            assertThatThrownBy(() -> Role.role(""))
-                .isInstanceOf(IllegalArgumentException.class);
+        void role_blankValue_returnsFailure() {
+            var result = Role.role("");
+            assertThat(result.isFailure()).isTrue();
         }
 
         @Test
-        void role_commonConstantsExist() {
+        void role_constants_haveCorrectValues() {
             assertThat(Role.ADMIN.value()).isEqualTo("admin");
             assertThat(Role.USER.value()).isEqualTo("user");
             assertThat(Role.SERVICE.value()).isEqualTo("service");
@@ -174,7 +186,7 @@ class SecurityValueObjectsTest {
     @Nested
     class SecurityContextTests {
         @Test
-        void anonymous_factory() {
+        void anonymous_factory_returnsUnauthenticatedContext() {
             var context = SecurityContext.anonymous();
             assertThat(context.isAuthenticated()).isFalse();
             assertThat(context.principal()).isEqualTo(Principal.ANONYMOUS);
@@ -183,42 +195,57 @@ class SecurityValueObjectsTest {
         }
 
         @Test
-        void forApiKey_setsServiceRole() {
-            var context = SecurityContext.forApiKey("my-key");
-            assertThat(context.isAuthenticated()).isTrue();
-            assertThat(context.principal().isApiKey()).isTrue();
-            assertThat(context.hasRole(Role.SERVICE)).isTrue();
+        void forApiKey_validKey_setsServiceRole() {
+            SecurityContext.forApiKey("my-key")
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(context -> {
+                               assertThat(context.isAuthenticated()).isTrue();
+                               assertThat(context.principal().isApiKey()).isTrue();
+                               assertThat(context.hasRole(Role.SERVICE)).isTrue();
+                           });
         }
 
         @Test
-        void forApiKey_withCustomRoles() {
-            var context = SecurityContext.forApiKey("my-key", Set.of(Role.ADMIN, Role.USER));
-            assertThat(context.hasRole(Role.ADMIN)).isTrue();
-            assertThat(context.hasRole(Role.USER)).isTrue();
-            assertThat(context.hasRole(Role.SERVICE)).isFalse();
+        void forApiKey_validKeyWithCustomRoles_appliesRoles() {
+            SecurityContext.forApiKey("my-key", Set.of(Role.ADMIN, Role.USER))
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(context -> {
+                               assertThat(context.hasRole(Role.ADMIN)).isTrue();
+                               assertThat(context.hasRole(Role.USER)).isTrue();
+                               assertThat(context.hasRole(Role.SERVICE)).isFalse();
+                           });
         }
 
         @Test
-        void hasRole_byStringName() {
-            var context = SecurityContext.forApiKey("key", Set.of(Role.ADMIN));
-            assertThat(context.hasRole("admin")).isTrue();
-            assertThat(context.hasRole("user")).isFalse();
+        void hasRole_validRoleName_checksCorrectly() {
+            SecurityContext.forApiKey("key", Set.of(Role.ADMIN))
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(context -> {
+                               assertThat(context.hasRole("admin")).isTrue();
+                               assertThat(context.hasRole("user")).isFalse();
+                           });
         }
 
         @Test
-        void hasAnyRole_checksMultiple() {
-            var context = SecurityContext.forApiKey("key", Set.of(Role.USER));
-            assertThat(context.hasAnyRole(Set.of(Role.ADMIN, Role.USER))).isTrue();
-            assertThat(context.hasAnyRole(Set.of(Role.ADMIN, Role.SERVICE))).isFalse();
+        void hasAnyRole_multipleRoles_checksCorrectly() {
+            SecurityContext.forApiKey("key", Set.of(Role.USER))
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(context -> {
+                               assertThat(context.hasAnyRole(Set.of(Role.ADMIN, Role.USER))).isTrue();
+                               assertThat(context.hasAnyRole(Set.of(Role.ADMIN, Role.SERVICE))).isFalse();
+                           });
         }
 
         @Test
-        void forBearer_withClaims() {
+        void forBearer_validSubject_includesClaims() {
             var claims = Map.of("tenant", "acme", "scope", "read:write");
-            var context = SecurityContext.forBearer("user-123", Set.of(Role.USER), claims);
-            assertThat(context.principal().isUser()).isTrue();
-            assertThat(context.claim("tenant")).isEqualTo("acme");
-            assertThat(context.claim("scope")).isEqualTo("read:write");
+            SecurityContext.forBearer("user-123", Set.of(Role.USER), claims)
+                           .onFailureRun(Assertions::fail)
+                           .onSuccess(context -> {
+                               assertThat(context.principal().isUser()).isTrue();
+                               assertThat(context.claim("tenant")).isEqualTo("acme");
+                               assertThat(context.claim("scope")).isEqualTo("read:write");
+                           });
         }
     }
 }

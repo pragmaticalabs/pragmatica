@@ -37,12 +37,12 @@ public record Quantity(int value) {
                      .map(Quantity::new);
     }
 
-    public Quantity add(Quantity other) {
-        return new Quantity(Math.min(value + other.value, MAX_QUANTITY));
+    public Result<Quantity> add(Quantity other) {
+        return quantity(value + other.value);
     }
 
-    public Quantity subtract(Quantity other) {
-        return new Quantity(Math.max(0, value - other.value));
+    public Result<Quantity> subtract(Quantity other) {
+        return quantity(Math.max(0, value - other.value));
     }
 
     public boolean isPositive() {
