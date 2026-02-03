@@ -232,14 +232,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         LeaderManager leaderManager;
         if (useConsensusLeaderElection) {
             // Consensus-based leader election: submit proposals through consensus
-            LeaderManager.LeaderProposalHandler proposalHandler = (candidate, viewSequence) -> {
-                log.info("Submitting leader proposal: candidate={}", candidate);
-                var key = LeaderKey.INSTANCE;
-                var value = LeaderValue.leaderValue(candidate);
-                var command = new KVCommand.Put<>(key, value);
-                return consensus.apply(List.of((C) command))
-                                .mapToUnit();
-            };
+            LeaderManager.LeaderProposalHandler proposalHandler =
+                (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate);
             leaderManager = LeaderManager.leaderManager(config.topology()
                                                               .self(),
                                                         delegateRouter,
@@ -398,5 +392,13 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         table.computeIfAbsent((Class) tuple.first(),
                               _ -> new ArrayList<>())
              .add((Consumer) tuple.last());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus, NodeId candidate) {
+        log.info("Submitting leader proposal: candidate={}", candidate);
+        var command = new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(candidate));
+        return consensus.apply(List.of((C) command))
+                        .mapToUnit();
     }
 }
