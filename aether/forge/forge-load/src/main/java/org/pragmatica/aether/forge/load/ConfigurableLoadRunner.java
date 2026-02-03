@@ -166,25 +166,27 @@ public final class ConfigurableLoadRunner {
                                          .map(target -> createRunner(target).map(runner -> Map.entry(target, runner)))
                                          .toList();
         return Result.allOf(runnerResults)
-                     .onFailure(cause -> {
-                                    log.error("Failed to create runners: {}",
-                                              cause.message());
-                                    cleanupScheduler();
-                                    state.set(State.IDLE);
-                                })
-                     .onSuccess(entries -> {
-                                    entries.forEach(entry -> startRunner(entry.getValue(),
-                                                                         entry.getKey()));
-                                    // Rate sync scheduler - delayed start to ensure runners are initialized
-        var sched = scheduler.get();
-                                    sched.schedule(() -> sched.scheduleAtFixedRate(this::syncMetrics,
-                                                                                   0,
-                                                                                   100,
-                                                                                   TimeUnit.MILLISECONDS),
-                                                   200,
-                                                   TimeUnit.MILLISECONDS);
-                                })
+                     .onFailure(this::handleRunnerCreationFailure)
+                     .onSuccess(this::initializeRunners)
                      .map(_ -> State.RUNNING);
+    }
+
+    private void handleRunnerCreationFailure(Cause cause) {
+        log.error("Failed to create runners: {}", cause.message());
+        cleanupScheduler();
+        state.set(State.IDLE);
+    }
+
+    private void initializeRunners(List<Map.Entry<LoadTarget, TargetRunner>> entries) {
+        entries.forEach(entry -> startRunner(entry.getValue(), entry.getKey()));
+        scheduleMetricsSync();
+    }
+
+    private void scheduleMetricsSync() {
+        var sched = scheduler.get();
+        sched.schedule(() -> sched.scheduleAtFixedRate(this::syncMetrics, 0, 100, TimeUnit.MILLISECONDS),
+                       200,
+                       TimeUnit.MILLISECONDS);
     }
 
     private void cleanupScheduler() {
@@ -637,7 +639,7 @@ public final class ConfigurableLoadRunner {
 
         private String inferMethod(String path, String body) {
             // Simple heuristic
-            if (body != null && !body.isEmpty()) {
+            if (!body.isEmpty()) {
                 return "POST";
             }
             if (path.contains("/delete") || path.endsWith("/cancel")) {
@@ -647,22 +649,7 @@ public final class ConfigurableLoadRunner {
         }
 
         TargetMetrics getTargetMetrics() {
-            Option<Duration> remaining = none();
-            if (target.duration()
-                      .isPresent() && !target.duration()
-                                             .unwrap()
-                                             .isZero()) {
-                var st = startTime();
-                var elapsed = Duration.between(st != null
-                                               ? st
-                                               : Instant.now(), Instant.now());
-                var rem = target.duration()
-                                .unwrap()
-                                .minus(elapsed);
-                if (!rem.isNegative()) {
-                    remaining = some(rem);
-                }
-            }
+            var remaining = calculateRemainingDuration();
             var requests = totalRequests.get();
             return new TargetMetrics(name,
                                      target.rate()
@@ -675,6 +662,22 @@ public final class ConfigurableLoadRunner {
                                      ? (double) totalLatencyNanos.get() / requests / 1_000_000
                                      : 0,
                                      remaining);
+        }
+
+        private Option<Duration> calculateRemainingDuration() {
+            return target.duration()
+                         .filter(d -> !d.isZero())
+                         .flatMap(this::computeRemaining);
+        }
+
+        private Option<Duration> computeRemaining(Duration targetDuration) {
+            var st = Option.option(startTime())
+                           .or(Instant.now());
+            var elapsed = Duration.between(st, Instant.now());
+            var rem = targetDuration.minus(elapsed);
+            return rem.isNegative()
+                   ? none()
+                   : some(rem);
         }
 
         private static String deriveNameFromTarget(String target) {

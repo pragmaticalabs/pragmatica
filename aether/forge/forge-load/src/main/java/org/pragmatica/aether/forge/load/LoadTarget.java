@@ -37,22 +37,12 @@ public record LoadTarget(Option<String> name,
      * Rate specification with value and time unit.
      *
      * <p>Use the {@link #rate(String)} factory method to create instances with validation.
+     * <p>Note: Constructor assumes pre-validated inputs from factory method.
      */
     public record Rate(int value, TimeUnit unit) {
         private static final Pattern RATE_PATTERN = Pattern.compile("^(\\d+)/(s|m|h)$");
         private static final Cause NON_POSITIVE_RATE = Causes.cause("Rate value must be positive");
-
-        /**
-         * Compact constructor with validation.
-         */
-        public Rate {
-            if (value <= 0) {
-                throw new IllegalArgumentException("Rate value must be positive, got: " + value);
-            }
-            if (unit == null) {
-                throw new IllegalArgumentException("Rate time unit cannot be null");
-            }
-        }
+        private static final Cause NULL_TIME_UNIT = Causes.cause("Rate time unit cannot be null");
 
         public enum TimeUnit {
             SECOND("s", 1),
