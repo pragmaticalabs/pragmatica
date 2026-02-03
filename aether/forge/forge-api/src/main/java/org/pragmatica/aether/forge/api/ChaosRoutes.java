@@ -157,13 +157,23 @@ public final class ChaosRoutes {
     /**
      * Request to inject a chaos event.
      */
-    public record InjectRequest(String type,
-                                String nodeId,
-                                String artifact,
-                                Long latencyMs,
-                                Double level,
-                                Double failureRate,
-                                Long durationSeconds) {}
+    public record InjectRequest(Option<String> type,
+                                Option<String> nodeId,
+                                Option<String> artifact,
+                                Option<Long> latencyMs,
+                                Option<Double> level,
+                                Option<Double> failureRate,
+                                Option<Long> durationSeconds) {
+        public InjectRequest {
+            type = type != null ? type : Option.none();
+            nodeId = nodeId != null ? nodeId : Option.none();
+            artifact = artifact != null ? artifact : Option.none();
+            latencyMs = latencyMs != null ? latencyMs : Option.none();
+            level = level != null ? level : Option.none();
+            failureRate = failureRate != null ? failureRate : Option.none();
+            durationSeconds = durationSeconds != null ? durationSeconds : Option.none();
+        }
+    }
 
     // ========== Handler Methods ==========
     private static ChaosStatusResponse chaosStatus(ChaosController controller) {
@@ -205,9 +215,7 @@ public final class ChaosRoutes {
     private static Promise<ChaosInjectResponse> injectChaos(ChaosController controller,
                                                             Consumer<EventLogEntry> eventLogger,
                                                             InjectRequest request) {
-        Duration duration = Duration.ofSeconds(request.durationSeconds() != null
-                                               ? request.durationSeconds()
-                                               : 60);
+        var duration = Duration.ofSeconds(request.durationSeconds().or(60L));
         return parseChaosEvent(request, duration).async()
                               .flatMap(controller::injectChaos)
                               .map(eventId -> logAndBuildInjectResponse(eventLogger, request, eventId));
@@ -216,50 +224,41 @@ public final class ChaosRoutes {
     private static ChaosInjectResponse logAndBuildInjectResponse(Consumer<EventLogEntry> eventLogger,
                                                                  InjectRequest request,
                                                                  String eventId) {
-        eventLogger.accept(new EventLogEntry("CHAOS_INJECTED", "Injected " + request.type() + " event: " + eventId));
-        return new ChaosInjectResponse(true, eventId, request.type());
+        var typeStr = request.type().or("UNKNOWN");
+        eventLogger.accept(new EventLogEntry("CHAOS_INJECTED", "Injected " + typeStr + " event: " + eventId));
+        return new ChaosInjectResponse(true, eventId, typeStr);
     }
 
     private static Result<ChaosEvent> parseChaosEvent(InjectRequest request, Duration duration) {
         var optDuration = Option.option(duration);
-        String type = request.type() != null
-                      ? request.type()
-                               .toUpperCase()
-                      : "";
+        var type = request.type().map(String::toUpperCase).or("");
+        // Extract values with defaults - using fold to convert Option<String> to nullable String at boundary
+        var nodeId = request.nodeId().fold(() -> null, s -> s);
+        var artifact = request.artifact().fold(() -> null, s -> s);
         return switch (type) {
-            case "NODE_KILL" -> ChaosEvent.NodeKill.kill(request.nodeId(),
-                                                         optDuration)
-                                          .map(e -> e);
-            case "LATENCY_SPIKE" -> ChaosEvent.LatencySpike.addLatency(request.nodeId(),
-                                                                       request.latencyMs() != null
-                                                                       ? request.latencyMs()
-                                                                       : 500,
-                                                                       optDuration)
-                                              .map(e -> e);
-            case "SLICE_CRASH" -> ChaosEvent.SliceCrash.crashSlice(request.artifact(),
-                                                                   Option.option(request.nodeId()),
-                                                                   optDuration)
-                                            .map(e -> e);
-            case "INVOCATION_FAILURE" -> ChaosEvent.InvocationFailure.forSlice(Option.option(request.artifact()),
-                                                                               request.failureRate() != null
-                                                                               ? request.failureRate()
-                                                                               : 0.5,
-                                                                               optDuration)
+            case "NODE_KILL" -> ChaosEvent.NodeKill.kill(nodeId, optDuration)
                                                    .map(e -> e);
-            case "CPU_SPIKE" -> ChaosEvent.CpuSpike.onNode(request.nodeId(),
-                                                           request.level() != null
-                                                           ? request.level()
-                                                           : 0.8,
-                                                           optDuration)
-                                          .map(e -> e);
-            case "MEMORY_PRESSURE" -> ChaosEvent.MemoryPressure.onNode(request.nodeId(),
-                                                                       request.level() != null
-                                                                       ? request.level()
-                                                                       : 0.9,
+            case "LATENCY_SPIKE" -> ChaosEvent.LatencySpike.addLatency(nodeId,
+                                                                       request.latencyMs().or(500L),
                                                                        optDuration)
-                                                .map(e -> e);
-            default -> UNKNOWN_CHAOS_TYPE.apply(type)
-                                         .result();
+                                                           .map(e -> e);
+            case "SLICE_CRASH" -> ChaosEvent.SliceCrash.crashSlice(artifact,
+                                                                   request.nodeId(),
+                                                                   optDuration)
+                                                       .map(e -> e);
+            case "INVOCATION_FAILURE" -> ChaosEvent.InvocationFailure.forSlice(request.artifact(),
+                                                                               request.failureRate().or(0.5),
+                                                                               optDuration)
+                                                                     .map(e -> e);
+            case "CPU_SPIKE" -> ChaosEvent.CpuSpike.onNode(nodeId,
+                                                           request.level().or(0.8),
+                                                           optDuration)
+                                                   .map(e -> e);
+            case "MEMORY_PRESSURE" -> ChaosEvent.MemoryPressure.onNode(nodeId,
+                                                                       request.level().or(0.9),
+                                                                       optDuration)
+                                                               .map(e -> e);
+            default -> UNKNOWN_CHAOS_TYPE.apply(type).result();
         };
     }
 

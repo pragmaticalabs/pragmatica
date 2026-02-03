@@ -110,19 +110,23 @@ public sealed interface LoadRoutes {
         var loadConfig = runner.config();
         var targetInfos = loadConfig.targets()
                                     .stream()
-                                    .map(t -> new LoadTargetInfo(t.name()
-                                                                  .or(t.target()),
-                                                                 t.target(),
-                                                                 t.rate()
-                                                                  .requestsPerSecond() + "/s",
-                                                                 t.duration()
-                                                                  .map(Object::toString)
-                                                                  .or((String) null)))
+                                    .map(LoadRoutes::toLoadTargetInfo)
                                     .toList();
         return new LoadConfigResponse(loadConfig.targets()
                                                 .size(),
                                       loadConfig.totalRequestsPerSecond(),
                                       targetInfos);
+    }
+
+    private static LoadTargetInfo toLoadTargetInfo(org.pragmatica.aether.forge.load.LoadTarget t) {
+        return new LoadTargetInfo(t.name()
+                                   .or(t.target()),
+                                  t.target(),
+                                  t.rate()
+                                   .requestsPerSecond() + "/s",
+                                  t.duration()
+                                   .map(Object::toString)
+                                   .fold(() -> null, s -> s));
     }
 
     private static Promise<LoadConfigUploadResponse> uploadConfig(ConfigurableLoadRunner runner, String toml) {
@@ -192,11 +196,13 @@ public sealed interface LoadRoutes {
     private static Route<RateSetResponse> setTotalRateRoute(ConfigurableLoadRunner loadRunner) {
         return Route.<RateSetResponse> post("/rate")
                     .withPath(aInteger())
-                    .to(rate -> {
-                        loadRunner.setTotalRate(rate);
-                        return Promise.success(new RateSetResponse(true, rate));
-                    })
+                    .to(rate -> setTotalRate(loadRunner, rate))
                     .asJson();
+    }
+
+    private static Promise<RateSetResponse> setTotalRate(ConfigurableLoadRunner loadRunner, int rate) {
+        loadRunner.setTotalRate(rate);
+        return Promise.success(new RateSetResponse(true, rate));
     }
 
     record unused() implements LoadRoutes {}

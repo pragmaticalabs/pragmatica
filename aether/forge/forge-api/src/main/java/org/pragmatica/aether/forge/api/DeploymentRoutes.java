@@ -145,11 +145,15 @@ public sealed interface DeploymentRoutes {
                                                         port,
                                                         "/api/deploy",
                                                         buildDeployJson(request)))
-                             .map(body -> {
-                                      eventLogger.accept(new EventLogEntry("DEPLOY",
-                                                                           "Deployed " + request.artifact() + " x" + request.instances()));
-                                      return new ProxyResponse(true, body);
-                                  });
+                             .map(body -> logAndBuildDeployResponse(eventLogger, request, body));
+    }
+
+    private static ProxyResponse logAndBuildDeployResponse(Consumer<EventLogEntry> eventLogger,
+                                                           DeployRequest request,
+                                                           String body) {
+        eventLogger.accept(new EventLogEntry("DEPLOY",
+                                             "Deployed " + request.artifact() + " x" + request.instances()));
+        return new ProxyResponse(true, body);
     }
 
     private static String buildDeployJson(DeployRequest request) {
@@ -165,11 +169,14 @@ public sealed interface DeploymentRoutes {
                                                         port,
                                                         "/api/undeploy",
                                                         "{\"artifact\":\"" + escapeJson(request.artifact()) + "\"}"))
-                             .map(body -> {
-                                      eventLogger.accept(new EventLogEntry("UNDEPLOY",
-                                                                           "Undeployed " + request.artifact()));
-                                      return new ProxyResponse(true, body);
-                                  });
+                             .map(body -> logAndBuildUndeployResponse(eventLogger, request, body));
+    }
+
+    private static ProxyResponse logAndBuildUndeployResponse(Consumer<EventLogEntry> eventLogger,
+                                                             UndeployRequest request,
+                                                             String body) {
+        eventLogger.accept(new EventLogEntry("UNDEPLOY", "Undeployed " + request.artifact()));
+        return new ProxyResponse(true, body);
     }
 
     private static Promise<ProxyResponse> proxyBlueprint(ForgeCluster cluster,
@@ -178,10 +185,13 @@ public sealed interface DeploymentRoutes {
                                                          String blueprintJson) {
         return findLeaderPort(cluster).async(LeaderNotAvailable.INSTANCE)
                              .flatMap(port -> proxyPost(http, port, "/api/blueprint", blueprintJson))
-                             .map(body -> {
-                                      eventLogger.accept(new EventLogEntry("BLUEPRINT", "Applied blueprint"));
-                                      return new ProxyResponse(true, body);
-                                  });
+                             .map(body -> logAndBuildBlueprintResponse(eventLogger, body));
+    }
+
+    private static ProxyResponse logAndBuildBlueprintResponse(Consumer<EventLogEntry> eventLogger,
+                                                              String body) {
+        eventLogger.accept(new EventLogEntry("BLUEPRINT", "Applied blueprint"));
+        return new ProxyResponse(true, body);
     }
 
     private static SlicesStatusResponse getSlicesStatus(ForgeCluster cluster) {
@@ -285,12 +295,13 @@ public sealed interface DeploymentRoutes {
     }
 
     private static String escapeJson(String s) {
-        if (s == null) return "";
-        return s.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t");
+        return Option.option(s)
+                     .map(str -> str.replace("\\", "\\\\")
+                                    .replace("\"", "\\\"")
+                                    .replace("\n", "\\n")
+                                    .replace("\r", "\\r")
+                                    .replace("\t", "\\t"))
+                     .or("");
     }
 
     record unused() implements DeploymentRoutes {}

@@ -11,6 +11,7 @@ import org.pragmatica.aether.forge.simulator.SimulatorConfig;
 import org.pragmatica.aether.forge.simulator.SimulatorMode;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpStatus;
+import org.pragmatica.lang.Option;
 import org.pragmatica.http.routing.JsonCodec;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestContextImpl;
@@ -265,11 +266,12 @@ public final class ForgeApiHandler {
     }
 
     private String escapeJson(String str) {
-        if (str == null) return "";
-        return str.replace("\\", "\\\\")
-                  .replace("\"", "\\\"")
-                  .replace("\n", "\\n")
-                  .replace("\r", "\\r")
-                  .replace("\t", "\\t");
+        return Option.option(str)
+                     .map(s -> s.replace("\\", "\\\\")
+                                .replace("\"", "\\\"")
+                                .replace("\n", "\\n")
+                                .replace("\r", "\\r")
+                                .replace("\t", "\\t"))
+                     .or("");
     }
 }
