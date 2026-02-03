@@ -1,7 +1,7 @@
 package org.pragmatica.aether.forge.api;
 
 import org.pragmatica.aether.forge.ForgeCluster;
-import org.pragmatica.aether.forge.api.ChaosRoutes.EventLogEntry;
+import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.RepositoryPutResponse;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.http.JdkHttpOperations;

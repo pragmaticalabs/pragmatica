@@ -128,16 +128,6 @@ public final class ForgeApiResponses {
      */
     public record NodeAddedResponse(boolean success, String nodeId, String state) {}
 
-    /**
-     * Response from rolling restart operation.
-     */
-    public record RollingRestartResponse(boolean success, String message) {}
-
-    /**
-     * Response from rolling restart status check.
-     */
-    public record RollingRestartStatusResponse(boolean active) {}
-
     // ========== Load Responses ==========
     /**
      * Load configuration from /api/load/config GET endpoint.

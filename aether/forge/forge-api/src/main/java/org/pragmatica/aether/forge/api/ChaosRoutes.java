@@ -8,9 +8,10 @@ import org.pragmatica.aether.forge.api.ForgeApiResponses.ChaosStoppedResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ActiveChaosEventInfo;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.NodeActionResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.NodeAddedResponse;
-import org.pragmatica.aether.forge.api.ForgeApiResponses.RollingRestartResponse;
-import org.pragmatica.aether.forge.api.ForgeApiResponses.RollingRestartStatusResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.SuccessResponse;
+import org.pragmatica.aether.forge.ForgeCluster.RollingRestartResponse;
+import org.pragmatica.aether.forge.ForgeCluster.RollingRestartStatusResponse;
+import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
 import org.pragmatica.aether.forge.simulator.ChaosController;
 import org.pragmatica.aether.forge.simulator.ChaosController.ActiveChaosEvent;
 import org.pragmatica.aether.forge.simulator.ChaosController.ChaosStatus;
@@ -162,11 +163,6 @@ public final class ChaosRoutes {
                                 Double level,
                                 Double failureRate,
                                 Long durationSeconds) {}
-
-    /**
-     * Event log entry for dashboard notifications.
-     */
-    public record EventLogEntry(String type, String message) {}
 
     // ========== Handler Methods ==========
     private static ChaosStatusResponse chaosStatus(ChaosController controller) {

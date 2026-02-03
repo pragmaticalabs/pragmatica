@@ -1,6 +1,6 @@
 package org.pragmatica.aether.forge;
 
-import org.pragmatica.aether.forge.api.ChaosRoutes.EventLogEntry;
+import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ForgeEvent;
 import org.pragmatica.aether.forge.api.ForgeRouter;
 import org.pragmatica.aether.forge.api.SimulatorRoutes.InventoryState;

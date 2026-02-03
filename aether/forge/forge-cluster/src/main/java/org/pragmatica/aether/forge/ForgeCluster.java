@@ -16,9 +16,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.aether.forge.api.ChaosRoutes.EventLogEntry;
-import org.pragmatica.aether.forge.api.ForgeApiResponses.RollingRestartResponse;
-import org.pragmatica.aether.forge.api.ForgeApiResponses.RollingRestartStatusResponse;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.ArrayList;
@@ -616,6 +613,21 @@ public final class ForgeCluster {
     public record SliceInstanceStatus(String nodeId,
                                       String state,
                                       String health) {}
+
+    /**
+     * Event log entry for dashboard events.
+     */
+    public record EventLogEntry(String type, String message) {}
+
+    /**
+     * Response from rolling restart operation.
+     */
+    public record RollingRestartResponse(boolean success, String message) {}
+
+    /**
+     * Response from rolling restart status check.
+     */
+    public record RollingRestartStatusResponse(boolean active) {}
 
     /**
      * Get slice status from the KV store.
