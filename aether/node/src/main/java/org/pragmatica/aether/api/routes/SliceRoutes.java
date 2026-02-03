@@ -310,7 +310,7 @@ public final class SliceRoutes implements RouteSource {
                                            .validate(body)
                                            .fold(
                                                cause -> new BlueprintValidationResponse(false,
-                                                                                        null,
+                                                                                        "",
                                                                                         0,
                                                                                         List.of(cause.message())),
                                                blueprint -> new BlueprintValidationResponse(true,
