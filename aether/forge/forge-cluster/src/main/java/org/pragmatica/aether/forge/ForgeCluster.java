@@ -218,24 +218,23 @@ public final class ForgeCluster {
             nodes.put(nodeIdStr, node);
             // Wrap start() to capture success/failure with node context
             startPromises.add(node.start()
-                                  .map(_ -> new NodeStartResult(nodeIdStr, port, mgmtPort, null))
-                                  .recover(cause -> new NodeStartResult(nodeIdStr, port, mgmtPort, cause)));
+                                  .map(_ -> new NodeStartResult(nodeIdStr, port, mgmtPort, Option.none()))
+                                  .recover(cause -> new NodeStartResult(nodeIdStr, port, mgmtPort, Option.some(cause))));
         }
         return Promise.allOf(startPromises)
                       .flatMap(this::handleStartResults);
     }
 
-    private record NodeStartResult(String nodeId, int port, int mgmtPort, org.pragmatica.lang.Cause failure) {
+    private record NodeStartResult(String nodeId, int port, int mgmtPort, Option<Cause> failure) {
         boolean succeeded() {
-            return failure == null;
+            return failure.isEmpty();
         }
     }
 
     private Promise<Unit> handleStartResults(List<Result<NodeStartResult>> results) {
         // Extract NodeStartResult from each Result (all succeed due to recover())
         var nodeResults = results.stream()
-                                 .map(r -> r.fold(_ -> null, r1 -> r1))
-                                 .filter(r -> r != null)
+                                 .flatMap(Result::stream)
                                  .toList();
         var failed = nodeResults.stream()
                                 .filter(r -> !r.succeeded())
@@ -251,34 +250,36 @@ public final class ForgeCluster {
         }
         // Log all failures with details
         for (var f : failed) {
-            log.error("Node {} failed to start on port {} (mgmt: {}): {}",
-                      f.nodeId(),
-                      f.port(),
-                      f.mgmtPort(),
-                      f.failure()
-                       .message());
+            f.failure().onPresent(cause -> log.error("Node {} failed to start on port {} (mgmt: {}): {}",
+                                                     f.nodeId(),
+                                                     f.port(),
+                                                     f.mgmtPort(),
+                                                     cause.message()));
         }
         log.error("Cluster startup failed: {} of {} nodes failed to start", failed.size(), initialClusterSize);
         // Stop successfully started nodes
         var stopPromises = succeeded.stream()
                                     .map(r -> Option.option(nodes.get(r.nodeId()))
-                                                    .fold(() -> Promise.success(Unit.unit()),
-                                                          node -> node.stop()
-                                                                      .timeout(NODE_TIMEOUT)
-                                                                      .recover(_ -> Unit.unit())))
+                                                    .map(node -> node.stop()
+                                                                     .timeout(NODE_TIMEOUT)
+                                                                     .recover(_ -> Unit.unit()))
+                                                    .or(Promise.success(Unit.unit())))
                                     .toList();
         return Promise.allOf(stopPromises)
-                      .map(_ -> {
-                               nodes.clear();
-                               nodeInfos.clear();
-                               slotsByNodeId.clear();
-                               availableSlots.clear();
-                               nodeCounter.set(0);
-                               return Unit.unit();
-                           })
+                      .mapToUnit()
+                      .onSuccess(this::clearClusterStateOnFailure)
                       .flatMap(_ -> failed.getFirst()
                                           .failure()
-                                          .promise());
+                                          .<Promise<Unit>>map(Cause::promise)
+                                          .or(Promise.success(Unit.unit())));
+    }
+
+    private void clearClusterStateOnFailure(Unit unit) {
+        nodes.clear();
+        nodeInfos.clear();
+        slotsByNodeId.clear();
+        availableSlots.clear();
+        nodeCounter.set(0);
     }
 
     /**
@@ -309,12 +310,9 @@ public final class ForgeCluster {
      * Returns the new node's ID.
      */
     public Promise<NodeId> addNode() {
-        var slot = availableSlots.poll();
-        if (slot == null) {
-            // Wrap around - reuse slot 0 (shouldn't happen with 2x buffer)
-            log.warn("Slot pool exhausted, this shouldn't happen");
-            slot = 0;
-        }
+        var slot = Option.option(availableSlots.poll())
+                         .onEmpty(() -> log.warn("Slot pool exhausted, this shouldn't happen"))
+                         .or(0);
         var nodeNum = nodeCounter.incrementAndGet();
         var nodeId = nodeId(nodeIdPrefix + "-" + nodeNum).unwrap();
         var port = basePort + slot;
@@ -350,8 +348,8 @@ public final class ForgeCluster {
      */
     public Promise<Unit> killNode(String nodeIdStr, boolean graceful) {
         return Option.option(nodes.get(nodeIdStr))
-                     .fold(() -> nodeNotFound(nodeIdStr),
-                           node -> killNodeInternal(nodeIdStr, node, graceful));
+                     .map(node -> killNodeInternal(nodeIdStr, node, graceful))
+                     .or(() -> nodeNotFound(nodeIdStr));
     }
 
     private Promise<Unit> nodeNotFound(String nodeIdStr) {
@@ -371,17 +369,11 @@ public final class ForgeCluster {
         // This prevents load generator from sending requests to the dying node
         nodes.remove(nodeIdStr);
         nodeInfos.remove(nodeIdStr);
-        var slot = slotsByNodeId.remove(nodeIdStr);
+        var slotOpt = Option.option(slotsByNodeId.remove(nodeIdStr));
         return node.stop()
                    .timeout(timeout)
                    .recover(_ -> Unit.unit())
-                   .map(_ -> {
-                            // Release slot back to pool only after stop completes (for reuse by new nodes)
-        if (slot != null) {
-                                availableSlots.offer(slot);
-                            }
-                            return Unit.unit();
-                        })
+                   .onSuccess(_ -> slotOpt.onPresent(availableSlots::offer))
                    .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr))
                    .onSuccess(_ -> triggerAutoHeal());
     }

@@ -86,17 +86,18 @@ public record StartupConfig(Option<Path> forgeConfig,
     }
 
     private static Result<Option<Path>> validatePath(Option<String> pathStr, String name) {
-        return pathStr.map(s -> {
-                               var path = Path.of(s);
-                               if (!Files.exists(path)) {
-                                   return Result.<Option<Path>>err(StartupError.fileNotFound(name, path));
-                               }
-                               if (!Files.isReadable(path)) {
-                                   return Result.<Option<Path>>err(StartupError.fileNotReadable(name, path));
-                               }
-                               return Result.ok(Option.some(path));
-                           })
-                      .or(Result.ok(Option.none()));
+        return pathStr.map(s -> validateSinglePath(Path.of(s), name))
+                      .or(Result.success(Option.none()));
+    }
+
+    private static Result<Option<Path>> validateSinglePath(Path path, String name) {
+        if (!Files.exists(path)) {
+            return StartupError.fileNotFound(name, path).result();
+        }
+        if (!Files.isReadable(path)) {
+            return StartupError.fileNotReadable(name, path).result();
+        }
+        return Result.success(Option.some(path));
     }
 
     /**
