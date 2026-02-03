@@ -326,11 +326,11 @@ public interface RollbackManager {
             private void updateLocalPreviousVersion(ArtifactBase artifactBase, PreviousVersionValue value) {
                 rollbackStates.compute(artifactBase,
                                        (ab, existing) -> Option.option(existing)
-                                                               .fold(() -> RollbackState.fromKVStore(ab,
-                                                                                                     value.previousVersion(),
-                                                                                                     value.currentVersion()),
-                                                                     state -> state.withKVStoreUpdate(value.previousVersion(),
-                                                                                                      value.currentVersion())));
+                                                               .map(state -> state.withKVStoreUpdate(value.previousVersion(),
+                                                                                                     value.currentVersion()))
+                                                               .or(() -> RollbackState.fromKVStore(ab,
+                                                                                                   value.previousVersion(),
+                                                                                                   value.currentVersion())));
             }
 
             private void trackVersionChange(ArtifactBase artifactBase, SliceTargetValue sliceTargetValue) {
@@ -340,14 +340,14 @@ public interface RollbackManager {
                 var currentVersion = sliceTargetValue.currentVersion();
                 rollbackStates.compute(artifactBase,
                                        (ab, existing) -> Option.option(existing)
-                                                               .fold(() -> {
-                                                                         log.debug("First deployment of {}, no previous version to track",
-                                                                                   artifactBase);
-                                                                         return RollbackState.initial(ab, currentVersion);
-                                                                     },
-                                                                     state -> computeVersionChange(state,
-                                                                                                   artifactBase,
-                                                                                                   currentVersion)));
+                                                               .map(state -> computeVersionChange(state,
+                                                                                                  artifactBase,
+                                                                                                  currentVersion))
+                                                               .or(() -> {
+                                                                   log.debug("First deployment of {}, no previous version to track",
+                                                                             artifactBase);
+                                                                   return RollbackState.initial(ab, currentVersion);
+                                                               }));
             }
 
             private RollbackState computeVersionChange(RollbackState state,
@@ -468,32 +468,34 @@ public interface RollbackManager {
      * Create a no-op rollback manager when rollback is disabled.
      */
     static RollbackManager disabled() {
-        return new NoOpRollbackManager();
-    }
-}
-
-/**
- * No-op implementation when rollback is disabled.
- */
-class NoOpRollbackManager implements RollbackManager {
-    private static final Logger log = LoggerFactory.getLogger(NoOpRollbackManager.class);
-
-    @Override
-    public void onLeaderChange(LeaderChange leaderChange) {}
-
-    @Override
-    public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
-
-    @Override
-    public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
-        log.debug("Rollback disabled, ignoring AllInstancesFailed for {}", event.artifact());
+        return Disabled.INSTANCE;
     }
 
-    @Override
-    public Option<RollbackStats> getStats(ArtifactBase artifactBase) {
-        return Option.none();
-    }
+    /**
+     * No-op implementation when rollback is disabled.
+     */
+    enum Disabled implements RollbackManager {
+        INSTANCE;
 
-    @Override
-    public void resetRollbackCount(ArtifactBase artifactBase) {}
+        private static final Logger log = LoggerFactory.getLogger(RollbackManager.class);
+
+        @Override
+        public void onLeaderChange(LeaderChange leaderChange) {}
+
+        @Override
+        public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
+
+        @Override
+        public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
+            log.debug("Rollback disabled, ignoring AllInstancesFailed for {}", event.artifact());
+        }
+
+        @Override
+        public Option<RollbackStats> getStats(ArtifactBase artifactBase) {
+            return Option.none();
+        }
+
+        @Override
+        public void resetRollbackCount(ArtifactBase artifactBase) {}
+    }
 }

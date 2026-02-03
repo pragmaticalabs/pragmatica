@@ -95,7 +95,7 @@ public interface ControlLoop {
                                    ClusterNode<KVCommand<AetherKey>> cluster,
                                    TimeSpan interval,
                                    ControllerConfig config) {
-        return controlLoop(self, controller, metricsCollector, Option.empty(), cluster, interval, config);
+        return controlLoop(self, controller, metricsCollector, Option.none(), cluster, interval, config);
     }
 
     /**
@@ -387,8 +387,8 @@ public interface ControlLoop {
             }
 
             private LoadFactorResult computeLoadFactorWithCurrentValues(Map<ScalingMetric, Double> currentMetrics) {
-                if (compositeLoadFactor instanceof CompositeLoadFactorImpl impl) {
-                    return impl.computeWithCurrentValues(currentMetrics);
+                if (compositeLoadFactor instanceof CompositeLoadFactor.State state) {
+                    return state.computeWithCurrentValues(currentMetrics);
                 }
                 return compositeLoadFactor.compute();
             }
