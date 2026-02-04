@@ -196,6 +196,7 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
 
     private PreparedStatement prepareStatement(Connection conn, String sql, Object[] params) throws SQLException {
         var stmt = conn.prepareStatement(sql);
+        stmt.setQueryTimeout((int) config.poolConfig().connectionTimeout().toSeconds());
         setParameters(stmt, params);
         return stmt;
     }
@@ -381,6 +382,7 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
 
         private PreparedStatement prepareStatement(String sql, Object[] params) throws SQLException {
             var stmt = conn.prepareStatement(sql);
+            stmt.setQueryTimeout((int) config.poolConfig().connectionTimeout().toSeconds());
             setParameters(stmt, params);
             return stmt;
         }

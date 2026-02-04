@@ -6,7 +6,7 @@ import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceBridge;
-import org.pragmatica.aether.slice.SliceBridgeImpl;
+import org.pragmatica.aether.slice.DefaultSliceBridge;
 import org.pragmatica.aether.slice.SliceClassLoader;
 import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
@@ -352,7 +352,7 @@ public interface DependencyResolver {
                                               SliceInvokerFacade invokerFacade,
                                               SerializerFactory serializerFactory) {
         return resolve(artifact, repository, registry, sharedLibraryLoader, invokerFacade)
-        .map(slice -> SliceBridgeImpl.sliceBridgeImpl(artifact, slice, serializerFactory));
+        .map(slice -> DefaultSliceBridge.defaultSliceBridge(artifact, slice, serializerFactory));
     }
 
     /**

@@ -319,6 +319,7 @@ public final class JooqDatabaseConnector implements DatabaseConnector {
     }
 
     private void setParameters(java.sql.PreparedStatement stmt, Object[] params) throws SQLException {
+        stmt.setQueryTimeout((int) config.poolConfig().connectionTimeout().toSeconds());
         for (int i = 0; i < params.length; i++) {
             stmt.setObject(i + 1, params[i]);
         }
@@ -500,6 +501,7 @@ public final class JooqDatabaseConnector implements DatabaseConnector {
         }
 
         private void setParameters(java.sql.PreparedStatement stmt, Object[] params) throws SQLException {
+            stmt.setQueryTimeout((int) config.poolConfig().connectionTimeout().toSeconds());
             for (int i = 0; i < params.length; i++) {
                 stmt.setObject(i + 1, params[i]);
             }

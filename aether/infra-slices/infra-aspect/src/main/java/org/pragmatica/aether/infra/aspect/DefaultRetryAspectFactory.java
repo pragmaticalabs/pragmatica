@@ -75,8 +75,8 @@ final class DefaultRetryAspectFactory implements RetryAspectFactory {
                                      try{
                                          return (Promise<?>) method.invoke(delegate, args);
                                      } catch (Exception e) {
-                                         return Promise.failure(InfraSliceError.RetryError.retryError("Failed to invoke method: " + method.getName(),
-                                                                                                      e));
+                                         return InfraSliceError.RetryFailed.retryFailed("Failed to invoke method: " + method.getName(),
+                                                                                                      e).promise();
                                      }
                                  });
         }

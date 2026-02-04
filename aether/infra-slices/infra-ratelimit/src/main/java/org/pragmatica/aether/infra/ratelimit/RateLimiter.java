@@ -51,8 +51,16 @@ public interface RateLimiter extends Slice {
      * @param defaultConfig Default configuration for unconfigured keys
      * @return RateLimiter instance
      */
-    static RateLimiter inMemory(RateLimitConfig defaultConfig) {
+    static RateLimiter rateLimiter(RateLimitConfig defaultConfig) {
         return new InMemoryRateLimiter(defaultConfig);
+    }
+
+    /**
+     * @deprecated Use {@link #rateLimiter(RateLimitConfig)} instead.
+     */
+    @Deprecated
+    static RateLimiter inMemory(RateLimitConfig defaultConfig) {
+        return rateLimiter(defaultConfig);
     }
 
     @Override

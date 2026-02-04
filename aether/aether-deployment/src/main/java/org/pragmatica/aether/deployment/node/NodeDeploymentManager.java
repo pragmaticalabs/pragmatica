@@ -7,7 +7,7 @@ import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceActionConfig;
-import org.pragmatica.aether.slice.SliceBridgeImpl;
+import org.pragmatica.aether.slice.DefaultSliceBridge;
 import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
 import org.pragmatica.aether.slice.serialization.SerializerFactoryProvider;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
@@ -334,7 +334,7 @@ public interface NodeDeploymentManager {
                                                               m.returnType()))
                                       .collect(Collectors.toList());
                 var serializerFactory = serializerProvider.createFactory(typeTokens);
-                var sliceBridge = SliceBridgeImpl.sliceBridgeImpl(artifact, slice, serializerFactory);
+                var sliceBridge = DefaultSliceBridge.defaultSliceBridge(artifact, slice, serializerFactory);
                 invocationHandler.registerSlice(artifact, sliceBridge);
                 log.debug("Registered slice {} for invocation", artifact);
                 return Unit.unit();

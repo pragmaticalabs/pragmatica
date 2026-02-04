@@ -17,7 +17,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Implementation of SliceBridge for Node-Slice communication.
+ * Default implementation of SliceBridge for Node-Slice communication.
  * <p>
  * This class bridges the Node (Application ClassLoader) and Slices (isolated ClassLoader)
  * using byte arrays for serialized data. It wraps a Slice instance and handles all
@@ -42,10 +42,10 @@ import java.util.Map;
  * @see SliceBridge
  * @see Slice
  */
-public record SliceBridgeImpl(Artifact artifact,
-                              Slice slice,
-                              Map<String, InternalMethod> methodMap,
-                              SerializerFactory serializerFactory) implements SliceBridge {
+public record DefaultSliceBridge(Artifact artifact,
+                                 Slice slice,
+                                 Map<String, InternalMethod> methodMap,
+                                 SerializerFactory serializerFactory) implements SliceBridge {
     /**
      * Internal method descriptor containing type information for serialization.
      */
@@ -54,16 +54,16 @@ public record SliceBridgeImpl(Artifact artifact,
                                  TypeToken<?> returnType) {}
 
     /**
-     * Create a SliceBridgeImpl from a Slice instance.
+     * Create a DefaultSliceBridge from a Slice instance.
      *
      * @param artifact          The slice artifact coordinates
      * @param slice             The slice instance
      * @param serializerFactory Factory for serialization
-     * @return SliceBridgeImpl wrapping the slice
+     * @return DefaultSliceBridge wrapping the slice
      */
-    public static SliceBridgeImpl sliceBridgeImpl(Artifact artifact,
-                                                  Slice slice,
-                                                  SerializerFactory serializerFactory) {
+    public static DefaultSliceBridge defaultSliceBridge(Artifact artifact,
+                                                        Slice slice,
+                                                        SerializerFactory serializerFactory) {
         var methodMap = slice.methods()
                              .stream()
                              .collect(java.util.stream.Collectors.toMap(m -> m.name()
@@ -71,17 +71,27 @@ public record SliceBridgeImpl(Artifact artifact,
                                                                         m -> new InternalMethod(m,
                                                                                                 m.parameterType(),
                                                                                                 m.returnType())));
-        return new SliceBridgeImpl(artifact, slice, Map.copyOf(methodMap), serializerFactory);
+        return new DefaultSliceBridge(artifact, slice, Map.copyOf(methodMap), serializerFactory);
     }
 
     /**
-     * @deprecated Use {@link #sliceBridgeImpl(Artifact, Slice, SerializerFactory)} instead.
+     * @deprecated Use {@link #defaultSliceBridge(Artifact, Slice, SerializerFactory)} instead.
      */
     @Deprecated
-    public static SliceBridgeImpl sliceBridge(Artifact artifact,
-                                              Slice slice,
-                                              SerializerFactory serializerFactory) {
-        return sliceBridgeImpl(artifact, slice, serializerFactory);
+    public static DefaultSliceBridge sliceBridgeImpl(Artifact artifact,
+                                                     Slice slice,
+                                                     SerializerFactory serializerFactory) {
+        return defaultSliceBridge(artifact, slice, serializerFactory);
+    }
+
+    /**
+     * @deprecated Use {@link #defaultSliceBridge(Artifact, Slice, SerializerFactory)} instead.
+     */
+    @Deprecated
+    public static DefaultSliceBridge sliceBridge(Artifact artifact,
+                                                 Slice slice,
+                                                 SerializerFactory serializerFactory) {
+        return defaultSliceBridge(artifact, slice, serializerFactory);
     }
 
     @Override

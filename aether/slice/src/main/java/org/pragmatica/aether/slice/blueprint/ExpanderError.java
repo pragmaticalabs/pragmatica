@@ -11,8 +11,16 @@ public sealed interface ExpanderError extends Cause {
      * Artifact mismatch between requested and manifest-declared artifact.
      */
     record ArtifactMismatch(Artifact requested, Artifact declared) implements ExpanderError {
-        public static ArtifactMismatch cause(Artifact requested, Artifact declared) {
+        public static ArtifactMismatch artifactMismatch(Artifact requested, Artifact declared) {
             return new ArtifactMismatch(requested, declared);
+        }
+
+        /**
+         * @deprecated Use {@link #artifactMismatch(Artifact, Artifact)} instead.
+         */
+        @Deprecated
+        public static ArtifactMismatch cause(Artifact requested, Artifact declared) {
+            return artifactMismatch(requested, declared);
         }
 
         @Override

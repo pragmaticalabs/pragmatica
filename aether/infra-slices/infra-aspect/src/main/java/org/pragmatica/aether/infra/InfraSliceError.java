@@ -1,6 +1,7 @@
 package org.pragmatica.aether.infra;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 
 /**
  * Error hierarchy for infrastructure slice failures.
@@ -27,29 +28,33 @@ public sealed interface InfraSliceError extends Cause {
         }
     }
 
-    record RetryError(String detail, Throwable cause) implements InfraSliceError {
-        public static RetryError retryError(String detail, Throwable cause) {
-            return new RetryError(detail, cause);
+    record RetryFailed(String detail, Option<Throwable> cause) implements InfraSliceError {
+        public static RetryFailed retryFailed(String detail, Throwable cause) {
+            return new RetryFailed(detail, Option.option(cause));
+        }
+
+        public static RetryFailed retryFailed(String detail) {
+            return new RetryFailed(detail, Option.none());
         }
 
         @Override
         public String message() {
-            return "Retry failed: " + detail + (cause != null
-                                                ? " - " + cause.getMessage()
-                                                : "");
+            return "Retry failed: " + detail + cause.map(c -> " - " + c.getMessage()).or("");
         }
     }
 
-    record CircuitBreakerError(String detail, Throwable cause) implements InfraSliceError {
-        public static CircuitBreakerError circuitBreakerError(String detail, Throwable cause) {
-            return new CircuitBreakerError(detail, cause);
+    record CircuitBreakerTripped(String detail, Option<Throwable> cause) implements InfraSliceError {
+        public static CircuitBreakerTripped circuitBreakerTripped(String detail, Throwable cause) {
+            return new CircuitBreakerTripped(detail, Option.option(cause));
+        }
+
+        public static CircuitBreakerTripped circuitBreakerTripped(String detail) {
+            return new CircuitBreakerTripped(detail, Option.none());
         }
 
         @Override
         public String message() {
-            return "Circuit breaker error: " + detail + (cause != null
-                                                         ? " - " + cause.getMessage()
-                                                         : "");
+            return "Circuit breaker tripped: " + detail + cause.map(c -> " - " + c.getMessage()).or("");
         }
     }
 }

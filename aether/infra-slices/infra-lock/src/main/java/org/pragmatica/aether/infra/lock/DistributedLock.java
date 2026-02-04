@@ -47,8 +47,16 @@ public interface DistributedLock extends Slice {
      *
      * @return DistributedLock instance
      */
-    static DistributedLock inMemory() {
+    static DistributedLock distributedLock() {
         return new InMemoryDistributedLock();
+    }
+
+    /**
+     * @deprecated Use {@link #distributedLock()} instead.
+     */
+    @Deprecated
+    static DistributedLock inMemory() {
+        return distributedLock();
     }
 
     @Override

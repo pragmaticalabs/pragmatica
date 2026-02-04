@@ -27,7 +27,7 @@ import java.util.List;
  * SliceClassLoader (slice JAR)
  * </pre>
  * <p>
- * The SliceBridge is implemented by SliceBridgeImpl in the slice module,
+ * The SliceBridge is implemented by DefaultSliceBridge in the slice module,
  * loaded via FrameworkClassLoader. This allows the Node to communicate with
  * slices without sharing classes across classloader boundaries.
  * <p>
