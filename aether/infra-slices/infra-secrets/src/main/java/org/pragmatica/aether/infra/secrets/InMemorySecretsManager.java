@@ -35,8 +35,7 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     static InMemorySecretsManager inMemorySecretsManager() {
-        return new InMemorySecretsManager(SecretsConfig.secretsConfig()
-                                                       .fold(err -> DEFAULT_CONFIG, c -> c));
+        return new InMemorySecretsManager(SecretsConfig.secretsConfig().or(DEFAULT_CONFIG));
     }
 
     static InMemorySecretsManager inMemorySecretsManager(SecretsConfig config) {
@@ -57,12 +56,10 @@ final class InMemorySecretsManager implements SecretsManager {
     private Promise<SecretMetadata> createNewSecret(String name, SecretValue value, Map<String, String> tags) {
         var metadata = SecretMetadata.secretMetadata(name, tags);
         var entry = SecretEntry.secretEntry(metadata);
-        entry.versions()
-             .put(1, value);
+        entry.versions().put(1, value);
         return option(secrets.putIfAbsent(name, entry))
-        .fold(() -> Promise.success(metadata),
-              existing -> SecretsError.secretAlreadyExists(name)
-                                      .promise());
+               .map(_ -> SecretsError.secretAlreadyExists(name).<SecretMetadata>promise())
+               .or(Promise.success(metadata));
     }
 
     @Override
@@ -78,10 +75,9 @@ final class InMemorySecretsManager implements SecretsManager {
     }
 
     private Promise<SecretValue> getVersionOrFail(SecretEntry entry, String name, int version) {
-        return option(entry.versions()
-                           .get(version))
-        .fold(() -> SecretsError.versionNotFound(name, version)
-                                .<SecretValue> promise(), Promise::success);
+        return option(entry.versions().get(version))
+               .toResult(SecretsError.versionNotFound(name, version))
+               .async();
     }
 
     @Override
@@ -225,18 +221,17 @@ final class InMemorySecretsManager implements SecretsManager {
     // ========== Internal Helpers ==========
     private Promise<String> validateSecretName(String name) {
         return option(name).filter(n -> !n.isBlank())
-                     .filter(n -> n.matches("^[a-zA-Z][a-zA-Z0-9._-]*$"))
-                     .map(String::trim)
-                     .fold(() -> SecretsError.invalidSecretName(name,
-                                                                "Name must start with letter and contain only letters, numbers, dots, underscores, and hyphens")
-                                             .<String> promise(),
-                           Promise::success);
+                           .filter(n -> n.matches("^[a-zA-Z][a-zA-Z0-9._-]*$"))
+                           .map(String::trim)
+                           .toResult(SecretsError.invalidSecretName(name,
+                               "Name must start with letter and contain only letters, numbers, dots, underscores, and hyphens"))
+                           .async();
     }
 
     private Promise<SecretEntry> getSecretEntryOrFail(String name) {
         return option(secrets.get(name))
-        .fold(() -> SecretsError.secretNotFound(name)
-                                .<SecretEntry> promise(), Promise::success);
+               .toResult(SecretsError.secretNotFound(name))
+               .async();
     }
 
     private void pruneOldVersions(SecretEntry entry) {

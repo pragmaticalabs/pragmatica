@@ -42,14 +42,13 @@ final class InMemoryCacheService implements CacheService {
         scheduler.scheduleAtFixedRate(this::cleanupExpired, 1, 1, TimeUnit.MINUTES);
     }
 
+    private static final CacheConfig DEFAULT_CONFIG = new CacheConfig("default",
+                                                                       10_000,
+                                                                       org.pragmatica.lang.io.TimeSpan.timeSpan(1).hours(),
+                                                                       CacheConfig.EvictionPolicy.LRU);
+
     static InMemoryCacheService inMemoryCacheService() {
-        return new InMemoryCacheService(CacheConfig.cacheConfig()
-                                                   .fold(_ -> new CacheConfig("default",
-                                                                              10_000,
-                                                                              org.pragmatica.lang.io.TimeSpan.timeSpan(1)
-                                                                                 .hours(),
-                                                                              CacheConfig.EvictionPolicy.LRU),
-                                                         c -> c));
+        return new InMemoryCacheService(CacheConfig.cacheConfig().or(DEFAULT_CONFIG));
     }
 
     static InMemoryCacheService inMemoryCacheService(CacheConfig config) {
@@ -248,25 +247,39 @@ final class InMemoryCacheService implements CacheService {
     @Override
     public Promise<Unit> stop() {
         scheduler.shutdown();
+        awaitSchedulerTermination();
         cache.clear();
         return Promise.success(unit());
+    }
+
+    private void awaitSchedulerTermination() {
+        try {
+            if (!scheduler.awaitTermination(5, TimeUnit.SECONDS)) {
+                scheduler.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            scheduler.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     // ========== Internal ==========
     private void cleanupExpired() {
         var now = Instant.now();
-        var expiredCount = cache.entrySet()
-                                .stream()
-                                .filter(e -> e.getValue()
-                                              .isExpiredAt(now))
-                                .peek(e -> cache.remove(e.getKey()))
-                                .count();
-        if (expiredCount > 0) {
-            for (int i = 0; i < expiredCount; i++) {
-                recordExpiration();
-            }
+        var expiredKeys = cache.entrySet()
+                               .stream()
+                               .filter(e -> e.getValue().isExpiredAt(now))
+                               .map(Map.Entry::getKey)
+                               .toList();
+        expiredKeys.forEach(this::removeExpiredEntry);
+        if (!expiredKeys.isEmpty()) {
             updateSize();
         }
+    }
+
+    private void removeExpiredEntry(String key) {
+        cache.remove(key);
+        recordExpiration();
     }
 
     private void recordHit() {

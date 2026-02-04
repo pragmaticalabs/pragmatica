@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
@@ -79,22 +80,19 @@ final class InMemoryDistributedLock implements DistributedLock {
     }
 
     Promise<Unit> releaseLock(String lockId, String ownerId) {
-        var entry = locks.get(lockId);
-        if (entry != null && entry.ownerId()
-                                  .equals(ownerId)) {
-            locks.remove(lockId, entry);
-            return Promise.success(unit());
-        }
-        return new LockError.LockNotHeld(lockId).promise();
+        return option(locks.get(lockId))
+               .filter(entry -> entry.ownerId().equals(ownerId))
+               .map(entry -> {
+                   locks.remove(lockId, entry);
+                   return Promise.success(unit());
+               })
+               .or(() -> new LockError.LockNotHeld(lockId).<Unit>promise());
     }
 
     Promise<Boolean> extendLock(String lockId, String ownerId, TimeSpan extension) {
-        var entry = locks.get(lockId);
-        if (entry != null && entry.ownerId()
-                                  .equals(ownerId)) {
-            return Promise.success(true);
-        }
-        return Promise.success(false);
+        return Promise.success(option(locks.get(lockId))
+                               .filter(entry -> entry.ownerId().equals(ownerId))
+                               .isPresent());
     }
 
     private record LockEntry(String ownerId, String token, Instant acquiredAt) {}

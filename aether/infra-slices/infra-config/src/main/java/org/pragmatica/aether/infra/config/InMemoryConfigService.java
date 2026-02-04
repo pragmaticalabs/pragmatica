@@ -130,14 +130,13 @@ final class InMemoryConfigService implements ConfigService {
 
     private void notifyWatchers(String section, String key) {
         var watchKey = watchKey(section, key);
-        var entries = watchers.get(watchKey);
-        if (entries != null) {
-            var currentValue = getHierarchical(section, key, TomlDocument::getString);
-            entries.stream()
-                   .filter(WatchEntry::isActive)
-                   .forEach(entry -> entry.callback()
-                                          .apply(currentValue));
-        }
+        Option.option(watchers.get(watchKey))
+              .onPresent(entries -> {
+                  var currentValue = getHierarchical(section, key, TomlDocument::getString);
+                  entries.stream()
+                         .filter(WatchEntry::isActive)
+                         .forEach(entry -> entry.callback().apply(currentValue));
+              });
     }
 
     private static String watchKey(String section, String key) {
@@ -175,10 +174,8 @@ final class InMemoryConfigService implements ConfigService {
         @Override
         public void cancel() {
             entry.cancel();
-            var entries = watchers.get(watchKey);
-            if (entries != null) {
-                entries.remove(entry);
-            }
+            Option.option(watchers.get(watchKey))
+                  .onPresent(entries -> entries.remove(entry));
         }
 
         @Override

@@ -6,10 +6,10 @@ import org.pragmatica.lang.Cause;
  * Error hierarchy for infrastructure slice failures.
  */
 public sealed interface InfraSliceError extends Cause {
-    record ConfigurationError(String detail) implements InfraSliceError {
+    record ConfigurationFailed(String detail) implements InfraSliceError {
         @Override
         public String message() {
-            return "Infrastructure slice configuration error: " + detail;
+            return "Infrastructure slice configuration failed: " + detail;
         }
     }
 

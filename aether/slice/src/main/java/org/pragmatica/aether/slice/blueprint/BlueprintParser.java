@@ -5,6 +5,7 @@ import org.pragmatica.config.toml.TomlDocument;
 import org.pragmatica.config.toml.TomlParser;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -42,12 +43,12 @@ public interface BlueprintParser {
     Fn1<Cause, String> INVALID_ARTIFACT = Causes.forOneValue("Invalid artifact format: %s");
 
     static Result<Blueprint> parse(String dsl) {
-        if (dsl == null || dsl.isBlank()) {
-            return MISSING_ID.result();
-        }
-        return TomlParser.parse(dsl)
+        return Option.option(dsl)
+                     .filter(s -> !s.isBlank())
+                     .toResult(MISSING_ID)
+                     .flatMap(content -> TomlParser.parse(content)
                          .mapError(cause -> Causes.cause("TOML parse error: " + cause.message()))
-                         .flatMap(BlueprintParser::parseDocument);
+                         .flatMap(BlueprintParser::parseDocument));
     }
 
     static Result<Blueprint> parseFile(Path path) {
@@ -73,8 +74,8 @@ public interface BlueprintParser {
     private static Result<List<SliceSpec>> parseSlices(TomlDocument doc) {
         // RFC-0005: Parse [[slices]] array format
         return doc.getTableArray("slices")
-                  .fold(() -> Result.success(List.of()),
-                        BlueprintParser::parseSliceArray);
+                  .map(BlueprintParser::parseSliceArray)
+                  .or(Result.success(List.of()));
     }
 
     private static Result<List<SliceSpec>> parseSliceArray(List<Map<String, Object>> sliceEntries) {
@@ -92,17 +93,16 @@ public interface BlueprintParser {
     }
 
     private static Result<SliceSpec> parseSliceEntry(Map<String, Object> entry, int index) {
-        var artifactObj = entry.get("artifact");
-        if (artifactObj == null) {
-            return MISSING_ARTIFACT.apply("slices[" + index + "]")
-                                   .result();
-        }
-        var artifactStr = artifactObj.toString();
-        var instanceCount = entry.get("instances") instanceof Number n
-                            ? n.intValue()
-                            : 1;
-        return Artifact.artifact(artifactStr)
-                       .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
-                       .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instanceCount));
+        return Option.option(entry.get("artifact"))
+                     .toResult(MISSING_ARTIFACT.apply("slices[" + index + "]"))
+                     .flatMap(artifactObj -> {
+                         var artifactStr = artifactObj.toString();
+                         var instanceCount = entry.get("instances") instanceof Number n
+                                             ? n.intValue()
+                                             : 1;
+                         return Artifact.artifact(artifactStr)
+                                        .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
+                                        .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instanceCount));
+                     });
     }
 }

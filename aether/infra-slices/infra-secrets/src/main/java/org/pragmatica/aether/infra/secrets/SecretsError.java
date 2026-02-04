@@ -60,7 +60,7 @@ public sealed interface SecretsError extends Cause {
     /**
      * Encryption/decryption failed.
      */
-    record CryptoError(String operation, Option<Throwable> cause) implements SecretsError {
+    record CryptoFailed(String operation, Option<Throwable> cause) implements SecretsError {
         @Override
         public String message() {
             return "Crypto operation failed: " + operation + cause.fold(() -> "", c -> " - " + c.getMessage());
@@ -98,12 +98,12 @@ public sealed interface SecretsError extends Cause {
         return new InvalidConfiguration(reason);
     }
 
-    static CryptoError cryptoError(String operation) {
-        return new CryptoError(operation, Option.none());
+    static CryptoFailed cryptoFailed(String operation) {
+        return new CryptoFailed(operation, Option.none());
     }
 
-    static CryptoError cryptoError(String operation, Throwable cause) {
-        return new CryptoError(operation, Option.option(cause));
+    static CryptoFailed cryptoFailed(String operation, Throwable cause) {
+        return new CryptoFailed(operation, Option.option(cause));
     }
 
     static AccessDenied accessDenied(String name, String reason) {

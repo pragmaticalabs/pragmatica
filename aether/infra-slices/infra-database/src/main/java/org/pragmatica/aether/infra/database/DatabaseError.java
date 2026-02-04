@@ -68,9 +68,9 @@ public sealed interface DatabaseError extends Cause {
     }
 
     /**
-     * Transaction error.
+     * Transaction failed.
      */
-    record TransactionError(String operation, Option<Throwable> cause) implements DatabaseError {
+    record TransactionFailed(String operation, Option<Throwable> cause) implements DatabaseError {
         @Override
         public String message() {
             return "Transaction " + operation + " failed" + cause.fold(() -> "", c -> ": " + c.getMessage());
@@ -120,12 +120,12 @@ public sealed interface DatabaseError extends Cause {
         return new InvalidConfiguration(reason);
     }
 
-    static TransactionError transactionError(String operation) {
-        return new TransactionError(operation, Option.none());
+    static TransactionFailed transactionFailed(String operation) {
+        return new TransactionFailed(operation, Option.none());
     }
 
-    static TransactionError transactionError(String operation, Throwable cause) {
-        return new TransactionError(operation, Option.option(cause));
+    static TransactionFailed transactionFailed(String operation, Throwable cause) {
+        return new TransactionFailed(operation, Option.option(cause));
     }
 
     static TableNotFound tableNotFound(String table) {

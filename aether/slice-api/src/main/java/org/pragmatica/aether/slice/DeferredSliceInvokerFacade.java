@@ -1,6 +1,8 @@
 package org.pragmatica.aether.slice;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 import org.pragmatica.lang.utils.Causes;
 
@@ -23,26 +25,31 @@ public final class DeferredSliceInvokerFacade implements SliceInvokerFacade {
         return new DeferredSliceInvokerFacade();
     }
 
+    private static final org.pragmatica.lang.Cause DELEGATE_ALREADY_SET =
+        Causes.cause("Delegate already set");
+
     /**
      * Set the actual SliceInvokerFacade delegate.
      * Must be called before any invocations occur.
+     *
+     * @return Result.success if set, or failure if already set
      */
-    public void setDelegate(SliceInvokerFacade invoker) {
-        if (!delegate.compareAndSet(null, invoker)) {
-            throw new IllegalStateException("Delegate already set");
-        }
+    public Result<Unit> setDelegate(SliceInvokerFacade invoker) {
+        return delegate.compareAndSet(null, invoker)
+               ? Result.success(Unit.unit())
+               : DELEGATE_ALREADY_SET.result();
     }
+
+    private static final org.pragmatica.lang.Cause NOT_INITIALIZED =
+        Causes.cause("SliceInvokerFacade not initialized");
 
     @Override
     public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
                                                           String methodName,
                                                           TypeToken<T> requestType,
                                                           TypeToken<R> responseType) {
-        var d = delegate.get();
-        if (d == null) {
-            return Causes.cause("SliceInvokerFacade not initialized")
-                         .result();
-        }
-        return d.methodHandle(sliceArtifact, methodName, requestType, responseType);
+        return Option.option(delegate.get())
+                     .toResult(NOT_INITIALIZED)
+                     .flatMap(d -> d.methodHandle(sliceArtifact, methodName, requestType, responseType));
     }
 }

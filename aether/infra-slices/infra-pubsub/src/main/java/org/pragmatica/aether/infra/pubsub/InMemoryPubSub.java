@@ -1,7 +1,9 @@
 package org.pragmatica.aether.infra.pubsub;
 
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
 import java.util.Set;
@@ -24,11 +26,10 @@ final class InMemoryPubSub implements PubSub {
         if (!topics.contains(topic)) {
             return new PubSubError.TopicNotFound(topic).promise();
         }
-        var subscribers = subscriptions.get(topic);
-        if (subscribers == null || subscribers.isEmpty()) {
-            return Promise.success(unit());
-        }
-        return deliverToSubscribers(subscribers, message);
+        return Option.option(subscriptions.get(topic))
+                     .filter(subs -> !subs.isEmpty())
+                     .map(subs -> deliverToSubscribers(subs, message))
+                     .or(Promise.success(unit()));
     }
 
     @Override
@@ -47,16 +48,12 @@ final class InMemoryPubSub implements PubSub {
 
     @Override
     public Promise<Unit> unsubscribe(Subscription subscription) {
-        var subscribers = subscriptions.get(subscription.topic());
-        if (subscribers == null) {
-            return new PubSubError.SubscriptionNotFound(subscription.subscriptionId()).promise();
-        }
-        var removed = subscribers.removeIf(e -> e.subscriptionId()
-                                                 .equals(subscription.subscriptionId()));
-        if (!removed) {
-            return new PubSubError.SubscriptionNotFound(subscription.subscriptionId()).promise();
-        }
-        return Promise.success(unit());
+        return Option.option(subscriptions.get(subscription.topic()))
+                     .toResult(new PubSubError.SubscriptionNotFound(subscription.subscriptionId()))
+                     .flatMap(subs -> subs.removeIf(e -> e.subscriptionId().equals(subscription.subscriptionId()))
+                         ? Result.success(unit())
+                         : new PubSubError.SubscriptionNotFound(subscription.subscriptionId()).result())
+                     .async();
     }
 
     @Override
