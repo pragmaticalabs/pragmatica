@@ -16,8 +16,8 @@ import java.util.Properties;
  * @param host           Database host
  * @param port           Database port (0 to use default for database type)
  * @param database       Database name
- * @param username       Connection username
- * @param password       Connection password
+ * @param username       Connection username (optional)
+ * @param password       Connection password (optional)
  * @param poolConfig     Connection pool configuration
  * @param properties     Additional driver-specific properties
  * @param jdbcUrl        Override JDBC URL (optional, overrides host/port/database)
@@ -29,13 +29,30 @@ public record DatabaseConnectorConfig(
     String host,
     int port,
     String database,
-    String username,
-    String password,
+    Option<String> username,
+    Option<String> password,
     PoolConfig poolConfig,
     Map<String, String> properties,
     Option<String> jdbcUrl,
     Option<String> r2dbcUrl
 ) {
+    /**
+     * Override toString() to mask password for security.
+     */
+    @Override
+    public String toString() {
+        return "DatabaseConnectorConfig[name=" + name +
+               ", type=" + type +
+               ", host=" + host +
+               ", port=" + port +
+               ", database=" + database +
+               ", username=" + username.map(_ -> "***").or("none") +
+               ", password=" + password.map(_ -> "***").or("none") +
+               ", poolConfig=" + poolConfig +
+               ", properties=" + properties +
+               ", jdbcUrl=" + jdbcUrl +
+               ", r2dbcUrl=" + r2dbcUrl + "]";
+    }
     /**
      * Creates a config with required parameters.
      *
@@ -55,9 +72,9 @@ public record DatabaseConnectorConfig(
         String username,
         String password
     ) {
-        return validate(name, type, host, database, username)
+        return validate(name, type, host, database)
             .map(_ -> new DatabaseConnectorConfig(
-                name, type, host, 0, database, username, password,
+                name, type, host, 0, database, Option.option(username), Option.option(password),
                 PoolConfig.DEFAULT, Map.of(), Option.none(), Option.none()
             ));
     }
@@ -71,24 +88,25 @@ public record DatabaseConnectorConfig(
      * @param password Connection password
      * @return Result with config or validation error
      */
-    public static Result<DatabaseConnectorConfig> fromJdbcUrl(
+    public static Result<DatabaseConnectorConfig> databaseConnectorConfigFromJdbcUrl(
         String name,
         String jdbcUrl,
         String username,
         String password
     ) {
-        if (name == null || name.isBlank()) {
-            return Causes.cause("Connector name is required").result();
-        }
-        if (jdbcUrl == null || jdbcUrl.isBlank()) {
-            return Causes.cause("JDBC URL is required").result();
-        }
-        var type = DatabaseType.fromJdbcUrl(jdbcUrl)
-                              .or(DatabaseType.POSTGRESQL);
-        return Result.success(new DatabaseConnectorConfig(
-            name, type, "", 0, "", username, password,
-            PoolConfig.DEFAULT, Map.of(), Option.some(jdbcUrl), Option.none()
-        ));
+        return Option.option(name)
+                     .filter(n -> !n.isBlank())
+                     .toResult(Causes.cause("Connector name is required"))
+                     .flatMap(_ -> Option.option(jdbcUrl)
+                                        .filter(u -> !u.isBlank())
+                                        .toResult(Causes.cause("JDBC URL is required")))
+                     .map(url -> {
+                         var type = DatabaseType.fromJdbcUrl(url).or(DatabaseType.POSTGRESQL);
+                         return new DatabaseConnectorConfig(
+                             name, type, "", 0, "", Option.option(username), Option.option(password),
+                             PoolConfig.DEFAULT, Map.of(), Option.some(url), Option.none()
+                         );
+                     });
     }
 
     /**
@@ -96,7 +114,7 @@ public record DatabaseConnectorConfig(
      *
      * @return New builder
      */
-    public static Builder builder() {
+    public static Builder databaseConnectorConfigBuilder() {
         return new Builder();
     }
 
@@ -125,30 +143,25 @@ public record DatabaseConnectorConfig(
      */
     public Properties toJdbcProperties() {
         var props = new Properties();
-        if (username != null && !username.isBlank()) {
-            props.setProperty("user", username);
-        }
-        if (password != null && !password.isBlank()) {
-            props.setProperty("password", password);
-        }
+        username.filter(u -> !u.isBlank()).onPresent(u -> props.setProperty("user", u));
+        password.filter(p -> !p.isBlank()).onPresent(p -> props.setProperty("password", p));
         properties.forEach(props::setProperty);
         return props;
     }
 
-    private static Result<Unit> validate(String name, DatabaseType type, String host, String database, String username) {
-        if (name == null || name.isBlank()) {
-            return Causes.cause("Connector name is required").result();
-        }
-        if (type == null) {
-            return Causes.cause("Database type is required").result();
-        }
-        if (host == null || host.isBlank()) {
-            return Causes.cause("Database host is required").result();
-        }
-        if (database == null || database.isBlank()) {
-            return Causes.cause("Database name is required").result();
-        }
-        return Result.unitResult();
+    private static Result<Unit> validate(String name, DatabaseType type, String host, String database) {
+        return Option.option(name)
+                     .filter(n -> !n.isBlank())
+                     .toResult(Causes.cause("Connector name is required"))
+                     .flatMap(_ -> Option.option(type)
+                                        .toResult(Causes.cause("Database type is required")))
+                     .flatMap(_ -> Option.option(host)
+                                        .filter(h -> !h.isBlank())
+                                        .toResult(Causes.cause("Database host is required")))
+                     .flatMap(_ -> Option.option(database)
+                                        .filter(d -> !d.isBlank())
+                                        .toResult(Causes.cause("Database name is required")))
+                     .map(_ -> Unit.unit());
     }
 
     /**
@@ -160,8 +173,8 @@ public record DatabaseConnectorConfig(
         private String host;
         private int port = 0;
         private String database;
-        private String username;
-        private String password;
+        private Option<String> username = Option.none();
+        private Option<String> password = Option.none();
         private PoolConfig poolConfig = PoolConfig.DEFAULT;
         private Map<String, String> properties = Map.of();
         private Option<String> jdbcUrl = Option.none();
@@ -195,12 +208,12 @@ public record DatabaseConnectorConfig(
         }
 
         public Builder username(String username) {
-            this.username = username;
+            this.username = Option.option(username);
             return this;
         }
 
         public Builder password(String password) {
-            this.password = password;
+            this.password = Option.option(password);
             return this;
         }
 
@@ -225,7 +238,7 @@ public record DatabaseConnectorConfig(
         }
 
         public Result<DatabaseConnectorConfig> build() {
-            return validate(name, type, host, database, username)
+            return validate(name, type, host, database)
                 .map(_ -> new DatabaseConnectorConfig(
                     name, type, host, port, database, username, password,
                     poolConfig, properties, jdbcUrl, r2dbcUrl

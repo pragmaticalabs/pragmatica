@@ -33,8 +33,8 @@ public final class JdbcDatabaseConnectorFactory implements ResourceFactory<Datab
             () -> {
                 var hikariConfig = new HikariConfig();
                 hikariConfig.setJdbcUrl(config.effectiveJdbcUrl());
-                hikariConfig.setUsername(config.username());
-                hikariConfig.setPassword(config.password());
+                config.username().onPresent(hikariConfig::setUsername);
+                config.password().onPresent(hikariConfig::setPassword);
                 hikariConfig.setConnectionTimeout(config.poolConfig().connectionTimeout().toMillis());
                 hikariConfig.setIdleTimeout(config.poolConfig().idleTimeout().toMillis());
                 hikariConfig.setMaxLifetime(config.poolConfig().maxLifetime().toMillis());

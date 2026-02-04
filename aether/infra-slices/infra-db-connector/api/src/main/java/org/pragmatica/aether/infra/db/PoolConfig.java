@@ -1,5 +1,7 @@
 package org.pragmatica.aether.infra.db;
 
+import org.pragmatica.lang.Option;
+
 import java.time.Duration;
 
 /**
@@ -19,7 +21,7 @@ public record PoolConfig(
     Duration connectionTimeout,
     Duration idleTimeout,
     Duration maxLifetime,
-    String validationQuery,
+    Option<String> validationQuery,
     Duration leakDetectionTimeout
 ) {
     /**
@@ -31,7 +33,7 @@ public record PoolConfig(
         Duration.ofSeconds(30),     // connectionTimeout
         Duration.ofMinutes(10),     // idleTimeout
         Duration.ofMinutes(30),     // maxLifetime
-        null,                       // validationQuery (use driver default)
+        Option.none(),              // validationQuery (use driver default)
         Duration.ZERO               // leakDetectionTimeout (disabled)
     );
 
@@ -68,7 +70,7 @@ public record PoolConfig(
      *
      * @return New builder with default values
      */
-    public static Builder builder() {
+    public static Builder poolConfigBuilder() {
         return new Builder();
     }
 
@@ -81,7 +83,7 @@ public record PoolConfig(
         private Duration connectionTimeout = DEFAULT.connectionTimeout;
         private Duration idleTimeout = DEFAULT.idleTimeout;
         private Duration maxLifetime = DEFAULT.maxLifetime;
-        private String validationQuery = DEFAULT.validationQuery;
+        private Option<String> validationQuery = DEFAULT.validationQuery;
         private Duration leakDetectionTimeout = DEFAULT.leakDetectionTimeout;
 
         private Builder() {}
@@ -112,7 +114,7 @@ public record PoolConfig(
         }
 
         public Builder validationQuery(String validationQuery) {
-            this.validationQuery = validationQuery;
+            this.validationQuery = Option.option(validationQuery);
             return this;
         }
 

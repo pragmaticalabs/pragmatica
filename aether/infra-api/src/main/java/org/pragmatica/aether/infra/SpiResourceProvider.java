@@ -16,17 +16,17 @@ import java.util.function.Function;
  * Discovers {@link ResourceFactory} implementations via ServiceLoader
  * and caches created instances by (resourceType, configSection) key.
  * <p>
- * Thread-safe: Uses ConcurrentHashMap for instance caching.
+ * Thread-safe: Uses ConcurrentHashMap.computeIfAbsent for atomic caching.
  */
 public final class SpiResourceProvider implements ResourceProvider {
     private final Map<Class<?>, ResourceFactory<?, ?>> factories;
-    private final Map<CacheKey, Object> instanceCache;
+    private final Map<CacheKey, Promise<?>> promiseCache;
     private final Function<String, Result<?>> configLoader;
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private SpiResourceProvider(Function<String, Result<?>> configLoader) {
         this.configLoader = configLoader;
-        this.instanceCache = new ConcurrentHashMap<>();
+        this.promiseCache = new ConcurrentHashMap<>();
         Map<Class<?>, ResourceFactory<?, ?>> factoryMap = new ConcurrentHashMap<>();
         ServiceLoader.load(ResourceFactory.class)
                      .stream()
@@ -65,18 +65,16 @@ public final class SpiResourceProvider implements ResourceProvider {
     public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
         var key = new CacheKey(resourceType, configSection);
 
-        // Check cache first
-        return Option.option(instanceCache.get(key))
-                     .map(cached -> Promise.success((T) cached))
-                     .or(() -> findAndCreateResource(resourceType, configSection, key));
+        // Use computeIfAbsent for atomic cache access - prevents duplicate factory calls
+        return (Promise<T>) promiseCache.computeIfAbsent(key, k -> createResource(resourceType, configSection));
     }
 
     @SuppressWarnings("unchecked")
-    private <T> Promise<T> findAndCreateResource(Class<T> resourceType, String configSection, CacheKey key) {
+    private <T> Promise<T> createResource(Class<T> resourceType, String configSection) {
         return Option.option(factories.get(resourceType))
                      .toResult(ResourceProvisioningError.factoryNotFound(resourceType))
                      .async()
-                     .flatMap(factory -> loadConfigAndCreate((ResourceFactory<T, ?>) factory, configSection, resourceType, key));
+                     .flatMap(factory -> loadConfigAndCreate((ResourceFactory<T, ?>) factory, configSection, resourceType));
     }
 
     @Override
@@ -86,11 +84,9 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     private <T, C> Promise<T> loadConfigAndCreate(ResourceFactory<T, C> factory,
                                                    String configSection,
-                                                   Class<T> resourceType,
-                                                   CacheKey key) {
-        // Load config using the config loader (which should delegate to ConfigService)
+                                                   Class<T> resourceType) {
         return loadConfig(configSection, factory.configType())
-            .flatMap(config -> createAndCache(factory, config, key, resourceType, configSection));
+            .flatMap(config -> createResource(factory, config, resourceType, configSection));
     }
 
     @SuppressWarnings("unchecked")
@@ -101,23 +97,12 @@ public final class SpiResourceProvider implements ResourceProvider {
                            .async();
     }
 
-    @SuppressWarnings("unchecked")
-    private <T, C> Promise<T> createAndCache(ResourceFactory<T, C> factory,
+    private <T, C> Promise<T> createResource(ResourceFactory<T, C> factory,
                                               C config,
-                                              CacheKey key,
                                               Class<T> resourceType,
                                               String configSection) {
         return factory.create(config)
-                      .mapError(cause -> ResourceProvisioningError.creationFailed(resourceType, configSection, cause))
-                      .onSuccess(instance -> instanceCache.putIfAbsent(key, instance))
-                      .map(instance -> returnCachedOrNew(key, instance));
-    }
-
-    @SuppressWarnings("unchecked")
-    private <T> T returnCachedOrNew(CacheKey key, T instance) {
-        return Option.option(instanceCache.get(key))
-                     .map(existing -> (T) existing)
-                     .or(instance);
+                      .mapError(cause -> ResourceProvisioningError.creationFailed(resourceType, configSection, cause));
     }
 
     /**

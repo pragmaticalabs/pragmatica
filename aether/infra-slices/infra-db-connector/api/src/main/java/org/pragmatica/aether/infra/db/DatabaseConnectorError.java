@@ -71,10 +71,9 @@ public sealed interface DatabaseConnectorError extends Cause {
         }
 
         private static String truncateSql(String sql) {
-            if (sql == null) {
-                return "null";
-            }
-            return sql.length() > 100 ? sql.substring(0, 97) + "..." : sql;
+            return Option.option(sql)
+                         .map(s -> s.length() > 100 ? s.substring(0, 97) + "..." : s)
+                         .or("null");
         }
     }
 
@@ -127,11 +126,11 @@ public sealed interface DatabaseConnectorError extends Cause {
     }
 
     /**
-     * Transaction rollback (deadlock, serialization failure, etc).
+     * Transaction rolled back (deadlock, serialization failure, etc).
      */
-    record TransactionRollback(String reason) implements DatabaseConnectorError {
-        public static TransactionRollback transactionRollback(String reason) {
-            return new TransactionRollback(reason);
+    record TransactionRolledBack(String reason) implements DatabaseConnectorError {
+        public static TransactionRolledBack transactionRolledBack(String reason) {
+            return new TransactionRolledBack(reason);
         }
 
         @Override
@@ -140,8 +139,8 @@ public sealed interface DatabaseConnectorError extends Cause {
         }
     }
 
-    static TransactionRollback transactionRollback(String reason) {
-        return TransactionRollback.transactionRollback(reason);
+    static TransactionRolledBack transactionRollback(String reason) {
+        return TransactionRolledBack.transactionRolledBack(reason);
     }
 
     /**

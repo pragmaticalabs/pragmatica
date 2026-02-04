@@ -2,23 +2,25 @@ package org.pragmatica.aether.infra;
 
 import org.pragmatica.lang.Option;
 
+import java.util.concurrent.atomic.AtomicReference;
+
 /**
  * Thread-safe holder for the global InfraStore instance.
  */
 final class InfraStoreHolder {
-    private static volatile Option<InfraStore> instance = Option.none();
+    private static final AtomicReference<InfraStore> INSTANCE = new AtomicReference<>();
 
     private InfraStoreHolder() {}
 
     static Option<InfraStore> instance() {
-        return instance;
+        return Option.option(INSTANCE.get());
     }
 
     static void setInstance(InfraStore store) {
-        instance = Option.some(store);
+        INSTANCE.set(store);
     }
 
     static void clear() {
-        instance = Option.none();
+        INSTANCE.set(null);
     }
 }

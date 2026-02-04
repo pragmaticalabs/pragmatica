@@ -95,9 +95,13 @@ public enum DatabaseType {
      * @return Result with DatabaseType or failure
      */
     public static Result<DatabaseType> databaseType(String name) {
-        if (name == null || name.isBlank()) {
-            return Causes.cause("Database type name is required").result();
-        }
+        return Option.option(name)
+                     .filter(s -> !s.isBlank())
+                     .toResult(Causes.cause("Database type name is required"))
+                     .flatMap(DatabaseType::findByName);
+    }
+
+    private static Result<DatabaseType> findByName(String name) {
         var normalized = name.trim().toLowerCase();
         for (var type : values()) {
             if (type.name.equals(normalized) || type.name().equalsIgnoreCase(normalized)) {
@@ -114,9 +118,12 @@ public enum DatabaseType {
      * @return Option with detected type
      */
     public static Option<DatabaseType> fromJdbcUrl(String jdbcUrl) {
-        if (jdbcUrl == null || !jdbcUrl.startsWith("jdbc:")) {
-            return Option.none();
-        }
+        return Option.option(jdbcUrl)
+                     .filter(url -> url.startsWith("jdbc:"))
+                     .flatMap(DatabaseType::findByJdbcUrl);
+    }
+
+    private static Option<DatabaseType> findByJdbcUrl(String jdbcUrl) {
         var urlLower = jdbcUrl.toLowerCase();
         for (var type : values()) {
             if (urlLower.contains(":" + type.jdbcProtocol + ":")) {

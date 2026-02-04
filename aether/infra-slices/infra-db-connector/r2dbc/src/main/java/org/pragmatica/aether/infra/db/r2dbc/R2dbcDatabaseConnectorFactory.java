@@ -34,12 +34,12 @@ public final class R2dbcDatabaseConnectorFactory implements DatabaseConnectorFac
             var builder = ConnectionFactoryOptions.builder()
                 .from(options);
 
-            if (config.username() != null && !config.username().isBlank()) {
-                builder.option(ConnectionFactoryOptions.USER, config.username());
-            }
-            if (config.password() != null && !config.password().isBlank()) {
-                builder.option(ConnectionFactoryOptions.PASSWORD, config.password());
-            }
+            config.username()
+                  .filter(u -> !u.isBlank())
+                  .onPresent(u -> builder.option(ConnectionFactoryOptions.USER, u));
+            config.password()
+                  .filter(p -> !p.isBlank())
+                  .onPresent(p -> builder.option(ConnectionFactoryOptions.PASSWORD, p));
 
             var connectionFactory = ConnectionFactories.get(builder.build());
 
