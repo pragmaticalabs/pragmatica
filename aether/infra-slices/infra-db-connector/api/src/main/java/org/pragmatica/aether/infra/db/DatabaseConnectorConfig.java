@@ -46,12 +46,21 @@ public record DatabaseConnectorConfig(
                ", host=" + host +
                ", port=" + port +
                ", database=" + database +
-               ", username=" + username.map(_ -> "***").or("none") +
-               ", password=" + password.map(_ -> "***").or("none") +
+               ", username=[REDACTED]" +
+               ", password=[REDACTED]" +
                ", poolConfig=" + poolConfig +
                ", properties=" + properties +
-               ", jdbcUrl=" + jdbcUrl +
-               ", r2dbcUrl=" + r2dbcUrl + "]";
+               ", jdbcUrl=" + sanitizeUrl(jdbcUrl) +
+               ", r2dbcUrl=" + sanitizeUrl(r2dbcUrl) + "]";
+    }
+
+    private static String sanitizeUrl(Option<String> url) {
+        return url.map(DatabaseConnectorConfig::removeCredentialsFromUrl).or("none");
+    }
+
+    private static String removeCredentialsFromUrl(String url) {
+        // Remove embedded credentials like user:password@ from URLs
+        return url.replaceAll("://[^:]+:[^@]+@", "://[REDACTED]@");
     }
     /**
      * Creates a config with required parameters.

@@ -85,19 +85,18 @@ public final class R2dbcDatabaseConnector implements DatabaseConnector {
     @Override
     public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
         return operations.queryList(sql, (row, meta) -> mapRow(row, meta, mapper), params)
-                         .flatMap(results -> {
-                             // All results need to succeed
-                             for (var result : results) {
-                                 if (result.isFailure()) {
-                                     return result.mapError(R2dbcDatabaseConnector::toConnectorError)
-                                                  .async()
-                                                  .map(_ -> List.<T>of());
-                                 }
-                             }
-                             return Promise.success(results.stream()
-                                                           .map(Result::unwrap)
-                                                           .toList());
-                         });
+                         .flatMap(R2dbcDatabaseConnector::collectSuccessfulResults);
+    }
+
+    private static <T> Promise<List<T>> collectSuccessfulResults(List<Result<T>> results) {
+        for (var result : results) {
+            if (result.isFailure()) {
+                return result.mapError(R2dbcDatabaseConnector::toConnectorError)
+                             .async()
+                             .map(_ -> List.<T>of());
+            }
+        }
+        return Promise.success(results.stream().map(Result::unwrap).toList());
     }
 
     @Override
@@ -186,7 +185,7 @@ public final class R2dbcDatabaseConnector implements DatabaseConnector {
     }
 
     private <T> Result<T> mapRow(Row row, RowMetadata meta, RowMapper<T> mapper) {
-        return mapper.map(new R2dbcRowAccessor(row, meta));
+        return mapper.map(new R2dbcRowAccessor(row));
     }
 
     private <T> Promise<T> withConnection(java.util.function.Function<Connection, Promise<T>> operation) {
@@ -213,7 +212,7 @@ public final class R2dbcDatabaseConnector implements DatabaseConnector {
     /**
      * RowAccessor implementation for R2DBC Row.
      */
-    private record R2dbcRowAccessor(Row row, RowMetadata meta) implements RowMapper.RowAccessor {
+    private record R2dbcRowAccessor(Row row) implements RowMapper.RowAccessor {
         @Override
         public Result<String> getString(String column) {
             return Result.lift(DatabaseConnectorError::databaseFailure, () -> row.get(column, String.class));
@@ -263,7 +262,7 @@ public final class R2dbcDatabaseConnector implements DatabaseConnector {
                 stmt.bind(i, params[i]);
             }
             return ReactiveOperations.<Result<T>>fromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row, meta))),
+                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
                 e -> R2dbcError.fromException(e, sql)
             ).flatMap(result -> result.mapError(R2dbcDatabaseConnector::toConnectorError).async());
         }
@@ -275,7 +274,7 @@ public final class R2dbcDatabaseConnector implements DatabaseConnector {
                 stmt.bind(i, params[i]);
             }
             return ReactiveOperations.<Result<T>>firstFromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row, meta))),
+                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
                 e -> R2dbcError.fromException(e, sql)
             ).flatMap(opt -> opt.fold(
                 () -> Promise.success(Option.none()),
@@ -292,20 +291,9 @@ public final class R2dbcDatabaseConnector implements DatabaseConnector {
                 stmt.bind(i, params[i]);
             }
             return ReactiveOperations.<Result<T>>collectFromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row, meta))),
+                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
                 e -> R2dbcError.fromException(e, sql)
-            ).flatMap(results -> {
-                for (var result : results) {
-                    if (result.isFailure()) {
-                        return result.mapError(R2dbcDatabaseConnector::toConnectorError)
-                                    .async()
-                                    .map(_ -> List.<T>of());
-                    }
-                }
-                return Promise.success(results.stream()
-                                              .map(Result::unwrap)
-                                              .toList());
-            });
+            ).flatMap(R2dbcDatabaseConnector::collectSuccessfulResults);
         }
 
         @Override

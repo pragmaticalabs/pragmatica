@@ -163,7 +163,7 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
                 stmt.bind(i, params[i]);
             }
             return ReactiveOperations.<Result<T>>fromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row, meta))),
+                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
                 e -> R2dbcError.fromException(e, sql)
             ).flatMap(result -> result.mapError(JooqR2dbcDatabaseConnector::toConnectorError).async());
         });
@@ -177,7 +177,7 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
                 stmt.bind(i, params[i]);
             }
             return ReactiveOperations.<Result<T>>firstFromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row, meta))),
+                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
                 e -> R2dbcError.fromException(e, sql)
             ).flatMap(opt -> opt.fold(
                 () -> Promise.success(Option.none()),
@@ -196,20 +196,9 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
                 stmt.bind(i, params[i]);
             }
             return ReactiveOperations.<Result<T>>collectFromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row, meta))),
+                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
                 e -> R2dbcError.fromException(e, sql)
-            ).flatMap(results -> {
-                for (var result : results) {
-                    if (result.isFailure()) {
-                        return result.mapError(JooqR2dbcDatabaseConnector::toConnectorError)
-                                    .async()
-                                    .map(_ -> List.<T>of());
-                    }
-                }
-                return Promise.success(results.stream()
-                                              .map(Result::unwrap)
-                                              .toList());
-            });
+            ).flatMap(JooqR2dbcDatabaseConnector::collectSuccessfulResults);
         });
     }
 
@@ -311,6 +300,17 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
                                                            .onResult(_ -> ReactiveOperations.fromPublisher(conn.close())));
     }
 
+    private static <T> Promise<List<T>> collectSuccessfulResults(List<Result<T>> results) {
+        for (var result : results) {
+            if (result.isFailure()) {
+                return result.mapError(JooqR2dbcDatabaseConnector::toConnectorError)
+                             .async()
+                             .map(_ -> List.<T>of());
+            }
+        }
+        return Promise.success(results.stream().map(Result::unwrap).toList());
+    }
+
     private static DatabaseConnectorError toConnectorError(org.pragmatica.lang.Cause cause) {
         if (cause instanceof R2dbcError r2dbcError) {
             return switch (r2dbcError) {
@@ -367,7 +367,7 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     /**
      * RowAccessor implementation for R2DBC Row.
      */
-    private record R2dbcRowAccessor(Row row, RowMetadata meta) implements RowMapper.RowAccessor {
+    private record R2dbcRowAccessor(Row row) implements RowMapper.RowAccessor {
         @Override
         public Result<String> getString(String column) {
             return Result.lift(DatabaseConnectorError::databaseFailure, () -> row.get(column, String.class));
@@ -417,7 +417,7 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
                 stmt.bind(i, params[i]);
             }
             return ReactiveOperations.<Result<T>>fromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row, meta))),
+                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
                 e -> R2dbcError.fromException(e, sql)
             ).flatMap(result -> result.mapError(JooqR2dbcDatabaseConnector::toConnectorError).async());
         }
@@ -429,7 +429,7 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
                 stmt.bind(i, params[i]);
             }
             return ReactiveOperations.<Result<T>>firstFromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row, meta))),
+                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
                 e -> R2dbcError.fromException(e, sql)
             ).flatMap(opt -> opt.fold(
                 () -> Promise.success(Option.none()),
@@ -446,20 +446,9 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
                 stmt.bind(i, params[i]);
             }
             return ReactiveOperations.<Result<T>>collectFromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row, meta))),
+                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
                 e -> R2dbcError.fromException(e, sql)
-            ).flatMap(results -> {
-                for (var result : results) {
-                    if (result.isFailure()) {
-                        return result.mapError(JooqR2dbcDatabaseConnector::toConnectorError)
-                                    .async()
-                                    .map(_ -> List.<T>of());
-                    }
-                }
-                return Promise.success(results.stream()
-                                              .map(Result::unwrap)
-                                              .toList());
-            });
+            ).flatMap(JooqR2dbcDatabaseConnector::collectSuccessfulResults);
         }
 
         @Override

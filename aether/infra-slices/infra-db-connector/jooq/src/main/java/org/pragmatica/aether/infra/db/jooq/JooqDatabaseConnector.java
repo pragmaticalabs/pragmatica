@@ -266,14 +266,8 @@ public final class JooqDatabaseConnector implements DatabaseConnector {
                         var transactionalConnector = new TransactionalJooqConnector(config, conn, dialect);
                         var result = callback.execute(transactionalConnector).await();
                         return result.fold(
-                            cause -> {
-                                rollbackSilently(conn);
-                                throw new TransactionFailedException(cause.message());
-                            },
-                            value -> {
-                                commitConnection(conn);
-                                return value;
-                            }
+                            cause -> handleTransactionFailure(conn, cause),
+                            value -> handleTransactionSuccess(conn, value)
                         );
                     } catch (Exception e) {
                         rollbackSilently(conn);
@@ -282,6 +276,16 @@ public final class JooqDatabaseConnector implements DatabaseConnector {
                 }
             }
         );
+    }
+
+    private <T> T handleTransactionFailure(Connection conn, org.pragmatica.lang.Cause cause) {
+        rollbackSilently(conn);
+        throw new TransactionFailedException(cause.message());
+    }
+
+    private <T> T handleTransactionSuccess(Connection conn, T value) {
+        commitConnection(conn);
+        return value;
     }
 
     @Override

@@ -28,22 +28,24 @@ public final class JdbcDatabaseConnectorFactory implements ResourceFactory<Datab
 
     @Override
     public Promise<DatabaseConnector> create(DatabaseConnectorConfig config) {
-        return Promise.lift(
-            DatabaseConnectorError::databaseFailure,
-            () -> {
-                var hikariConfig = new HikariConfig();
-                hikariConfig.setJdbcUrl(config.effectiveJdbcUrl());
-                config.username().onPresent(hikariConfig::setUsername);
-                config.password().onPresent(hikariConfig::setPassword);
-                hikariConfig.setConnectionTimeout(config.poolConfig().connectionTimeout().toMillis());
-                hikariConfig.setIdleTimeout(config.poolConfig().idleTimeout().toMillis());
-                hikariConfig.setMaxLifetime(config.poolConfig().maxLifetime().toMillis());
-                hikariConfig.setMinimumIdle(config.poolConfig().minConnections());
-                hikariConfig.setMaximumPoolSize(config.poolConfig().maxConnections());
+        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> createConnector(config));
+    }
 
-                var dataSource = new HikariDataSource(hikariConfig);
-                return JdbcDatabaseConnector.jdbcDatabaseConnector(config, dataSource);
-            }
-        );
+    private static DatabaseConnector createConnector(DatabaseConnectorConfig config) {
+        var dataSource = createHikariDataSource(config);
+        return JdbcDatabaseConnector.jdbcDatabaseConnector(config, dataSource);
+    }
+
+    private static HikariDataSource createHikariDataSource(DatabaseConnectorConfig config) {
+        var hikariConfig = new HikariConfig();
+        hikariConfig.setJdbcUrl(config.effectiveJdbcUrl());
+        config.username().onPresent(hikariConfig::setUsername);
+        config.password().onPresent(hikariConfig::setPassword);
+        hikariConfig.setConnectionTimeout(config.poolConfig().connectionTimeout().toMillis());
+        hikariConfig.setIdleTimeout(config.poolConfig().idleTimeout().toMillis());
+        hikariConfig.setMaxLifetime(config.poolConfig().maxLifetime().toMillis());
+        hikariConfig.setMinimumIdle(config.poolConfig().minConnections());
+        hikariConfig.setMaximumPoolSize(config.poolConfig().maxConnections());
+        return new HikariDataSource(hikariConfig);
     }
 }

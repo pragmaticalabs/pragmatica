@@ -1,9 +1,9 @@
 package org.pragmatica.aether.infra.db.jooq.r2dbc;
 
 import io.r2dbc.spi.Row;
-import io.r2dbc.spi.RowMetadata;
 import org.pragmatica.aether.infra.db.DatabaseConnectorError;
 import org.pragmatica.aether.infra.db.RowMapper.RowAccessor;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 /**
@@ -11,11 +11,9 @@ import org.pragmatica.lang.Result;
  */
 final class JooqR2dbcRowAccessor implements RowAccessor {
     private final Row row;
-    private final RowMetadata metadata;
 
-    JooqR2dbcRowAccessor(Row row, RowMetadata metadata) {
+    JooqR2dbcRowAccessor(Row row) {
         this.row = row;
-        this.metadata = metadata;
     }
 
     @Override
@@ -30,10 +28,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
     @Override
     public Result<Integer> getInt(String column) {
         try {
-            var value = row.get(column, Integer.class);
-            return value == null
-                   ? DatabaseConnectorError.queryFailed("getInt(" + column + ")", "Column value was NULL").result()
-                   : Result.success(value);
+            return Option.option(row.get(column, Integer.class))
+                         .toResult(DatabaseConnectorError.queryFailed("getInt(" + column + ")", "Column value was NULL"));
         } catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getInt(" + column + ")", e).result();
         }
@@ -42,10 +38,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
     @Override
     public Result<Long> getLong(String column) {
         try {
-            var value = row.get(column, Long.class);
-            return value == null
-                   ? DatabaseConnectorError.queryFailed("getLong(" + column + ")", "Column value was NULL").result()
-                   : Result.success(value);
+            return Option.option(row.get(column, Long.class))
+                         .toResult(DatabaseConnectorError.queryFailed("getLong(" + column + ")", "Column value was NULL"));
         } catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getLong(" + column + ")", e).result();
         }
@@ -54,10 +48,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
     @Override
     public Result<Double> getDouble(String column) {
         try {
-            var value = row.get(column, Double.class);
-            return value == null
-                   ? DatabaseConnectorError.queryFailed("getDouble(" + column + ")", "Column value was NULL").result()
-                   : Result.success(value);
+            return Option.option(row.get(column, Double.class))
+                         .toResult(DatabaseConnectorError.queryFailed("getDouble(" + column + ")", "Column value was NULL"));
         } catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getDouble(" + column + ")", e).result();
         }
@@ -66,10 +58,8 @@ final class JooqR2dbcRowAccessor implements RowAccessor {
     @Override
     public Result<Boolean> getBoolean(String column) {
         try {
-            var value = row.get(column, Boolean.class);
-            return value == null
-                   ? DatabaseConnectorError.queryFailed("getBoolean(" + column + ")", "Column value was NULL").result()
-                   : Result.success(value);
+            return Option.option(row.get(column, Boolean.class))
+                         .toResult(DatabaseConnectorError.queryFailed("getBoolean(" + column + ")", "Column value was NULL"));
         } catch (Exception e) {
             return DatabaseConnectorError.queryFailed("getBoolean(" + column + ")", e).result();
         }
