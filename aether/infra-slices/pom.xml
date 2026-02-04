@@ -18,6 +18,7 @@
         <module>infra-cache</module>
         <module>infra-config</module>
         <module>infra-database</module>
+        <module>infra-db-connector</module>
         <module>infra-http</module>
         <module>infra-lock</module>
         <module>infra-pubsub</module>
