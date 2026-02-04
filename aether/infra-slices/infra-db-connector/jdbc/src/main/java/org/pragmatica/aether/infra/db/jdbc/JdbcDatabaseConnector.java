@@ -231,7 +231,7 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
             case SQLTimeoutException _ -> DatabaseConnectorError.timeout(sql);
             case SQLIntegrityConstraintViolationException e -> DatabaseConnectorError.constraintViolation(e.getMessage());
             case SQLTransactionRollbackException e -> DatabaseConnectorError.transactionRollback(e.getMessage());
-            case NoResultException _ -> DatabaseConnectorError.NoResult.INSTANCE;
+            case NoResultException _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;
             case MultipleResultsException e -> DatabaseConnectorError.multipleResults(e.count());
             case TransactionFailedException e -> DatabaseConnectorError.connectionFailed(e.getMessage());
             case SQLException e -> Option.option(e.getSQLState())

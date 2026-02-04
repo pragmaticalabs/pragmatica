@@ -66,12 +66,13 @@ public final class SpiResourceProvider implements ResourceProvider {
         var key = new CacheKey(resourceType, configSection);
 
         // Check cache first
-        var cached = instanceCache.get(key);
-        if (cached != null) {
-            return Promise.success((T) cached);
-        }
+        return Option.option(instanceCache.get(key))
+                     .map(cached -> Promise.success((T) cached))
+                     .or(() -> findAndCreateResource(resourceType, configSection, key));
+    }
 
-        // Find factory
+    @SuppressWarnings("unchecked")
+    private <T> Promise<T> findAndCreateResource(Class<T> resourceType, String configSection, CacheKey key) {
         return Option.option(factories.get(resourceType))
                      .toResult(ResourceProvisioningError.factoryNotFound(resourceType))
                      .async()
@@ -109,11 +110,14 @@ public final class SpiResourceProvider implements ResourceProvider {
         return factory.create(config)
                       .mapError(cause -> ResourceProvisioningError.creationFailed(resourceType, configSection, cause))
                       .onSuccess(instance -> instanceCache.putIfAbsent(key, instance))
-                      .map(instance -> {
-                          // Return cached instance if another thread beat us
-                          var existing = instanceCache.get(key);
-                          return existing != null ? (T) existing : instance;
-                      });
+                      .map(instance -> returnCachedOrNew(key, instance));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T returnCachedOrNew(CacheKey key, T instance) {
+        return Option.option(instanceCache.get(key))
+                     .map(existing -> (T) existing)
+                     .or(instance);
     }
 
     /**

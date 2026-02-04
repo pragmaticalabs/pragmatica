@@ -314,7 +314,7 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     private static DatabaseConnectorError toConnectorError(org.pragmatica.lang.Cause cause) {
         if (cause instanceof R2dbcError r2dbcError) {
             return switch (r2dbcError) {
-                case R2dbcError.NoResult _ -> DatabaseConnectorError.NoResult.INSTANCE;
+                case R2dbcError.NoResult _ -> DatabaseConnectorError.ResultNotFound.INSTANCE;
                 case R2dbcError.MultipleResults m -> DatabaseConnectorError.multipleResults(m.count());
                 case R2dbcError.ConnectionFailed c -> DatabaseConnectorError.connectionFailed(c.message());
                 case R2dbcError.ConstraintViolation v -> DatabaseConnectorError.constraintViolation(v.constraint());

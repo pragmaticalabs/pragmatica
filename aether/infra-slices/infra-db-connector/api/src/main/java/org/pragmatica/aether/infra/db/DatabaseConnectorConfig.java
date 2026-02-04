@@ -2,6 +2,7 @@ package org.pragmatica.aether.infra.db;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
 
 import java.util.Map;
@@ -134,7 +135,7 @@ public record DatabaseConnectorConfig(
         return props;
     }
 
-    private static Result<Void> validate(String name, DatabaseType type, String host, String database, String username) {
+    private static Result<Unit> validate(String name, DatabaseType type, String host, String database, String username) {
         if (name == null || name.isBlank()) {
             return Causes.cause("Connector name is required").result();
         }
@@ -147,7 +148,7 @@ public record DatabaseConnectorConfig(
         if (database == null || database.isBlank()) {
             return Causes.cause("Database name is required").result();
         }
-        return Result.success(null);
+        return Result.unitResult();
     }
 
     /**

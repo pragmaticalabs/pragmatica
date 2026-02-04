@@ -109,21 +109,21 @@ public sealed interface DatabaseConnectorError extends Cause {
     }
 
     /**
-     * Operation timeout exceeded.
+     * Operation timed out.
      */
-    record Timeout(String operation) implements DatabaseConnectorError {
-        public static Timeout timeout(String operation) {
-            return new Timeout(operation);
+    record TimedOut(String operation) implements DatabaseConnectorError {
+        public static TimedOut timedOut(String operation) {
+            return new TimedOut(operation);
         }
 
         @Override
         public String message() {
-            return "Operation timeout: " + operation;
+            return "Operation timed out: " + operation;
         }
     }
 
-    static Timeout timeout(String operation) {
-        return Timeout.timeout(operation);
+    static TimedOut timeout(String operation) {
+        return TimedOut.timedOut(operation);
     }
 
     /**
@@ -147,7 +147,7 @@ public sealed interface DatabaseConnectorError extends Cause {
     /**
      * Transaction not active when required.
      */
-    enum TransactionRequired implements DatabaseConnectorError {
+    enum TransactionNotActive implements DatabaseConnectorError {
         INSTANCE;
 
         @Override
@@ -159,7 +159,7 @@ public sealed interface DatabaseConnectorError extends Cause {
     /**
      * Query returned no result when one was expected.
      */
-    enum NoResult implements DatabaseConnectorError {
+    enum ResultNotFound implements DatabaseConnectorError {
         INSTANCE;
 
         @Override

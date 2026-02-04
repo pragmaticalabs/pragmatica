@@ -129,31 +129,31 @@ public final class TomlConfigService implements ConfigService {
         if (type == String.class) {
             return document.getString(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
-                           .map(s -> s);
+                           .map(Object.class::cast);
         }
 
         if (type == int.class || type == Integer.class) {
             return document.getInt(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
-                           .map(i -> i);
+                           .map(Object.class::cast);
         }
 
         if (type == long.class || type == Long.class) {
             return document.getLong(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
-                           .map(l -> l);
+                           .map(Object.class::cast);
         }
 
         if (type == boolean.class || type == Boolean.class) {
             return document.getBoolean(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
-                           .map(b -> b);
+                           .map(Object.class::cast);
         }
 
         if (type == double.class || type == Double.class) {
             return document.getDouble(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
-                           .map(d -> d);
+                           .map(Object.class::cast);
         }
 
         if (type.isEnum()) {
