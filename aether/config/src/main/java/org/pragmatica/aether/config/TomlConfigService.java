@@ -6,7 +6,9 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
+import java.lang.reflect.Type;
 import java.nio.file.Path;
 import java.util.Arrays;
 
@@ -105,7 +107,7 @@ public final class TomlConfigService implements ConfigService {
             var args = new Object[components.length];
             for (int i = 0; i < components.length; i++) {
                 var component = components[i];
-                var value = extractValue(section, component.getName(), component.getType());
+                var value = extractValue(section, component);
                 if (value.isFailure()) {
                     return (Result<T>) value;
                 }
@@ -119,7 +121,9 @@ public final class TomlConfigService implements ConfigService {
     }
 
     @SuppressWarnings("unchecked")
-    private Result<Object> extractValue(String section, String key, Class<?> type) {
+    private Result<Object> extractValue(String section, RecordComponent component) {
+        var key = component.getName();
+        var type = component.getType();
         var tomlKey = toSnakeCase(key);
 
         if (type == String.class) {
@@ -167,11 +171,54 @@ public final class TomlConfigService implements ConfigService {
         }
 
         if (type == Option.class) {
-            // For Option types, return none() if not present
-            return Result.success(Option.none());
+            return extractOptionValue(section, tomlKey, key, component.getGenericType());
         }
 
         return ConfigError.typeMismatch(section + "." + key, "supported type", type.getSimpleName()).result();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Result<Object> extractOptionValue(String section, String tomlKey, String key, Type genericType) {
+        // Extract the type parameter from Option<T>
+        if (genericType instanceof ParameterizedType paramType) {
+            var typeArgs = paramType.getActualTypeArguments();
+            if (typeArgs.length == 1) {
+                var innerType = typeArgs[0];
+                if (innerType instanceof Class<?> innerClass) {
+                    return extractOptionalPrimitive(section, tomlKey, key, innerClass);
+                }
+            }
+        }
+        // If we can't determine the inner type, treat as Option<String>
+        return Result.success(document.getString(section, tomlKey));
+    }
+
+    private Result<Object> extractOptionalPrimitive(String section, String tomlKey, String key, Class<?> innerClass) {
+        if (innerClass == String.class) {
+            return Result.success(document.getString(section, tomlKey));
+        }
+        if (innerClass == Integer.class) {
+            return Result.success(document.getInt(section, tomlKey));
+        }
+        if (innerClass == Long.class) {
+            return Result.success(document.getLong(section, tomlKey));
+        }
+        if (innerClass == Boolean.class) {
+            return Result.success(document.getBoolean(section, tomlKey));
+        }
+        if (innerClass == Double.class) {
+            return Result.success(document.getDouble(section, tomlKey));
+        }
+        if (innerClass.isEnum()) {
+            var stringOpt = document.getString(section, tomlKey);
+            if (stringOpt.isEmpty()) {
+                return Result.success(Option.none());
+            }
+            return parseEnum(stringOpt.unwrap(), innerClass, section + "." + key)
+                .map(Option::option);
+        }
+        // For unsupported types, return none
+        return Result.success(Option.none());
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

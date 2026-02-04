@@ -1,5 +1,6 @@
 package org.pragmatica.aether.infra;
 
+import org.pragmatica.aether.config.ConfigService;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -8,7 +9,6 @@ import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
-import java.util.stream.Collectors;
 
 /**
  * SPI-based implementation of ResourceProvider.
@@ -41,11 +41,11 @@ public final class SpiResourceProvider implements ResourceProvider {
      * @return New SpiResourceProvider
      */
     public static SpiResourceProvider spiResourceProvider() {
-        return new SpiResourceProvider(section -> {
-            // This will be bound to ConfigService at runtime
-            // For now, return a placeholder that requires ConfigService.instance()
-            return ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE.result();
-        });
+        return new SpiResourceProvider(section ->
+            ConfigService.instance()
+                         .toResult(ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE)
+                         .flatMap(configService -> configService.config(section, Object.class))
+        );
     }
 
     /**

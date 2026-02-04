@@ -3,7 +3,6 @@ package org.pragmatica.aether.slice.dependency;
 import org.pragmatica.aether.slice.Aspect;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceCreationContext;
-import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
