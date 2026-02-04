@@ -17,12 +17,28 @@ public record DependencyModel(String parameterName,
                               String interfaceSimpleName,
                               String interfacePackage,
                               Option<String> sliceArtifact,
-                              Option<String> version) {
+                              Option<String> version,
+                              Option<ResourceQualifierModel> resourceQualifier) {
+
+    /**
+     * Backward-compatible constructor without resourceQualifier.
+     */
+    public DependencyModel(String parameterName,
+                           TypeMirror interfaceType,
+                           String interfaceQualifiedName,
+                           String interfaceSimpleName,
+                           String interfacePackage,
+                           Option<String> sliceArtifact,
+                           Option<String> version) {
+        this(parameterName, interfaceType, interfaceQualifiedName, interfaceSimpleName,
+             interfacePackage, sliceArtifact, version, Option.none());
+    }
+
     public static Result<DependencyModel> dependencyModel(VariableElement param, ProcessingEnvironment env) {
         var paramName = param.getSimpleName()
                              .toString();
         var type = param.asType();
-        if (! (type instanceof DeclaredType dt)) {
+        if (!(type instanceof DeclaredType dt)) {
             return Causes.cause("Dependency parameter must be an interface: " + paramName)
                          .result();
         }
@@ -40,13 +56,23 @@ public record DependencyModel(String parameterName,
                              .getPackageOf(typeElement)
                              .getQualifiedName()
                              .toString();
+        // Check for @ResourceQualifier meta-annotation
+        var resourceQualifier = ResourceQualifierModel.fromParameter(param, env);
         return Result.success(new DependencyModel(paramName,
                                                   type,
                                                   qualifiedName,
                                                   simpleName,
                                                   packageName,
                                                   Option.none(),
-                                                  Option.none()));
+                                                  Option.none(),
+                                                  resourceQualifier));
+    }
+
+    /**
+     * Check if this dependency is a resource (has @ResourceQualifier).
+     */
+    public boolean isResource() {
+        return resourceQualifier.isPresent();
     }
 
     public DependencyModel withResolved(String sliceArtifact, String version) {
@@ -56,7 +82,8 @@ public record DependencyModel(String parameterName,
                                    interfaceSimpleName,
                                    interfacePackage,
                                    Option.some(sliceArtifact),
-                                   Option.some(version));
+                                   Option.some(version),
+                                   resourceQualifier);
     }
 
     public Option<String> fullArtifact() {

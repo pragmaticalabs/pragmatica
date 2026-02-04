@@ -29,11 +29,12 @@ import java.util.Map;
  * <p>
  * Generated factory contains:
  * <ul>
- *   <li>{@code create(Aspect, SliceInvokerFacade)} - returns typed slice instance</li>
- *   <li>{@code createSlice(Aspect, SliceInvokerFacade)} - returns Slice for Aether runtime</li>
+ *   <li>{@code create(Aspect, SliceCreationContext)} - returns typed slice instance</li>
+ *   <li>{@code createSlice(Aspect, SliceCreationContext)} - returns Slice for Aether runtime</li>
  * </ul>
  * <p>
- * All dependencies get local proxy records that delegate to SliceInvokerFacade.
+ * Slice dependencies get local proxy records that delegate to ctx.invoker().
+ * Resource dependencies (annotated with @ResourceQualifier) use ctx.resources().provide().
  * <p>
  * When methods have @Aspect annotations, generates wrapper record with
  * aspect-wrapped method implementations.
@@ -121,7 +122,7 @@ public class FactoryClassGenerator {
         out.println("import org.pragmatica.aether.slice.MethodHandle;");
         out.println("import org.pragmatica.aether.slice.MethodName;");
         out.println("import org.pragmatica.aether.slice.Slice;");
-        out.println("import org.pragmatica.aether.slice.SliceInvokerFacade;");
+        out.println("import org.pragmatica.aether.slice.SliceCreationContext;");
         out.println("import org.pragmatica.aether.slice.SliceMethod;");
         out.println("import org.pragmatica.lang.Promise;");
         out.println("import org.pragmatica.lang.Unit;");
@@ -154,15 +155,18 @@ public class FactoryClassGenerator {
                                       Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var sliceName = model.simpleName();
         var methodName = lowercaseFirst(sliceName);
-        // Split dependencies
+        // Split dependencies: resource deps (with @ResourceQualifier), infra deps, and slice deps
+        var resourceDeps = allDeps.stream()
+                                  .filter(DependencyModel::isResource)
+                                  .toList();
         var infraDeps = allDeps.stream()
-                               .filter(DependencyModel::isInfrastructure)
+                               .filter(d -> !d.isResource() && d.isInfrastructure())
                                .toList();
         var sliceDeps = allDeps.stream()
-                               .filter(d -> !d.isInfrastructure())
+                               .filter(d -> !d.isResource() && !d.isInfrastructure())
                                .toList();
         out.println("    public static Promise<" + sliceName + "> " + methodName + "(Aspect<" + sliceName + "> aspect,");
-        out.println("                                              SliceInvokerFacade invoker) {");
+        out.println("                                              SliceCreationContext ctx) {");
         // Generate local proxy records ONLY for slice dependencies
         for (var dep : sliceDeps) {
             generateLocalProxyRecord(out, dep, proxyMethodsCache);
@@ -175,8 +179,8 @@ public class FactoryClassGenerator {
         }
         // Build the creation chain
         if (model.hasAspects()) {
-            generateAspectCreateChain(out, model, infraDeps, sliceDeps, proxyMethodsCache);
-        } else if (infraDeps.isEmpty() && sliceDeps.isEmpty()) {
+            generateAspectCreateChain(out, model, resourceDeps, infraDeps, sliceDeps, proxyMethodsCache);
+        } else if (resourceDeps.isEmpty() && infraDeps.isEmpty() && sliceDeps.isEmpty()) {
             // No dependencies at all
             var factoryArgs = model.dependencies()
                                    .stream()
@@ -187,7 +191,7 @@ public class FactoryClassGenerator {
                         + ");");
             out.println("        return Promise.success(aspect.apply(instance));");
         } else {
-            generateMixedDependencyChain(out, model, infraDeps, sliceDeps, proxyMethodsCache);
+            generateMixedDependencyChain(out, model, resourceDeps, infraDeps, sliceDeps, proxyMethodsCache);
         }
         out.println("    }");
     }
@@ -225,6 +229,7 @@ public class FactoryClassGenerator {
 
     private void generateAspectCreateChain(PrintWriter out,
                                            SliceModel model,
+                                           List<DependencyModel> resourceDeps,
                                            List<DependencyModel> infraDeps,
                                            List<DependencyModel> sliceDeps,
                                            Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
@@ -258,12 +263,20 @@ public class FactoryClassGenerator {
             out.println("                                                          .async()");
             out.println("                                                          .flatMap(cfg -> factory.create(Cache.class, cfg).async()))");
         }
-        // Handle infra dependencies first - keep flatMaps open for variable scoping
+        // Handle resource dependencies first (via ctx.resources().provide())
+        var openResourceFlatMaps = 0;
+        String lastResourceVar = cacheVarNames.isEmpty() ? "factory" : cacheVarNames.getLast();
+        if (!resourceDeps.isEmpty()) {
+            for (var resource : resourceDeps) {
+                out.println("                           .flatMap(" + lastResourceVar + " -> " + generateResourceProvideCall(resource) + ")");
+                lastResourceVar = resource.parameterName();
+                openResourceFlatMaps++;
+            }
+        }
+        // Handle infra dependencies - keep flatMaps open for variable scoping
         var openInfraFlatMaps = 0;
         if (!infraDeps.isEmpty()) {
-            var infraPrevVar = cacheVarNames.isEmpty()
-                               ? "factory"
-                               : cacheVarNames.getLast();
+            var infraPrevVar = lastResourceVar;
             for (int i = 0; i < infraDeps.size(); i++) {
                 var infra = infraDeps.get(i);
                 var infraVarName = infra.parameterName();
@@ -281,11 +294,14 @@ public class FactoryClassGenerator {
                     allHandles.add(new HandleInfo(dep, proxyMethod));
                 }
             }
-            // Determine previous variable: last infra dep, or last cache var, or factory
+            // Determine previous variable: last infra dep, last resource dep, last cache var, or factory
             String slicePrevVar;
             if (!infraDeps.isEmpty()) {
                 slicePrevVar = infraDeps.getLast()
                                         .parameterName();
+            } else if (!resourceDeps.isEmpty()) {
+                slicePrevVar = resourceDeps.getLast()
+                                           .parameterName();
             } else if (!cacheVarNames.isEmpty()) {
                 slicePrevVar = cacheVarNames.getLast();
             } else {
@@ -298,7 +314,7 @@ public class FactoryClassGenerator {
             }
         }
         // Final map to create wrapper
-        var lastVar = determineLastVariableName(infraDeps, sliceDeps, cacheVarNames, proxyMethodsCache);
+        var lastVar = determineLastVariableName(resourceDeps, infraDeps, sliceDeps, cacheVarNames, proxyMethodsCache);
         out.println("                           .map(" + lastVar + " -> {");
         // Instantiate slice dependency proxies only
         for (var dep : sliceDeps) {
@@ -347,6 +363,10 @@ public class FactoryClassGenerator {
         out.println(closeIndent + "})");
         // Close all open infra flatMaps
         for (int i = 0; i < openInfraFlatMaps; i++) {
+            out.println(closeIndent + ")");
+        }
+        // Close all open resource flatMaps
+        for (int i = 0; i < openResourceFlatMaps; i++) {
             out.println(closeIndent + ")");
         }
         out.println(closeIndent.substring(4) + ";");
@@ -438,7 +458,7 @@ public class FactoryClassGenerator {
         var artifact = escapeJavaString(handle.dep.fullArtifact()
                                               .or(() -> "UNRESOLVED"));
         var methodName = escapeJavaString(handle.method.name);
-        return "invoker.methodHandle(\"" + artifact + "\", \"" + methodName + "\",\n"
+        return "ctx.invoker().methodHandle(\"" + artifact + "\", \"" + methodName + "\",\n"
                + "                                                     new TypeToken<" + handle.method.paramType
                + ">() {},\n" + "                                                     new TypeToken<" + handle.method.responseType
                + ">() {}).async()";
@@ -511,7 +531,7 @@ public class FactoryClassGenerator {
         var methodName = lowercaseFirst(sliceName);
         var sliceRecordName = methodName + "Slice";
         out.println("    public static Promise<Slice> " + methodName + "Slice(Aspect<" + sliceName + "> aspect,");
-        out.println("                                              SliceInvokerFacade invoker) {");
+        out.println("                                              SliceCreationContext ctx) {");
         // Generate local adapter record
         out.println("        record " + sliceRecordName + "(" + sliceName + " delegate) implements Slice, " + sliceName
                     + " {");
@@ -548,7 +568,7 @@ public class FactoryClassGenerator {
         }
         out.println("        }");
         out.println();
-        out.println("        return " + methodName + "(aspect, invoker)");
+        out.println("        return " + methodName + "(aspect, ctx)");
         out.println("                   .map(" + sliceRecordName + "::new);");
         out.println("    }");
     }
@@ -623,7 +643,8 @@ public class FactoryClassGenerator {
      * Determines the variable name to use in the final .map() lambda.
      * Handles empty collections safely to avoid NoSuchElementException.
      */
-    private String determineLastVariableName(List<DependencyModel> infraDeps,
+    private String determineLastVariableName(List<DependencyModel> resourceDeps,
+                                             List<DependencyModel> infraDeps,
                                              List<DependencyModel> sliceDeps,
                                              List<String> cacheVarNames,
                                              Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
@@ -640,6 +661,11 @@ public class FactoryClassGenerator {
             return infraDeps.getLast()
                             .parameterName();
         }
+        // Try resource deps
+        if (!resourceDeps.isEmpty()) {
+            return resourceDeps.getLast()
+                               .parameterName();
+        }
         // Fall back to cache var names
         if (!cacheVarNames.isEmpty()) {
             return cacheVarNames.getLast();
@@ -650,17 +676,48 @@ public class FactoryClassGenerator {
 
     private void generateMixedDependencyChain(PrintWriter out,
                                               SliceModel model,
+                                              List<DependencyModel> resourceDeps,
                                               List<DependencyModel> infraDeps,
                                               List<DependencyModel> sliceDeps,
                                               Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
         var sliceName = model.simpleName();
-        // Start with InfraStore chain
-        if (!infraDeps.isEmpty()) {
+        var indent = "            ";
+        var openFlatMaps = 0;
+
+        // Start chain with resource dependencies first (via ctx.resources().provide())
+        if (!resourceDeps.isEmpty()) {
+            var firstResource = resourceDeps.getFirst();
+            out.println("        return " + generateResourceProvideCall(firstResource));
+            // Chain remaining resource deps
+            for (int i = 1; i < resourceDeps.size(); i++) {
+                var resource = resourceDeps.get(i);
+                var prevResource = resourceDeps.get(i - 1);
+                out.println(indent + ".flatMap(" + prevResource.parameterName() + " -> " + generateResourceProvideCall(resource) + ")");
+                openFlatMaps++;
+            }
+            // Chain infra deps if any
+            if (!infraDeps.isEmpty()) {
+                var lastResource = resourceDeps.getLast();
+                var firstInfra = infraDeps.getFirst();
+                out.println(indent + ".flatMap(" + lastResource.parameterName() + " -> " + generateInfraStoreCall(firstInfra));
+                indent += "    ";
+                openFlatMaps++;
+                for (int i = 1; i < infraDeps.size(); i++) {
+                    var infra = infraDeps.get(i);
+                    var prevInfra = infraDeps.get(i - 1);
+                    out.println(indent + ".flatMap(" + prevInfra.parameterName() + " -> " + generateInfraStoreCall(infra));
+                    indent += "    ";
+                    openFlatMaps++;
+                }
+            }
+            // Chain slice deps if any
+            var prevVar = !infraDeps.isEmpty() ? infraDeps.getLast().parameterName() : resourceDeps.getLast().parameterName();
+            generateSliceDepChain(out, model, sliceDeps, proxyMethodsCache, prevVar, indent, openFlatMaps);
+        } else if (!infraDeps.isEmpty()) {
+            // Start with InfraStore chain (no resource deps)
             var firstInfra = infraDeps.getFirst();
             out.println("        return " + generateInfraStoreCall(firstInfra));
             // Chain remaining infra deps - keep flatMaps open for variable scoping
-            var indent = "            ";
-            var openFlatMaps = 0;
             for (int i = 1; i < infraDeps.size(); i++) {
                 var infra = infraDeps.get(i);
                 var prevInfra = infraDeps.get(i - 1);
@@ -668,57 +725,66 @@ public class FactoryClassGenerator {
                 indent += "    ";
                 openFlatMaps++;
             }
-            // Chain slice dependency proxies if any
-            if (!sliceDeps.isEmpty()) {
-                var lastInfra = infraDeps.getLast();
-                var allSliceHandles = new ArrayList<HandleInfo>();
-                for (var dep : sliceDeps) {
-                    var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
-                    for (var method : methods) {
-                        allSliceHandles.add(new HandleInfo(dep, method));
-                    }
-                }
-                // First handle uses lastInfra as parameter
-                var firstHandle = allSliceHandles.getFirst();
-                out.println(indent + ".flatMap(" + lastInfra.parameterName() + " -> " + generateMethodHandleCall(firstHandle));
-                indent += "    ";
-                openFlatMaps++;
-                // Remaining handles use previous handle's varName
-                for (int i = 1; i < allSliceHandles.size(); i++) {
-                    var handle = allSliceHandles.get(i);
-                    var prevHandle = allSliceHandles.get(i - 1);
-                    out.println(indent + ".flatMap(" + prevHandle.varName() + " -> " + generateMethodHandleCall(handle));
-                    indent += "    ";
-                    openFlatMaps++;
-                }
-                // Final map with all dependencies
-                var lastHandle = allSliceHandles.getLast();
-                out.println(indent + ".map(" + lastHandle.varName() + " -> {");
-                generateDependencyInstantiation(out, indent, sliceDeps, proxyMethodsCache);
-                generateFactoryCall(out, indent, model);
-                out.println(indent + "})");
-                // Close all open flatMaps
-                for (int i = 0; i < openFlatMaps; i++) {
-                    indent = indent.substring(4);
-                    out.println(indent + ")");
-                }
-                out.println(indent.substring(4) + ";");
-            } else {
-                // Only infra deps, no slice deps
-                var lastInfra = infraDeps.getLast();
-                out.println(indent + ".map(" + lastInfra.parameterName() + " -> {");
-                generateFactoryCall(out, indent, model);
-                out.println(indent + "})");
-                // Close all open flatMaps
-                for (int i = 0; i < openFlatMaps; i++) {
-                    indent = indent.substring(4);
-                    out.println(indent + ")");
-                }
-                out.println(indent.substring(4) + ";");
-            }
+            // Chain slice deps if any
+            var lastInfra = infraDeps.getLast();
+            generateSliceDepChain(out, model, sliceDeps, proxyMethodsCache, lastInfra.parameterName(), indent, openFlatMaps);
         } else {
             // Only slice deps (existing flatMap logic)
             generateFlatMapChain(out, model, sliceDeps, proxyMethodsCache);
+        }
+    }
+
+    private void generateSliceDepChain(PrintWriter out,
+                                       SliceModel model,
+                                       List<DependencyModel> sliceDeps,
+                                       Map<String, List<ProxyMethodInfo>> proxyMethodsCache,
+                                       String prevVar,
+                                       String indent,
+                                       int openFlatMaps) {
+        if (!sliceDeps.isEmpty()) {
+            var allSliceHandles = new ArrayList<HandleInfo>();
+            for (var dep : sliceDeps) {
+                var methods = proxyMethodsCache.get(dep.interfaceQualifiedName());
+                for (var method : methods) {
+                    allSliceHandles.add(new HandleInfo(dep, method));
+                }
+            }
+            // First handle uses prevVar as parameter
+            var firstHandle = allSliceHandles.getFirst();
+            out.println(indent + ".flatMap(" + prevVar + " -> " + generateMethodHandleCall(firstHandle));
+            indent += "    ";
+            openFlatMaps++;
+            // Remaining handles use previous handle's varName
+            for (int i = 1; i < allSliceHandles.size(); i++) {
+                var handle = allSliceHandles.get(i);
+                var prevHandle = allSliceHandles.get(i - 1);
+                out.println(indent + ".flatMap(" + prevHandle.varName() + " -> " + generateMethodHandleCall(handle));
+                indent += "    ";
+                openFlatMaps++;
+            }
+            // Final map with all dependencies
+            var lastHandle = allSliceHandles.getLast();
+            out.println(indent + ".map(" + lastHandle.varName() + " -> {");
+            generateDependencyInstantiation(out, indent, sliceDeps, proxyMethodsCache);
+            generateFactoryCall(out, indent, model);
+            out.println(indent + "})");
+            // Close all open flatMaps
+            for (int i = 0; i < openFlatMaps; i++) {
+                indent = indent.substring(4);
+                out.println(indent + ")");
+            }
+            out.println(indent.substring(4) + ";");
+        } else {
+            // No slice deps, just finalize with map
+            out.println(indent + ".map(" + prevVar + " -> {");
+            generateFactoryCall(out, indent, model);
+            out.println(indent + "})");
+            // Close all open flatMaps
+            for (int i = 0; i < openFlatMaps; i++) {
+                indent = indent.substring(4);
+                out.println(indent + ")");
+            }
+            out.println(indent.substring(4) + ";");
         }
     }
 
@@ -726,6 +792,19 @@ public class FactoryClassGenerator {
         var interfaceName = infra.interfaceSimpleName();
         var factoryMethodName = toFactoryMethodName(interfaceName);
         return "Promise.success(" + interfaceName + "." + factoryMethodName + "())";
+    }
+
+    /**
+     * Generate resource provisioning call: ctx.resources().provide(Type.class, "config.section")
+     */
+    private String generateResourceProvideCall(DependencyModel resource) {
+        var qualifier = resource.resourceQualifier()
+                                .or(() -> {
+            throw new IllegalStateException("Resource dependency without @ResourceQualifier: " + resource.parameterName());
+        });
+        var resourceType = qualifier.resourceTypeSimpleName();
+        var configSection = escapeJavaString(qualifier.configSection());
+        return "ctx.resources().provide(" + resourceType + ".class, \"" + configSection + "\")";
     }
 
     private String toFactoryMethodName(String className) {

@@ -2,11 +2,13 @@ package org.pragmatica.aether.slice.dependency;
 
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.artifact.Version;
+import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.aether.slice.SliceBridgeImpl;
 import org.pragmatica.aether.slice.SliceClassLoader;
+import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceLoadingContext;
 import org.pragmatica.aether.slice.SliceManifest;
@@ -92,14 +94,16 @@ public interface DependencyResolver {
      * @param registry            Registry to track loaded slices
      * @param sharedLibraryLoader ClassLoader for shared dependencies
      * @param invokerFacade       Facade for inter-slice invocations
+     * @param resourceFacade      Facade for resource provisioning
      * @return Promise of resolved slice with loading context
      */
     static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
                                                      Repository repository,
                                                      SliceRegistry registry,
                                                      SharedLibraryClassLoader sharedLibraryLoader,
-                                                     SliceInvokerFacade invokerFacade) {
-        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade);
+                                                     SliceInvokerFacade invokerFacade,
+                                                     ResourceProviderFacade resourceFacade) {
+        var loadingContext = SliceLoadingContext.sliceLoadingContext(invokerFacade, resourceFacade);
         return registry.lookup(artifact)
                        .map(slice -> Promise.success(new ResolvedSlice(slice, loadingContext)))
                        .or(() -> resolveWithSharedLoaderAndContext(artifact,
@@ -108,6 +112,40 @@ public interface DependencyResolver {
                                                                    sharedLibraryLoader,
                                                                    loadingContext,
                                                                    new HashSet<>()));
+    }
+
+    /**
+     * Resolve a slice and return with its loading context for eager dependency validation.
+     * Uses a no-op resource provider (for backward compatibility).
+     *
+     * @param artifact            The slice artifact to resolve
+     * @param repository          Repository to locate artifacts
+     * @param registry            Registry to track loaded slices
+     * @param sharedLibraryLoader ClassLoader for shared dependencies
+     * @param invokerFacade       Facade for inter-slice invocations
+     * @return Promise of resolved slice with loading context
+     */
+    static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
+                                                     Repository repository,
+                                                     SliceRegistry registry,
+                                                     SharedLibraryClassLoader sharedLibraryLoader,
+                                                     SliceInvokerFacade invokerFacade) {
+        return resolveWithContext(artifact, repository, registry, sharedLibraryLoader, invokerFacade, noOpResourceProvider());
+    }
+
+    /**
+     * Returns a no-op resource provider for backward compatibility.
+     * This provider fails for any resource request.
+     */
+    private static ResourceProviderFacade noOpResourceProvider() {
+        return new ResourceProviderFacade() {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+                return Causes.cause("Resource provisioning not configured. " +
+                    "Use resolveWithContext(artifact, repo, registry, loader, invoker, resourceFacade) " +
+                    "to enable resource provisioning.").promise();
+            }
+        };
     }
 
     private static Promise<ResolvedSlice> resolveWithSharedLoaderAndContext(Artifact artifact,
@@ -267,7 +305,7 @@ public interface DependencyResolver {
                                                        repository,
                                                        registry,
                                                        sharedLibraryLoader,
-                                                       loadingContext,
+                                                       loadingContext.invoker(),
                                                        resolutionPath,
                                                        List.of()).onSuccess(resolved -> log.info("Resolved all {} slice dependencies for {} with context",
                                                                                                  resolved.size(),
@@ -532,7 +570,7 @@ public interface DependencyResolver {
         log.info("Resolving {} slice dependencies for {}", sliceDeps.size(), artifact.asString());
         if (sliceDeps.isEmpty()) {
             log.info("No slice dependencies for {}, creating slice directly", artifact.asString());
-            return createSliceFromClass(sliceClass, invokerFacade, List.of(), List.of())
+            return createSliceFromClass(sliceClass, toCreationContext(invokerFacade), List.of(), List.of())
             .flatMap(slice -> registerSlice(artifact, slice, registry));
         }
         return resolveArtifactDependenciesSequentially(sliceDeps,
@@ -559,7 +597,7 @@ public interface DependencyResolver {
                                                          List<ArtifactDependency> sliceDeps,
                                                          SliceRegistry registry) {
         log.info("Creating and registering slice {}", artifact.asString());
-        return createSliceFromClass(sliceClass, invokerFacade, resolvedSlices, sliceDeps)
+        return createSliceFromClass(sliceClass, toCreationContext(invokerFacade), resolvedSlices, sliceDeps)
         .flatMap(slice -> registerSlice(artifact, slice, registry));
     }
 
@@ -639,7 +677,7 @@ public interface DependencyResolver {
     }
 
     private static Promise<Slice> createSliceFromClass(Class<?> sliceClass,
-                                                       SliceInvokerFacade invokerFacade,
+                                                       SliceCreationContext creationContext,
                                                        List<Slice> dependencies,
                                                        List<ArtifactDependency> descriptors) {
         // Convert ArtifactDependency to DependencyDescriptor for SliceFactory compatibility
@@ -649,7 +687,14 @@ public interface DependencyResolver {
                                                                                 dep.versionPattern(),
                                                                                 Option.none()))
                                            .toList();
-        return SliceFactory.createSlice(sliceClass, invokerFacade, dependencies, legacyDescriptors);
+        return SliceFactory.createSlice(sliceClass, creationContext, dependencies, legacyDescriptors);
+    }
+
+    /**
+     * Creates a minimal SliceCreationContext from an invoker facade (backward compatibility).
+     */
+    private static SliceCreationContext toCreationContext(SliceInvokerFacade invokerFacade) {
+        return SliceCreationContext.sliceCreationContext(invokerFacade, noOpResourceProvider());
     }
 
     private static Promise<Slice> registerSlice(Artifact artifact, Slice slice, SliceRegistry registry) {
