@@ -93,6 +93,9 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
    - Cloud provider adapters: AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
    - Node auto-discovery and registration
+   - Node pool support: core (on-demand) vs elastic (spot) pools
+   - Instance type parameter for spot/on-demand selection
+   - **Enables:** Spot Instance Support (#17), Expense Tracking (#18)
 
 5. **Dependency Lifecycle Management**
    - Block manual unload while dependents are ACTIVE
@@ -163,6 +166,118 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
+
+16. **Cross-Slice Transaction Support (2PC)**
+    - Distributed transactions via Transaction aspect
+    - Scope: DB transactions + internal services (pub-sub, queues, streaming)
+    - NOT Saga pattern (user-unfriendly compensation design)
+
+    **Design Decisions:**
+    | Aspect | Decision |
+    |--------|----------|
+    | Coordinator | Per-transaction (no bottleneck) |
+    | Timeout | Auto-abort + orphan cleanup for coordinator disappearance |
+    | Streaming | Queue pattern (bounded batch as transaction unit) |
+    | Read-only participants | Skip prepare phase (hold locks until decision) |
+    | Context propagation | Reuse existing requestId propagation mechanism |
+    | Deadlock detection | Timeout-based (DAG-like call structure minimizes cycles) |
+    | Connection pooling | Per-node pool (similar to monolith pattern) |
+
+    **Open Questions:**
+    - Transaction log location: consensus KV store for coordinator state?
+    - Orphan recovery: query KV for state, abort if no decision recorded
+    - Aspect API: annotation vs explicit scope (JBCT alignment TBD)
+    - Nested semantics: savepoints vs flat "join existing"
+    - Transaction ID format: `{originNode}-{timestamp}-{sequence}`
+
+    **Guarantees:**
+    - Aether's "each call eventually succeeds, if cluster is alive" applies
+    - DB failure = transaction failure (expected behavior)
+
+17. **Spot Instance Support for Elastic Scaling**
+    - Cost-optimized scaling using cloud spot/preemptible instances
+    - 60-90% cost savings for traffic spike handling
+
+    **Architecture:**
+    ```
+    Core Pool (on-demand)     Elastic Pool (spot)
+    ┌─────┬─────┬─────┐      ┌─────┬─────┬─────┐
+    │Node1│Node2│Node3│      │Node4│Node5│Node6│  ← traffic spike
+    └─────┴─────┴─────┘      └─────┴─────┴─────┘
+       Always running           Come and go
+       Baseline capacity        Overflow only
+    ```
+
+    **Design:**
+    - Core pool: on-demand instances, always running, sized for normal traffic
+    - Elastic pool: spot instances, scaled for traffic spikes only
+    - Spot termination = normal node departure (no special handling)
+    - All slices eligible for spot nodes (no per-slice annotation needed)
+
+    **Configuration:**
+    ```toml
+    [cluster.pools.core]
+    min = 3
+    max = 5
+    type = "on-demand"
+
+    [cluster.pools.elastic]
+    min = 0
+    max = 20
+    type = "spot"
+    fallback = "on-demand"  # configurable: if spot unavailable
+    ```
+
+    **TTM/LLM Instance Type Selection (consideration):**
+    Instance type choice as optimization target, not just config:
+
+    | Prediction | Instance Choice | Rationale |
+    |------------|-----------------|-----------|
+    | Short spike (< 1hr) | Spot | Cheap, likely survives |
+    | Long spike (> 1hr) | On-demand | Stability worth cost |
+    | Recurring pattern (daily peak) | Spot | Predictable window |
+    | Unknown/anomaly | On-demand | Safety first |
+
+    Additional criteria TTM/LLM could consider:
+    - Time of day (spot prices fluctuate)
+    - Current spot price (real-time from cloud API)
+    - Historical interruption rate per instance type
+    - Upcoming known events (prefer on-demand for releases/campaigns)
+
+    **Complexity:** Low - just configuration and cloud API flag
+    **Prerequisite:** Cloud Provider Adapters (#4)
+
+18. **Cluster Expense Tracking**
+    - Real-time cost visibility for cluster operations
+    - Enables cost-aware scaling decisions
+
+    **Data Sources:**
+    - AWS Cost Explorer API
+    - GCP Billing API
+    - Azure Cost Management API
+
+    **Metrics:**
+    - Total cluster cost (hourly/daily/monthly)
+    - Cost per node
+    - Cost per slice (derived from node allocation)
+    - Cost per request (derived)
+    - Spot savings: actual spend vs equivalent on-demand
+    - Projected cost at current scale
+
+    **Value:**
+    - ROI visibility: "Aether saved $X this month via spot instances"
+    - Cost-aware scaling: "this spike costs $Y/hour"
+    - Budget alerts: "approaching monthly limit"
+    - Chargeback support: cost attribution per slice/team
+
+    **Integration Points:**
+    - Dashboard: cost widgets and trends
+    - Alerts: budget threshold notifications
+    - Controller: cost as scaling factor (optional)
+    - TTM/LLM: cost optimization recommendations
+
+    **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
+    **Prerequisite:** Cloud Provider Adapters (#4)
 
 ---
 
