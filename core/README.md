@@ -77,13 +77,13 @@ List<Result<User>> userResults = userIds.stream()
 Result<List<User>> allUsers = Result.allOf(userResults);
 ```
 
-## Modern Java 25 Features
+## Built for Java 25
 
-Pragmatica Lite leverages cutting-edge Java 25 features:
+Pragmatica Lite targets Java 25 and leverages modern language features:
 
-- **Sealed Interfaces**: Type-safe Result and Option hierarchies
-- **Pattern Matching**: Elegant switch expressions for monadic types
-- **Records**: Immutable data structures throughout
+- **Sealed Interfaces** (JDK 17): Type-safe Result and Option hierarchies
+- **Records** (JDK 16): Immutable data structures throughout
+- **Pattern Matching** (JDK 21): Elegant switch expressions for monadic types
 
 ### Maven Configuration
 
