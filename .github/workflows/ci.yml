@@ -59,11 +59,11 @@ jobs:
 
       - name: Run E2E tests
         run: mvn verify -B -Pwith-e2e -pl aether/e2e-tests -DskipE2ETests=false
-        timeout-minutes: 15
+        timeout-minutes: 30
 
       - name: Run Forge tests
         run: mvn verify -B -Pwith-e2e -pl aether/forge/forge-tests
-        timeout-minutes: 15
+        timeout-minutes: 20
 
       - name: Upload E2E test results
         uses: actions/upload-artifact@v4

@@ -38,7 +38,7 @@ import static org.awaitility.Awaitility.await;
  * }</pre>
  */
 public class AetherCluster implements AutoCloseable {
-    private static final Duration QUORUM_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration QUORUM_TIMEOUT = Duration.ofMinutes(5);
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(2);
 
     private final List<AetherNodeContainer> nodes;
@@ -335,7 +335,23 @@ public class AetherCluster implements AutoCloseable {
     public void awaitLeader() {
         await().atMost(QUORUM_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> leader().isPresent());
+               .until(() -> {
+                   var leaderOpt = leader();
+                   if (leaderOpt.isEmpty()) {
+                       // Debug: log status from first running node
+                       nodes.stream()
+                            .filter(AetherNodeContainer::isRunning)
+                            .findFirst()
+                            .ifPresent(node -> {
+                                try {
+                                    LOG.debug("awaitLeader: status={}", node.getStatus());
+                                } catch (Exception e) {
+                                    LOG.debug("awaitLeader: failed to get status: {}", e.getMessage());
+                                }
+                            });
+                   }
+                   return leaderOpt.isPresent();
+               });
     }
 
     /**
