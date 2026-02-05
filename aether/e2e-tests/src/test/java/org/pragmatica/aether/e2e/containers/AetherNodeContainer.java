@@ -70,7 +70,8 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // Test artifact paths relative to Maven repository
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
     private static final String[] TEST_ARTIFACTS = {
-        "echo-slice/0.15.0/echo-slice-0.15.0.jar"
+        "echo-slice/0.15.0/echo-slice-0.15.0.jar",
+        "echo-slice/0.16.0/echo-slice-0.16.0.jar"
     };
 
     /**

@@ -65,8 +65,9 @@
         <module>aether-deployment</module>
         <module>aether-control</module>
         <module>node</module>
-        <!-- E2E test slice - pure function, no dependencies -->
+        <!-- E2E test slices - pure function, no dependencies -->
         <module>e2e-tests/echo-slice</module>
+        <module>e2e-tests/echo-slice-v2</module>
     </modules>
 
     <properties>
