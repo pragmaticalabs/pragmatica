@@ -54,6 +54,7 @@ class RollingUpdateE2ETest {
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
+        cluster.uploadTestArtifacts();
     }
 
     @AfterAll

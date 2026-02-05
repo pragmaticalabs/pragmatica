@@ -43,10 +43,16 @@ class SliceDeploymentE2ETest {
 
     @BeforeAll
     static void createCluster() {
+        System.out.println("[DEBUG] Creating cluster...");
         cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
         cluster.start();
+        System.out.println("[DEBUG] Awaiting quorum...");
         cluster.awaitQuorum();
+        System.out.println("[DEBUG] Awaiting all healthy...");
         cluster.awaitAllHealthy();
+        System.out.println("[DEBUG] Uploading test artifacts to DHT...");
+        cluster.uploadTestArtifacts();
+        System.out.println("[DEBUG] Cluster ready for tests");
     }
 
     @AfterAll
@@ -58,16 +64,21 @@ class SliceDeploymentE2ETest {
 
     @BeforeEach
     void cleanupSlices() {
+        System.out.println("[DEBUG] BeforeEach: starting cleanup...");
         // Wait for cluster stability
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
+        System.out.println("[DEBUG] BeforeEach: sleeping 2s for stability...");
         sleep(timeSpan(2).seconds());
 
         // Undeploy all slices
+        System.out.println("[DEBUG] BeforeEach: undeploying all slices...");
         undeployAllSlices();
 
         // Wait for clean state
+        System.out.println("[DEBUG] BeforeEach: awaiting no slices...");
         awaitNoSlices();
+        System.out.println("[DEBUG] BeforeEach: cleanup complete");
     }
 
     @Test

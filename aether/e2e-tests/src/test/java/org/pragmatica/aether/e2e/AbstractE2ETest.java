@@ -53,6 +53,8 @@ public abstract class AbstractE2ETest {
         cluster = AetherCluster.aetherCluster(clusterSize(), PROJECT_ROOT);
         cluster.start();
         cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
+        cluster.uploadTestArtifacts();
         additionalSetUp();
     }
 

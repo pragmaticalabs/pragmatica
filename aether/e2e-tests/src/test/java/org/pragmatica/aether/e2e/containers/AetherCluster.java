@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.Network;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
@@ -43,6 +44,14 @@ public class AetherCluster implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(AetherCluster.class);
     private static final Duration QUORUM_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(2);
+
+    // Local Maven repository path and test artifacts
+    private static final Path M2_REPO_PATH = Path.of(System.getProperty("user.home"), ".m2", "repository");
+    private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
+    private static final String[][] TEST_ARTIFACTS = {
+        {"echo-slice", "0.15.0"},
+        {"echo-slice", "0.16.0"}
+    };
 
     private final List<AetherNodeContainer> nodes;
     private final Network network;
@@ -137,6 +146,33 @@ public class AetherCluster implements AutoCloseable {
         }
 
         System.out.println("[DEBUG] All nodes started. Waiting for cluster formation...");
+    }
+
+    /**
+     * Uploads test artifacts to DHT via Maven protocol.
+     * This must be called AFTER the cluster is healthy (leader elected, consensus working).
+     * Artifacts must be in DHT for slice deployment to work.
+     */
+    public void uploadTestArtifacts() {
+        System.out.println("[DEBUG] Uploading test artifacts to DHT...");
+        var leaderNode = leader().or(this::anyNode);
+
+        for (var artifact : TEST_ARTIFACTS) {
+            var artifactId = artifact[0];
+            var version = artifact[1];
+            var jarFileName = artifactId + "-" + version + ".jar";
+            var jarPath = M2_REPO_PATH.resolve(TEST_GROUP_PATH).resolve(artifactId).resolve(version).resolve(jarFileName);
+
+            if (Files.exists(jarPath)) {
+                var success = leaderNode.uploadArtifact(TEST_GROUP_PATH, artifactId, version, jarPath);
+                if (!success) {
+                    System.err.println("[WARN] Failed to upload artifact: " + jarPath);
+                }
+            } else {
+                System.err.println("[WARN] Test artifact not found: " + jarPath);
+            }
+        }
+        System.out.println("[DEBUG] Test artifacts upload complete");
     }
 
     private Option<String> getContainerIp(AetherNodeContainer node) {
@@ -336,6 +372,7 @@ public class AetherCluster implements AutoCloseable {
      * @throws org.awaitility.core.ConditionTimeoutException if leader not elected
      */
     public void awaitLeader() {
+        System.out.println("[DEBUG] Waiting for leader election...");
         await().atMost(QUORUM_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> {
@@ -347,13 +384,16 @@ public class AetherCluster implements AutoCloseable {
                             .findFirst()
                             .ifPresent(node -> {
                                 try {
-                                    LOG.debug("awaitLeader: status={}", node.getStatus());
+                                    System.out.println("[DEBUG] awaitLeader: no leader yet, status=" + node.getStatus());
                                 } catch (Exception e) {
-                                    LOG.debug("awaitLeader: failed to get status: {}", e.getMessage());
+                                    System.out.println("[DEBUG] awaitLeader: failed to get status: " + e.getMessage());
                                 }
                             });
+                       return false;
                    }
-                   return leaderOpt.isPresent();
+                   leaderOpt.onPresent(leader ->
+                       System.out.println("[DEBUG] Leader elected: " + leader.nodeId()));
+                   return true;
                });
     }
 
@@ -508,16 +548,27 @@ public class AetherCluster implements AutoCloseable {
     }
 
     private boolean allNodesHealthy() {
-        return nodes.stream()
-                    .filter(AetherNodeContainer::isRunning)
-                    .allMatch(node -> {
-                        try {
-                            var health = node.getHealth();
-                            return !health.contains("\"error\"") && health.contains("\"ready\":true");
-                        } catch (Exception e) {
-                            return false;
-                        }
-                    });
+        var allHealthy = true;
+        for (var node : nodes) {
+            if (!node.isRunning()) {
+                continue;
+            }
+            try {
+                var health = node.getHealth();
+                var isHealthy = !health.contains("\"error\"") && health.contains("\"ready\":true");
+                if (!isHealthy) {
+                    System.out.println("[DEBUG] Node " + node.nodeId() + " NOT healthy: " + health);
+                    allHealthy = false;
+                }
+            } catch (Exception e) {
+                System.out.println("[DEBUG] Node " + node.nodeId() + " health check failed: " + e.getMessage());
+                allHealthy = false;
+            }
+        }
+        if (allHealthy) {
+            System.out.println("[DEBUG] All nodes healthy");
+        }
+        return allHealthy;
     }
 
     private int activeNodeCount() {

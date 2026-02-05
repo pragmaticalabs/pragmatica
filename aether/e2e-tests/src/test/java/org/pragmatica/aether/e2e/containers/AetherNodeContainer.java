@@ -366,6 +366,60 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         return post("/api/blueprint", blueprint);
     }
 
+    // ===== Artifact Upload (Maven Protocol) =====
+
+    /**
+     * Uploads an artifact to the DHT via Maven protocol.
+     * This is required for slice deployment to work - artifacts must be in DHT, not local filesystem.
+     *
+     * @param groupPath group path with slashes (e.g., "org/pragmatica-lite/aether/test")
+     * @param artifactId artifact ID
+     * @param version version
+     * @param jarPath path to local jar file
+     * @return true if upload succeeded
+     */
+    public boolean uploadArtifact(String groupPath, String artifactId, String version, Path jarPath) {
+        try {
+            var jarContent = Files.readAllBytes(jarPath);
+            var remotePath = "/repository/" + groupPath + "/" + artifactId + "/" + version +
+                             "/" + artifactId + "-" + version + ".jar";
+            System.out.println("[DEBUG] Uploading artifact to " + remotePath + " (" + jarContent.length + " bytes)");
+            var response = putBinary(remotePath, jarContent);
+            var success = !response.contains("\"error\"");
+            if (success) {
+                System.out.println("[DEBUG] Artifact upload succeeded: " + remotePath);
+            } else {
+                System.out.println("[DEBUG] Artifact upload failed: " + response);
+            }
+            return success;
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Artifact upload error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Performs a PUT request with binary body.
+     *
+     * @param path API path
+     * @param body binary content
+     * @return response body
+     */
+    public String putBinary(String path, byte[] body) {
+        try {
+            var request = HttpRequest.newBuilder()
+                                     .uri(URI.create(managementUrl() + path))
+                                     .header("Content-Type", "application/octet-stream")
+                                     .PUT(HttpRequest.BodyPublishers.ofByteArray(body))
+                                     .timeout(Duration.ofSeconds(60))
+                                     .build();
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            return response.body();
+        } catch (Exception e) {
+            return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
+    }
+
     // ===== HTTP Helpers =====
 
     /**
