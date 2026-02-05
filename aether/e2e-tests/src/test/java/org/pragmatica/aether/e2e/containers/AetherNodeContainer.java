@@ -144,8 +144,8 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         }
 
         // Build and cache the image
-        var jarPath = projectRoot.resolve("node/target/aether-node.jar");
-        var dockerfilePath = projectRoot.resolve("docker/aether-node/Dockerfile");
+        var jarPath = projectRoot.resolve("aether/node/target/aether-node.jar");
+        var dockerfilePath = projectRoot.resolve("aether/docker/aether-node/Dockerfile");
 
         if (!java.nio.file.Files.exists(jarPath)) {
             throw new IllegalStateException(
