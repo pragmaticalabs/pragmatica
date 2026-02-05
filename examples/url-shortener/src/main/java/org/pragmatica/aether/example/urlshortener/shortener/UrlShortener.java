@@ -122,7 +122,9 @@ public interface UrlShortener {
         @Override
         public Promise<ShortenResponse> shorten(ShortenRequest request) {
             var url = request.url();
-            return db.queryOptional(SELECT_BY_URL, row -> row.getString("short_code"), url)
+            return db.queryOptional(SELECT_BY_URL,
+                                    row -> row.getString("short_code"),
+                                    url)
                      .flatMap(existing -> existing.map(code -> Promise.success(new ShortenResponse(code, url)))
                                                   .or(() -> createNewShortUrl(url)));
         }
@@ -130,7 +132,9 @@ public interface UrlShortener {
         @Override
         public Promise<ResolveResponse> resolve(ResolveRequest request) {
             var shortCode = request.shortCode();
-            return db.queryOptional(SELECT_BY_CODE, row -> row.getString("original_url"), shortCode)
+            return db.queryOptional(SELECT_BY_CODE,
+                                    row -> row.getString("original_url"),
+                                    shortCode)
                      .flatMap(maybeUrl -> maybeUrl.map(url -> recordClickAndRespond(shortCode, url))
                                                   .or(UrlError.NotFound.INSTANCE::promise));
         }
@@ -148,7 +152,7 @@ public interface UrlShortener {
         }
 
         private String computeHash(String url) {
-            try {
+            try{
                 var digest = MessageDigest.getInstance("SHA-256");
                 var hashBytes = digest.digest(url.getBytes(StandardCharsets.UTF_8));
                 var sb = new StringBuilder();
@@ -166,7 +170,7 @@ public interface UrlShortener {
             var value = Long.parseUnsignedLong(hexHash.substring(0, 12), 16);
             var sb = new StringBuilder();
             while (value > 0 && sb.length() < length) {
-                sb.insert(0, BASE62_CHARS.charAt((int) (value % 62)));
+                sb.insert(0, BASE62_CHARS.charAt((int)(value % 62)));
                 value /= 62;
             }
             while (sb.length() < length) {

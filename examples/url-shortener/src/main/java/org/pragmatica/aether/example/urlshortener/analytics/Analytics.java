@@ -17,7 +17,6 @@ import java.util.regex.Pattern;
  */
 @Slice
 public interface Analytics {
-
     // === Requests ===
     record RecordClickRequest(String shortCode) {
         private static final Pattern CODE_PATTERN = Pattern.compile("^[A-Za-z0-9]{6,8}$");
@@ -102,8 +101,7 @@ public interface Analytics {
         @Override
         public Promise<GetStatsResponse> getStats(GetStatsRequest request) {
             var shortCode = request.shortCode();
-            return getClickCount(shortCode)
-                .map(count -> new GetStatsResponse(shortCode, count));
+            return getClickCount(shortCode).map(count -> new GetStatsResponse(shortCode, count));
         }
 
         private Promise<Long> getClickCount(String shortCode) {
