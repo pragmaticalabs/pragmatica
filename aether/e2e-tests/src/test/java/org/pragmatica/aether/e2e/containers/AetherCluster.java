@@ -1,6 +1,8 @@
 package org.pragmatica.aether.e2e.containers;
 
 import org.pragmatica.lang.Option;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.Network;
 
 import java.nio.file.Path;
@@ -38,6 +40,7 @@ import static org.awaitility.Awaitility.await;
  * }</pre>
  */
 public class AetherCluster implements AutoCloseable {
+    private static final Logger LOG = LoggerFactory.getLogger(AetherCluster.class);
     private static final Duration QUORUM_TIMEOUT = Duration.ofMinutes(5);
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(2);
 
