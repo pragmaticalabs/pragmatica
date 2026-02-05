@@ -144,12 +144,20 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         }
 
         // Build and cache the image
-        var jarPath = projectRoot.resolve("aether/node/target/aether-node.jar");
-        var dockerfilePath = projectRoot.resolve("aether/docker/aether-node/Dockerfile");
+        // Try both paths: with and without 'aether/' prefix (CI vs local)
+        var jarPath = resolveExistingPath(projectRoot,
+            "aether/node/target/aether-node.jar",
+            "node/target/aether-node.jar");
+        var dockerfilePath = resolveExistingPath(projectRoot,
+            "aether/docker/aether-node/Dockerfile",
+            "docker/aether-node/Dockerfile");
 
-        if (!java.nio.file.Files.exists(jarPath)) {
+        if (jarPath == null) {
             throw new IllegalStateException(
-                "aether-node.jar not found at " + jarPath + ". Run 'mvn package' first.");
+                "aether-node.jar not found. Tried:\n  " +
+                projectRoot.resolve("aether/node/target/aether-node.jar") + "\n  " +
+                projectRoot.resolve("node/target/aether-node.jar") +
+                "\nRun 'mvn package' first.");
         }
 
         // Build image once with caching disabled (deleteOnExit=false keeps it cached)
@@ -161,6 +169,23 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         cachedImage = image;
         cachedProjectRoot = projectRoot;
         return image;
+    }
+
+    /**
+     * Resolves the first existing path from the list of candidates.
+     *
+     * @param root base path to resolve against
+     * @param candidates paths to try in order
+     * @return first existing path or null if none exist
+     */
+    private static Path resolveExistingPath(Path root, String... candidates) {
+        for (var candidate : candidates) {
+            var path = root.resolve(candidate);
+            if (Files.exists(path)) {
+                return path;
+            }
+        }
+        return null;
     }
 
     /**
