@@ -144,20 +144,25 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         }
 
         // Build and cache the image
-        // Try both paths: with and without 'aether/' prefix (CI vs local)
+        // Try multiple paths based on where projectRoot points:
+        // - CI: repo root → aether/node/target/
+        // - Local from e2e-tests: ../node/target/ (go up to aether/, then into node/)
         var jarPath = resolveExistingPath(projectRoot,
-            "aether/node/target/aether-node.jar",
-            "node/target/aether-node.jar");
+            "aether/node/target/aether-node.jar",   // CI: from repo root
+            "../node/target/aether-node.jar",        // Local: from aether/e2e-tests/
+            "node/target/aether-node.jar");          // Fallback
         var dockerfilePath = resolveExistingPath(projectRoot,
-            "aether/docker/aether-node/Dockerfile",
+            "aether/docker/aether-node/Dockerfile",  // CI: from repo root
+            "../docker/aether-node/Dockerfile",      // Local: from aether/e2e-tests/
             "docker/aether-node/Dockerfile");
 
         if (jarPath == null) {
             throw new IllegalStateException(
                 "aether-node.jar not found. Tried:\n  " +
                 projectRoot.resolve("aether/node/target/aether-node.jar") + "\n  " +
+                projectRoot.resolve("../node/target/aether-node.jar").normalize() + "\n  " +
                 projectRoot.resolve("node/target/aether-node.jar") +
-                "\nRun 'mvn package' first.");
+                "\nRun 'mvn package -pl aether/node' first.");
         }
 
         // Build image once with caching disabled (deleteOnExit=false keeps it cached)
