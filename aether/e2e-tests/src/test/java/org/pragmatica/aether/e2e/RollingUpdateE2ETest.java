@@ -26,7 +26,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  *   <li>Request continuity during updates</li>
  * </ul>
  *
- * <p>Note: These tests require Docker and the inventory test artifacts.
+ * <p>Note: These tests require Docker and the echo-slice test artifact.
+ * TODO: Create echo-slice v2 for proper version transition testing.
  * Run with: mvn test -pl e2e-tests -Dtest=RollingUpdateE2ETest
  *
  * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
@@ -36,8 +37,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class RollingUpdateE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String OLD_VERSION = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
-    private static final String NEW_VERSION = "org.pragmatica-lite.aether.example:inventory:0.0.2-test";
+    // TODO: Create echo-slice v2 for proper version transition testing
+    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
+    private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
     private static final Duration UPDATE_TIMEOUT = Duration.ofSeconds(120);
 
     // Common timeouts

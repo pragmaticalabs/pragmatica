@@ -27,8 +27,8 @@ public abstract class AbstractE2ETest {
     protected static final TimeSpan RECOVERY_TIMEOUT = timeSpan(60).seconds();
     protected static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
 
-    // Common artifact for slice deployment tests
-    protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
+    // Common artifact for slice deployment tests - pure function echo slice
+    protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
 
     protected AetherCluster cluster;
 

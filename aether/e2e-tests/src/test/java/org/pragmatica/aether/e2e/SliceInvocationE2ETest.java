@@ -24,9 +24,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  *   <li>Request distribution across slice instances</li>
  * </ul>
  *
- * <p>Note: Full invocation testing requires slices with defined methods.
- * The inventory has no methods, so some tests focus on infrastructure
- * and error handling rather than successful invocations.
+ * <p>Note: Uses the echo-slice test artifact which provides pure function
+ * methods (echo, ping, transform, fail) for testing invocation infrastructure.
  *
  * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
  * Tests run in order and each test cleans up previous state before running.
@@ -36,7 +35,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceInvocationE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
 
     // Common timeouts
     private static final TimeSpan DEFAULT_TIMEOUT = timeSpan(30).seconds();
@@ -230,7 +229,7 @@ class SliceInvocationE2ETest {
                    .pollInterval(POLL_INTERVAL.duration())
                    .until(() -> {
                        var slices = cluster.anyNode().getSlices();
-                       return !slices.contains("inventory");
+                       return !slices.contains("echo-slice");
                    });
 
             // Invoke should fail (no routes)

@@ -33,7 +33,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class ManagementApiE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
 
     // Common timeouts
     private static final TimeSpan DEFAULT_TIMEOUT = timeSpan(30).seconds();
@@ -123,7 +123,7 @@ class ManagementApiE2ETest {
             awaitSliceActive(TEST_ARTIFACT);
 
             slices = cluster.anyNode().getSlices();
-            assertThat(slices).contains("inventory");
+            assertThat(slices).contains("echo-slice");
         }
     }
 
@@ -162,7 +162,7 @@ class ManagementApiE2ETest {
 
         @Test
         void invocationMetrics_filtering_byArtifactAndMethod() {
-            var filtered = cluster.anyNode().getInvocationMetrics("inventory", null);
+            var filtered = cluster.anyNode().getInvocationMetrics("echo-slice", null);
             assertThat(filtered).doesNotContain("\"error\"");
 
             var methodFiltered = cluster.anyNode().getInvocationMetrics(null, "process");

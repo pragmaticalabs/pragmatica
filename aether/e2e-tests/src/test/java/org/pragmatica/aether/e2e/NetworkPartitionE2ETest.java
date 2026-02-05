@@ -35,7 +35,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class NetworkPartitionE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
 
     // Common timeouts
     private static final TimeSpan DEFAULT_TIMEOUT = timeSpan(2).minutes();
@@ -165,7 +165,7 @@ class NetworkPartitionE2ETest {
 
         // Deploy a slice while cluster is healthy
         deployAndAssert(TEST_ARTIFACT, 1);
-        awaitSliceVisible("inventory");
+        awaitSliceVisible("echo-slice");
 
         // Reduce to 2 nodes (still has quorum)
         cluster.killNode("node-3");
@@ -173,7 +173,7 @@ class NetworkPartitionE2ETest {
 
         // Slice state should be preserved
         var slices = cluster.anyNode().getSlices();
-        assertThat(slices).contains("inventory");
+        assertThat(slices).contains("echo-slice");
 
         // Restore full cluster
         cluster.restartNode("node-3");
@@ -184,7 +184,7 @@ class NetworkPartitionE2ETest {
 
         // State should still be consistent
         slices = cluster.anyNode().getSlices();
-        assertThat(slices).contains("inventory");
+        assertThat(slices).contains("echo-slice");
     }
 
     // ===== Cleanup Helpers =====

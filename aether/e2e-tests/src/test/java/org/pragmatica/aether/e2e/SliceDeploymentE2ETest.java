@@ -32,7 +32,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceDeploymentE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
 
     // Common timeouts
     private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(3).minutes();
@@ -180,7 +180,7 @@ class SliceDeploymentE2ETest {
             id = "org.test:e2e-blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.example:inventory:0.0.1-test"
+            artifact = "org.pragmatica-lite.aether.test:echo-slice:0.15.0"
             instances = 1
             """;
 
