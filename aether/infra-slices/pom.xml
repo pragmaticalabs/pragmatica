@@ -15,7 +15,6 @@
 
     <modules>
         <module>infra-aspect</module>
-        <module>infra-cache</module>
         <module>infra-config</module>
         <module>infra-database</module>
         <module>infra-db-connector</module>

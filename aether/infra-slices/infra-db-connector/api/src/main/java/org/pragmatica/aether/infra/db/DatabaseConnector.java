@@ -1,6 +1,5 @@
 package org.pragmatica.aether.infra.db;
 
-import org.pragmatica.aether.infra.InfraStore;
 import org.pragmatica.aether.slice.Slice;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.lang.Option;
@@ -118,38 +117,16 @@ public interface DatabaseConnector extends Slice {
 
     // ========== Factory Methods ==========
 
-    String ARTIFACT_KEY = "org.pragmatica-lite.aether:infra-db-connector";
-    String VERSION = "0.15.0";
-
     /**
-     * Gets or creates a shared connector with the given configuration.
+     * Creates a new connector instance with the given configuration.
      * <p>
-     * Uses InfraStore to ensure connectors are shared across slices.
-     * The connector is identified by its name from the configuration.
-     *
-     * @param config Connector configuration
-     * @return Shared DatabaseConnector instance
-     */
-    static DatabaseConnector databaseConnector(DatabaseConnectorConfig config) {
-        var key = ARTIFACT_KEY + ":" + config.name();
-        return InfraStore.instance()
-                         .map(store -> store.getOrCreate(key, VERSION, DatabaseConnector.class,
-                                                         () -> createConnector(config)))
-                         .or(() -> createConnector(config));
-    }
-
-    /**
-     * Creates a new connector instance.
-     * <p>
-     * This is called internally by the factory method. Override to provide
-     * custom connector implementations.
+     * Default implementation returns a no-op connector.
+     * Actual implementations are provided by jdbc, r2dbc, jooq modules.
      *
      * @param config Connector configuration
      * @return New DatabaseConnector instance
      */
-    private static DatabaseConnector createConnector(DatabaseConnectorConfig config) {
-        // Default implementation returns a no-op connector
-        // Actual implementations are provided by jdbc, r2dbc, jooq modules
+    static DatabaseConnector databaseConnector(DatabaseConnectorConfig config) {
         return new NoOpDatabaseConnector(config);
     }
 

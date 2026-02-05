@@ -280,7 +280,7 @@ public class FactoryClassGenerator {
             for (int i = 0; i < infraDeps.size(); i++) {
                 var infra = infraDeps.get(i);
                 var infraVarName = infra.parameterName();
-                out.println("                           .flatMap(" + infraPrevVar + " -> " + generateInfraStoreCall(infra));
+                out.println("                           .flatMap(" + infraPrevVar + " -> " + generateInfraCall(infra));
                 infraPrevVar = infraVarName;
                 openInfraFlatMaps++;
             }
@@ -680,32 +680,33 @@ public class FactoryClassGenerator {
                                               List<DependencyModel> infraDeps,
                                               List<DependencyModel> sliceDeps,
                                               Map<String, List<ProxyMethodInfo>> proxyMethodsCache) {
-        var sliceName = model.simpleName();
         var indent = "            ";
         var openFlatMaps = 0;
 
         // Start chain with resource dependencies first (via ctx.resources().provide())
+        // Keep flatMaps OPEN for variable scoping
         if (!resourceDeps.isEmpty()) {
             var firstResource = resourceDeps.getFirst();
             out.println("        return " + generateResourceProvideCall(firstResource));
-            // Chain remaining resource deps
+            // Chain remaining resource deps - keep flatMaps open for variable scoping
             for (int i = 1; i < resourceDeps.size(); i++) {
                 var resource = resourceDeps.get(i);
                 var prevResource = resourceDeps.get(i - 1);
-                out.println(indent + ".flatMap(" + prevResource.parameterName() + " -> " + generateResourceProvideCall(resource) + ")");
+                out.println(indent + ".flatMap(" + prevResource.parameterName() + " -> " + generateResourceProvideCall(resource));
+                indent += "    ";
                 openFlatMaps++;
             }
             // Chain infra deps if any
             if (!infraDeps.isEmpty()) {
                 var lastResource = resourceDeps.getLast();
                 var firstInfra = infraDeps.getFirst();
-                out.println(indent + ".flatMap(" + lastResource.parameterName() + " -> " + generateInfraStoreCall(firstInfra));
+                out.println(indent + ".flatMap(" + lastResource.parameterName() + " -> " + generateInfraCall(firstInfra));
                 indent += "    ";
                 openFlatMaps++;
                 for (int i = 1; i < infraDeps.size(); i++) {
                     var infra = infraDeps.get(i);
                     var prevInfra = infraDeps.get(i - 1);
-                    out.println(indent + ".flatMap(" + prevInfra.parameterName() + " -> " + generateInfraStoreCall(infra));
+                    out.println(indent + ".flatMap(" + prevInfra.parameterName() + " -> " + generateInfraCall(infra));
                     indent += "    ";
                     openFlatMaps++;
                 }
@@ -714,14 +715,14 @@ public class FactoryClassGenerator {
             var prevVar = !infraDeps.isEmpty() ? infraDeps.getLast().parameterName() : resourceDeps.getLast().parameterName();
             generateSliceDepChain(out, model, sliceDeps, proxyMethodsCache, prevVar, indent, openFlatMaps);
         } else if (!infraDeps.isEmpty()) {
-            // Start with InfraStore chain (no resource deps)
+            // Start with infra chain (no resource deps)
             var firstInfra = infraDeps.getFirst();
-            out.println("        return " + generateInfraStoreCall(firstInfra));
+            out.println("        return " + generateInfraCall(firstInfra));
             // Chain remaining infra deps - keep flatMaps open for variable scoping
             for (int i = 1; i < infraDeps.size(); i++) {
                 var infra = infraDeps.get(i);
                 var prevInfra = infraDeps.get(i - 1);
-                out.println(indent + ".flatMap(" + prevInfra.parameterName() + " -> " + generateInfraStoreCall(infra));
+                out.println(indent + ".flatMap(" + prevInfra.parameterName() + " -> " + generateInfraCall(infra));
                 indent += "    ";
                 openFlatMaps++;
             }
@@ -788,7 +789,7 @@ public class FactoryClassGenerator {
         }
     }
 
-    private String generateInfraStoreCall(DependencyModel infra) {
+    private String generateInfraCall(DependencyModel infra) {
         var interfaceName = infra.interfaceSimpleName();
         var factoryMethodName = toFactoryMethodName(interfaceName);
         return "Promise.success(" + interfaceName + "." + factoryMethodName + "())";

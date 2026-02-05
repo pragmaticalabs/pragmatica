@@ -1,6 +1,7 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.config.AppHttpConfig;
+import org.pragmatica.aether.config.ConfigurationProvider;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TTMConfig;
@@ -37,6 +38,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  * @param rollback         Automatic rollback configuration
  * @param appHttp          Application HTTP server configuration for slice routes
  * @param controllerConfig Controller configuration for scaling thresholds and behavior
+ * @param configProvider   Configuration provider for resource provisioning (empty to disable)
  */
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
@@ -48,7 +50,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                TTMConfig ttm,
                                RollbackConfig rollback,
                                AppHttpConfig appHttp,
-                               ControllerConfig controllerConfig) {
+                               ControllerConfig controllerConfig,
+                               Option<ConfigurationProvider> configProvider) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
 
@@ -117,7 +120,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     TTMConfig.disabled(),
                                     RollbackConfig.defaultConfig(),
                                     AppHttpConfig.disabled(),
-                                    ControllerConfig.defaultConfig());
+                                    ControllerConfig.defaultConfig(),
+                                    Option.empty());
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -137,7 +141,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     TTMConfig.disabled(),
                                     RollbackConfig.defaultConfig(),
                                     AppHttpConfig.disabled(),
-                                    ControllerConfig.defaultConfig());
+                                    ControllerConfig.defaultConfig(),
+                                    Option.empty());
     }
 
     /**
@@ -160,7 +165,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     TTMConfig.disabled(),
                                     RollbackConfig.defaultConfig(),
                                     AppHttpConfig.disabled(),
-                                    ControllerConfig.forgeDefaults());
+                                    ControllerConfig.forgeDefaults(),
+                                    Option.empty());
     }
 
     /**
@@ -186,7 +192,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     ttm,
                                     rollback,
                                     appHttp,
-                                    controllerConfig);
+                                    controllerConfig,
+                                    configProvider);
     }
 
     /**
@@ -203,7 +210,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     ttmConfig,
                                     rollback,
                                     appHttp,
-                                    controllerConfig);
+                                    controllerConfig,
+                                    configProvider);
     }
 
     /**
@@ -220,7 +228,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     ttm,
                                     rollbackConfig,
                                     appHttp,
-                                    controllerConfig);
+                                    controllerConfig,
+                                    configProvider);
     }
 
     /**
@@ -237,7 +246,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     ttm,
                                     rollback,
                                     appHttp,
-                                    controllerConfig);
+                                    controllerConfig,
+                                    configProvider);
     }
 
     /**
@@ -254,7 +264,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     ttm,
                                     rollback,
                                     appHttpConfig,
-                                    controllerConfig);
+                                    controllerConfig,
+                                    configProvider);
     }
 
     /**
@@ -271,7 +282,26 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     ttm,
                                     rollback,
                                     appHttp,
-                                    newControllerConfig);
+                                    newControllerConfig,
+                                    configProvider);
+    }
+
+    /**
+     * Create a new configuration with a ConfigurationProvider for resource provisioning.
+     */
+    public AetherNodeConfig withConfigProvider(ConfigurationProvider provider) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    Option.some(provider));
     }
 
     public NodeId self() {

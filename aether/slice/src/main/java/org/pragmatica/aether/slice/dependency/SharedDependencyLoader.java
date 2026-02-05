@@ -29,7 +29,6 @@ public interface SharedDependencyLoader {
      * Process infrastructure dependencies from [infra] section.
      * <p>
      * Infrastructure JARs are loaded into SharedLibraryClassLoader like [shared] dependencies.
-     * Instance sharing is managed by infra services themselves via InfraStore at runtime.
      *
      * @param dependencies        List of infra dependencies from [infra] section
      * @param sharedLibraryLoader The shared library classloader

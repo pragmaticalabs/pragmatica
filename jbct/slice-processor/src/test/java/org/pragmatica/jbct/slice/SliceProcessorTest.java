@@ -132,6 +132,44 @@ class SliceProcessorTest {
             }
             """);
 
+    private static final JavaFileObject RESOURCE_PROVIDER_FACADE = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.ResourceProviderFacade",
+            """
+            package org.pragmatica.aether.slice;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface ResourceProviderFacade {
+                <T> Promise<T> provide(Class<T> resourceType, String configSection);
+            }
+            """);
+
+    private static final JavaFileObject SLICE_CREATION_CONTEXT = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.SliceCreationContext",
+            """
+            package org.pragmatica.aether.slice;
+
+            public interface SliceCreationContext {
+                SliceInvokerFacade invoker();
+                ResourceProviderFacade resources();
+            }
+            """);
+
+    private static final JavaFileObject RESOURCE_QUALIFIER = JavaFileObjects.forSourceString(
+            "org.pragmatica.aether.slice.annotation.ResourceQualifier",
+            """
+            package org.pragmatica.aether.slice.annotation;
+
+            import java.lang.annotation.*;
+
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.ANNOTATION_TYPE)
+            public @interface ResourceQualifier {
+                Class<?> type();
+                String config();
+            }
+            """);
+
     // Aspect-related stubs
     private static final JavaFileObject ASPECT_KIND = JavaFileObjects.forSourceString(
             "org.pragmatica.aether.infra.aspect.AspectKind",
@@ -277,7 +315,8 @@ class SliceProcessorTest {
     private List<JavaFileObject> commonSources() {
         return new ArrayList<>(List.of(
                 SLICE_ANNOTATION, PROMISE, UNIT, TYPE_TOKEN, RESULT,
-                ASPECT, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE
+                ASPECT, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
+                RESOURCE_PROVIDER_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER
         ));
     }
 
@@ -1385,5 +1424,291 @@ class SliceProcessorTest {
         // Verify RFC-0004 compliant properties
         assertThat(manifestContent).contains("slice.interface=test.OrderService");
         assertThat(manifestContent).contains("slice.artifactId=orders-order-service");
+    }
+
+    // ========== @ResourceQualifier Tests ==========
+
+    @Test
+    void should_generate_resource_provide_call_for_qualified_parameter() throws Exception {
+        // Custom qualifier annotation with @ResourceQualifier meta-annotation
+        var primaryDb = JavaFileObjects.forSourceString("test.annotation.PrimaryDb",
+                                                        """
+            package test.annotation;
+
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+
+            @ResourceQualifier(type = test.infra.DatabaseConnector.class, config = "database.primary")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface PrimaryDb {}
+            """);
+
+        // Infrastructure interface (resource type)
+        var databaseConnector = JavaFileObjects.forSourceString("test.infra.DatabaseConnector",
+                                                                """
+            package test.infra;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface DatabaseConnector {
+                Promise<String> query(String sql);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderRepository",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.PrimaryDb;
+            import test.infra.DatabaseConnector;
+
+            @Slice
+            public interface OrderRepository {
+                Promise<String> findOrder(String orderId);
+
+                static OrderRepository orderRepository(@PrimaryDb DatabaseConnector db) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(primaryDb);
+        sources.add(databaseConnector);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderRepositoryFactory")
+                                        .get()
+                                        .getCharContent(false)
+                                        .toString();
+
+        // Resource is provided via ctx.resources().provide()
+        assertThat(factoryContent).contains("ctx.resources().provide(DatabaseConnector.class, \"database.primary\")");
+
+        // No proxy record generated for resource dependency
+        assertThat(factoryContent).doesNotContain("record databaseConnector(MethodHandle<");
+    }
+
+    @Test
+    void should_handle_mixed_resource_and_slice_dependencies() throws Exception {
+        // Custom qualifier annotation
+        var primaryDb = JavaFileObjects.forSourceString("test.annotation.PrimaryDb",
+                                                        """
+            package test.annotation;
+
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+
+            @ResourceQualifier(type = test.infra.DatabaseConnector.class, config = "database.primary")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface PrimaryDb {}
+            """);
+
+        // Infrastructure interface (resource type)
+        var databaseConnector = JavaFileObjects.forSourceString("test.infra.DatabaseConnector",
+                                                                """
+            package test.infra;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface DatabaseConnector {
+                Promise<String> query(String sql);
+            }
+            """);
+
+        // External slice dependency
+        var inventoryService = JavaFileObjects.forSourceString("external.InventoryService",
+                                                               """
+            package external;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface InventoryService {
+                Promise<Integer> checkStock(String productId);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.OrderRepository",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.PrimaryDb;
+            import test.infra.DatabaseConnector;
+            import external.InventoryService;
+
+            @Slice
+            public interface OrderRepository {
+                Promise<String> placeOrder(String orderId);
+
+                static OrderRepository orderRepository(@PrimaryDb DatabaseConnector db,
+                                                        InventoryService inventory) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(primaryDb);
+        sources.add(databaseConnector);
+        sources.add(inventoryService);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.OrderRepositoryFactory")
+                                        .get()
+                                        .getCharContent(false)
+                                        .toString();
+
+        // Resource is provided via ctx.resources().provide()
+        assertThat(factoryContent).contains("ctx.resources().provide(DatabaseConnector.class, \"database.primary\")");
+
+        // Slice dependency gets proxy record with MethodHandle
+        assertThat(factoryContent).contains("record inventoryService(MethodHandle<");
+
+        // Factory call includes both dependencies
+        assertThat(factoryContent).contains("OrderRepository.orderRepository(db, inventory)");
+    }
+
+    @Test
+    void should_generate_multiple_resource_dependencies() throws Exception {
+        // Primary DB qualifier
+        var primaryDb = JavaFileObjects.forSourceString("test.annotation.PrimaryDb",
+                                                        """
+            package test.annotation;
+
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+
+            @ResourceQualifier(type = test.infra.DatabaseConnector.class, config = "database.primary")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface PrimaryDb {}
+            """);
+
+        // Secondary DB qualifier
+        var secondaryDb = JavaFileObjects.forSourceString("test.annotation.SecondaryDb",
+                                                          """
+            package test.annotation;
+
+            import org.pragmatica.aether.slice.annotation.ResourceQualifier;
+            import java.lang.annotation.*;
+
+            @ResourceQualifier(type = test.infra.DatabaseConnector.class, config = "database.secondary")
+            @Retention(RetentionPolicy.RUNTIME)
+            @Target(ElementType.PARAMETER)
+            public @interface SecondaryDb {}
+            """);
+
+        // Infrastructure interface (resource type)
+        var databaseConnector = JavaFileObjects.forSourceString("test.infra.DatabaseConnector",
+                                                                """
+            package test.infra;
+
+            import org.pragmatica.lang.Promise;
+
+            public interface DatabaseConnector {
+                Promise<String> query(String sql);
+            }
+            """);
+
+        var source = JavaFileObjects.forSourceString("test.DataReplicator",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+            import test.annotation.PrimaryDb;
+            import test.annotation.SecondaryDb;
+            import test.infra.DatabaseConnector;
+
+            @Slice
+            public interface DataReplicator {
+                Promise<String> replicate(String tableId);
+
+                static DataReplicator dataReplicator(@PrimaryDb DatabaseConnector primary,
+                                                      @SecondaryDb DatabaseConnector secondary) {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(primaryDb);
+        sources.add(secondaryDb);
+        sources.add(databaseConnector);
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.DataReplicatorFactory")
+                                        .get()
+                                        .getCharContent(false)
+                                        .toString();
+
+        // Both resources are provided via ctx.resources().provide()
+        assertThat(factoryContent).contains("ctx.resources().provide(DatabaseConnector.class, \"database.primary\")");
+        assertThat(factoryContent).contains("ctx.resources().provide(DatabaseConnector.class, \"database.secondary\")");
+
+        // Factory call includes both dependencies
+        assertThat(factoryContent).contains("DataReplicator.dataReplicator(primary, secondary)");
+    }
+
+    @Test
+    void should_use_sliceCreationContext_parameter_in_factory() throws Exception {
+        var source = JavaFileObjects.forSourceString("test.TestService",
+                                                     """
+            package test;
+
+            import org.pragmatica.aether.slice.annotation.Slice;
+            import org.pragmatica.lang.Promise;
+
+            @Slice
+            public interface TestService {
+                Promise<String> doSomething(String request);
+
+                static TestService testService() {
+                    return null;
+                }
+            }
+            """);
+
+        var sources = commonSources();
+        sources.add(source);
+
+        Compilation compilation = javac()
+                                       .withProcessors(new SliceProcessor())
+                                       .compile(sources);
+
+        assertCompilation(compilation).succeeded();
+
+        var factoryContent = compilation.generatedSourceFile("test.TestServiceFactory")
+                                        .get()
+                                        .getCharContent(false)
+                                        .toString();
+
+        // Factory signature uses SliceCreationContext
+        assertThat(factoryContent).contains("import org.pragmatica.aether.slice.SliceCreationContext;");
+        assertThat(factoryContent).contains("SliceCreationContext ctx)");
     }
 }

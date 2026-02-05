@@ -14,8 +14,6 @@ import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
-import org.pragmatica.aether.infra.InfraStore;
-import org.pragmatica.aether.infra.InfraStoreImpl;
 import org.pragmatica.aether.infra.artifact.ArtifactStore;
 import org.pragmatica.aether.infra.artifact.MavenProtocolHandler;
 import org.pragmatica.aether.repository.RepositoryFactory;
@@ -40,8 +38,13 @@ import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
 import org.pragmatica.aether.ttm.TTMManager;
 import org.pragmatica.aether.ttm.TTMState;
 import org.pragmatica.aether.update.RollingUpdateManager;
+import org.pragmatica.aether.config.ConfigService;
+import org.pragmatica.aether.config.ProviderBasedConfigService;
+import org.pragmatica.aether.infra.ResourceProvider;
+import org.pragmatica.aether.infra.SpiResourceProvider;
 import org.pragmatica.aether.slice.DeferredSliceInvokerFacade;
 import org.pragmatica.aether.slice.FrameworkClassLoader;
+import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.aether.slice.SharedLibraryClassLoader;
 import org.pragmatica.aether.slice.SliceRuntime;
 import org.pragmatica.aether.slice.SliceStore;
@@ -267,10 +270,12 @@ public interface AetherNode {
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var sharedLibraryLoader = createSharedLibraryLoader(config);
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
+        var resourceFacade = createResourceProviderFacade(config);
         var sliceStore = SliceStore.sliceStore(sliceRegistry,
                                                repositories,
                                                sharedLibraryLoader,
                                                deferredInvoker,
+                                               resourceFacade,
                                                config.sliceAction());
         // Create Rabia cluster node with metrics
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology());
@@ -334,7 +339,6 @@ public interface AetherNode {
                               BlueprintService blueprintService,
                               MavenProtocolHandler mavenProtocolHandler,
                               ArtifactStore artifactStore,
-                              InfraStoreImpl infraStore,
                               InvocationMetricsCollector invocationMetrics,
                               DecisionTreeController controller,
                               RollingUpdateManager rollingUpdateManager,
@@ -360,7 +364,6 @@ public interface AetherNode {
                 // Start comprehensive snapshot collection (feeds TTM pipeline)
                 snapshotCollector.start();
                 SliceRuntime.setSliceInvoker(sliceInvoker);
-                InfraStore.setInstance(infraStore);
                 return managementServer.map(ManagementServer::start)
                                        .or(Promise.unitPromise())
                                        .flatMap(_ -> appHttpServer.start())
@@ -383,7 +386,6 @@ public interface AetherNode {
                 ttmManager.stop();
                 snapshotCollector.stop();
                 SliceRuntime.clear();
-                InfraStore.clear();
                 // 4. Stop servers and network
                 return managementServer.map(ManagementServer::stop)
                                        .or(Promise.unitPromise())
@@ -597,8 +599,6 @@ public interface AetherNode {
                                                                                               minuteAggregator);
         // Create artifact metrics collector for storage and deployment tracking
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
-        // Create infrastructure store for infra service instance sharing
-        var infraStore = InfraStoreImpl.infraStoreImpl();
         // Create TTM manager (returns no-op if disabled in config)
         var ttmManager = TTMManager.ttmManager(config.ttm(),
                                                minuteAggregator,
@@ -697,7 +697,6 @@ public interface AetherNode {
                                       blueprintService,
                                       mavenProtocolHandler,
                                       artifactStore,
-                                      infraStore,
                                       invocationMetrics,
                                       controller,
                                       rollingUpdateManager,
@@ -739,7 +738,6 @@ public interface AetherNode {
                                                                blueprintService,
                                                                mavenProtocolHandler,
                                                                artifactStore,
-                                                               infraStore,
                                                                invocationMetrics,
                                                                controller,
                                                                rollingUpdateManager,
@@ -963,6 +961,47 @@ public interface AetherNode {
                                              return new SharedLibraryClassLoader(loader);
                                          })
                                     .or(new SharedLibraryClassLoader(AetherNode.class.getClassLoader())));
+    }
+
+    /**
+     * Create ResourceProviderFacade from config.
+     * If ConfigurationProvider is configured, creates ConfigService and ResourceProvider.
+     * Otherwise, returns a no-op facade that fails with an informative message.
+     */
+    private static ResourceProviderFacade createResourceProviderFacade(AetherNodeConfig config) {
+        var log = LoggerFactory.getLogger(AetherNode.class);
+        return config.configProvider()
+                     .fold(
+                         () -> {
+                             log.debug("No configuration provider configured, resource provisioning disabled");
+                             return noOpResourceProviderFacade();
+                         },
+                         configProvider -> {
+                             log.info("Creating ConfigService and ResourceProvider from configuration provider");
+                             var configService = ProviderBasedConfigService.providerBasedConfigService(configProvider);
+                             ConfigService.setInstance(configService);
+                             var resourceProvider = SpiResourceProvider.spiResourceProvider();
+                             ResourceProvider.setInstance(resourceProvider);
+                             log.info("ConfigService and ResourceProvider initialized");
+                             return new ResourceProviderFacade() {
+                                 @Override
+                                 public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+                                     return resourceProvider.provide(resourceType, configSection);
+                                 }
+                             };
+                         }
+                     );
+    }
+
+    private static ResourceProviderFacade noOpResourceProviderFacade() {
+        return new ResourceProviderFacade() {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+                return org.pragmatica.lang.utils.Causes.cause(
+                    "Resource provisioning not configured. Use AetherNodeConfig.withConfigProvider() to enable."
+                ).promise();
+            }
+        };
     }
 
     /**

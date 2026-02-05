@@ -5,19 +5,19 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.example.urlshortener.analytics.Analytics.GetStatsRequest;
 import org.pragmatica.aether.example.urlshortener.analytics.Analytics.RecordClickRequest;
-import org.pragmatica.aether.infra.cache.CacheService;
+import org.pragmatica.aether.example.urlshortener.shortener.InMemoryDatabaseConnector;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
 class AnalyticsTest {
-    private CacheService cache;
+    private InMemoryDatabaseConnector db;
     private Analytics analytics;
 
     @BeforeEach
     void setup() {
-        cache = CacheService.cacheService();
-        analytics = Analytics.analytics(cache);
+        db = InMemoryDatabaseConnector.inMemoryDatabaseConnector();
+        analytics = Analytics.analytics(db);
     }
 
     @Nested

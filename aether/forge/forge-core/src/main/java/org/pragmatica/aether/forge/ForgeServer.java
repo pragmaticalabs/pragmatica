@@ -1,5 +1,7 @@
 package org.pragmatica.aether.forge;
 
+import org.pragmatica.aether.config.ConfigurationProvider;
+import org.pragmatica.aether.config.source.MapConfigSource;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.load.LoadConfigLoader;
 import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
@@ -7,6 +9,9 @@ import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
+
+import java.util.HashMap;
+import java.util.Map;
 
 import java.awt.*;
 import java.io.IOException;
@@ -60,6 +65,7 @@ public final class ForgeServer {
     private ForgeMetrics metrics;
     private ForgeApiHandler apiHandler;
     private StaticFileHandler staticHandler;
+    private Option<ForgeH2Server> h2Server = Option.empty();
 
     private Option<HttpServer> httpServer = Option.empty();
     private ScheduledExecutorService metricsScheduler;
@@ -120,6 +126,13 @@ public final class ForgeServer {
         if (forgeConfig.autoHealEnabled()) {
             log.info("  Auto-heal: enabled");
         }
+        if (forgeConfig.h2Config().enabled()) {
+            log.info("  H2 Database: port {} ({})",
+                     forgeConfig.h2Config().port(),
+                     forgeConfig.h2Config().persistent()
+                     ? "persistent"
+                     : "in-memory");
+        }
         startupConfig.blueprint()
                      .onPresent(p -> log.info("  Blueprint: {}", p));
         startupConfig.loadConfig()
@@ -132,6 +145,10 @@ public final class ForgeServer {
 
     public void start() throws Exception {
         log.info("Starting Forge server...");
+        // Start H2 database if enabled
+        startH2Server();
+        // Build ConfigurationProvider with H2 URL if enabled
+        var configProvider = buildConfigurationProvider();
         // Initialize components
         metrics = ForgeMetrics.forgeMetrics();
         cluster = ForgeCluster.forgeCluster(forgeConfig.nodes(),
@@ -139,7 +156,8 @@ public final class ForgeServer {
                                             forgeConfig.managementPort(),
                                             forgeConfig.appHttpPort(),
                                             "node",
-                                            forgeConfig.autoHealEnabled());
+                                            forgeConfig.autoHealEnabled(),
+                                            configProvider);
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         // Load generators send to app HTTP port where slice routes are registered
         loadGenerator = LoadGenerator.loadGenerator(forgeConfig.appHttpPort(), metrics, entryPointMetrics);
@@ -254,7 +272,84 @@ public final class ForgeServer {
                    .onFailure(cause -> log.warn("Error stopping cluster: {}",
                                                 cause.message()));
         }
+        stopH2Server();
         log.info("Forge server stopped.");
+    }
+
+    private void startH2Server() {
+        if (!forgeConfig.h2Config().enabled()) {
+            return;
+        }
+        var server = ForgeH2Server.forgeH2Server(forgeConfig.h2Config());
+        server.start()
+              .await(TimeSpan.timeSpan(10).seconds())
+              .onSuccess(_ -> {
+                  h2Server = Option.some(server);
+                  log.info("H2 database available at: {}", server.jdbcUrl());
+              })
+              .onFailure(cause -> {
+                  log.error("Failed to start H2 server: {}", cause.message());
+                  System.exit(1);
+              });
+    }
+
+    /**
+     * Build ConfigurationProvider with layered configuration.
+     * <p>
+     * Priority (highest to lowest):
+     * <ol>
+     *   <li>Runtime values (H2 URL if enabled)</li>
+     *   <li>Environment variables (AETHER_*)</li>
+     *   <li>System properties (-Daether.*)</li>
+     *   <li>forge.toml (if specified)</li>
+     *   <li>aether.toml (if exists)</li>
+     * </ol>
+     *
+     * @return ConfigurationProvider for all nodes, or empty if no config needed
+     */
+    private Option<ConfigurationProvider> buildConfigurationProvider() {
+        var builder = ConfigurationProvider.builder();
+
+        // Add TOML files (lowest priority)
+        startupConfig.forgeConfig()
+                     .map(path -> path.resolveSibling("aether.toml"))
+                     .filter(path -> path.toFile().exists())
+                     .onPresent(builder::withTomlFile);
+
+        startupConfig.forgeConfig()
+                     .onPresent(builder::withTomlFile);
+
+        // Add system properties and environment (higher priority)
+        builder.withSystemProperties("aether.")
+               .withEnvironment("AETHER_");
+
+        // Inject H2 runtime values (highest priority)
+        h2Server.onPresent(server -> {
+            Map<String, String> runtimeValues = new HashMap<>();
+            runtimeValues.put("database.url", server.jdbcUrl());
+            runtimeValues.put("database.type", "H2");
+            runtimeValues.put("database.user", "sa");
+            runtimeValues.put("database.password", "");
+            builder.withSource(MapConfigSource.mapConfigSource("runtime", runtimeValues, 500));
+            log.info("Injected H2 configuration into ConfigurationProvider");
+        });
+
+        return Option.some(builder.build());
+    }
+
+    private void stopH2Server() {
+        h2Server.onPresent(server -> server.stop()
+                                           .await(TimeSpan.timeSpan(5).seconds())
+                                           .onFailure(cause -> log.warn("Error stopping H2 server: {}",
+                                                                        cause.message())));
+    }
+
+    /**
+     * Get the H2 JDBC URL if H2 is enabled and running.
+     */
+    public Option<String> h2JdbcUrl() {
+        return h2Server.filter(ForgeH2Server::isRunning)
+                       .map(ForgeH2Server::jdbcUrl);
     }
 
     private void startHttpServer() {

@@ -25,8 +25,8 @@ import java.util.List;
  * org.example:order-domain:^1.0.0
  *
  * [infra]
- * # Infrastructure services (shared instances via InfraStore)
- * org.pragmatica-lite.aether:infra-cache:^0.7.0
+ * # Infrastructure services
+ * org.pragmatica-lite.aether:infra-db-connector:^0.7.0
  * org.pragmatica-lite.aether:infra-database:^0.7.0
  *
  * [slices]
@@ -36,8 +36,7 @@ import java.util.List;
  * </pre>
  * <p>
  * The [infra] section is for infrastructure service dependencies. JARs are loaded
- * into SharedLibraryClassLoader like [shared], but instances are shared via InfraStore.
- * Infra services control their own sharing strategy (singleton, factory, etc.).
+ * into SharedLibraryClassLoader like [shared].
  * <p>
  * For backward compatibility, lines without any section header are treated as slice dependencies.
  *

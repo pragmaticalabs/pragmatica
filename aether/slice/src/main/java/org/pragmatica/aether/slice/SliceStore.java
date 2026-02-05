@@ -38,12 +38,44 @@ public interface SliceStore {
                                  SharedLibraryClassLoader sharedLibraryLoader,
                                  SliceInvokerFacade invokerFacade,
                                  SliceActionConfig config) {
+        return sliceStore(registry, repositories, sharedLibraryLoader, invokerFacade, noOpResourceProvider(), config);
+    }
+
+    /**
+     * Create a new SliceStore instance with shared library classloader and resource provider.
+     *
+     * @param registry            Registry for tracking loaded slices
+     * @param repositories        Repositories to search for slice JARs
+     * @param sharedLibraryLoader ClassLoader for shared dependencies across slices
+     * @param invokerFacade       Facade for inter-slice invocation (used by generated factories)
+     * @param resourceFacade      Facade for resource provisioning (used by generated factories)
+     * @param config              Configuration for slice lifecycle timeouts
+     *
+     * @return SliceStore implementation
+     */
+    static SliceStore sliceStore(SliceRegistry registry,
+                                 List<Repository> repositories,
+                                 SharedLibraryClassLoader sharedLibraryLoader,
+                                 SliceInvokerFacade invokerFacade,
+                                 ResourceProviderFacade resourceFacade,
+                                 SliceActionConfig config) {
         return new sliceStore(registry,
                               repositories,
                               sharedLibraryLoader,
                               invokerFacade,
+                              resourceFacade,
                               config,
                               new ConcurrentHashMap<>());
+    }
+
+    private static ResourceProviderFacade noOpResourceProvider() {
+        return new ResourceProviderFacade() {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+                return Causes.cause("Resource provisioning not configured. " +
+                    "Use AetherNodeConfig.withConfigProvider() to enable resource provisioning.").promise();
+            }
+        };
     }
 
     interface LoadedSlice {
@@ -112,6 +144,7 @@ public interface SliceStore {
                       List<Repository> repositories,
                       SharedLibraryClassLoader sharedLibraryLoader,
                       SliceInvokerFacade invokerFacade,
+                      ResourceProviderFacade resourceFacade,
                       SliceActionConfig config,
                       ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>> entries) implements SliceStore {
         private static final Logger log = LoggerFactory.getLogger(sliceStore.class);
@@ -133,7 +166,8 @@ public interface SliceStore {
                                                          compositeRepository(),
                                                          registry,
                                                          sharedLibraryLoader,
-                                                         invokerFacade)
+                                                         invokerFacade,
+                                                         resourceFacade)
                                      .map(resolved -> {
                                               // Extract the classloader from the slice's class
             var sliceClassLoader = resolved.slice()

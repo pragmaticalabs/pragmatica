@@ -7,21 +7,21 @@ import org.pragmatica.aether.example.urlshortener.analytics.Analytics;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ResolveRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.ShortenRequest;
 import org.pragmatica.aether.example.urlshortener.shortener.UrlShortener.UrlError;
-import org.pragmatica.aether.infra.cache.CacheService;
+import org.pragmatica.aether.infra.db.DatabaseConnector;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
 class UrlShortenerTest {
-    private CacheService cache;
+    private InMemoryDatabaseConnector db;
     private Analytics analytics;
     private UrlShortener urlShortener;
 
     @BeforeEach
     void setup() {
-        cache = CacheService.cacheService();
-        analytics = Analytics.analytics(cache);
-        urlShortener = UrlShortener.urlShortener(cache, analytics);
+        db = InMemoryDatabaseConnector.inMemoryDatabaseConnector();
+        analytics = Analytics.analytics(db);
+        urlShortener = UrlShortener.urlShortener(db, analytics);
     }
 
     @Nested

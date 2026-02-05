@@ -1,5 +1,6 @@
 package org.pragmatica.aether.forge;
 
+import org.pragmatica.aether.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
@@ -78,12 +79,16 @@ public final class ForgeCluster {
     private final boolean autoHealEnabled;
     private final int targetClusterSize;
 
+    // Configuration provider for nodes
+    private final Option<ConfigurationProvider> configProvider;
+
     private ForgeCluster(int initialClusterSize,
                          int basePort,
                          int baseMgmtPort,
                          int baseAppHttpPort,
                          String nodeIdPrefix,
-                         boolean autoHealEnabled) {
+                         boolean autoHealEnabled,
+                         Option<ConfigurationProvider> configProvider) {
         this.initialClusterSize = initialClusterSize;
         this.basePort = basePort;
         this.baseMgmtPort = baseMgmtPort;
@@ -91,6 +96,7 @@ public final class ForgeCluster {
         this.nodeIdPrefix = nodeIdPrefix;
         this.autoHealEnabled = autoHealEnabled;
         this.targetClusterSize = initialClusterSize;
+        this.configProvider = configProvider;
     }
 
     public static ForgeCluster forgeCluster() {
@@ -113,7 +119,8 @@ public final class ForgeCluster {
                                 DEFAULT_BASE_MGMT_PORT,
                                 DEFAULT_BASE_APP_HTTP_PORT,
                                 "node",
-                                autoHealEnabled);
+                                autoHealEnabled,
+                                Option.empty());
     }
 
     /**
@@ -125,7 +132,7 @@ public final class ForgeCluster {
      * @param baseMgmtPort Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
      */
     public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort) {
-        return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, "node", false);
+        return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, "node", false, Option.empty());
     }
 
     /**
@@ -138,7 +145,7 @@ public final class ForgeCluster {
      * @param nodeIdPrefix  Prefix for node IDs (e.g., "cf" creates nodes "cf-1", "cf-2", etc.)
      */
     public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
-        return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, nodeIdPrefix, false);
+        return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, nodeIdPrefix, false, Option.empty());
     }
 
     /**
@@ -155,7 +162,7 @@ public final class ForgeCluster {
                                             int baseMgmtPort,
                                             int baseAppHttpPort,
                                             String nodeIdPrefix) {
-        return forgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, false);
+        return forgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, false, Option.empty());
     }
 
     /**
@@ -174,7 +181,28 @@ public final class ForgeCluster {
                                             int baseAppHttpPort,
                                             String nodeIdPrefix,
                                             boolean autoHealEnabled) {
-        return new ForgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, autoHealEnabled);
+        return forgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, autoHealEnabled, Option.empty());
+    }
+
+    /**
+     * Create a ForgeCluster with ConfigurationProvider for node configuration.
+     *
+     * @param initialSize        Number of nodes to start with
+     * @param basePort           Base port for cluster communication
+     * @param baseMgmtPort       Base port for management HTTP API
+     * @param baseAppHttpPort    Base port for application HTTP API (slice endpoints)
+     * @param nodeIdPrefix       Prefix for node IDs
+     * @param autoHealEnabled    If true, automatically replace killed nodes to maintain target size
+     * @param configProvider     Configuration provider for all nodes (shared)
+     */
+    public static ForgeCluster forgeCluster(int initialSize,
+                                            int basePort,
+                                            int baseMgmtPort,
+                                            int baseAppHttpPort,
+                                            String nodeIdPrefix,
+                                            boolean autoHealEnabled,
+                                            Option<ConfigurationProvider> configProvider) {
+        return new ForgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, autoHealEnabled, configProvider);
     }
 
     /**
@@ -543,7 +571,8 @@ public final class ForgeCluster {
                                           org.pragmatica.aether.config.TTMConfig.disabled(),
                                           RollbackConfig.defaultConfig(),
                                           AppHttpConfig.enabledOnPort(appHttpPort),
-                                          ControllerConfig.forgeDefaults());
+                                          ControllerConfig.forgeDefaults(),
+                                          configProvider);
         return AetherNode.aetherNode(config)
                          .unwrap();
     }
