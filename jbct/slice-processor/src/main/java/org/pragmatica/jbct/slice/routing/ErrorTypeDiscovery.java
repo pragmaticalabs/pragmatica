@@ -72,12 +72,13 @@ public final class ErrorTypeDiscovery {
         var types = processingEnv.getTypeUtils();
         var result = new ArrayList<TypeElement>();
         for (var element : packageElement.getEnclosedElements()) {
-            if (element.getKind() == ElementKind.CLASS || element.getKind() == ElementKind.ENUM || element.getKind() == ElementKind.INTERFACE) {
+            if (isTypeKind(element.getKind())) {
                 var typeElement = (TypeElement) element;
                 if (implementsCause(typeElement, types)) {
                     result.add(typeElement);
-                    collectNestedCauseTypes(typeElement, types, result);
                 }
+                // Always recurse - Cause types may be nested inside non-Cause types (e.g., @Slice interfaces)
+                collectNestedCauseTypes(typeElement, types, result);
             }
         }
         return result;
@@ -87,14 +88,19 @@ public final class ErrorTypeDiscovery {
                                          javax.lang.model.util.Types types,
                                          List<TypeElement> result) {
         for (var enclosed : enclosing.getEnclosedElements()) {
-            if (enclosed.getKind() == ElementKind.CLASS || enclosed.getKind() == ElementKind.ENUM || enclosed.getKind() == ElementKind.INTERFACE) {
+            if (isTypeKind(enclosed.getKind())) {
                 var nested = (TypeElement) enclosed;
                 if (implementsCause(nested, types)) {
                     result.add(nested);
-                    collectNestedCauseTypes(nested, types, result);
                 }
+                collectNestedCauseTypes(nested, types, result);
             }
         }
+    }
+
+    private static boolean isTypeKind(ElementKind kind) {
+        return kind == ElementKind.CLASS || kind == ElementKind.ENUM
+               || kind == ElementKind.INTERFACE || kind == ElementKind.RECORD;
     }
 
     private boolean implementsCause(TypeElement element, javax.lang.model.util.Types types) {
@@ -121,6 +127,19 @@ public final class ErrorTypeDiscovery {
         if (!conflicts.isEmpty()) {
             return formatConflictError(conflicts).result();
         }
+        // Sort children before parents for correct switch pattern dominance
+        var types = processingEnv.getTypeUtils();
+        mappings.sort((a, b) -> {
+            var aType = a.errorType().asType();
+            var bType = b.errorType().asType();
+            if (types.isAssignable(aType, bType)) {
+                return -1;
+            }
+            if (types.isAssignable(bType, aType)) {
+                return 1;
+            }
+            return 0;
+        });
         return Result.success(List.copyOf(mappings));
     }
 
