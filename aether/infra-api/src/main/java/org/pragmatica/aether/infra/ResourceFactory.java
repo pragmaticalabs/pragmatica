@@ -25,7 +25,7 @@ import org.pragmatica.lang.Promise;
  *     }
  *
  *     @Override
- *     public Promise<DatabaseConnector> create(DatabaseConnectorConfig config) {
+ *     public Promise<DatabaseConnector> provision(DatabaseConnectorConfig config) {
  *         return JdbcDatabaseConnector.jdbcDatabaseConnector(config);
  *     }
  * }
@@ -56,10 +56,10 @@ public interface ResourceFactory<T, C> {
     Class<C> configType();
 
     /**
-     * Create a resource instance from configuration.
+     * Provision a resource instance from configuration.
      *
      * @param config Configuration for the resource
-     * @return Promise containing the created resource or error
+     * @return Promise containing the provisioned resource or error
      */
-    Promise<T> create(C config);
+    Promise<T> provision(C config);
 }

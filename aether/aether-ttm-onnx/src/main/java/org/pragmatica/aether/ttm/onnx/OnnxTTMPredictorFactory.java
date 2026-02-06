@@ -12,7 +12,7 @@ import org.pragmatica.lang.Result;
  */
 public final class OnnxTTMPredictorFactory implements TTMPredictorFactory {
     @Override
-    public Result<TTMPredictor> create(TTMConfig config) {
+    public Result<TTMPredictor> ttmPredictor(TTMConfig config) {
         return OnnxTTMPredictor.onnxTTMPredictor(config);
     }
 }

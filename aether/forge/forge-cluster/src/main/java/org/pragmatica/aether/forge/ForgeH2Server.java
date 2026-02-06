@@ -66,16 +66,22 @@ public final class ForgeH2Server {
     private Promise<Unit> initializeDatabase(Server server) {
         return config.initScript()
                      .map(this::runInitScript)
-                     .or(Promise.success(Unit.unit()));
+                     .or(() -> {
+                         log.debug("No init script configured, skipping database initialization");
+                         return Promise.success(Unit.unit());
+                     });
     }
 
     private Promise<Unit> runInitScript(String scriptPath) {
+        log.info("Running H2 init script: {}", scriptPath);
         return Promise.lift(H2Error.InitScriptFailed::new, () -> {
-            try(Connection conn = DriverManager.getConnection(jdbcUrl())) {
+            try (Connection conn = DriverManager.getConnection(jdbcUrl(), "sa", "")) {
                 var statement = conn.createStatement();
                 statement.execute("RUNSCRIPT FROM '" + scriptPath + "'");
             }
-        }).mapToUnit();
+        }).mapToUnit()
+          .onSuccess(_ -> log.info("H2 init script completed successfully"))
+          .onFailure(cause -> log.error("H2 init script failed: {}", cause.message()));
     }
 
     /**
@@ -98,7 +104,7 @@ public final class ForgeH2Server {
     public String jdbcUrl() {
         var dbPath = config.persistent()
                      ? "tcp://localhost:" + config.port() + "/./" + config.name()
-                     : "tcp://localhost:" + config.port() + "/mem:" + config.name();
+                     : "tcp://localhost:" + config.port() + "/mem:" + config.name() + ";DB_CLOSE_DELAY=-1";
         return "jdbc:h2:" + dbPath;
     }
 

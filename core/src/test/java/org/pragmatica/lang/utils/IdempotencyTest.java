@@ -38,28 +38,28 @@ class IdempotencyTest {
     void setUp() {
         timeSource = new TestTimeSource();
 
-        idempotency = Idempotency.create(timeSpan(100).millis(), timeSource)
+        idempotency = Idempotency.idempotency(timeSpan(100).millis(), timeSource)
                                  .onFailure(_ -> fail("Setup should not fail"))
                                  .fold(_ -> null, v -> v);
     }
 
     @Test
-    void create_succeeds_forPositiveTtl() {
-        Idempotency.create(timeSpan(100).millis())
+    void idempotency_succeeds_forPositiveTtl() {
+        Idempotency.idempotency(timeSpan(100).millis())
                    .onFailureRun(Assertions::fail)
                    .onSuccess(Assertions::assertNotNull);
     }
 
     @Test
-    void create_fails_forZeroTtl() {
-        Idempotency.create(timeSpan(0).millis())
+    void idempotency_fails_forZeroTtl() {
+        Idempotency.idempotency(timeSpan(0).millis())
                    .onSuccess(_ -> Assertions.fail())
                    .onFailure(cause -> assertInstanceOf(Idempotency.IdempotencyError.InvalidTtl.class, cause));
     }
 
     @Test
-    void create_fails_forNegativeTtl() {
-        Idempotency.create(timeSpan(-100).millis())
+    void idempotency_fails_forNegativeTtl() {
+        Idempotency.idempotency(timeSpan(-100).millis())
                    .onSuccess(_ -> Assertions.fail())
                    .onFailure(cause -> assertInstanceOf(Idempotency.IdempotencyError.InvalidTtl.class, cause));
     }
@@ -184,7 +184,7 @@ class IdempotencyTest {
         var completionLatch = new CountDownLatch(5);
 
         // Create idempotency with real time source for concurrency test
-        var concurrentIdempotency = Idempotency.create(timeSpan(10).seconds())
+        var concurrentIdempotency = Idempotency.idempotency(timeSpan(10).seconds())
                                                .onFailure(_ -> fail("Setup should not fail"))
                                                .fold(_ -> null, v -> v);
 
@@ -235,7 +235,7 @@ class IdempotencyTest {
         var operationCount = new AtomicInteger(0);
         var completionLatch = new CountDownLatch(10);
 
-        var concurrentIdempotency = Idempotency.create(timeSpan(10).seconds())
+        var concurrentIdempotency = Idempotency.idempotency(timeSpan(10).seconds())
                                                .onFailure(_ -> fail("Setup should not fail"))
                                                .fold(_ -> null, v -> v);
 
@@ -291,7 +291,7 @@ class IdempotencyTest {
 
     @Test
     void shouldUseSystemTimeSourceByDefault() {
-        var defaultIdempotency = Idempotency.create(timeSpan(100).millis())
+        var defaultIdempotency = Idempotency.idempotency(timeSpan(100).millis())
                                             .onFailure(_ -> fail("Setup should not fail"))
                                             .fold(_ -> null, v -> v);
 
@@ -402,7 +402,7 @@ class IdempotencyTest {
     void cleanupScheduler_shouldRemoveExpiredEntries() throws InterruptedException {
         // Create idempotency with short TTL and cleanup interval
         var cleanupTimeSource = new TestTimeSource();
-        var shortTtlIdempotency = Idempotency.create(timeSpan(50).millis(), cleanupTimeSource)
+        var shortTtlIdempotency = Idempotency.idempotency(timeSpan(50).millis(), cleanupTimeSource)
                                               .onFailure(_ -> fail("Setup should not fail"))
                                               .fold(_ -> null, v -> v);
 

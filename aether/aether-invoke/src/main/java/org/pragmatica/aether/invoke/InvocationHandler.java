@@ -58,7 +58,7 @@ public interface InvocationHandler {
      * @param artifact The slice artifact
      * @return Option containing the SliceBridge if registered
      */
-    Option<SliceBridge> getLocalSlice(Artifact artifact);
+    Option<SliceBridge> localSlice(Artifact artifact);
 
     /**
      * Get the metrics collector if configured.
@@ -79,11 +79,11 @@ public interface InvocationHandler {
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {
         return new InvocationHandlerImpl(self,
                                          network,
-                                         Option.empty(),
+                                         Option.none(),
                                          DEFAULT_INVOCATION_TIMEOUT,
-                                         Option.empty(),
-                                         Option.empty(),
-                                         Option.empty());
+                                         Option.none(),
+                                         Option.none(),
+                                         Option.none());
     }
 
     /**
@@ -98,9 +98,9 @@ public interface InvocationHandler {
                                          network,
                                          Option.option(metricsCollector),
                                          DEFAULT_INVOCATION_TIMEOUT,
-                                         Option.empty(),
-                                         Option.empty(),
-                                         Option.empty());
+                                         Option.none(),
+                                         Option.none(),
+                                         Option.none());
     }
 
     /**
@@ -140,9 +140,9 @@ public interface InvocationHandler {
                                          network,
                                          Option.option(metricsCollector),
                                          invocationTimeout,
-                                         Option.empty(),
-                                         Option.empty(),
-                                         Option.empty());
+                                         Option.none(),
+                                         Option.none(),
+                                         Option.none());
     }
 }
 
@@ -189,7 +189,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     @Override
-    public Option<SliceBridge> getLocalSlice(Artifact artifact) {
+    public Option<SliceBridge> localSlice(Artifact artifact) {
         return Option.option(localSlices.get(artifact));
     }
 
@@ -328,17 +328,17 @@ class InvocationHandlerImpl implements InvocationHandler {
     }
 
     private void sendSuccessResponse(InvokeRequest request, byte[] payload) {
-        var response = new InvokeResponse(self, request.correlationId(), request.requestId(), true, payload);
+        var response = InvokeResponse.invokeResponse(self, request.correlationId(), request.requestId(), true, payload);
         network.send(request.sender(), response);
         log.debug("[requestId={}] Sent success response [{}]", request.requestId(), request.correlationId());
     }
 
     private void sendErrorResponse(InvokeRequest request, String errorMessage) {
-        var response = new InvokeResponse(self,
-                                          request.correlationId(),
-                                          request.requestId(),
-                                          false,
-                                          errorMessage.getBytes(StandardCharsets.UTF_8));
+        var response = InvokeResponse.invokeResponse(self,
+                                                     request.correlationId(),
+                                                     request.requestId(),
+                                                     false,
+                                                     errorMessage.getBytes(StandardCharsets.UTF_8));
         network.send(request.sender(), response);
         log.debug("[requestId={}] Sent error response [{}]: {}",
                   request.requestId(),

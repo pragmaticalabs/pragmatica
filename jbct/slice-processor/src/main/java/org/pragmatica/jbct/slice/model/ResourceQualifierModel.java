@@ -25,6 +25,12 @@ public record ResourceQualifierModel(TypeMirror resourceType,
                                       String resourceTypeSimpleName,
                                       String configSection) {
 
+    public static ResourceQualifierModel resourceQualifierModel(TypeMirror resourceType,
+                                                                 String resourceTypeSimpleName,
+                                                                 String configSection) {
+        return new ResourceQualifierModel(resourceType, resourceTypeSimpleName, configSection);
+    }
+
     private static final String RESOURCE_QUALIFIER_ANNOTATION =
         "org.pragmatica.aether.slice.annotation.ResourceQualifier";
 
@@ -55,42 +61,41 @@ public record ResourceQualifierModel(TypeMirror resourceType,
 
     private static Option<ResourceQualifierModel> extractFromMetaAnnotation(AnnotationMirror metaAnnotation,
                                                                              ProcessingEnvironment env) {
-        TypeMirror resourceType = null;
-        String configSection = null;
-
         var elementValues = env.getElementUtils().getElementValuesWithDefaults(metaAnnotation);
+
+        var resourceType = findAnnotationValue(elementValues, "type").flatMap(ResourceQualifierModel::extractTypeMirror);
+        var configSection = findAnnotationValue(elementValues, "config").flatMap(ResourceQualifierModel::extractString);
+
+        return resourceType.flatMap(type -> configSection.map(config -> resourceQualifierModel(type,
+                                                                                                    extractSimpleName(type),
+                                                                                                    config)));
+    }
+
+    private static Option<AnnotationValue> findAnnotationValue(
+        java.util.Map<? extends javax.lang.model.element.ExecutableElement, ? extends AnnotationValue> elementValues,
+        String key) {
         for (var entry : elementValues.entrySet()) {
-            var key = entry.getKey().getSimpleName().toString();
-            var value = entry.getValue();
-
-            if ("type".equals(key)) {
-                resourceType = extractTypeMirror(value);
-            } else if ("config".equals(key)) {
-                configSection = extractString(value);
+            if (key.equals(entry.getKey().getSimpleName().toString())) {
+                return Option.some(entry.getValue());
             }
-        }
-
-        if (resourceType != null && configSection != null) {
-            var simpleName = extractSimpleName(resourceType);
-            return Option.some(new ResourceQualifierModel(resourceType, simpleName, configSection));
         }
         return Option.none();
     }
 
-    private static TypeMirror extractTypeMirror(AnnotationValue value) {
+    private static Option<TypeMirror> extractTypeMirror(AnnotationValue value) {
         var obj = value.getValue();
         if (obj instanceof TypeMirror tm) {
-            return tm;
+            return Option.some(tm);
         }
-        return null;
+        return Option.none();
     }
 
-    private static String extractString(AnnotationValue value) {
+    private static Option<String> extractString(AnnotationValue value) {
         var obj = value.getValue();
         if (obj instanceof String s) {
-            return s;
+            return Option.some(s);
         }
-        return null;
+        return Option.none();
     }
 
     private static String extractSimpleName(TypeMirror type) {

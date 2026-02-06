@@ -205,7 +205,12 @@ class ConfigLoaderTest {
     @Test
     void parseDuration_handlesBlankValue() {
         assertThat(ConfigLoader.parseDuration("")).isEqualTo(Duration.ofSeconds(1));
-        assertThat(ConfigLoader.parseDuration(null)).isEqualTo(Duration.ofSeconds(1));
+    }
+
+    @Test
+    void parseDuration_rejectsNull() {
+        org.junit.jupiter.api.Assertions.assertThrows(NullPointerException.class,
+            () -> ConfigLoader.parseDuration(null));
     }
 
     @Test

@@ -105,10 +105,12 @@ public record ForgeConfig(int nodes,
 
     /**
      * Load configuration from file path.
+     * Relative paths in the config (e.g., init_script) are resolved relative to the config file's directory.
      */
     public static Result<ForgeConfig> load(Path path) {
+        var baseDir = path.toAbsolutePath().getParent();
         return TomlParser.parseFile(path)
-                         .flatMap(ForgeConfig::fromDocument);
+                         .flatMap(doc -> fromDocument(doc, baseDir));
     }
 
     /**
@@ -120,6 +122,14 @@ public record ForgeConfig(int nodes,
     }
 
     private static Result<ForgeConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc) {
+        return fromDocument(doc, Option.none());
+    }
+
+    private static Result<ForgeConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Path baseDir) {
+        return fromDocument(doc, Option.some(baseDir));
+    }
+
+    private static Result<ForgeConfig> fromDocument(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
         int nodes = doc.getInt("cluster", "nodes")
                        .or(DEFAULT_NODES);
         int managementPort = doc.getInt("cluster", "management_port")
@@ -130,11 +140,11 @@ public record ForgeConfig(int nodes,
                              .or(DEFAULT_APP_HTTP_PORT);
         boolean autoHealEnabled = doc.getBoolean("cluster", "auto_heal_enabled")
                                      .or(DEFAULT_AUTO_HEAL_ENABLED);
-        var h2Config = parseH2Config(doc);
+        var h2Config = parseH2Config(doc, baseDir);
         return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, autoHealEnabled, h2Config);
     }
 
-    private static ForgeH2Config parseH2Config(org.pragmatica.config.toml.TomlDocument doc) {
+    private static ForgeH2Config parseH2Config(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {
         boolean enabled = doc.getBoolean("database", "enabled")
                              .or(false);
         if (!enabled) {
@@ -146,8 +156,18 @@ public record ForgeConfig(int nodes,
                          .or(ForgeH2Config.DEFAULT_NAME);
         boolean persistent = doc.getBoolean("database", "persistent")
                                 .or(ForgeH2Config.DEFAULT_PERSISTENT);
-        Option<String> initScript = doc.getString("database", "init_script");
+        Option<String> initScript = doc.getString("database", "init_script")
+                                       .map(script -> resolveRelativePath(script, baseDir));
         return ForgeH2Config.forgeH2Config(enabled, port, name, persistent, initScript);
+    }
+
+    private static String resolveRelativePath(String path, Option<Path> baseDir) {
+        var filePath = Path.of(path);
+        if (filePath.isAbsolute()) {
+            return filePath.toString();
+        }
+        return baseDir.map(dir -> dir.resolve(filePath).toAbsolutePath().toString())
+                      .or(path);
     }
 
     /**

@@ -86,8 +86,9 @@ public interface CompositeLoadFactor {
     static CompositeLoadFactor compositeLoadFactor(ScalingConfig config) {
         var windows = new EnumMap<ScalingMetric, MetricWindow>(ScalingMetric.class);
         for (ScalingMetric metric : ScalingMetric.values()) {
-            windows.put(metric,
-                        MetricWindow.metricWindow(config.windowSize()));
+            // ScalingConfig guarantees windowSize > 0, so metricWindow always succeeds here
+            MetricWindow.metricWindow(config.windowSize())
+                        .onSuccess(window -> windows.put(metric, window));
         }
         return new State(config, windows);
     }

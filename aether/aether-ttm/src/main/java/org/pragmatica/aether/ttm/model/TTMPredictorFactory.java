@@ -16,5 +16,5 @@ public interface TTMPredictorFactory {
     Option<TTMPredictorFactory> INSTANCE =
         Option.from(ServiceLoader.load(TTMPredictorFactory.class).findFirst());
 
-    Result<TTMPredictor> create(TTMConfig config);
+    Result<TTMPredictor> ttmPredictor(TTMConfig config);
 }

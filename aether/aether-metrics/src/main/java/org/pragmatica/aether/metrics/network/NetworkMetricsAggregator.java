@@ -1,6 +1,5 @@
 package org.pragmatica.aether.metrics.network;
 
-import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
@@ -10,7 +9,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * and want unified metrics.
  */
 public final class NetworkMetricsAggregator {
-    private final List<NetworkMetricsHandler> handlers = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<NetworkMetricsHandler> handlers = new CopyOnWriteArrayList<>();
 
     private NetworkMetricsAggregator() {}
 
@@ -22,9 +21,7 @@ public final class NetworkMetricsAggregator {
      * Register a handler for aggregation.
      */
     public void register(NetworkMetricsHandler handler) {
-        if (!handlers.contains(handler)) {
-            handlers.add(handler);
-        }
+        handlers.addIfAbsent(handler);
     }
 
     /**

@@ -164,11 +164,11 @@ public interface NodeDeploymentManager {
                 // Emit state transition event for metrics via MessageRouter
                 // For initial LOAD, use LOAD as both from and to (captures loadTime)
                 var effectiveFromState = previousState.or(state);
-                router.route(new StateTransition(sliceKey.artifact(), self, effectiveFromState, state, timestamp));
+                router.route(StateTransition.stateTransition(sliceKey.artifact(), self, effectiveFromState, state, timestamp));
                 // Emit deployment failed event if transitioning to FAILED
                 // We do this here because we have access to previousState
                 if (state == SliceState.FAILED) {
-                    previousState.onPresent(prevState -> router.route(new DeploymentFailed(sliceKey.artifact(),
+                    previousState.onPresent(prevState -> router.route(DeploymentFailed.deploymentFailed(sliceKey.artifact(),
                                                                                            self,
                                                                                            prevState,
                                                                                            timestamp)));
@@ -280,7 +280,7 @@ public interface NodeDeploymentManager {
             private void handleActive(SliceNodeKey sliceKey) {
                 // All registration and publishing is done in handleActivating BEFORE transitioning to ACTIVE
                 // Here we only emit the deployment completed event for metrics
-                router.route(new DeploymentCompleted(sliceKey.artifact(), self, System.currentTimeMillis()));
+                router.route(DeploymentCompleted.deploymentCompleted(sliceKey.artifact(), self, System.currentTimeMillis()));
             }
 
             private Promise<Unit> publishHttpRoutes(SliceNodeKey sliceKey) {
@@ -289,10 +289,10 @@ public interface NodeDeploymentManager {
                           artifact,
                           httpRoutePublisher.isPresent(),
                           sliceInvokerFacade.isPresent());
-                return httpRoutePublisher.flatMap(publisher -> sliceInvokerFacade.flatMap(facade -> findLoadedSlice(artifact).map(ls -> doPublishHttpRoutes(artifact,
-                                                                                                                                                            publisher,
-                                                                                                                                                            facade,
-                                                                                                                                                            ls))))
+                return httpRoutePublisher.flatMap(publisher ->
+                                                    sliceInvokerFacade.flatMap(facade ->
+                                                        findLoadedSlice(artifact)
+                                                            .map(ls -> doPublishHttpRoutes(artifact, publisher, facade, ls))))
                                          .or(Promise.unitPromise());
             }
 
@@ -507,25 +507,33 @@ public interface NodeDeploymentManager {
                           operation.isResolved());
                 configuration.timeoutFor(currentState)
                              .async()
-                             .flatMap(timeout -> {
-                                          log.debug("Got timeout {} for {}, setting up callbacks",
-                                                    timeout,
-                                                    sliceKey.artifact());
-                                          return operation.timeout(timeout);
-                                      })
-                             .onSuccess(_ -> {
-                                            log.debug("Operation succeeded for {}, transitioning to {}",
-                                                      sliceKey.artifact(),
-                                                      successState);
-                                            transitionTo(sliceKey, successState);
-                                        })
-                             .onFailure(cause -> {
-                                            log.warn("Operation failed for {}: {}, transitioning to {}",
-                                                     sliceKey.artifact(),
-                                                     cause.message(),
-                                                     failureState);
-                                            transitionTo(sliceKey, failureState);
-                                        });
+                             .flatMap(timeout -> applyTimeout(sliceKey, operation, timeout))
+                             .onSuccess(_ -> handleTransitionSuccess(sliceKey, successState))
+                             .onFailure(cause -> handleTransitionFailure(sliceKey, failureState, cause));
+            }
+
+            private Promise<?> applyTimeout(SliceNodeKey sliceKey,
+                                               Promise<?> operation,
+                                               org.pragmatica.lang.io.TimeSpan timeout) {
+                log.debug("Got timeout {} for {}, setting up callbacks",
+                          timeout,
+                          sliceKey.artifact());
+                return operation.timeout(timeout);
+            }
+
+            private void handleTransitionSuccess(SliceNodeKey sliceKey, SliceState successState) {
+                log.debug("Operation succeeded for {}, transitioning to {}",
+                          sliceKey.artifact(),
+                          successState);
+                transitionTo(sliceKey, successState);
+            }
+
+            private void handleTransitionFailure(SliceNodeKey sliceKey, SliceState failureState, Cause cause) {
+                log.warn("Operation failed for {}: {}, transitioning to {}",
+                         sliceKey.artifact(),
+                         cause.message(),
+                         failureState);
+                transitionTo(sliceKey, failureState);
             }
 
             private Promise<Unit> transitionTo(SliceNodeKey sliceKey, SliceState newState) {
@@ -601,13 +609,15 @@ public interface NodeDeploymentManager {
              */
             private void suspendSlice(SliceNodeKey sliceKey) {
                 // Unpublish HTTP routes (local handler map only)
-                httpRoutePublisher.onPresent(publisher -> {
-                                                 publisher.unpublishRoutes(sliceKey.artifact());
-                                                 log.debug("Unpublished HTTP routes for suspended slice {}",
-                                                           sliceKey.artifact());
-                                             });
+                httpRoutePublisher.onPresent(publisher -> unpublishRoutesForSuspension(publisher, sliceKey));
                 // Unregister from invocation handler
                 unregisterSliceFromInvocation(sliceKey);
+            }
+
+            private void unpublishRoutesForSuspension(HttpRoutePublisher publisher, SliceNodeKey sliceKey) {
+                publisher.unpublishRoutes(sliceKey.artifact());
+                log.debug("Unpublished HTTP routes for suspended slice {}",
+                          sliceKey.artifact());
             }
 
             /**
@@ -647,16 +657,17 @@ public interface NodeDeploymentManager {
                     registerSliceForInvocation(sliceKey).flatMap(_ -> publishEndpointsAndRoutes(sliceKey))
                                               .onSuccess(_ -> log.debug("Successfully reactivated slice {}",
                                                                         sliceKey.artifact()))
-                                              .onFailure(cause -> {
-                                                             log.error("Failed to reactivate slice {}: {}",
-                                                                       sliceKey.artifact(),
-                                                                       cause.message());
-                                                             // Clean up failed reactivation
-                    unregisterSliceFromInvocation(sliceKey);
-                                                             unpublishHttpRoutes(sliceKey);
-                                                             deployments.remove(sliceKey);
-                                                         });
+                                              .onFailure(cause -> handleReactivationFailure(sliceKey, cause));
                 }
+            }
+
+            private void handleReactivationFailure(SliceNodeKey sliceKey, Cause cause) {
+                log.error("Failed to reactivate slice {}: {}",
+                          sliceKey.artifact(),
+                          cause.message());
+                unregisterSliceFromInvocation(sliceKey);
+                unpublishHttpRoutes(sliceKey);
+                deployments.remove(sliceKey);
             }
 
             /**

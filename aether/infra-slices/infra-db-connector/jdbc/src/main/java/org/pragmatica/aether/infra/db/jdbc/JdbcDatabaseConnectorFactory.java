@@ -27,16 +27,21 @@ public final class JdbcDatabaseConnectorFactory implements ResourceFactory<Datab
     }
 
     @Override
-    public Promise<DatabaseConnector> create(DatabaseConnectorConfig config) {
-        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> createConnector(config));
+    public Promise<DatabaseConnector> provision(DatabaseConnectorConfig config) {
+        return Promise.lift(DatabaseConnectorError::databaseFailure, () -> connector(config));
     }
 
-    private static DatabaseConnector createConnector(DatabaseConnectorConfig config) {
-        var dataSource = createHikariDataSource(config);
-        return JdbcDatabaseConnector.jdbcDatabaseConnector(config, dataSource);
+    private static DatabaseConnector connector(DatabaseConnectorConfig config) {
+        var dataSource = hikariDataSource(config);
+        try {
+            return JdbcDatabaseConnector.jdbcDatabaseConnector(config, dataSource);
+        } catch (Exception e) {
+            dataSource.close();
+            throw e;
+        }
     }
 
-    private static HikariDataSource createHikariDataSource(DatabaseConnectorConfig config) {
+    private static HikariDataSource hikariDataSource(DatabaseConnectorConfig config) {
         var hikariConfig = new HikariConfig();
         hikariConfig.setJdbcUrl(config.effectiveJdbcUrl());
         config.username().onPresent(hikariConfig::setUsername);

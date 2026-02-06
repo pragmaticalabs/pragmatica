@@ -58,7 +58,7 @@ public final class ForgeMetrics {
      * Take a snapshot and calculate rates.
      * Should be called periodically (e.g., every 500ms).
      */
-    public void snapshot() {
+    public synchronized void snapshot() {
         var now = System.currentTimeMillis();
         var elapsed = now - lastSnapshotTime;
         if (elapsed <= 0) elapsed = 1;
@@ -91,15 +91,16 @@ public final class ForgeMetrics {
 
     /**
      * Get current metrics for dashboard.
+     * Synchronized to match snapshot() for consistent reads across all volatile fields.
      */
-    public MetricsSnapshot currentMetrics() {
-        return new MetricsSnapshot(requestsPerSecond, successRate, avgLatencyMs, totalSuccess.get(), totalFailures.get());
+    public synchronized MetricsSnapshot currentMetrics() {
+        return MetricsSnapshot.metricsSnapshot(requestsPerSecond, successRate, avgLatencyMs, totalSuccess.get(), totalFailures.get());
     }
 
     /**
      * Reset all metrics.
      */
-    public void reset() {
+    public synchronized void reset() {
         successCount.reset();
         failureCount.reset();
         totalLatencyNanos.reset();
@@ -122,6 +123,14 @@ public final class ForgeMetrics {
                                   double avgLatencyMs,
                                   long totalSuccess,
                                   long totalFailures) {
+        public static MetricsSnapshot metricsSnapshot(double requestsPerSecond,
+                                                       double successRate,
+                                                       double avgLatencyMs,
+                                                       long totalSuccess,
+                                                       long totalFailures) {
+            return new MetricsSnapshot(requestsPerSecond, successRate, avgLatencyMs, totalSuccess, totalFailures);
+        }
+
         public long totalRequests() {
             return totalSuccess + totalFailures;
         }

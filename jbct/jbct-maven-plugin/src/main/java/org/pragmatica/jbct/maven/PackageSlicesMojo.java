@@ -1,6 +1,7 @@
 package org.pragmatica.jbct.maven;
 
 import org.pragmatica.jbct.slice.SliceManifest;
+import org.pragmatica.lang.Option;
 
 import java.io.File;
 import java.io.FileWriter;
@@ -209,11 +210,11 @@ public class PackageSlicesMojo extends AbstractMojo {
         }
     }
 
-    private java.util.Optional<java.util.Properties> readFirstSliceManifest(Artifact artifact) {
+    private Option<java.util.Properties> readFirstSliceManifest(Artifact artifact) {
         var file = artifact.getFile();
         if (file == null || !file.exists() || !file.getName()
                                                    .endsWith(".jar")) {
-            return java.util.Optional.empty();
+            return Option.none();
         }
         try (var jar = new JarFile(file)) {
             var entries = jar.entries();
@@ -226,13 +227,13 @@ public class PackageSlicesMojo extends AbstractMojo {
                     try (var stream = jar.getInputStream(entry)) {
                         props.load(stream);
                     }
-                    return java.util.Optional.of(props);
+                    return Option.some(props);
                 }
             }
-            return java.util.Optional.empty();
+            return Option.none();
         } catch (IOException e) {
             getLog().debug("Could not read JAR: " + file + " - " + e.getMessage());
-            return java.util.Optional.empty();
+            return Option.none();
         }
     }
 
@@ -242,18 +243,17 @@ public class PackageSlicesMojo extends AbstractMojo {
 
     private ArtifactInfo toSliceArtifactInfo(Artifact artifact) {
         // Read slice artifact from manifest (has correct naming: groupId:artifactId-sliceName)
-        return readFirstSliceManifest(artifact).flatMap(props -> {
-                                                            var sliceArtifactId = props.getProperty("slice.artifactId");
-                                                            var baseArtifact = props.getProperty("base.artifact");
-                                                            if (sliceArtifactId != null && baseArtifact != null && baseArtifact.contains(":")) {
-                                                                var groupId = baseArtifact.split(":") [0];
-                                                                return java.util.Optional.of(new ArtifactInfo(groupId,
-                                                                                                              sliceArtifactId,
-                                                                                                              toSemverRange(artifact.getVersion())));
-                                                            }
-                                                            return java.util.Optional.<ArtifactInfo>empty();
-                                                        })
-                                     .orElseGet(() -> toArtifactInfo(artifact));
+        return readFirstSliceManifest(artifact).flatMap(props -> extractSliceArtifactInfo(props, artifact.getVersion()))
+                                               .or(() -> toArtifactInfo(artifact));
+    }
+
+    private Option<ArtifactInfo> extractSliceArtifactInfo(java.util.Properties props, String version) {
+        return Option.option(props.getProperty("slice.artifactId"))
+                     .flatMap(sliceArtifactId -> Option.option(props.getProperty("base.artifact"))
+                                                       .filter(base -> base.contains(":"))
+                                                       .map(base -> new ArtifactInfo(base.split(":")[0],
+                                                                                     sliceArtifactId,
+                                                                                     toSemverRange(version))));
     }
 
     private String toSemverRange(String version) {
@@ -440,6 +440,7 @@ public class PackageSlicesMojo extends AbstractMojo {
     throws IOException {
         var factoryClassName = manifest.slicePackage() + "." + manifest.sliceName() + "Factory";
         var tempFile = Files.createTempFile("deps-", ".txt");
+        tempFile.toFile().deleteOnExit();
         Files.writeString(tempFile, content);
         archiver.addFile(tempFile.toFile(), "META-INF/dependencies/" + factoryClassName);
     }
@@ -460,6 +461,7 @@ public class PackageSlicesMojo extends AbstractMojo {
                                      .toList();
             if (!filteredLines.isEmpty()) {
                 var tempService = Files.createTempFile("service-", ".txt");
+                tempService.toFile().deleteOnExit();
                 Files.writeString(tempService, String.join("\n", filteredLines));
                 archiver.addFile(tempService.toFile(),
                                  "META-INF/services/org.pragmatica.aether.http.adapter.SliceRouterFactory");
@@ -592,6 +594,7 @@ public class PackageSlicesMojo extends AbstractMojo {
                         var transformedBytes = transformFactoryBytecode(classFile, versionMap);
                         // Write transformed bytecode to temp file for archiving
                         var tempClass = Files.createTempFile("factory-", ".class");
+                        tempClass.toFile().deleteOnExit();
                         Files.write(tempClass, transformedBytes);
                         archiver.addFile(tempClass.toFile(), relativePath);
                         getLog().info("Transformed bytecode: " + className);

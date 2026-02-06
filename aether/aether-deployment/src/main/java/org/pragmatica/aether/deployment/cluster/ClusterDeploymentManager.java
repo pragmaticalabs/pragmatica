@@ -41,7 +41,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -719,7 +718,7 @@ public interface ClusterDeploymentManager {
                 }
                 var allocated = 0;
                 for (var i = 0; i < nodeCount && allocated < toAdd; i++) {
-                    var nodeIndex = allocationIndex.getAndIncrement() % nodeCount;
+                    var nodeIndex = Math.floorMod(allocationIndex.getAndIncrement(), nodeCount);
                     var node = nodes.get(nodeIndex);
                     if (!nodesWithInstances.contains(node) && tryAllocate(artifact, node)) {
                         allocated++;
@@ -750,7 +749,7 @@ public interface ClusterDeploymentManager {
                 var maxAttempts = nodes.size() * 2;
                 // Prevent infinite loop
                 while (allocated < remaining && attempts < maxAttempts) {
-                    var nodeIndex = allocationIndex.getAndIncrement() % nodes.size();
+                    var nodeIndex = Math.floorMod(allocationIndex.getAndIncrement(), nodes.size());
                     var node = nodes.get(nodeIndex);
                     if (tryAllocate(artifact, node)) {
                         allocated++;
@@ -791,7 +790,7 @@ public interface ClusterDeploymentManager {
                 sliceStates.put(sliceKey, SliceState.LOAD);
                 // Emit deployment started event for metrics via MessageRouter
                 var timestamp = System.currentTimeMillis();
-                router.route(new DeploymentStarted(sliceKey.artifact(), sliceKey.nodeId(), timestamp));
+                router.route(DeploymentStarted.deploymentStarted(sliceKey.artifact(), sliceKey.nodeId(), timestamp));
                 var value = new SliceNodeValue(SliceState.LOAD);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(sliceKey, value);
                 cluster.apply(List.of(command))
@@ -865,17 +864,18 @@ public interface ClusterDeploymentManager {
                                         KVStore<AetherKey, AetherValue> kvStore,
                                         MessageRouter router,
                                         AtomicReference<ClusterDeploymentState> state,
-                                        List<NodeId> topology) implements ClusterDeploymentManager {
+                                        AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
             private static final Logger log = LoggerFactory.getLogger(clusterDeploymentManager.class);
 
             @Override
             public void onLeaderChange(LeaderChange leaderChange) {
                 if (leaderChange.localNodeIsLeader()) {
+                    var currentTopology = topologyRef.get();
                     log.info("Node {} became leader, activating cluster deployment manager with {} known nodes",
                              self,
-                             topology.size());
+                             currentTopology.size());
                     // Create active state with current topology
-                    var activeNodes = new AtomicReference<List<NodeId>>(List.copyOf(topology));
+                    var activeNodes = new AtomicReference<>(currentTopology);
                     var activeState = new ClusterDeploymentState.Active(self,
                                                                         cluster,
                                                                         kvStore,
@@ -910,32 +910,23 @@ public interface ClusterDeploymentManager {
 
             @Override
             public void onTopologyChange(TopologyChangeNotification topologyChange) {
-                // Always update topology even when dormant, so we have current topology when becoming leader
+                // Always update topology even when dormant, so we have current topology when becoming leader.
+                // Use atomic reference swap instead of non-atomic clear+addAll on CopyOnWriteArrayList.
                 switch (topologyChange) {
-                    case NodeAdded(_, List<NodeId> newTopology) -> {
-                        topology.clear();
-                        topology.addAll(newTopology);
-                    }
-                    case NodeRemoved(_, List<NodeId> newTopology) -> {
-                        topology.clear();
-                        topology.addAll(newTopology);
-                    }
-                    case NodeDown(_, List<NodeId> newTopology) -> {
-                        topology.clear();
-                        topology.addAll(newTopology);
-                    }
+                    case NodeAdded(_, List<NodeId> newTopology) -> topologyRef.set(List.copyOf(newTopology));
+                    case NodeRemoved(_, List<NodeId> newTopology) -> topologyRef.set(List.copyOf(newTopology));
+                    case NodeDown(_, List<NodeId> newTopology) -> topologyRef.set(List.copyOf(newTopology));
                     default -> {}
                 }
                 state.get()
                      .onTopologyChange(topologyChange);
             }
         }
-        var initialNodes = new CopyOnWriteArrayList<>(initialTopology);
         return new clusterDeploymentManager(self,
                                             cluster,
                                             kvStore,
                                             router,
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
-                                            initialNodes);
+                                            new AtomicReference<>(List.copyOf(initialTopology)));
     }
 }

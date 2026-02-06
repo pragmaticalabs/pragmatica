@@ -51,7 +51,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// <h2>Usage Example</h2>
 /// <pre>{@code
 /// // Create an idempotency guard with 5-minute TTL
-/// Idempotency.create(timeSpan(5).minutes())
+/// Idempotency.idempotency(timeSpan(5).minutes())
 ///     .onFailure(cause -> log.error("Failed to create: {}", cause.message()))
 ///     .onSuccess(idempotency -> {
 ///         // Basic usage - operation executes at most once per requestId
@@ -74,10 +74,10 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// <h2>Factory Methods</h2>
 /// <pre>{@code
 /// // Basic creation with TTL
-/// Idempotency.create(timeSpan(10).minutes());
+/// Idempotency.idempotency(timeSpan(10).minutes());
 ///
 /// // With custom time source (for testing)
-/// Idempotency.create(timeSpan(10).minutes(), testTimeSource);
+/// Idempotency.idempotency(timeSpan(10).minutes(), testTimeSource);
 /// }</pre>
 ///
 /// <h2>TTL Semantics</h2>
@@ -94,7 +94,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Idempotency works well with {@link Retry} for client-side retry logic:
 /// <pre>{@code
 /// // Server side: idempotent endpoint
-/// Idempotency.create(timeSpan(5).minutes())
+/// Idempotency.idempotency(timeSpan(5).minutes())
 ///     .onSuccess(idempotency -> {
 ///         public Promise<Receipt> processPayment(String requestId, PaymentRequest request) {
 ///             return idempotency.execute(requestId, () -> doProcessPayment(request));
@@ -145,8 +145,8 @@ public interface Idempotency {
     /// @param ttl the time-to-live for cached results; must be positive
     ///
     /// @return Result containing the Idempotency instance, or failure if TTL is invalid
-    static Result<Idempotency> create(org.pragmatica.lang.io.TimeSpan ttl) {
-        return create(ttl, TimeSource.system());
+    static Result<Idempotency> idempotency(org.pragmatica.lang.io.TimeSpan ttl) {
+        return idempotency(ttl, TimeSource.system());
     }
 
     /// Creates an Idempotency instance with the specified TTL and time source.
@@ -159,7 +159,7 @@ public interface Idempotency {
     /// <p><b>Example (testing):</b>
     /// <pre>{@code
     /// var testTime = TimeSource.controllable();
-    /// Idempotency.create(timeSpan(5).minutes(), testTime)
+    /// Idempotency.idempotency(timeSpan(5).minutes(), testTime)
     ///     .onSuccess(idempotency -> {
     ///         idempotency.execute("key", operation);  // Executes
     ///         testTime.advance(timeSpan(6).minutes());
@@ -171,17 +171,21 @@ public interface Idempotency {
     /// @param timeSource custom time source for TTL calculations
     ///
     /// @return Result containing the Idempotency instance, or failure if TTL is invalid
-    static Result<Idempotency> create(org.pragmatica.lang.io.TimeSpan ttl, TimeSource timeSource) {
+    static Result<Idempotency> idempotency(org.pragmatica.lang.io.TimeSpan ttl, TimeSource timeSource) {
         if (ttl.nanos() <= 0) {
-            return new IdempotencyError.InvalidTtl(ttl).result();
+            return IdempotencyError.InvalidTtl.invalidTtl(ttl).result();
         }
-        return Result.success(createIdempotency(ttl, timeSource));
+        return Result.success(newIdempotency(ttl, timeSource));
     }
 
     /// Error types that can occur during idempotency creation.
     sealed interface IdempotencyError extends Cause {
         /// Indicates the TTL provided was not positive.
         record InvalidTtl(org.pragmatica.lang.io.TimeSpan ttl) implements IdempotencyError {
+            public static InvalidTtl invalidTtl(org.pragmatica.lang.io.TimeSpan ttl) {
+                return new InvalidTtl(ttl);
+            }
+
             @Override
             public String message() {
                 return "TTL must be positive, got: " + ttl;
@@ -189,12 +193,7 @@ public interface Idempotency {
         }
     }
 
-    private static Idempotency createIdempotency(org.pragmatica.lang.io.TimeSpan ttl, TimeSource timeSource) {
-        record CachedEntry<T>(Promise<T> promise, long expiresAtNanos) {
-            boolean shouldReplace(long now) {
-                return promise.isResolved() && now >= expiresAtNanos;
-            }
-        }
+    private static Idempotency newIdempotency(org.pragmatica.lang.io.TimeSpan ttl, TimeSource timeSource) {
         record idempotency(long ttlNanos,
                            TimeSource timeSource,
                            ConcurrentHashMap<String, CachedEntry<?>> entries) implements Idempotency {
@@ -255,26 +254,35 @@ public interface Idempotency {
         // When the entries map is GC'd, the cleanup task becomes a no-op.
         var log = LoggerFactory.getLogger(Idempotency.class);
         var entriesRef = new WeakReference<>(entries);
-        SharedScheduler.scheduleAtFixedRate(() -> {
-                                                try{
-                                                    var map = entriesRef.get();
-                                                    if (map == null) {
-                                                        return;
-                                                    }
-                                                    var sizeBefore = map.size();
-                                                    long now = timeSource.nanoTime();
-                                                    map.entrySet()
-                                                       .removeIf(e -> e.getValue()
-                                                                       .shouldReplace(now));
-                                                    var removed = sizeBefore - map.size();
-                                                    if (removed > 0) {
-                                                        log.trace("Cleanup removed {} expired entries", removed);
-                                                    }
-                                                } catch (Exception e) {
-                                                    log.warn("Cleanup task failed", e);
-                                                }
-                                            },
+        SharedScheduler.scheduleAtFixedRate(() -> cleanupExpiredEntries(entriesRef, timeSource, log),
                                             cleanupInterval);
         return new idempotency(ttl.nanos(), timeSource, entries);
+    }
+
+    private static void cleanupExpiredEntries(WeakReference<ConcurrentHashMap<String, CachedEntry<?>>> entriesRef,
+                                              TimeSource timeSource,
+                                              Logger log) {
+        try {
+            var map = entriesRef.get();
+            if (map == null) {
+                return;
+            }
+            var sizeBefore = map.size();
+            long now = timeSource.nanoTime();
+            map.entrySet()
+               .removeIf(e -> e.getValue().shouldReplace(now));
+            var removed = sizeBefore - map.size();
+            if (removed > 0) {
+                log.trace("Cleanup removed {} expired entries", removed);
+            }
+        } catch (Exception e) {
+            log.warn("Cleanup task failed", e);
+        }
+    }
+
+    record CachedEntry<T>(Promise<T> promise, long expiresAtNanos) {
+        boolean shouldReplace(long now) {
+            return promise.isResolved() && now >= expiresAtNanos;
+        }
     }
 }

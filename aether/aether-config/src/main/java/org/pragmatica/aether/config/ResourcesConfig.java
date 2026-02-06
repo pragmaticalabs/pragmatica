@@ -11,14 +11,21 @@ public record ResourcesConfig(String cpuRequest,
                               String cpuLimit,
                               String memoryRequest,
                               String memoryLimit) {
+    /**
+     * Factory method following JBCT naming convention.
+     */
+    public static ResourcesConfig resourcesConfig(String cpuRequest, String cpuLimit, String memoryRequest, String memoryLimit) {
+        return new ResourcesConfig(cpuRequest, cpuLimit, memoryRequest, memoryLimit);
+    }
+
     public static ResourcesConfig defaultConfig() {
-        return new ResourcesConfig("500m", "2", "1Gi", "2Gi");
+        return resourcesConfig("500m", "2", "1Gi", "2Gi");
     }
 
     /**
      * Create minimal resources for local/test environments.
      */
     public static ResourcesConfig minimal() {
-        return new ResourcesConfig("100m", "500m", "256Mi", "512Mi");
+        return resourcesConfig("100m", "500m", "256Mi", "512Mi");
     }
 }

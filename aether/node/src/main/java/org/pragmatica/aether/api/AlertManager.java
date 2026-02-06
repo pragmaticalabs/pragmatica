@@ -379,10 +379,9 @@ public class AlertManager {
                   event.method(),
                   event.attemptedNodes()
                        .size(),
-                  event.lastError() != null
-                  ? event.lastError()
-                         .message()
-                  : "unknown error");
+                  event.lastError()
+                       .map(Cause::message)
+                       .or("unknown error"));
     }
 
     private final Map<String, SliceFailureAlert> activeSliceFailureAlerts = new ConcurrentHashMap<>();
@@ -399,10 +398,9 @@ public class AlertManager {
                                                       .stream()
                                                       .map(NodeId::id)
                                                       .toList(),
-                                                 event.lastError() != null
-                                                 ? event.lastError()
-                                                        .message()
-                                                 : "unknown");
+                                                 event.lastError()
+                                                      .map(Cause::message)
+                                                      .or("unknown"));
         // Remove oldest entry if at capacity, then add new entry
         while (!sliceFailureHistory.offerLast(entry)) {
             sliceFailureHistory.pollFirst();
@@ -457,9 +455,8 @@ public class AlertManager {
             }
             sb.append("],");
             sb.append("\"lastError\":\"")
-              .append(alert.lastError != null
-                      ? escapeJson(alert.lastError.message())
-                      : "unknown")
+              .append(escapeJson(alert.lastError.map(Cause::message)
+                                                .or("unknown")))
               .append("\",");
             sb.append("\"timestamp\":")
               .append(alert.triggeredAt);
@@ -526,7 +523,7 @@ public class AlertManager {
      */
     public record SliceFailureAlert(Artifact artifact,
                                     MethodName method,
-                                    Cause lastError,
+                                    Option<Cause> lastError,
                                     List<NodeId> attemptedNodes,
                                     String requestId,
                                     long triggeredAt) {}

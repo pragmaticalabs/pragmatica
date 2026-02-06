@@ -515,7 +515,7 @@ class NodeDeploymentManagerTest {
         }
 
         @Override
-        public Option<SliceBridge> getLocalSlice(Artifact artifact) {
+        public Option<SliceBridge> localSlice(Artifact artifact) {
             return Option.none();
         }
 

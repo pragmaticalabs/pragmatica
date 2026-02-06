@@ -36,7 +36,18 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                          Artifact targetSlice,
                          MethodName method,
                          byte[] payload,
-                         boolean expectResponse) implements InvocationMessage {}
+                         boolean expectResponse) implements InvocationMessage {
+        /** Factory method following JBCT naming convention. */
+        public static InvokeRequest invokeRequest(NodeId sender,
+                                                   String correlationId,
+                                                   String requestId,
+                                                   Artifact targetSlice,
+                                                   MethodName method,
+                                                   byte[] payload,
+                                                   boolean expectResponse) {
+            return new InvokeRequest(sender, correlationId, requestId, targetSlice, method, payload, expectResponse);
+        }
+    }
 
     /**
      * Response from a remote slice invocation.
@@ -51,5 +62,14 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                           String correlationId,
                           String requestId,
                           boolean success,
-                          byte[] payload) implements InvocationMessage {}
+                          byte[] payload) implements InvocationMessage {
+        /** Factory method following JBCT naming convention. */
+        public static InvokeResponse invokeResponse(NodeId sender,
+                                                     String correlationId,
+                                                     String requestId,
+                                                     boolean success,
+                                                     byte[] payload) {
+            return new InvokeResponse(sender, correlationId, requestId, success, payload);
+        }
+    }
 }

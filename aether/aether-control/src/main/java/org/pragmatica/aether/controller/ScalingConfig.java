@@ -3,6 +3,10 @@ package org.pragmatica.aether.controller;
 import java.util.EnumMap;
 import java.util.Map;
 
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.utils.Causes;
+
 /**
  * Configuration for the Lizard Brain relative change scaling algorithm.
  *
@@ -124,14 +128,13 @@ public record ScalingConfig(int windowSize,
      * @param scaleUpThreshold     Scale up threshold (relative change, must be > 0)
      * @param scaleDownThreshold   Scale down threshold (relative change, must be > 0)
      * @param weights              Per-metric weights
-     * @return New ScalingConfig
-     * @throws IllegalArgumentException if validation fails
+     * @return Result containing valid ScalingConfig or validation error
      */
-    public static ScalingConfig scalingConfig(int windowSize,
-                                              long evaluationIntervalMs,
-                                              double scaleUpThreshold,
-                                              double scaleDownThreshold,
-                                              Map<ScalingMetric, Double> weights) {
+    public static Result<ScalingConfig> scalingConfig(int windowSize,
+                                                      long evaluationIntervalMs,
+                                                      double scaleUpThreshold,
+                                                      double scaleDownThreshold,
+                                                      Map<ScalingMetric, Double> weights) {
         return scalingConfig(windowSize,
                              evaluationIntervalMs,
                              scaleUpThreshold,
@@ -149,46 +152,56 @@ public record ScalingConfig(int windowSize,
      * @param scaleDownThreshold      Scale down threshold (relative change, must be > 0)
      * @param weights                 Per-metric weights (all must be >= 0)
      * @param errorRateBlockThreshold Error rate threshold for blocking scale-up
-     * @return New ScalingConfig
-     * @throws IllegalArgumentException if validation fails
+     * @return Result containing valid ScalingConfig or validation error
      */
-    public static ScalingConfig scalingConfig(int windowSize,
-                                              long evaluationIntervalMs,
-                                              double scaleUpThreshold,
-                                              double scaleDownThreshold,
-                                              Map<ScalingMetric, Double> weights,
-                                              double errorRateBlockThreshold) {
-        if (windowSize <= 0) {
-            throw new IllegalArgumentException("windowSize must be positive, got: " + windowSize);
-        }
-        if (scaleUpThreshold <= 0) {
-            throw new IllegalArgumentException("scaleUpThreshold must be positive, got: " + scaleUpThreshold);
-        }
-        if (scaleDownThreshold <= 0) {
-            throw new IllegalArgumentException("scaleDownThreshold must be positive, got: " + scaleDownThreshold);
-        }
-        if (scaleUpThreshold <= scaleDownThreshold) {
-            throw new IllegalArgumentException("scaleUpThreshold must be greater than scaleDownThreshold, got: " + scaleUpThreshold
-                                               + " <= " + scaleDownThreshold);
-        }
-        validateWeights(weights);
-        return new ScalingConfig(windowSize,
-                                 evaluationIntervalMs,
-                                 scaleUpThreshold,
-                                 scaleDownThreshold,
-                                 Map.copyOf(weights),
-                                 errorRateBlockThreshold);
+    public static Result<ScalingConfig> scalingConfig(int windowSize,
+                                                      long evaluationIntervalMs,
+                                                      double scaleUpThreshold,
+                                                      double scaleDownThreshold,
+                                                      Map<ScalingMetric, Double> weights,
+                                                      double errorRateBlockThreshold) {
+        return validatePositive(windowSize, "windowSize")
+            .flatMap(_ -> validatePositive(scaleUpThreshold, "scaleUpThreshold"))
+            .flatMap(_ -> validatePositive(scaleDownThreshold, "scaleDownThreshold"))
+            .flatMap(_ -> validateThresholdOrder(scaleUpThreshold, scaleDownThreshold))
+            .flatMap(_ -> validateWeights(weights))
+            .map(_ -> new ScalingConfig(windowSize,
+                                        evaluationIntervalMs,
+                                        scaleUpThreshold,
+                                        scaleDownThreshold,
+                                        Map.copyOf(weights),
+                                        errorRateBlockThreshold));
+    }
+
+    private static Result<Unit> validatePositive(double value, String name) {
+        return value > 0
+               ? Result.unitResult()
+               : Causes.cause(name + " must be positive, got: " + value).result();
+    }
+
+    private static Result<Unit> validatePositive(int value, String name) {
+        return value > 0
+               ? Result.unitResult()
+               : Causes.cause(name + " must be positive, got: " + value).result();
+    }
+
+    private static Result<Unit> validateThresholdOrder(double scaleUp, double scaleDown) {
+        return scaleUp > scaleDown
+               ? Result.unitResult()
+               : Causes.cause("scaleUpThreshold must be greater than scaleDownThreshold, got: "
+                               + scaleUp + " <= " + scaleDown).result();
     }
 
     /**
      * Validate that all weights are non-negative.
      */
-    private static void validateWeights(Map<ScalingMetric, Double> weights) {
+    private static Result<Unit> validateWeights(Map<ScalingMetric, Double> weights) {
         for (var entry : weights.entrySet()) {
             if (entry.getValue() < 0) {
-                throw new IllegalArgumentException("Weight for " + entry.getKey() + " must be >= 0, got: " + entry.getValue());
+                return Causes.cause("Weight for " + entry.getKey() + " must be >= 0, got: " + entry.getValue()).result();
             }
         }
+        return Result.unitResult();
     }
 
     /**
@@ -206,10 +219,9 @@ public record ScalingConfig(int windowSize,
      *
      * @param metric    Metric to update
      * @param newWeight New weight value (must be >= 0)
-     * @return New ScalingConfig with updated weight
-     * @throws IllegalArgumentException if weight is negative
+     * @return Result containing new ScalingConfig with updated weight or validation error
      */
-    public ScalingConfig withWeight(ScalingMetric metric, double newWeight) {
+    public Result<ScalingConfig> withWeight(ScalingMetric metric, double newWeight) {
         var newWeights = new EnumMap<ScalingMetric, Double>(ScalingMetric.class);
         newWeights.putAll(weights);
         newWeights.put(metric, newWeight);
@@ -225,10 +237,9 @@ public record ScalingConfig(int windowSize,
      * Create a copy with updated window size.
      *
      * @param newWindowSize New window size (must be > 0)
-     * @return New ScalingConfig
-     * @throws IllegalArgumentException if windowSize is not positive
+     * @return Result containing new ScalingConfig or validation error
      */
-    public ScalingConfig withWindowSize(int newWindowSize) {
+    public Result<ScalingConfig> withWindowSize(int newWindowSize) {
         return scalingConfig(newWindowSize,
                              evaluationIntervalMs,
                              scaleUpThreshold,
@@ -241,9 +252,9 @@ public record ScalingConfig(int windowSize,
      * Create a copy with updated evaluation interval.
      *
      * @param newIntervalMs New evaluation interval in milliseconds
-     * @return New ScalingConfig
+     * @return Result containing new ScalingConfig or validation error
      */
-    public ScalingConfig withEvaluationIntervalMs(long newIntervalMs) {
+    public Result<ScalingConfig> withEvaluationIntervalMs(long newIntervalMs) {
         return scalingConfig(windowSize,
                              newIntervalMs,
                              scaleUpThreshold,
@@ -256,10 +267,9 @@ public record ScalingConfig(int windowSize,
      * Create a copy with updated scale up threshold.
      *
      * @param newThreshold New scale up threshold (must be > 0 and > scaleDownThreshold)
-     * @return New ScalingConfig
-     * @throws IllegalArgumentException if threshold is invalid
+     * @return Result containing new ScalingConfig or validation error
      */
-    public ScalingConfig withScaleUpThreshold(double newThreshold) {
+    public Result<ScalingConfig> withScaleUpThreshold(double newThreshold) {
         return scalingConfig(windowSize,
                              evaluationIntervalMs,
                              newThreshold,
@@ -272,10 +282,9 @@ public record ScalingConfig(int windowSize,
      * Create a copy with updated scale down threshold.
      *
      * @param newThreshold New scale down threshold (must be > 0 and < scaleUpThreshold)
-     * @return New ScalingConfig
-     * @throws IllegalArgumentException if threshold is invalid
+     * @return Result containing new ScalingConfig or validation error
      */
-    public ScalingConfig withScaleDownThreshold(double newThreshold) {
+    public Result<ScalingConfig> withScaleDownThreshold(double newThreshold) {
         return scalingConfig(windowSize,
                              evaluationIntervalMs,
                              scaleUpThreshold,
@@ -288,9 +297,9 @@ public record ScalingConfig(int windowSize,
      * Create a copy with updated error rate block threshold.
      *
      * @param newThreshold New error rate block threshold
-     * @return New ScalingConfig
+     * @return Result containing new ScalingConfig or validation error
      */
-    public ScalingConfig withErrorRateBlockThreshold(double newThreshold) {
+    public Result<ScalingConfig> withErrorRateBlockThreshold(double newThreshold) {
         return scalingConfig(windowSize,
                              evaluationIntervalMs,
                              scaleUpThreshold,

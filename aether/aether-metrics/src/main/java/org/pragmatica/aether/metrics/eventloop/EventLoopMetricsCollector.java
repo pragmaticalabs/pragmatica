@@ -1,19 +1,23 @@
 package org.pragmatica.aether.metrics.eventloop;
 
-import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SingleThreadEventLoop;
 import io.netty.util.concurrent.EventExecutor;
+import org.pragmatica.lang.Option;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 /**
  * Collects event loop metrics by injecting probe tasks.
@@ -31,13 +35,13 @@ public final class EventLoopMetricsCollector {
     // Probe every 100ms
     private static final long HEALTH_THRESHOLD_NS = EventLoopMetrics.DEFAULT_HEALTH_THRESHOLD_NS;
 
-    private final List<EventLoopGroup> eventLoopGroups = new CopyOnWriteArrayList<>();
+    private final CopyOnWriteArrayList<EventLoopGroup> eventLoopGroups = new CopyOnWriteArrayList<>();
     private final AtomicLong maxLagNanos = new AtomicLong(0);
     private final AtomicInteger totalPendingTasks = new AtomicInteger(0);
     private final AtomicInteger totalActiveChannels = new AtomicInteger(0);
 
-    private ScheduledExecutorService scheduler;
-    private ScheduledFuture<?> probeFuture;
+    private volatile ScheduledExecutorService scheduler;
+    private final AtomicReference<Option<ScheduledFuture<?>>> probeFuture = new AtomicReference<>(none());
     private volatile boolean started = false;
 
     private EventLoopMetricsCollector() {}
@@ -48,10 +52,11 @@ public final class EventLoopMetricsCollector {
 
     /**
      * Register an EventLoopGroup to monitor.
+     *
+     * @param group the event loop group, must not be null
      */
     public void register(EventLoopGroup group) {
-        if (group != null && !eventLoopGroups.contains(group)) {
-            eventLoopGroups.add(group);
+        if (eventLoopGroups.addIfAbsent(group)) {
             log.debug("Registered EventLoopGroup for monitoring: {}",
                       group.getClass()
                            .getSimpleName());
@@ -67,10 +72,10 @@ public final class EventLoopMetricsCollector {
         }
         this.scheduler = scheduler;
         started = true;
-        probeFuture = scheduler.scheduleAtFixedRate(this::probe,
-                                                    PROBE_INTERVAL_MS,
-                                                    PROBE_INTERVAL_MS,
-                                                    TimeUnit.MILLISECONDS);
+        probeFuture.set(some(scheduler.scheduleAtFixedRate(this::probe,
+                                                           PROBE_INTERVAL_MS,
+                                                           PROBE_INTERVAL_MS,
+                                                           TimeUnit.MILLISECONDS)));
         log.info("Event loop metrics collection started");
     }
 
@@ -82,10 +87,8 @@ public final class EventLoopMetricsCollector {
             return;
         }
         started = false;
-        if (probeFuture != null) {
-            probeFuture.cancel(false);
-            probeFuture = null;
-        }
+        probeFuture.getAndSet(none())
+                   .onPresent(future -> future.cancel(false));
         log.info("Event loop metrics collection stopped");
     }
 
@@ -109,9 +112,10 @@ public final class EventLoopMetricsCollector {
                     } catch (Exception e) {
                         log.trace("Failed to probe event loop: {}", e.getMessage());
                     }
-                    // Count pending tasks if available
+                    // Count pending tasks and registered channels if available
                     if (eventLoop instanceof SingleThreadEventLoop stEventLoop) {
                         totalPending += stEventLoop.pendingTasks();
+                        totalChannels += stEventLoop.registeredChannels();
                     }
                 }
             }

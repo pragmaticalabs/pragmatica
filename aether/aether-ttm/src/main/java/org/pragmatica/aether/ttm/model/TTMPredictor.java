@@ -47,7 +47,7 @@ public interface TTMPredictor {
         }
         return TTMPredictorFactory.INSTANCE
             .fold(() -> TTMError.NoProvider.noProvider().<TTMPredictor>result(),
-                  factory -> factory.create(config));
+                  factory -> factory.ttmPredictor(config));
     }
 
     /**

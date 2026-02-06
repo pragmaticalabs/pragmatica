@@ -11,6 +11,7 @@ import org.pragmatica.lang.Unit;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -78,14 +79,14 @@ public interface DecisionTreeController extends ClusterController {
 
         private volatile ControllerConfig config;
         private final Map<String, Double> previousCallCounts;
-        private volatile long lastEvaluationTime;
+        private final AtomicLong lastEvaluationTime;
 
         ControllerState(ControllerConfig config,
                         Map<String, Double> previousCallCounts,
                         long lastEvaluationTime) {
             this.config = config;
             this.previousCallCounts = previousCallCounts;
-            this.lastEvaluationTime = lastEvaluationTime;
+            this.lastEvaluationTime = new AtomicLong(lastEvaluationTime);
         }
 
         @Override
@@ -108,6 +109,28 @@ public interface DecisionTreeController extends ClusterController {
                       avgCpu,
                       context.blueprints()
                              .size());
+            // Compute elapsed time atomically using CAS loop to prevent race
+            // where two concurrent calls both get near-zero elapsed time
+            var currentTime = System.currentTimeMillis();
+            long previousTime;
+            long expected;
+            do {
+                expected = lastEvaluationTime.get();
+                previousTime = expected;
+            } while (!lastEvaluationTime.compareAndSet(expected, currentTime));
+            var elapsedSeconds = Math.max(1.0, (currentTime - previousTime) / 1000.0);
+            // Prune previousCallCounts at the start of each evaluation cycle.
+            // Metrics are rebuilt from context.metrics() each cycle, so stale entries
+            // (from metrics no longer reported by any node) are removed.
+            var currentMetricKeys = context.metrics()
+                                           .values()
+                                           .stream()
+                                           .flatMap(nodeMetrics -> nodeMetrics.keySet()
+                                                                              .stream())
+                                           .filter(this::isCallMetric)
+                                           .collect(java.util.stream.Collectors.toSet());
+            previousCallCounts.keySet()
+                              .retainAll(currentMetricKeys);
             var changes = context.blueprints()
                                  .entrySet()
                                  .stream()
@@ -115,7 +138,8 @@ public interface DecisionTreeController extends ClusterController {
                                                                  entry.getValue(),
                                                                  avgCpu,
                                                                  context.metrics(),
-                                                                 currentConfig))
+                                                                 currentConfig,
+                                                                 elapsedSeconds))
                                  .flatMap(List::stream)
                                  .toList();
             return Promise.success(new ControlDecisions(changes));
@@ -125,10 +149,12 @@ public interface DecisionTreeController extends ClusterController {
                                                         Blueprint blueprint,
                                                         double avgCpu,
                                                         Map<NodeId, Map<String, Double>> metrics,
-                                                        ControllerConfig currentConfig) {
+                                                        ControllerConfig currentConfig,
+                                                        double elapsedSeconds) {
             return evaluateCpuRules(artifact, blueprint, avgCpu, currentConfig).orElse(() -> evaluateCallRateRule(artifact,
                                                                                                                   metrics,
-                                                                                                                  currentConfig))
+                                                                                                                  currentConfig,
+                                                                                                                  elapsedSeconds))
                                    .or(List::of);
         }
 
@@ -157,12 +183,9 @@ public interface DecisionTreeController extends ClusterController {
 
         private Option<List<BlueprintChange>> evaluateCallRateRule(Artifact artifact,
                                                                    Map<NodeId, Map<String, Double>> metrics,
-                                                                   ControllerConfig currentConfig) {
+                                                                   ControllerConfig currentConfig,
+                                                                   double elapsedSeconds) {
             // Rule 3: High call rate → scale up
-            // Calculate actual rate using delta from previous evaluation
-            var currentTime = System.currentTimeMillis();
-            var elapsedSeconds = Math.max(1.0, (currentTime - lastEvaluationTime) / 1000.0);
-            lastEvaluationTime = currentTime;
             // Collect call metrics and update previous counts, then check for high rate
             var callMetricEntries = metrics.values()
                                            .stream()
@@ -179,8 +202,9 @@ public interface DecisionTreeController extends ClusterController {
         }
 
         /**
-         * Check for high call rates and update previous call counts.
-         * Separates the query (checking rates) from the mutation (updating counts).
+         * Check for high call rates and update previous call counts atomically.
+         * Uses ConcurrentHashMap.put() which atomically returns the previous value,
+         * eliminating the non-atomic getOrDefault/put race.
          */
         private boolean checkAndUpdateCallRates(List<Map.Entry<String, Double>> callMetricEntries,
                                                 double elapsedSeconds,
@@ -189,11 +213,11 @@ public interface DecisionTreeController extends ClusterController {
             for (var entry : callMetricEntries) {
                 var metricName = entry.getKey();
                 var currentCount = entry.getValue();
-                var previousCount = previousCallCounts.getOrDefault(metricName, 0.0);
+                // put() atomically stores new value and returns previous (or null if absent)
+                var previous = previousCallCounts.put(metricName, currentCount);
+                var previousCount = previous != null ? previous : 0.0;
                 var delta = currentCount - previousCount;
                 var callsPerSecond = delta / elapsedSeconds;
-                // Update count after computing rate
-                previousCallCounts.put(metricName, currentCount);
                 if (callsPerSecond > currentConfig.callRateScaleUpThreshold()) {
                     hasHighRate = true;
                 }

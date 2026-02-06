@@ -35,6 +35,19 @@
             <artifactId>toml</artifactId>
         </dependency>
 
+        <!-- Infrastructure: JDBC Database Connector (ServiceLoader provider) -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>infra-db-connector-jdbc</artifactId>
+        </dependency>
+
+        <!-- HikariCP (optional in infra-db-connector-jdbc, required at runtime) -->
+        <dependency>
+            <groupId>com.zaxxer</groupId>
+            <artifactId>HikariCP</artifactId>
+            <version>7.0.2</version>
+        </dependency>
+
         <!-- H2 Database -->
         <dependency>
             <groupId>com.h2database</groupId>

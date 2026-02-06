@@ -196,7 +196,7 @@ class RollbackManagerTest {
             "request-123",
             artifact,
             MethodName.methodName("doSomething").unwrap(),
-            Causes.cause("Test failure"),
+            Option.some(Causes.cause("Test failure")),
             List.of(NodeId.nodeId("node-2").unwrap(), NodeId.nodeId("node-3").unwrap())
         );
     }

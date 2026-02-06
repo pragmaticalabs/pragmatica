@@ -1387,6 +1387,16 @@ public final class Java25Parser {
                 return "token";
             }
         }
+
+        record ErrorNode() implements RuleId {
+            public int ordinal() {
+                return - 5;
+            }
+
+            public String name() {
+                return "error";
+            }
+        }
     }
 
     // Rule ID singleton instances
@@ -1526,6 +1536,7 @@ public final class Java25Parser {
     private static final RuleId.PegCharClass RULE_PEG_CHAR_CLASS = new RuleId.PegCharClass();
     private static final RuleId.PegAny RULE_PEG_ANY = new RuleId.PegAny();
     private static final RuleId.PegToken RULE_PEG_TOKEN = new RuleId.PegToken();
+    private static final RuleId.ErrorNode RULE_ERROR_NODE = new RuleId.ErrorNode();
 
     // === CST Types ===
     public record SourceLocation(int line, int column, int offset) {
@@ -1611,7 +1622,7 @@ public final class Java25Parser {
                      List<Trivia> leadingTrivia,
                      List<Trivia> trailingTrivia) implements CstNode {
             @Override public RuleId rule() {
-                return null;
+                return RULE_ERROR_NODE;
             }
         }
     }

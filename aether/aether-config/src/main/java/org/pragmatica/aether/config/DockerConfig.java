@@ -10,15 +10,22 @@ public record DockerConfig(String network,
     public static final String DEFAULT_NETWORK = "aether-network";
     public static final String DEFAULT_IMAGE = "ghcr.io/siy/aether-node:latest";
 
+    /**
+     * Factory method following JBCT naming convention.
+     */
+    public static DockerConfig dockerConfig(String network, String image) {
+        return new DockerConfig(network, image);
+    }
+
     public static DockerConfig defaultConfig() {
-        return new DockerConfig(DEFAULT_NETWORK, DEFAULT_IMAGE);
+        return dockerConfig(DEFAULT_NETWORK, DEFAULT_IMAGE);
     }
 
     public DockerConfig withNetwork(String network) {
-        return new DockerConfig(network, image);
+        return dockerConfig(network, image);
     }
 
     public DockerConfig withImage(String image) {
-        return new DockerConfig(network, image);
+        return dockerConfig(network, image);
     }
 }

@@ -1,6 +1,11 @@
 package org.pragmatica.aether.config;
 
+import org.pragmatica.lang.Option;
+
 import java.time.Duration;
+
+import static org.pragmatica.lang.Option.none;
+import static org.pragmatica.lang.Option.some;
 
 /**
  * Per-node configuration.
@@ -15,43 +20,50 @@ public record NodeConfig(String heap,
                          String gc,
                          Duration metricsInterval,
                          Duration reconciliation,
-                         ResourcesConfig resources) {
+                         Option<ResourcesConfig> resources) {
     public static final String DEFAULT_GC = "zgc";
     public static final Duration DEFAULT_METRICS_INTERVAL = Duration.ofSeconds(1);
     public static final Duration DEFAULT_RECONCILIATION = Duration.ofSeconds(5);
 
     /**
+     * Factory method following JBCT naming convention.
+     */
+    public static NodeConfig nodeConfig(String heap, String gc, Duration metricsInterval, Duration reconciliation, Option<ResourcesConfig> resources) {
+        return new NodeConfig(heap, gc, metricsInterval, reconciliation, resources);
+    }
+
+    /**
      * Create node config with environment defaults.
      */
     public static NodeConfig forEnvironment(Environment env) {
-        return new NodeConfig(env.defaultHeap(),
-                              DEFAULT_GC,
-                              DEFAULT_METRICS_INTERVAL,
-                              DEFAULT_RECONCILIATION,
-                              env == Environment.KUBERNETES
-                              ? ResourcesConfig.defaultConfig()
-                              : null);
+        return nodeConfig(env.defaultHeap(),
+                          DEFAULT_GC,
+                          DEFAULT_METRICS_INTERVAL,
+                          DEFAULT_RECONCILIATION,
+                          env == Environment.KUBERNETES
+                          ? some(ResourcesConfig.defaultConfig())
+                          : none());
     }
 
     /**
      * Create with custom heap.
      */
     public NodeConfig withHeap(String heap) {
-        return new NodeConfig(heap, gc, metricsInterval, reconciliation, resources);
+        return nodeConfig(heap, gc, metricsInterval, reconciliation, resources);
     }
 
     /**
      * Create with custom GC.
      */
     public NodeConfig withGc(String gc) {
-        return new NodeConfig(heap, gc, metricsInterval, reconciliation, resources);
+        return nodeConfig(heap, gc, metricsInterval, reconciliation, resources);
     }
 
     /**
      * Create with custom resources.
      */
-    public NodeConfig withResources(ResourcesConfig resources) {
-        return new NodeConfig(heap, gc, metricsInterval, reconciliation, resources);
+    public NodeConfig withResources(Option<ResourcesConfig> resources) {
+        return nodeConfig(heap, gc, metricsInterval, reconciliation, resources);
     }
 
     /**

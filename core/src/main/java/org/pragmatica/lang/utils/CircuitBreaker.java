@@ -20,7 +20,7 @@ package org.pragmatica.lang.utils;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.CircuitBreaker.CircuitBreakerErrors.CircuitBreakerOpenError;
+import org.pragmatica.lang.utils.CircuitBreaker.CircuitBreakerError.CircuitBreakerOpenError;
 
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
@@ -110,7 +110,7 @@ public interface CircuitBreaker {
                         }
                         var timeout = timeSpan(resetTimeout.nanos() - (timeSource().nanoTime() - lastStateChangeTimestamp.get()))
                         .nanos();
-                        yield new CircuitBreakerOpenError("Circuit breaker is open. Operation rejected.", timeout).promise();
+                        yield CircuitBreakerOpenError.circuitBreakerOpenError("Circuit breaker is open. Operation rejected.", timeout).promise();
                     }
                     case HALF_OPEN -> executeHalfOpenState(operation);
                 };
@@ -145,7 +145,7 @@ public interface CircuitBreaker {
                 var oldState = stateRef.getAndSet(newState);
                 if (oldState != newState) {
                     lastStateChangeTimestamp.set(timeSource().nanoTime());
-                    log.info("Circuit breaker stateRef changed from {} to {}", oldState, newState);
+                    log.info("Circuit breaker state changed from {} to {}", oldState, newState);
                     switch (newState) {
                         case OPEN -> scheduleReset();
                         case HALF_OPEN -> testSuccessCount.set(0);
@@ -178,8 +178,12 @@ public interface CircuitBreaker {
                                   timeSource);
     }
 
-    sealed interface CircuitBreakerErrors extends Cause {
-        record CircuitBreakerOpenError(String message, TimeSpan retryTime) implements CircuitBreakerErrors {
+    sealed interface CircuitBreakerError extends Cause {
+        record CircuitBreakerOpenError(String message, TimeSpan retryTime) implements CircuitBreakerError {
+            public static CircuitBreakerOpenError circuitBreakerOpenError(String message, TimeSpan retryTime) {
+                return new CircuitBreakerOpenError(message, retryTime);
+            }
+
             @Override
             public String message() {
                 return "Circuit breaker is open. " + message + ". Will attempt reset in " + retryTime;
@@ -196,15 +200,6 @@ public interface CircuitBreaker {
                                                                                                               testAttempts,
                                                                                                               shouldTrip,
                                                                                                               timeSource);
-    }
-
-    @Deprecated(forRemoval = true)
-    static CircuitBreaker create(int failureThreshold,
-                                 TimeSpan resetTimeout,
-                                 int testAttempts,
-                                 Predicate<Cause> shouldTrip,
-                                 org.pragmatica.lang.utils.TimeSource timeSource) {
-        return circuitBreaker(failureThreshold, resetTimeout, testAttempts, shouldTrip, timeSource);
     }
 
     interface StageFailureThreshold {

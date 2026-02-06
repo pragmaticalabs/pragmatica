@@ -1,4 +1,7 @@
 package org.pragmatica.aether.controller;
+
+import org.pragmatica.lang.Result;
+import org.pragmatica.lang.utils.Causes;
 /**
  * Immutable sliding window for relative change calculation.
  *
@@ -37,14 +40,12 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
      * Create a new empty window with the specified capacity.
      *
      * @param windowSize Maximum number of samples to retain (must be > 0)
-     * @return Empty MetricWindow
-     * @throws IllegalArgumentException if windowSize is not positive
+     * @return Result containing empty MetricWindow or validation error
      */
-    public static MetricWindow metricWindow(int windowSize) {
-        if (windowSize <= 0) {
-            throw new IllegalArgumentException("windowSize must be positive, got: " + windowSize);
-        }
-        return new MetricWindow(new double[windowSize], 0, 0, 0.0, 0);
+    public static Result<MetricWindow> metricWindow(int windowSize) {
+        return windowSize > 0
+               ? Result.success(new MetricWindow(new double[windowSize], 0, 0, 0.0, 0))
+               : Causes.cause("windowSize must be positive, got: " + windowSize).result();
     }
 
     /**

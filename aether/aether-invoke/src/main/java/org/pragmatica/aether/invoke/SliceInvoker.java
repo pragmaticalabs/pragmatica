@@ -305,7 +305,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private final Map<NodeId, Set<String>> pendingInvocationsByNode = new ConcurrentHashMap<>();
 
     private volatile boolean stopped = false;
-    private volatile Option<SliceFailureListener> failureListener = Option.empty();
+    private volatile Option<SliceFailureListener> failureListener = Option.none();
 
     record PendingInvocation(Promise<Object> promise, long createdAtMs, String requestId, NodeId targetNode) {}
 
@@ -404,7 +404,7 @@ class SliceInvokerImpl implements SliceInvoker {
         var correlationId = KSUID.ksuid()
                                  .toString();
         var requestId = InvocationContext.getOrGenerateRequestId();
-        var invokeRequest = new InvokeRequest(self, correlationId, requestId, slice, method, payload, false);
+        var invokeRequest = InvokeRequest.invokeRequest(self, correlationId, requestId, slice, method, payload, false);
         network.send(endpoint.nodeId(), invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent fire-and-forget invocation to {}: {}.{}",
@@ -453,7 +453,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                 .add(correlationId);
         pendingPromise.timeout(timeSpan(timeoutMs).millis())
                       .onResult(_ -> removePendingInvocation(correlationId, targetNode));
-        var invokeRequest = new InvokeRequest(self, correlationId, requestId, slice, method, payload, true);
+        var invokeRequest = InvokeRequest.invokeRequest(self, correlationId, requestId, slice, method, payload, true);
         network.send(targetNode, invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent InvokeRequest to {}: {}.{} [{}]",
@@ -483,7 +483,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                         requestId,
                                         new java.util.HashSet<>(),
                                         new java.util.ArrayList<>(),
-                                        null);
+                                        Option.none());
         return Promise.promise(promise -> executeWithFailover(promise, ctx));
     }
 
@@ -499,7 +499,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                       String requestId,
                                       java.util.Set<NodeId> failedNodes,
                                       java.util.List<NodeId> attemptedNodes,
-                                      Cause lastError) {
+                                      Option<Cause> lastError) {
         FailoverContext<R> withFailure(NodeId failedNode, Cause error) {
             var newFailed = new java.util.HashSet<>(failedNodes);
             newFailed.add(failedNode);
@@ -513,7 +513,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                          requestId,
                                          newFailed,
                                          newAttempted,
-                                         error);
+                                         Option.some(error));
         }
 
         int attemptCount() {
@@ -563,7 +563,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                 .add(correlationId);
         pendingPromise.timeout(timeSpan(timeoutMs).millis())
                       .onResult(_ -> removePendingInvocation(correlationId, targetNode));
-        var invokeRequest = new InvokeRequest(self, correlationId, ctx.requestId, ctx.slice, ctx.method, payload, true);
+        var invokeRequest = InvokeRequest.invokeRequest(self, correlationId, ctx.requestId, ctx.slice, ctx.method, payload, true);
         network.send(targetNode, invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
@@ -638,7 +638,7 @@ class SliceInvokerImpl implements SliceInvoker {
                                                                                 ctx.attemptedNodes);
             publishFailureEvent(event);
         }
-        promise.fail(ctx.lastError);
+        promise.fail(ctx.lastError.or(Causes.cause("Max retries exceeded with no error recorded")));
     }
 
     @Override
@@ -670,7 +670,7 @@ class SliceInvokerImpl implements SliceInvoker {
     @Override
     @SuppressWarnings("unchecked")
     public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
-        return invocationHandler.getLocalSlice(slice)
+        return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
                                 .flatMap(bridge -> invokeViaBridge(bridge, method, request));
     }
@@ -690,11 +690,13 @@ class SliceInvokerImpl implements SliceInvoker {
               .onEmpty(() -> log.warn("[requestId={}] Received response for unknown correlationId: {}",
                                       response.requestId(),
                                       response.correlationId()))
-              .onPresent(pending -> {
-                             removeFromNodeIndex(response.correlationId(),
-                                                 pending.targetNode());
-                             handlePendingResponse(pending, response);
-                         });
+              .onPresent(pending -> processReceivedResponse(pending, response));
+    }
+
+    private void processReceivedResponse(PendingInvocation pending, InvokeResponse response) {
+        removeFromNodeIndex(response.correlationId(),
+                            pending.targetNode());
+        handlePendingResponse(pending, response);
     }
 
     @Override
@@ -708,13 +710,15 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private void handleNodeDeparture(NodeId departedNode) {
-        var correlationIds = pendingInvocationsByNode.remove(departedNode);
-        if (correlationIds == null || correlationIds.isEmpty()) {
-            return;
-        }
+        Option.option(pendingInvocationsByNode.remove(departedNode))
+              .filter(ids -> !ids.isEmpty())
+              .onPresent(correlationIds -> retryPendingForDepartedNode(departedNode, correlationIds));
+    }
+
+    private void retryPendingForDepartedNode(NodeId departedNode, Set<String> correlationIds) {
         var affectedRequestIds = correlationIds.stream()
                                                .map(pendingInvocations::get)
-                                               .filter(p -> p != null)
+                                               .flatMap(p -> Option.option(p).stream())
                                                .map(PendingInvocation::requestId)
                                                .limit(5)
                                                .toList();
@@ -723,16 +727,18 @@ class SliceInvokerImpl implements SliceInvoker {
                  correlationIds.size(),
                  affectedRequestIds);
         for (var correlationId : correlationIds) {
-            var pending = pendingInvocations.remove(correlationId);
-            if (pending != null) {
-                log.debug("Triggering retry for request [{}] due to node {} departure",
-                          pending.requestId(),
-                          departedNode);
-                // Fail the promise to trigger onFailure callback which handles retry
-                pending.promise()
-                       .fail(Causes.cause("Target node " + departedNode + " departed"));
-            }
+            Option.option(pendingInvocations.remove(correlationId))
+                  .onPresent(pending -> retryDepartedInvocation(pending, departedNode));
         }
+    }
+
+    private void retryDepartedInvocation(PendingInvocation pending, NodeId departedNode) {
+        log.debug("Triggering retry for request [{}] due to node {} departure",
+                  pending.requestId(),
+                  departedNode);
+        // Fail the promise to trigger onFailure callback which handles retry
+        pending.promise()
+               .fail(Causes.cause("Target node " + departedNode + " departed"));
     }
 
     private void removePendingInvocation(String correlationId, NodeId targetNode) {
@@ -741,14 +747,14 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private void removeFromNodeIndex(String correlationId, NodeId targetNode) {
-        var nodeCorrelations = pendingInvocationsByNode.get(targetNode);
-        if (nodeCorrelations != null) {
-            nodeCorrelations.remove(correlationId);
-            // Clean up empty sets
-            if (nodeCorrelations.isEmpty()) {
-                pendingInvocationsByNode.remove(targetNode, nodeCorrelations);
-            }
-        }
+        Option.option(pendingInvocationsByNode.get(targetNode))
+              .onPresent(nodeCorrelations -> {
+                             nodeCorrelations.remove(correlationId);
+                             // Clean up empty sets
+                             if (nodeCorrelations.isEmpty()) {
+                                 pendingInvocationsByNode.remove(targetNode, nodeCorrelations);
+                             }
+                         });
     }
 
     private void handlePendingResponse(PendingInvocation pending, InvokeResponse response) {

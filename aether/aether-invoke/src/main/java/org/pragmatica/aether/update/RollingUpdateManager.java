@@ -24,6 +24,7 @@ import org.pragmatica.utility.KSUID;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -194,6 +195,11 @@ public interface RollingUpdateManager {
             private static final Logger log = LoggerFactory.getLogger(RollingUpdateManager.class);
             private static final TimeSpan KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
                                                                         .seconds();
+            /**
+             * Retention period for terminal-state updates before pruning from in-memory map.
+             * Updates in COMPLETED, ROLLED_BACK, or FAILED state are pruned after this period.
+             */
+            private static final long TERMINAL_RETENTION_MS = TimeUnit.HOURS.toMillis(1);
 
             @Override
             public void onLeaderChange(LeaderChange leaderChange) {
@@ -263,7 +269,7 @@ public interface RollingUpdateManager {
 
             private Promise<Unit> checkNoActiveUpdate(ArtifactBase artifactBase) {
                 return getActiveUpdate(artifactBase).isPresent()
-                       ? new RollingUpdateError.UpdateAlreadyExists(artifactBase).promise()
+                       ? RollingUpdateError.UpdateAlreadyExists.updateAlreadyExists(artifactBase).promise()
                        : Promise.success(Unit.unit());
             }
 
@@ -300,14 +306,14 @@ public interface RollingUpdateManager {
 
             private Promise<RollingUpdate> findUpdate(String updateId) {
                 return Option.option(updates.get(updateId))
-                             .toResult(new RollingUpdateError.UpdateNotFound(updateId))
+                             .toResult(RollingUpdateError.UpdateNotFound.updateNotFound(updateId))
                              .async();
             }
 
             private Promise<RollingUpdate> validateRoutingAdjustment(RollingUpdate update, VersionRouting newRouting) {
                 if (!update.state()
                            .allowsNewVersionTraffic() && update.state() != RollingUpdateState.DEPLOYED) {
-                    return new RollingUpdateError.InvalidStateTransition(update.state(), RollingUpdateState.ROUTING).promise();
+                    return RollingUpdateError.InvalidStateTransition.invalidStateTransition(update.state(), RollingUpdateState.ROUTING).promise();
                 }
                 log.info("Adjusting routing for {} to {}", update.updateId(), newRouting);
                 return applyRoutingChange(update, newRouting);
@@ -342,7 +348,7 @@ public interface RollingUpdateManager {
             private Promise<RollingUpdate> validateAndComplete(RollingUpdate update) {
                 if (!update.routing()
                            .isAllNew()) {
-                    return new RollingUpdateError.InvalidStateTransition(update.state(), RollingUpdateState.COMPLETING).promise();
+                    return RollingUpdateError.InvalidStateTransition.invalidStateTransition(update.state(), RollingUpdateState.COMPLETING).promise();
                 }
                 log.info("Completing rolling update {}", update.updateId());
                 return persistAndTransition(update, RollingUpdateState.COMPLETING).flatMap(this::cleanupOldVersion);
@@ -356,7 +362,7 @@ public interface RollingUpdateManager {
 
             private Promise<RollingUpdate> validateAndRollback(RollingUpdate update) {
                 if (update.isTerminal()) {
-                    return new RollingUpdateError.InvalidStateTransition(update.state(), RollingUpdateState.ROLLING_BACK).promise();
+                    return RollingUpdateError.InvalidStateTransition.invalidStateTransition(update.state(), RollingUpdateState.ROLLING_BACK).promise();
                 }
                 log.info("Rolling back update {}", update.updateId());
                 return persistAndTransition(update, RollingUpdateState.ROLLING_BACK).flatMap(this::removeNewVersion);
@@ -392,7 +398,7 @@ public interface RollingUpdateManager {
             @Override
             public Promise<VersionHealthMetrics> getHealthMetrics(String updateId) {
                 return Option.option(updates.get(updateId))
-                             .toResult(new RollingUpdateError.UpdateNotFound(updateId))
+                             .toResult(RollingUpdateError.UpdateNotFound.updateNotFound(updateId))
                              .async()
                              .map(this::collectHealthMetrics);
             }
@@ -440,6 +446,10 @@ public interface RollingUpdateManager {
             @SuppressWarnings("unchecked")
             private Promise<RollingUpdate> cacheAndPersistUpdate(String updateId, RollingUpdate transitioned) {
                 updates.put(updateId, transitioned);
+                // Prune terminal-state updates older than retention period
+                if (transitioned.isTerminal()) {
+                    pruneTerminalUpdates();
+                }
                 var key = new AetherKey.RollingUpdateKey(updateId);
                 var value = new AetherValue.RollingUpdateValue(transitioned.updateId(),
                                                                transitioned.artifactBase(),
@@ -466,6 +476,22 @@ public interface RollingUpdateManager {
                 return clusterNode.<Unit> apply(List.of(command))
                                   .timeout(KV_OPERATION_TIMEOUT)
                                   .map(_ -> transitioned);
+            }
+
+            /**
+             * Prune terminal-state updates that have exceeded the retention period.
+             * This prevents unbounded growth of the in-memory updates map.
+             */
+            private void pruneTerminalUpdates() {
+                var cutoff = System.currentTimeMillis() - TERMINAL_RETENTION_MS;
+                var pruned = updates.entrySet()
+                                    .removeIf(entry -> {
+                                        var update = entry.getValue();
+                                        return update.isTerminal() && update.updatedAt() < cutoff;
+                                    });
+                if (pruned) {
+                    log.debug("Pruned terminal rolling updates older than retention period");
+                }
             }
 
             @SuppressWarnings("unchecked")
