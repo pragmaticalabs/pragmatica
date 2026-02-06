@@ -56,7 +56,6 @@
         <module>forge</module>
         <module>infra-services</module>
         <!-- e2e-tests requires examples to be installed first, enabled via -Pwith-e2e profile -->
-        <module>aether-ttm</module>
         <module>http-handler-api</module>
         <module>http-routing-adapter</module>
         <!-- Split node modules - ordered by dependency -->
@@ -64,6 +63,9 @@
         <module>aether-invoke</module>
         <module>aether-deployment</module>
         <module>aether-control</module>
+        <!-- TTM modules - after control and metrics -->
+        <module>aether-ttm</module>
+        <module>aether-ttm-onnx</module>
         <module>node</module>
         <!-- E2E test slices - pure function, no dependencies -->
         <module>e2e-tests/echo-slice</module>
@@ -241,6 +243,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>aether-ttm</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>aether-ttm-onnx</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

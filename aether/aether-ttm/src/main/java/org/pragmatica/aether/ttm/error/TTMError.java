@@ -58,4 +58,16 @@ public sealed interface TTMError extends Cause {
             return "Unexpected output tensor type: " + actualType;
         }
     }
+
+    /**
+     * No TTM predictor implementation available on classpath.
+     */
+    record NoProvider() implements TTMError {
+        public static final NoProvider INSTANCE = new NoProvider();
+
+        @Override
+        public String message() {
+            return "No TTM predictor implementation available. Add aether-ttm-onnx to classpath.";
+        }
+    }
 }

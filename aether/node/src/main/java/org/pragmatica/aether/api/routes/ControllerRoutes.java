@@ -14,6 +14,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
+import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -33,6 +34,11 @@ public final class ControllerRoutes implements RouteSource {
         return new ControllerRoutes(nodeSupplier);
     }
 
+    // Training data export DTO
+    record TrainingDataPoint(long timestamp, double cpuUsage, double heapUsage, double eventLoopLagMs,
+                             double latencyMs, long invocations, long gcPauseMs, double latencyP50,
+                             double latencyP95, double latencyP99, double errorRate, int eventCount) {}
+
     // Request DTO
     record ControllerConfigRequest(Double cpuScaleUpThreshold,
                                    Double cpuScaleDownThreshold,
@@ -51,7 +57,9 @@ public final class ControllerRoutes implements RouteSource {
                               .withBody(ControllerConfigRequest.class)
                               .toJson(this::handleControllerConfig),
                          Route.<EvaluationTriggeredResponse> post("/api/controller/evaluate")
-                              .toJson(() -> new EvaluationTriggeredResponse("evaluation_triggered")));
+                              .toJson(() -> new EvaluationTriggeredResponse("evaluation_triggered")),
+                         Route.<List<TrainingDataPoint>> get("/api/ttm/training-data")
+                              .toJson(this::buildTrainingDataResponse));
     }
 
     private Promise<ControllerConfigUpdatedResponse> handleControllerConfig(ControllerConfigRequest req) {
@@ -120,5 +128,30 @@ public final class ControllerRoutes implements RouteSource {
                                f.recommendation()
                                 .getClass()
                                 .getSimpleName());
+    }
+
+    private List<TrainingDataPoint> buildTrainingDataResponse() {
+        return nodeSupplier.get()
+                           .snapshotCollector()
+                           .minuteAggregator()
+                           .recent(120)
+                           .stream()
+                           .map(ControllerRoutes::toTrainingDataPoint)
+                           .toList();
+    }
+
+    private static TrainingDataPoint toTrainingDataPoint(org.pragmatica.aether.metrics.MinuteAggregate agg) {
+        return new TrainingDataPoint(agg.minuteTimestamp(),
+                                     agg.avgCpuUsage(),
+                                     agg.avgHeapUsage(),
+                                     agg.avgEventLoopLagMs(),
+                                     agg.avgLatencyMs(),
+                                     agg.totalInvocations(),
+                                     agg.totalGcPauseMs(),
+                                     agg.latencyP50(),
+                                     agg.latencyP95(),
+                                     agg.latencyP99(),
+                                     agg.errorRate(),
+                                     agg.eventCount());
     }
 }

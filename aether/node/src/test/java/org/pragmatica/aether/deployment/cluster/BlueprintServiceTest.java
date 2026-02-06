@@ -287,6 +287,16 @@ class BlueprintServiceTest {
             return Option.option(storage.get(key));
         }
 
+        @Override
+        @SuppressWarnings("unchecked")
+        public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, java.util.function.BiConsumer<KK, VV> consumer) {
+            storage.forEach((key, value) -> {
+                if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
+                    consumer.accept((KK) key, (VV) value);
+                }
+            });
+        }
+
         // Override the StateMachine process method
         @SuppressWarnings("unchecked")
         public Option<AetherValue> process(org.pragmatica.cluster.state.kvstore.KVCommand command) {

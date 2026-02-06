@@ -1,9 +1,12 @@
 package org.pragmatica.aether.ttm;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Metrics;
 import org.pragmatica.aether.config.TTMConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.metrics.MinuteAggregator;
 import org.pragmatica.aether.ttm.error.TTMError;
+import org.pragmatica.aether.ttm.model.ScalingRecommendation;
 import org.pragmatica.aether.ttm.model.TTMForecast;
 import org.pragmatica.aether.ttm.model.TTMPredictor;
 import org.pragmatica.consensus.leader.LeaderNotification.LeaderChange;
@@ -159,6 +162,11 @@ public interface TTMManager {
                       AtomicReference<TTMState> stateRef,
                       CopyOnWriteArrayList<Consumer<TTMForecast>> callbacks) implements TTMManager {
         private static final Logger log = LoggerFactory.getLogger(ttmManager.class);
+        private static final Counter PREDICTION_COUNTER = Metrics.counter("ttm.predictions.count");
+        private static final Counter SCALE_UP_COUNTER = Metrics.counter("ttm.recommendations", "type", "scale_up");
+        private static final Counter SCALE_DOWN_COUNTER = Metrics.counter("ttm.recommendations", "type", "scale_down");
+        private static final Counter ADJUST_COUNTER = Metrics.counter("ttm.recommendations", "type", "adjust_thresholds");
+        private static final Counter HOLD_COUNTER = Metrics.counter("ttm.recommendations", "type", "hold");
 
         @Override
         public void onLeaderChange(LeaderChange leaderChange) {
@@ -266,6 +274,8 @@ public interface TTMManager {
             var controllerConfig = controllerConfigSupplier.get();
             var forecast = analyzer.analyze(predictions, predictor.lastConfidence(), recentHistory, controllerConfig);
             currentForecastRef.set(forecast);
+            PREDICTION_COUNTER.increment();
+            trackRecommendationType(forecast.recommendation());
             log.debug("TTM forecast: recommendation={}, confidence={}",
                       forecast.recommendation()
                               .getClass()
@@ -273,6 +283,15 @@ public interface TTMManager {
                       forecast.confidence());
             notifyCallbacks(forecast);
             stateRef.set(TTMState.RUNNING);
+        }
+
+        private void trackRecommendationType(ScalingRecommendation rec) {
+            switch (rec) {
+                case ScalingRecommendation.PreemptiveScaleUp _ -> SCALE_UP_COUNTER.increment();
+                case ScalingRecommendation.PreemptiveScaleDown _ -> SCALE_DOWN_COUNTER.increment();
+                case ScalingRecommendation.AdjustThresholds _ -> ADJUST_COUNTER.increment();
+                case ScalingRecommendation.NoAction _ -> HOLD_COUNTER.increment();
+            }
         }
 
         private void notifyCallbacks(TTMForecast forecast) {

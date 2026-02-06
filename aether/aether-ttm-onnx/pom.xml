@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite.aether</groupId>
+        <artifactId>aether</artifactId>
+        <version>0.15.0</version>
+    </parent>
+
+    <artifactId>aether-ttm-onnx</artifactId>
+    <name>Aether TTM ONNX Provider</name>
+    <description>ONNX Runtime inference provider for TTM predictive scaling</description>
+
+    <properties>
+        <onnxruntime.version>1.23.2</onnxruntime.version>
+    </properties>
+
+    <dependencies>
+        <!-- TTM API -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-ttm</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- ONNX Runtime for inference -->
+        <dependency>
+            <groupId>com.microsoft.onnxruntime</groupId>
+            <artifactId>onnxruntime</artifactId>
+            <version>${onnxruntime.version}</version>
+        </dependency>
+
+        <!-- Logging -->
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+    </dependencies>
+</project>

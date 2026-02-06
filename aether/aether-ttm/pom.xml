@@ -13,10 +13,6 @@
     <name>Aether TTM Integration</name>
     <description>Tiny Time Mixers predictive scaling for Aether</description>
 
-    <properties>
-        <onnxruntime.version>1.23.2</onnxruntime.version>
-    </properties>
-
     <dependencies>
         <!-- Pragmatica Core -->
         <dependency>
@@ -28,18 +24,21 @@
             <artifactId>messaging</artifactId>
         </dependency>
 
-        <!-- Aether Config (for TTMConfig) -->
+        <!-- Aether modules -->
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>aether-config</artifactId>
             <version>${project.version}</version>
         </dependency>
-
-        <!-- ONNX Runtime for inference -->
         <dependency>
-            <groupId>com.microsoft.onnxruntime</groupId>
-            <artifactId>onnxruntime</artifactId>
-            <version>${onnxruntime.version}</version>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-control</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-metrics</artifactId>
+            <version>${project.version}</version>
         </dependency>
 
         <!-- Logging -->

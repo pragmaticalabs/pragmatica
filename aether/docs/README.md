@@ -40,11 +40,12 @@ Extend and maintain Aether:
 Deploy and run Aether clusters:
 
 1. [Scaling](operators/scaling.md) - Auto-scaling configuration and behavior
-2. [Monitoring](operators/monitoring.md) - Alerts and thresholds
-3. [Docker Deployment](operators/docker-deployment.md) - Container-based deployment
-4. [Rolling Updates](operators/rolling-updates.md) - Zero-downtime deployments
-5. [Artifact Repository](operators/artifact-repository.md) - Slice artifact management
-6. [Infrastructure Design](operators/infrastructure-design.md) - Production architecture
+2. [TTM Guide](ttm-guide.md) - Predictive auto-scaling with Tiny Time Mixers
+3. [Monitoring](operators/monitoring.md) - Alerts and thresholds
+4. [Docker Deployment](operators/docker-deployment.md) - Container-based deployment
+5. [Rolling Updates](operators/rolling-updates.md) - Zero-downtime deployments
+6. [Artifact Repository](operators/artifact-repository.md) - Slice artifact management
+7. [Infrastructure Design](operators/infrastructure-design.md) - Production architecture
 
 **Runbooks:**
 - [Deployment Runbook](operators/runbooks/deployment.md)
