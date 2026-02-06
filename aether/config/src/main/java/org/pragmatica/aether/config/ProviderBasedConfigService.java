@@ -4,10 +4,15 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
+import java.time.Duration;
 import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.regex.Pattern;
 
 /**
  * ConfigService implementation that delegates to a ConfigurationProvider.
@@ -17,6 +22,10 @@ import java.util.Arrays;
  * a ConfigurationProvider for resource provisioning.
  */
 public final class ProviderBasedConfigService implements ConfigService {
+    private static final Pattern DURATION_PATTERN = Pattern.compile(
+        "^(\\d+)\\s*(ms|s|m|h|d)$"
+    );
+
     private final ConfigurationProvider provider;
 
     private ProviderBasedConfigService(ConfigurationProvider provider) {
@@ -145,6 +154,13 @@ public final class ProviderBasedConfigService implements ConfigService {
                            .map(Object.class::cast);
         }
 
+        if (type == Duration.class) {
+            return provider.getString(fullKey)
+                           .flatMap(ProviderBasedConfigService::parseDuration)
+                           .toResult(ConfigError.sectionNotFound(fullKey))
+                           .map(Object.class::cast);
+        }
+
         if (type.isEnum()) {
             return provider.getString(fullKey)
                            .toResult(ConfigError.sectionNotFound(fullKey))
@@ -154,9 +170,15 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (type.isRecord()) {
             var nestedSection = section + "." + toSnakeCase(key);
             if (!hasSection(nestedSection)) {
-                return ConfigError.sectionNotFound(nestedSection).result();
+                return findDefaultField(type)
+                    .map(Result::success)
+                    .or(ConfigError.sectionNotFound(nestedSection).result());
             }
             return (Result<Object>) bindToClass(nestedSection, type);
+        }
+
+        if (type == Map.class) {
+            return extractMapValue(fullKey, component.getGenericType());
         }
 
         if (type == Option.class) {
@@ -180,6 +202,65 @@ public final class ProviderBasedConfigService implements ConfigService {
         } catch (NumberFormatException e) {
             return Option.none();
         }
+    }
+
+    static Option<Duration> parseDuration(String value) {
+        if (value == null || value.isBlank()) {
+            return Option.none();
+        }
+
+        // Try human-friendly format: "30s", "10m", "1h", "500ms", "1d"
+        var matcher = DURATION_PATTERN.matcher(value.trim());
+        if (matcher.matches()) {
+            var amount = Long.parseLong(matcher.group(1));
+            var unit = matcher.group(2);
+            return Option.some(switch (unit) {
+                case "ms" -> Duration.ofMillis(amount);
+                case "s" -> Duration.ofSeconds(amount);
+                case "m" -> Duration.ofMinutes(amount);
+                case "h" -> Duration.ofHours(amount);
+                case "d" -> Duration.ofDays(amount);
+                default -> Duration.ZERO;
+            });
+        }
+
+        // Try ISO-8601 format: "PT30S", "PT10M", etc.
+        try {
+            return Option.some(Duration.parse(value.trim()));
+        } catch (Exception e) {
+            return Option.none();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Result<Object> extractMapValue(String fullKey, Type genericType) {
+        // Collect all sub-keys under the prefix into a Map<String, String>
+        var prefix = fullKey + ".";
+        Map<String, String> map = new LinkedHashMap<>();
+
+        for (var mapKey : provider.keys()) {
+            if (mapKey.startsWith(prefix)) {
+                var subKey = mapKey.substring(prefix.length());
+                provider.getString(mapKey)
+                        .onPresent(v -> map.put(subKey, v));
+            }
+        }
+
+        return Result.success(map);
+    }
+
+    private static Option<Object> findDefaultField(Class<?> type) {
+        try {
+            Field defaultField = type.getField("DEFAULT");
+            if (java.lang.reflect.Modifier.isStatic(defaultField.getModifiers())
+                && java.lang.reflect.Modifier.isFinal(defaultField.getModifiers())
+                && type.isAssignableFrom(defaultField.getType())) {
+                return Option.option(defaultField.get(null));
+            }
+        } catch (NoSuchFieldException | IllegalAccessException e) {
+            // No DEFAULT field — fall through
+        }
+        return Option.none();
     }
 
     @SuppressWarnings("unchecked")
@@ -215,6 +296,9 @@ public final class ProviderBasedConfigService implements ConfigService {
         if (innerClass == Double.class) {
             return Result.success(provider.getString(fullKey).flatMap(this::parseDouble));
         }
+        if (innerClass == Duration.class) {
+            return Result.success(provider.getString(fullKey).flatMap(ProviderBasedConfigService::parseDuration));
+        }
         if (innerClass.isEnum()) {
             var stringOpt = provider.getString(fullKey);
             if (stringOpt.isEmpty()) {
@@ -236,7 +320,7 @@ public final class ProviderBasedConfigService implements ConfigService {
         }
     }
 
-    private static String toSnakeCase(String camelCase) {
+    static String toSnakeCase(String camelCase) {
         var result = new StringBuilder();
         for (int i = 0; i < camelCase.length(); i++) {
             char c = camelCase.charAt(i);

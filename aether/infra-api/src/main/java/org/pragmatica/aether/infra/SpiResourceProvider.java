@@ -5,6 +5,8 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
+import org.pragmatica.lang.Functions.Fn2;
+
 import java.util.Map;
 import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,10 +23,10 @@ import java.util.function.Function;
 public final class SpiResourceProvider implements ResourceProvider {
     private final Map<Class<?>, ResourceFactory<?, ?>> factories;
     private final Map<CacheKey, Promise<?>> promiseCache;
-    private final Function<String, Result<?>> configLoader;
+    private final Fn2<Result<?>, String, Class<?>> configLoader;
 
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private SpiResourceProvider(Function<String, Result<?>> configLoader) {
+    private SpiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader) {
         this.configLoader = configLoader;
         this.promiseCache = new ConcurrentHashMap<>();
         Map<Class<?>, ResourceFactory<?, ?>> factoryMap = new ConcurrentHashMap<>();
@@ -41,10 +43,10 @@ public final class SpiResourceProvider implements ResourceProvider {
      * @return New SpiResourceProvider
      */
     public static SpiResourceProvider spiResourceProvider() {
-        return new SpiResourceProvider(section ->
+        return new SpiResourceProvider((section, configClass) ->
             ConfigService.instance()
                          .toResult(ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE)
-                         .flatMap(configService -> configService.config(section, Object.class))
+                         .flatMap(configService -> configService.config(section, configClass))
         );
     }
 
@@ -53,11 +55,23 @@ public final class SpiResourceProvider implements ResourceProvider {
      * <p>
      * Useful for testing or custom configuration sources.
      *
-     * @param configLoader Function that loads config sections
+     * @param configLoader Function that loads config sections with (section, configClass)
+     * @return New SpiResourceProvider
+     */
+    public static SpiResourceProvider spiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader) {
+        return new SpiResourceProvider(configLoader);
+    }
+
+    /**
+     * Create an SpiResourceProvider with a simple config loader (section only).
+     * <p>
+     * Backwards-compatible factory for testing scenarios where config type is not needed.
+     *
+     * @param configLoader Function that loads config sections by name
      * @return New SpiResourceProvider
      */
     public static SpiResourceProvider spiResourceProvider(Function<String, Result<?>> configLoader) {
-        return new SpiResourceProvider(configLoader);
+        return new SpiResourceProvider((section, configClass) -> configLoader.apply(section));
     }
 
     @Override
@@ -91,7 +105,7 @@ public final class SpiResourceProvider implements ResourceProvider {
 
     @SuppressWarnings("unchecked")
     private <C> Promise<C> loadConfig(String section, Class<C> configType) {
-        return configLoader.apply(section)
+        return configLoader.apply(section, configType)
                            .mapError(cause -> ResourceProvisioningError.configLoadFailed(section, cause))
                            .map(obj -> (C) obj)
                            .async();

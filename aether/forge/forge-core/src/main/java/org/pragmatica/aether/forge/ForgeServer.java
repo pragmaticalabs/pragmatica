@@ -324,11 +324,16 @@ public final class ForgeServer {
                .withEnvironment("AETHER_");
 
         // Inject H2 runtime values (highest priority)
+        // Keys must match toSnakeCase(recordComponentName) from DatabaseConnectorConfig
         h2Server.onPresent(server -> {
             Map<String, String> runtimeValues = new HashMap<>();
-            runtimeValues.put("database.url", server.jdbcUrl());
+            runtimeValues.put("database.name", "forge-h2");
             runtimeValues.put("database.type", "H2");
-            runtimeValues.put("database.user", "sa");
+            runtimeValues.put("database.host", "localhost");
+            runtimeValues.put("database.port", "0");
+            runtimeValues.put("database.database", "forge");
+            runtimeValues.put("database.jdbc_url", server.jdbcUrl());
+            runtimeValues.put("database.username", "sa");
             runtimeValues.put("database.password", "");
             builder.withSource(MapConfigSource.mapConfigSource("runtime", runtimeValues, 500));
             log.info("Injected H2 configuration into ConfigurationProvider");

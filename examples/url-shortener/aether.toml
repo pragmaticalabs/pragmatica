@@ -2,7 +2,15 @@
 
 [database]
 type = "H2"
-pool.min = 2
-pool.max = 10
-pool.idle-timeout = "10m"
-pool.connection-timeout = "30s"
+name = "url-shortener"
+host = "localhost"
+port = 0
+database = "urlshortener"
+
+[database.pool_config]
+min_connections = 2
+max_connections = 10
+idle_timeout = "10m"
+connection_timeout = "30s"
+max_lifetime = "30m"
+leak_detection_timeout = "0s"
