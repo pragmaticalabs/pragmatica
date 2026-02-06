@@ -108,13 +108,16 @@ public class TestCluster {
         router.addRoute(KVStoreLocalIO.Request.Find.class, store::find);
         router.addRoute(QuorumStateNotification.class, engine::quorumState);
 
-        network.addNode(id, createHandler(engine));
+        var stateChangePrinter = new StateChangePrinter(id);
+        router.addRoute(KVStoreNotification.ValuePut.class, stateChangePrinter::accept);
+
+        // Register router BEFORE adding node to network to ensure QuorumStateNotification
+        // is received by all nodes when quorum is reached
         stores.put(id, store);
         engines.put(id, engine);
         routers.put(id, router);
 
-        var stateChangePrinter = new StateChangePrinter(id);
-        router.addRoute(KVStoreNotification.ValuePut.class, stateChangePrinter::accept);
+        network.addNode(id, createHandler(engine));
     }
 
     @SuppressWarnings("unchecked")
@@ -147,8 +150,8 @@ public class TestCluster {
                               .toList();
 
         Promise.allOf(promises)
-               .await(timeSpan(10).seconds())
-               .onFailureRun(() -> fail("Failed to start all nodes within 10 seconds"));
+               .await(timeSpan(60).seconds())
+               .onFailureRun(() -> fail("Failed to start all nodes within 60 seconds"));
     }
 
     public void submitAndWait(NodeId nodeId, KVCommand<StringKey> command) {

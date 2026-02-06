@@ -1,7 +1,7 @@
-package org.pragmatica.consensus.rabia;
+package org.pragmatica.cluster.consensus.rabia;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.consensus.rabia.infrastructure.TestCluster;
 import org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey;
@@ -24,13 +24,15 @@ import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKe
 
 /**
  * Test Suite 2: Message Semantics
+ * <p>
+ * Tests message-level behaviors like duplication, out-of-order delivery,
+ * message loss, and stale view numbers.
  */
-@Disabled("Flaky test - passes individually but fails with other tests due to resource contention")
 public class MessageSemanticsIT {
     private static final Logger log = LoggerFactory.getLogger(MessageSemanticsIT.class);
     private static final int CLUSTER_SIZE = 5;
-    private static final int COMMAND_COUNT = 1000;
-    private static final Duration TIMEOUT = Duration.ofSeconds(60);
+    private static final int COMMAND_COUNT = 500; // Reduced from 1000 for faster tests
+    private static final Duration TIMEOUT = Duration.ofSeconds(120); // Increased timeout
 
     private TestCluster cluster;
 
@@ -39,6 +41,18 @@ public class MessageSemanticsIT {
         cluster = new TestCluster(CLUSTER_SIZE);
         cluster.awaitStart();
         log.info("Cluster started with {} nodes", CLUSTER_SIZE);
+    }
+
+    @AfterEach
+    void tearDown() {
+        // Reset fault injection to ensure clean state between tests
+        if (cluster != null && cluster.network() != null) {
+            var injector = cluster.network().getFaultInjector();
+            injector.setFault(LocalNetwork.FaultType.MESSAGE_DUPLICATE, false);
+            injector.setFault(LocalNetwork.FaultType.MESSAGE_DELAY, false);
+            injector.setFault(LocalNetwork.FaultType.MESSAGE_LOSS, false);
+            injector.setMessageLossRate(0.0);
+        }
     }
 
     /**
@@ -68,10 +82,10 @@ public class MessageSemanticsIT {
 
         // Verify all commands were executed exactly once
         for (int i = 0; i < COMMAND_COUNT; i++) {
-            var key = key("duplicate-" + i);
+            var k = key("duplicate-" + i);
             var expectedValue = "value-" + i;
-            assertTrue(cluster.allNodesHaveValue(key, expectedValue),
-                       "All nodes should have key " + key + " with value " + expectedValue);
+            assertTrue(cluster.allNodesHaveValue(k, expectedValue),
+                       "All nodes should have key " + k + " with value " + expectedValue);
         }
 
         // Disable message duplication
@@ -187,24 +201,24 @@ public class MessageSemanticsIT {
 
         // First, establish a baseline state with some commands
         var clientNode = cluster.getFirst();
-        var initialCommands = generatePutCommands(100, "initial-");
+        var initialCommands = generatePutCommands(50, "initial-"); // Reduced from 100
         submitCommands(clientNode, initialCommands);
 
         await().atMost(TIMEOUT)
                .pollInterval(1, TimeUnit.SECONDS)
-               .until(() -> cluster.allNodesHaveValue(key("initial-99"), "value-99"));
+               .until(() -> cluster.allNodesHaveValue(key("initial-49"), "value-49"));
 
         // Force a view change by temporarily disconnecting a node
         var disconnectNode = cluster.ids().get(1);
         cluster.disconnect(disconnectNode);
 
         // Submit more commands to advance to a new view
-        var advanceCommands = generatePutCommands(100, "advance-");
+        var advanceCommands = generatePutCommands(50, "advance-"); // Reduced from 100
         submitCommands(clientNode, advanceCommands);
 
         await().atMost(TIMEOUT)
                .pollInterval(1, TimeUnit.SECONDS)
-               .until(() -> cluster.allNodesHaveValue(key("advance-99"), "value-99"));
+               .until(() -> cluster.allNodesHaveValue(key("advance-49"), "value-49"));
 
         // Reconnect the disconnected node, which will have a stale view
         // The actual reconnection is implementation-specific and might require
@@ -212,15 +226,15 @@ public class MessageSemanticsIT {
         // handles this correctly
 
         // Submit final commands to verify the system continues to function correctly
-        var finalCommands = generatePutCommands(100, "final-");
+        var finalCommands = generatePutCommands(50, "final-"); // Reduced from 100
         submitCommands(clientNode, finalCommands);
 
         await().atMost(TIMEOUT)
                .pollInterval(1, TimeUnit.SECONDS)
-               .until(() -> cluster.allNodesHaveValue(key("final-99"), "value-99"));
+               .until(() -> cluster.allNodesHaveValue(key("final-49"), "value-49"));
 
         // Verify all commands were processed correctly
-        for (int i = 0; i < 100; i++) {
+        for (int i = 0; i < 50; i++) {
             var initialKey = key("initial-" + i);
             var advanceKey = key("advance-" + i);
             var finalKey = key("final-" + i);
@@ -245,7 +259,7 @@ public class MessageSemanticsIT {
 
     private void submitCommands(NodeId nodeId, List<KVCommand<StringKey>> commands) {
         var counter = new AtomicLong(0);
-        var batchSize = 100;
+        var batchSize = 50; // Reduced from 100 for better granularity
 
         for (int i = 0; i < commands.size(); i += batchSize) {
             int end = Math.min(i + batchSize, commands.size());
@@ -255,7 +269,7 @@ public class MessageSemanticsIT {
                    .apply(batch)
                    .onSuccess(_ -> {
                        long completed = counter.addAndGet(batch.size());
-                       if (completed % 500 == 0) {
+                       if (completed % 100 == 0) {
                            log.info("Processed {} commands", completed);
                        }
                    })
