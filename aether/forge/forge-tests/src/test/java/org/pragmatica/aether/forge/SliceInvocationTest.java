@@ -31,8 +31,8 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
  * </ul>
  *
  * <p>Note: Full invocation testing requires slices with defined methods.
- * The inventory slice has methods (checkStock, reserveStock, releaseStock), but tests focus
- * on infrastructure and error handling rather than successful invocations.
+ * The echo-slice has an echo method. Tests focus on infrastructure and error handling
+ * rather than successful invocations.
  */
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceInvocationTest {
@@ -40,7 +40,7 @@ class SliceInvocationTest {
     private static final int BASE_MGMT_PORT = 6100;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(60);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -131,7 +131,7 @@ class SliceInvocationTest {
                            throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
                        }
                    })
-                   .until(() -> getSlices().contains("inventory"));
+                   .until(() -> getSlices().contains("echo-slice"));
 
             var routes = getRoutes();
             assertThat(routes).doesNotContain("\"error\"");
@@ -172,12 +172,12 @@ class SliceInvocationTest {
                            throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
                        }
                    })
-                   .until(() -> getSlices().contains("inventory"));
+                   .until(() -> getSlices().contains("echo-slice"));
 
             undeploy(TEST_ARTIFACT);
             await().atMost(WAIT_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
-                   .until(() -> !getSlices().contains("inventory"));
+                   .until(() -> !getSlices().contains("echo-slice"));
 
             var response = invokeGet("/api/example");
             assertThat(response).containsAnyOf("error", "404", "not found", "Not Found");
@@ -203,7 +203,7 @@ class SliceInvocationTest {
                            throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
                        }
                    })
-                   .until(() -> getSlices().contains("inventory"));
+                   .until(() -> getSlices().contains("echo-slice"));
 
             for (var node : cluster.status().nodes()) {
                 var health = getHealth(node.mgmtPort());

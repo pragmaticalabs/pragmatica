@@ -36,7 +36,7 @@ class GracefulShutdownTest {
     private static final int BASE_MGMT_PORT = 12100;
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(30);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
 
     // Per-method port offsets to avoid TIME_WAIT conflicts between test methods
     private static final Map<String, Integer> METHOD_PORT_OFFSETS = Map.of(
@@ -119,7 +119,7 @@ class GracefulShutdownTest {
                })
                .until(() -> {
                    var slices = getSlicesFromAnyNode();
-                   return slices.contains("inventory");
+                   return slices.contains("echo-slice");
                });
 
         // Shutdown one node
@@ -136,7 +136,7 @@ class GracefulShutdownTest {
 
         // Slice should still be accessible
         var slices = getSlicesFromAnyNode();
-        assertThat(slices).contains("inventory");
+        assertThat(slices).contains("echo-slice");
     }
 
     @Test
@@ -159,13 +159,13 @@ class GracefulShutdownTest {
                .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    var slices = getSlicesFromAnyNode();
-                   if (slices.contains("\"error\"") && !slices.contains("inventory")) {
+                   if (slices.contains("\"error\"") && !slices.contains("echo-slice")) {
                        throw new AssertionError("Slice query failed: " + slices);
                    }
                })
                .until(() -> {
                    var slices = getSlicesFromAnyNode();
-                   return slices.contains("inventory");
+                   return slices.contains("echo-slice");
                });
 
         // Verify cluster is healthy
