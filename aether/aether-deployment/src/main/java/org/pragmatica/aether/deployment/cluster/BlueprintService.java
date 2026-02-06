@@ -20,6 +20,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -110,12 +111,10 @@ public interface BlueprintService {
 
             @Override
             public List<ExpandedBlueprint> list() {
-                return store.snapshot()
-                            .values()
-                            .stream()
-                            .map(this::extractBlueprint)
-                            .flatMap(Option::stream)
-                            .toList();
+                var result = new ArrayList<ExpandedBlueprint>();
+                store.forEach(AppBlueprintKey.class, AppBlueprintValue.class,
+                              (_, value) -> result.add(value.blueprint()));
+                return result;
             }
 
             @Override

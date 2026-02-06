@@ -34,9 +34,9 @@ import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.lang.utils.SharedScheduler;
 
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.stream.Collectors;
-import java.util.stream.IntStream;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -126,15 +126,9 @@ public interface ClusterDeploymentManager {
              * Rebuild state from KVStore snapshot on leader activation.
              * This ensures the new leader has complete knowledge of desired and actual state.
              */
-            @SuppressWarnings("rawtypes")
             void rebuildStateFromKVStore() {
                 log.info("Rebuilding cluster deployment state from KVStore");
-                // Use raw forEach to avoid ClassCastException - KV store may contain LeaderKey entries
-                ((Map) kvStore.snapshot()).forEach((key, value) -> {
-                                                       if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue) {
-                                                           processKVEntry(aetherKey, aetherValue);
-                                                       }
-                                                   });
+                kvStore.forEach(AetherKey.class, AetherValue.class, this::processKVEntry);
                 log.info("Restored {} blueprints and {} slice states from KVStore",
                          blueprints.size(),
                          sliceStates.size());
@@ -496,7 +490,7 @@ public interface ClusterDeploymentManager {
                 // Clean up HTTP routes containing the removed node
                 var httpRouteCommands = cleanupHttpRoutesForNode(removedNode);
                 // Combine all commands
-                List<KVCommand<AetherKey>> allCommands = new java.util.ArrayList<>();
+                List<KVCommand<AetherKey>> allCommands = new ArrayList<>();
                 sliceKeysToRemove.stream()
                                  .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
                                  .forEach(allCommands::add);
@@ -518,19 +512,20 @@ public interface ClusterDeploymentManager {
                          removedNode);
             }
 
-            @SuppressWarnings("rawtypes")
             private List<EndpointKey> findEndpointKeysForNode(NodeId nodeId) {
-                var result = new java.util.ArrayList<EndpointKey>();
-                // Use raw forEach to avoid ClassCastException - KV store may contain various key types
-                ((Map) kvStore.snapshot()).forEach((key, value) -> {
-                                                       if (key instanceof EndpointKey endpointKey && value instanceof EndpointValue endpointValue) {
-                                                           if (endpointValue.nodeId()
-                                                                            .equals(nodeId)) {
-                                                               result.add(endpointKey);
-                                                           }
-                                                       }
-                                                   });
+                var result = new ArrayList<EndpointKey>();
+                kvStore.forEach(EndpointKey.class, EndpointValue.class,
+                                (key, value) -> collectEndpointKeyForNode(result, key, value, nodeId));
                 return result;
+            }
+
+            private void collectEndpointKeyForNode(List<EndpointKey> result,
+                                                   EndpointKey endpointKey,
+                                                   EndpointValue endpointValue,
+                                                   NodeId nodeId) {
+                if (endpointValue.nodeId().equals(nodeId)) {
+                    result.add(endpointKey);
+                }
             }
 
             /**
@@ -538,75 +533,70 @@ public interface ClusterDeploymentManager {
              * For each HttpRouteValue, remove the node from the node set.
              * If the node set becomes empty, delete the entry.
              */
-            @SuppressWarnings("rawtypes")
             private List<KVCommand<AetherKey>> cleanupHttpRoutesForNode(NodeId removedNode) {
                 var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
-                // Scan KVStore for HttpRouteKey entries containing the removed node
-                ((Map) kvStore.snapshot()).forEach((key, value) -> {
-                                                       if (key instanceof HttpRouteKey routeKey && value instanceof HttpRouteValue routeValue) {
-                                                           if (routeValue.nodes()
-                                                                         .contains(removedNode)) {
-                                                               var updatedValue = routeValue.withoutNode(removedNode);
-                                                               if (updatedValue.isEmpty()) {
-                                                                   // No nodes left - remove the route entirely
-                commands.add(new KVCommand.Remove<>(routeKey));
-                                                                   log.debug("Removing HTTP route {} (last node {} departed)",
-                                                                             routeKey,
-                                                                             removedNode);
-                                                               } else {
-                                                                   // Update the route with remaining nodes
-                commands.add(new KVCommand.Put<>(routeKey, updatedValue));
-                                                                   log.debug("Updating HTTP route {} - removed departed node {}, {} nodes remaining",
-                                                                             routeKey,
-                                                                             removedNode,
-                                                                             updatedValue.nodes()
-                                                                                         .size());
-                                                               }
-                                                           }
-                                                       }
-                                                   });
+                kvStore.forEach(HttpRouteKey.class, HttpRouteValue.class,
+                                (key, value) -> collectRouteCleanupCommand(commands, key, value, removedNode));
                 return commands;
+            }
+
+            private void collectRouteCleanupCommand(List<KVCommand<AetherKey>> commands,
+                                                    HttpRouteKey routeKey,
+                                                    HttpRouteValue routeValue,
+                                                    NodeId removedNode) {
+                if (!routeValue.nodes().contains(removedNode)) {
+                    return;
+                }
+                var updatedValue = routeValue.withoutNode(removedNode);
+                if (updatedValue.isEmpty()) {
+                    commands.add(new KVCommand.Remove<>(routeKey));
+                    log.debug("Removing HTTP route {} (last node {} departed)", routeKey, removedNode);
+                } else {
+                    commands.add(new KVCommand.Put<>(routeKey, updatedValue));
+                    log.debug("Updating HTTP route {} - removed departed node {}, {} nodes remaining",
+                              routeKey, removedNode, updatedValue.nodes().size());
+                }
             }
 
             /**
              * Remove HTTP route entries that reference nodes not in the current topology.
              * This handles cases where nodes died before the leader could clean up their routes.
              */
-            @SuppressWarnings("rawtypes")
             private void cleanupStaleHttpRoutes() {
                 var currentNodes = new HashSet<>(activeNodes.get());
                 var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
-                ((Map) kvStore.snapshot()).forEach((key, value) -> {
-                                                       if (key instanceof HttpRouteKey routeKey && value instanceof HttpRouteValue routeValue) {
-                                                           // Find nodes in route that are NOT in current topology
-                var staleNodes = routeValue.nodes()
-                                           .stream()
-                                           .filter(n -> !currentNodes.contains(n))
-                                           .toList();
-                                                           if (!staleNodes.isEmpty()) {
-                                                               var updatedValue = routeValue;
-                                                               for (var staleNode : staleNodes) {
-                                                                   updatedValue = updatedValue.withoutNode(staleNode);
-                                                               }
-                                                               if (updatedValue.isEmpty()) {
-                                                                   commands.add(new KVCommand.Remove<>(routeKey));
-                                                                   log.debug("Removing stale HTTP route {} (no valid nodes)",
-                                                                             routeKey);
-                                                               } else {
-                                                                   commands.add(new KVCommand.Put<>(routeKey,
-                                                                                                    updatedValue));
-                                                                   log.debug("Cleaning up HTTP route {} - removed {} stale nodes",
-                                                                             routeKey,
-                                                                             staleNodes.size());
-                                                               }
-                                                           }
-                                                       }
-                                                   });
+                kvStore.forEach(HttpRouteKey.class, HttpRouteValue.class,
+                                (key, value) -> collectStaleRouteCleanupCommand(commands, key, value, currentNodes));
                 if (!commands.isEmpty()) {
                     log.debug("Cleaning up {} stale HTTP route entries", commands.size());
                     cluster.apply(commands)
                            .onFailure(cause -> log.error("Failed to clean up stale HTTP routes: {}",
                                                          cause.message()));
+                }
+            }
+
+            private void collectStaleRouteCleanupCommand(List<KVCommand<AetherKey>> commands,
+                                                         HttpRouteKey routeKey,
+                                                         HttpRouteValue routeValue,
+                                                         Set<NodeId> currentNodes) {
+                var staleNodes = routeValue.nodes()
+                                           .stream()
+                                           .filter(n -> !currentNodes.contains(n))
+                                           .toList();
+                if (staleNodes.isEmpty()) {
+                    return;
+                }
+                var updatedValue = routeValue;
+                for (var staleNode : staleNodes) {
+                    updatedValue = updatedValue.withoutNode(staleNode);
+                }
+                if (updatedValue.isEmpty()) {
+                    commands.add(new KVCommand.Remove<>(routeKey));
+                    log.debug("Removing stale HTTP route {} (no valid nodes)", routeKey);
+                } else {
+                    commands.add(new KVCommand.Put<>(routeKey, updatedValue));
+                    log.debug("Cleaning up HTTP route {} - removed {} stale nodes",
+                              routeKey, staleNodes.size());
                 }
             }
 

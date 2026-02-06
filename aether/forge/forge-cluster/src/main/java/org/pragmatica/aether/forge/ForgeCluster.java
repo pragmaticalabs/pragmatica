@@ -4,6 +4,9 @@ import org.pragmatica.aether.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
+import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
@@ -20,6 +23,7 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -663,44 +667,42 @@ public final class ForgeCluster {
         var node = nodes.values()
                         .iterator()
                         .next();
-        // Use raw Map to avoid ClassCastException - KV store contains both AetherKey and LeaderKey entries
-        @SuppressWarnings("rawtypes")
-        Map kvSnapshot = node.kvStore()
-                             .snapshot();
-        // Group slice instances by artifact
-        var slicesByArtifact = new java.util.HashMap<String, List<SliceInstanceStatus>>();
-        var stateByArtifact = new java.util.HashMap<String, org.pragmatica.aether.slice.SliceState>();
-        kvSnapshot.forEach((key, value) -> {
-                               if (key instanceof org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey sliceKey && value instanceof org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue sliceValue) {
-                                   var artifactStr = sliceKey.artifact()
-                                                             .asString();
-                                   var instanceState = sliceValue.state();
-                                   var health = instanceState == org.pragmatica.aether.slice.SliceState.ACTIVE
-                                                ? "HEALTHY"
-                                                : "UNHEALTHY";
-                                   slicesByArtifact.computeIfAbsent(artifactStr,
-                                                                    _ -> new ArrayList<>())
-                                                   .add(new SliceInstanceStatus(sliceKey.nodeId()
-                                                                                        .id(),
-                                                                                instanceState.name(),
-                                                                                health));
-                                   // Track highest state for aggregate
-        stateByArtifact.merge(artifactStr,
-                              instanceState,
-                              (old, curr) -> curr == org.pragmatica.aether.slice.SliceState.ACTIVE
-                                             ? curr
-                                             : old);
-                               }
-                           });
+        // Use type-safe forEach to filter by key/value type
+        var slicesByArtifact = new HashMap<String, List<SliceInstanceStatus>>();
+        var stateByArtifact = new HashMap<String, SliceState>();
+        node.kvStore()
+            .forEach(SliceNodeKey.class, SliceNodeValue.class,
+                     (sliceKey, sliceValue) -> collectSliceStatus(slicesByArtifact, stateByArtifact, sliceKey, sliceValue));
         // Build result
         return slicesByArtifact.entrySet()
                                .stream()
                                .map(entry -> new SliceStatus(entry.getKey(),
-                                                             stateByArtifact.getOrDefault(entry.getKey(),
-                                                                                          org.pragmatica.aether.slice.SliceState.FAILED)
+                                                             stateByArtifact.getOrDefault(entry.getKey(), SliceState.FAILED)
                                                                             .name(),
                                                              entry.getValue()))
                                .toList();
+    }
+
+    private void collectSliceStatus(Map<String, List<SliceInstanceStatus>> slicesByArtifact,
+                                    Map<String, SliceState> stateByArtifact,
+                                    SliceNodeKey sliceKey,
+                                    SliceNodeValue sliceValue) {
+        var artifactStr = sliceKey.artifact()
+                                  .asString();
+        var instanceState = sliceValue.state();
+        var health = instanceState == SliceState.ACTIVE
+                     ? "HEALTHY"
+                     : "UNHEALTHY";
+        slicesByArtifact.computeIfAbsent(artifactStr, _ -> new ArrayList<>())
+                        .add(new SliceInstanceStatus(sliceKey.nodeId().id(),
+                                                     instanceState.name(),
+                                                     health));
+        // Track highest state for aggregate
+        stateByArtifact.merge(artifactStr, instanceState, this::higherState);
+    }
+
+    private SliceState higherState(SliceState old, SliceState curr) {
+        return curr == SliceState.ACTIVE ? curr : old;
     }
 
     /**

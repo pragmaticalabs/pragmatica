@@ -23,7 +23,6 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.messaging.MessageReceiver;
 
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -305,14 +304,8 @@ public interface RollbackManager {
                                                 });
             }
 
-            @SuppressWarnings("rawtypes")
             private void loadPreviousVersionsFromKvStore() {
-                // Use raw forEach to avoid ClassCastException - KV store may contain LeaderKey entries
-                ((Map) kvStore.snapshot()).forEach((key, value) -> {
-                                                       if (key instanceof AetherKey aetherKey && value instanceof AetherValue aetherValue) {
-                                                           loadPreviousVersionEntry(aetherKey, aetherValue);
-                                                       }
-                                                   });
+                kvStore.forEach(AetherKey.class, AetherValue.class, this::loadPreviousVersionEntry);
                 log.debug("Loaded {} previous version entries from KVStore", rollbackStates.size());
             }
 
@@ -419,16 +412,10 @@ public interface RollbackManager {
                                                       RollbackDecision decision,
                                                       String requestId) {
                 var artifactBase = rollbackArtifact.base();
-                var existingTarget = kvStore.snapshot()
-                                            .entrySet()
-                                            .stream()
-                                            .filter(e -> e.getKey() instanceof SliceTargetKey stk &&
-                stk.artifactBase()
-                   .equals(artifactBase))
-                                            .findFirst();
-                var instanceCount = existingTarget.map(e -> ((SliceTargetValue) e.getValue()).targetInstances())
-                                                  .orElse(1);
                 var key = SliceTargetKey.sliceTargetKey(artifactBase);
+                var instanceCount = kvStore.get(key)
+                                           .map(v -> ((SliceTargetValue) v).targetInstances())
+                                           .or(1);
                 var value = SliceTargetValue.sliceTargetValue(decision.targetVersion(), instanceCount);
                 var command = new KVCommand.Put<AetherKey, AetherValue>(key, value);
                 // Capture values needed for state update
