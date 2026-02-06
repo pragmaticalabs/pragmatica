@@ -40,8 +40,7 @@ record OnnxTTMPredictor(OrtEnvironment env,
     @Override
     public Promise<float[]> predict(float[][] input) {
         return Promise.lift(cause -> new TTMError.InferenceFailed(cause.getMessage()),
-                            () -> runInference(input))
-                      .flatMap(Result::async);
+                            () -> runInference(input));
     }
 
     @Override
@@ -63,7 +62,7 @@ record OnnxTTMPredictor(OrtEnvironment env,
         return unit();
     }
 
-    Result<float[]> runInference(float[][] input) throws OrtException {
+    float[] runInference(float[][] input) throws OrtException {
         int seqLen = input.length;
         int features = input[0].length;
         float[] flatInput = new float[seqLen * features];
@@ -74,7 +73,7 @@ record OnnxTTMPredictor(OrtEnvironment env,
         try (var tensor = OnnxTensor.createTensor(env, FloatBuffer.wrap(flatInput), shape);
              var results = session.run(Map.of("input", tensor))) {
             var outputTensor = (OnnxTensor) results.get(0);
-            return flattenOutput(outputTensor).map(output -> extractPredictions(output, features));
+            return extractPredictions(flattenOutput(outputTensor), features);
         }
     }
 
@@ -86,10 +85,10 @@ record OnnxTTMPredictor(OrtEnvironment env,
         return predictions;
     }
 
-    private Result<float[]> flattenOutput(OnnxTensor tensor) throws OrtException {
+    private float[] flattenOutput(OnnxTensor tensor) throws OrtException {
         var value = tensor.getValue();
         if (value instanceof float[] arr) {
-            return Result.success(arr);
+            return arr;
         } else if (value instanceof float[][] arr2d) {
             int totalLen = 0;
             for (float[] row : arr2d) {
@@ -101,7 +100,7 @@ record OnnxTTMPredictor(OrtEnvironment env,
                 System.arraycopy(row, 0, flat, offset, row.length);
                 offset += row.length;
             }
-            return Result.success(flat);
+            return flat;
         } else if (value instanceof float[][][] arr3d) {
             int totalLen = 0;
             for (float[][] batch : arr3d) {
@@ -117,10 +116,9 @@ record OnnxTTMPredictor(OrtEnvironment env,
                     offset += row.length;
                 }
             }
-            return Result.success(flat);
+            return flat;
         }
-        return new TTMError.UnexpectedOutputType(value.getClass()
-                                                      .getName()).result();
+        throw new OrtException("Unexpected output tensor type: " + value.getClass().getName());
     }
 
     private double calculateConfidence(float[] output) {
@@ -202,7 +200,6 @@ record OnnxTTMPredictor(OrtEnvironment env,
         var warmupInput = new float[config.inputWindowMinutes()][FeatureIndex.FEATURE_COUNT];
         Result.lift(e -> new TTMError.InferenceFailed("Warm-up inference failed: " + e.getMessage()),
                     () -> predictor.runInference(warmupInput))
-              .flatMap(r -> r)
               .onSuccess(output -> log.info("  Warm-up complete, output length: {}", output.length))
               .onFailure(cause -> log.warn("  Warm-up inference failed: {}", cause.message()));
     }

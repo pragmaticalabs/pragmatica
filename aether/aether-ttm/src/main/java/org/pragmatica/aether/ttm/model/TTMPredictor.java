@@ -46,22 +46,22 @@ public interface TTMPredictor {
             return Result.success(noOp());
         }
         return TTMPredictorFactory.INSTANCE
-            .map(factory -> factory.create(config))
-            .or(TTMError.NoProvider.INSTANCE.result());
+            .fold(() -> TTMError.NoProvider.noProvider().<TTMPredictor>result(),
+                  factory -> factory.create(config));
     }
 
     /**
      * Create a no-op predictor for testing or when TTM is disabled.
      */
     static TTMPredictor noOp() {
-        return noOpTTMPredictor.INSTANCE;
+        return NoOpTTMPredictor.INSTANCE;
     }
 
     /**
      * No-op predictor for testing or when TTM is disabled.
      */
-    record noOpTTMPredictor() implements TTMPredictor {
-        static final noOpTTMPredictor INSTANCE = new noOpTTMPredictor();
+    record NoOpTTMPredictor() implements TTMPredictor {
+        static final NoOpTTMPredictor INSTANCE = new NoOpTTMPredictor();
 
         @Override
         public Promise<float[]> predict(float[][] input) {

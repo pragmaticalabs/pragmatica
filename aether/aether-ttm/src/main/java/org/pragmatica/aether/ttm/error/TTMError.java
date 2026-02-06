@@ -41,7 +41,9 @@ public sealed interface TTMError extends Cause {
      * TTM is disabled.
      */
     record Disabled() implements TTMError {
-        public static final Disabled INSTANCE = new Disabled();
+        public static Disabled disabled() {
+            return new Disabled();
+        }
 
         @Override
         public String message() {
@@ -63,7 +65,9 @@ public sealed interface TTMError extends Cause {
      * No TTM predictor implementation available on classpath.
      */
     record NoProvider() implements TTMError {
-        public static final NoProvider INSTANCE = new NoProvider();
+        public static NoProvider noProvider() {
+            return new NoProvider();
+        }
 
         @Override
         public String message() {

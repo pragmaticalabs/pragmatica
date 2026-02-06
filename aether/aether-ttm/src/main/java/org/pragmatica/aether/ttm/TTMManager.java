@@ -82,7 +82,7 @@ public interface TTMManager {
                                          MinuteAggregator aggregator,
                                          Supplier<ControllerConfig> controllerConfigSupplier) {
         if (!config.enabled()) {
-            return TTMError.Disabled.INSTANCE.result();
+            return Result.success(noOp(config));
         }
         return TTMPredictor.ttmPredictor(config)
                            .map(predictor -> createManager(config, predictor, aggregator, controllerConfigSupplier));
@@ -98,7 +98,7 @@ public interface TTMManager {
                                                                        thread.setDaemon(true);
                                                                        return thread;
                                                                    });
-        return new ttmManager(config,
+        return new ActiveTTMManager(config,
                               predictor,
                               analyzer,
                               aggregator,
@@ -114,13 +114,13 @@ public interface TTMManager {
      * Create a no-op TTM manager (for when TTM is disabled).
      */
     static TTMManager noOp(TTMConfig config) {
-        return new noOpTTMManager(config);
+        return new NoOpTTMManager(config);
     }
 
     /**
      * No-op implementation for when TTM is disabled.
      */
-    record noOpTTMManager(TTMConfig config) implements TTMManager {
+    record NoOpTTMManager(TTMConfig config) implements TTMManager {
         @Override
         public void onLeaderChange(LeaderChange leaderChange) {}
 
@@ -151,17 +151,17 @@ public interface TTMManager {
     /**
      * Implementation of TTMManager.
      */
-    record ttmManager(TTMConfig config,
-                      TTMPredictor predictor,
-                      ForecastAnalyzer analyzer,
-                      MinuteAggregator aggregator,
-                      Supplier<ControllerConfig> controllerConfigSupplier,
-                      ScheduledExecutorService scheduler,
-                      AtomicReference<ScheduledFuture<?>> evaluationTask,
-                      AtomicReference<TTMForecast> currentForecastRef,
-                      AtomicReference<TTMState> stateRef,
-                      CopyOnWriteArrayList<Consumer<TTMForecast>> callbacks) implements TTMManager {
-        private static final Logger log = LoggerFactory.getLogger(ttmManager.class);
+    record ActiveTTMManager(TTMConfig config,
+                            TTMPredictor predictor,
+                            ForecastAnalyzer analyzer,
+                            MinuteAggregator aggregator,
+                            Supplier<ControllerConfig> controllerConfigSupplier,
+                            ScheduledExecutorService scheduler,
+                            AtomicReference<ScheduledFuture<?>> evaluationTask,
+                            AtomicReference<TTMForecast> currentForecastRef,
+                            AtomicReference<TTMState> stateRef,
+                            CopyOnWriteArrayList<Consumer<TTMForecast>> callbacks) implements TTMManager {
+        private static final Logger log = LoggerFactory.getLogger(ActiveTTMManager.class);
         private static final Counter PREDICTION_COUNTER = Metrics.counter("ttm.predictions.count");
         private static final Counter SCALE_UP_COUNTER = Metrics.counter("ttm.recommendations", "type", "scale_up");
         private static final Counter SCALE_DOWN_COUNTER = Metrics.counter("ttm.recommendations", "type", "scale_down");
@@ -256,12 +256,8 @@ public interface TTMManager {
             }
             float[][] input = aggregator.toTTMInput(required);
             return predictor.predict(input)
-                            .map(this::processPredictionAndReturn);
-        }
-
-        private Unit processPredictionAndReturn(float[] predictions) {
-            processPrediction(predictions);
-            return Unit.unit();
+                            .withSuccess(this::processPrediction)
+                            .mapToUnit();
         }
 
         private void handleEvaluationError(Cause cause) {
