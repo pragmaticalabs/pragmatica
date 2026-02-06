@@ -1,7 +1,6 @@
 package org.pragmatica.jbct.format.cst;
 
 import org.pragmatica.jbct.parser.Java25Parser;
-import org.pragmatica.jbct.parser.Java25Parser.CstNode;
 import org.pragmatica.jbct.shared.SourceFile;
 
 import java.io.IOException;
@@ -9,14 +8,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
@@ -82,19 +79,6 @@ class CstFormatterTest {
                             });
     }
 
-    @Disabled("Debug utility for visual inspection - covered by cstFormatter_isIdempotent_onGoldenExamples")
-    @Test
-    void format_goldenExample_chainAlignment() throws IOException {
-        var path = EXAMPLES_DIR.resolve("ChainAlignment.java");
-        var content = Files.readString(path);
-        var source = new SourceFile(path, content);
-        formatter.format(source)
-                 .onFailure(cause -> fail("Format failed: " + cause.message()))
-                 .onSuccess(formatted -> assertEquals(content,
-                                                      formatted.content(),
-                                                      "Golden example should be idempotent"));
-    }
-
     @Test
     void format_memberSpacing() {
         // Test member spacing: fields should NOT have blank lines between them,
@@ -155,37 +139,6 @@ class CstFormatterTest {
                             });
     }
 
-    @Disabled("Debug utility for CST inspection - not a behavioral test")
-    @Test
-    void debug_cstTrivia() {
-        var parser = new Java25Parser();
-        // Test with comment
-        var code = "class Foo { // comment\n  void bar() { } }";
-        var result = parser.parse(code);
-        assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
-        result.onSuccess(cst -> dumpCst(cst, 0, code));
-    }
-
-    @Disabled("Debug utility for CST trivia inspection - not a behavioral test")
-    @Test
-    void debug_cstTriviaAssignment() {
-        var parser = new Java25Parser();
-        var code = "class Test { void foo() { int x = 1; } }";
-        var result = parser.parse(code);
-        assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
-        result.onSuccess(cst -> dumpCstWithTrivia(cst, 0));
-    }
-
-    @Disabled("Debug utility for lambda CST inspection - not a behavioral test")
-    @Test
-    void debug_lambdaParsing() {
-        var parser = new Java25Parser();
-        var code = "class Test { void foo() { list.filter(s -> !s.isEmpty()); } }";
-        var result = parser.parse(code);
-        assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
-        result.onSuccess(cst -> dumpCstLambda(cst, 0));
-    }
-
     @Test
     void format_preservesLambdaSpacing() {
         var code = "class Test { void foo() { list.filter(s -> !s.isEmpty()); } }";
@@ -234,100 +187,6 @@ class CstFormatterTest {
                             });
     }
 
-    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
-    @Test
-    void debug_formatBlankLines() throws IOException {
-        compareGoldenFile("BlankLines.java");
-    }
-
-    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
-    @Test
-    void debug_formatChainAlignment() throws IOException {
-        compareGoldenFile("ChainAlignment.java");
-    }
-
-    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
-    @Test
-    void debug_formatAnnotations() throws IOException {
-        compareGoldenFile("Annotations.java");
-    }
-
-    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
-    @Test
-    void debug_formatMultilineArguments() throws IOException {
-        compareGoldenFile("MultilineArguments.java");
-    }
-
-    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
-    @Test
-    void debug_formatLambdas() throws IOException {
-        compareGoldenFile("Lambdas.java");
-    }
-
-    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
-    @Test
-    void debug_formatSwitchExpressions() throws IOException {
-        compareGoldenFile("SwitchExpressions.java");
-    }
-
-    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
-    @Test
-    void debug_formatLineWrapping() throws IOException {
-        compareGoldenFile("LineWrapping.java");
-    }
-
-    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
-    @Test
-    void debug_formatMultilineParameters() throws IOException {
-        compareGoldenFile("MultilineParameters.java");
-    }
-
-    @Disabled("Debug utility - covered by cstFormatter_isIdempotent_onGoldenExamples")
-    @Test
-    void debug_formatTernaryOperators() throws IOException {
-        compareGoldenFile("TernaryOperators.java");
-    }
-
-    private void compareGoldenFile(String fileName) throws IOException {
-        var path = EXAMPLES_DIR.resolve(fileName);
-        var content = Files.readString(path);
-        var source = new SourceFile(path, content);
-        formatter.format(source)
-                 .onFailure(cause -> fail("Format failed: " + cause.message()))
-                 .onSuccess(formatted -> {
-                                // Find first difference
-        var expected = content;
-                                var actual = formatted.content();
-                                for (int i = 0; i < Math.min(expected.length(),
-                                                             actual.length()); i++) {
-                                    if (expected.charAt(i) != actual.charAt(i)) {
-                                        int start = Math.max(0, i - 30);
-                                        int end = Math.min(expected.length(),
-                                                           i + 30);
-                                        System.out.println("First diff at position " + i + " in " + fileName);
-                                        System.out.println("Expected: '" + expected.substring(start, end)
-                                                                                   .replace("\n", "\\n") + "'");
-                                        System.out.println("Actual: '" + actual.substring(start,
-                                                                                          Math.min(actual.length(),
-                                                                                                   i + 30))
-                                                                               .replace("\n", "\\n") + "'");
-                                        return;
-                                    }
-                                }
-                                System.out.println(fileName + " matches!");
-                            });
-    }
-
-    @Disabled("Debug utility for blank lines trivia inspection - not a behavioral test")
-    @Test
-    void debug_blankLinesTrivia() {
-        var parser = new Java25Parser();
-        var code = "class Test {\n    int a;\n\n    // Comment\n    int b;\n}";
-        var result = parser.parse(code);
-        assertTrue(result.isSuccess(), () -> "Parse failed: " + result);
-        result.onSuccess(cst -> dumpClassMembers(cst, 0));
-    }
-
     @Test
     void format_preservesEmptyRecordBody() {
         var code = "class Outer { record Test(String value) {} }";
@@ -339,143 +198,6 @@ class CstFormatterTest {
                                 assertThat(formatted.content())
                                           .contains("record Test(String value)");
                             });
-    }
-
-    private void dumpClassMembers(CstNode node, int depth) {
-        var indent = "  ".repeat(depth);
-        switch (node) {
-            case CstNode.Terminal t -> {}
-            case CstNode.Token tok -> {}
-            case CstNode.Error err -> {}
-            case CstNode.NonTerminal nt -> {
-                if (nt.rule()
-                      .name()
-                      .equals("ClassMember")) {
-                    System.out.println(indent + "ClassMember:");
-                    for (var tr : nt.leadingTrivia()) {
-                        System.out.println(indent + "  LTrivia: " + triviaDesc(tr));
-                    }
-                    for (var tr : nt.trailingTrivia()) {
-                        System.out.println(indent + "  TTrivia: " + triviaDesc(tr));
-                    }
-                }
-                for (var child : nt.children()) {
-                    dumpClassMembers(child, depth + 1);
-                }
-            }
-        }
-    }
-
-    private void dumpCstLambda(CstNode node, int depth) {
-        var indent = "  ".repeat(depth);
-        switch (node) {
-            case CstNode.Terminal t -> {
-                if (t.text()
-                     .equals("->") || t.text()
-                                       .equals("s") || t.text()
-                                                        .equals("filter")) {
-                    System.out.println(indent + "Terminal(" + t.rule()
-                                                              .name() + "): '" + t.text() + "'");
-                }
-            }
-            case CstNode.Token tok -> {
-                if (tok.text()
-                       .equals("->") || tok.text()
-                                           .equals("s") || tok.text()
-                                                              .equals("filter")) {
-                    System.out.println(indent + "Token(" + tok.rule()
-                                                             .name() + "): '" + tok.text() + "'");
-                }
-            }
-            case CstNode.Error err -> {}
-            case CstNode.NonTerminal nt -> {
-                if (nt.rule()
-                      .name()
-                      .equals("Lambda") || nt.rule()
-                                             .name()
-                                             .equals("Primary") || nt.rule()
-                                                                     .name()
-                                                                     .equals("Postfix") ||
-                nt.rule()
-                  .name()
-                  .equals("Args") || nt.rule()
-                                       .name()
-                                       .equals("Expr")) {
-                    System.out.println(indent + "NonTerminal(" + nt.rule()
-                                                                  .name() + ")");
-                }
-                for (var child : nt.children()) {
-                    dumpCstLambda(child, depth + 1);
-                }
-            }
-        }
-    }
-
-    private void dumpCstWithTrivia(CstNode node, int depth) {
-        var indent = "  ".repeat(depth);
-        switch (node) {
-            case CstNode.Terminal t -> {
-                System.out.println(indent + "Terminal(" + t.rule()
-                                                          .name() + "): '" + t.text() + "'");
-                for (var tr : t.leadingTrivia()) {
-                    System.out.println(indent + "  LTrivia: " + triviaDesc(tr));
-                }
-                for (var tr : t.trailingTrivia()) {
-                    System.out.println(indent + "  TTrivia: " + triviaDesc(tr));
-                }
-            }
-            case CstNode.Token tok -> {
-                System.out.println(indent + "Token(" + tok.rule()
-                                                         .name() + "): '" + tok.text() + "'");
-                for (var tr : tok.leadingTrivia()) {
-                    System.out.println(indent + "  LTrivia: " + triviaDesc(tr));
-                }
-                for (var tr : tok.trailingTrivia()) {
-                    System.out.println(indent + "  TTrivia: " + triviaDesc(tr));
-                }
-            }
-            case CstNode.NonTerminal nt -> {
-                System.out.println(indent + "NonTerminal(" + nt.rule()
-                                                              .name() + ")");
-                for (var child : nt.children()) {
-                    dumpCstWithTrivia(child, depth + 1);
-                }
-            }
-            case CstNode.Error err -> System.out.println(indent + "Error: '" + err.skippedText() + "'");
-        }
-    }
-
-    private String triviaDesc(Java25Parser.Trivia t) {
-        return switch (t) {
-            case Java25Parser.Trivia.Whitespace ws -> "WS('" + ws.text()
-                                                                .replace("\n", "\\n")
-                                                                .replace(" ", "·") + "')";
-            case Java25Parser.Trivia.LineComment lc -> "LC('" + lc.text() + "')";
-            case Java25Parser.Trivia.BlockComment bc -> "BC('" + bc.text() + "')";
-        };
-    }
-
-    private void dumpCst(CstNode node, int depth, String source) {
-        var indent = "  ".repeat(depth);
-        var trivia = "leading=" + node.leadingTrivia()
-                                     .size() + ", trailing=" + node.trailingTrivia()
-                                                                  .size();
-        switch (node) {
-            case CstNode.Terminal t -> System.out.println(indent + "Terminal(" + t.rule()
-                                                                                  .name() + "): '" + t.text() + "' [" + trivia
-                                                          + "]");
-            case CstNode.Token tok -> System.out.println(indent + "Token(" + tok.rule()
-                                                                                .name() + "): '" + tok.text() + "' [" + trivia
-                                                         + "]");
-            case CstNode.Error err -> System.out.println(indent + "Error: '" + err.skippedText() + "' [" + trivia + "]");
-            case CstNode.NonTerminal nt -> {
-                System.out.println(indent + "NonTerminal(" + nt.rule()
-                                                              .name() + ") [" + trivia + "]");
-                for (var child : nt.children()) {
-                    dumpCst(child, depth + 1, source);
-                }
-            }
-        }
     }
 
     @Test
