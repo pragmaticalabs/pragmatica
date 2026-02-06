@@ -31,8 +31,8 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
         cluster.killNode("node-3");
 
         // Remaining nodes should detect the disconnection
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var health = cluster.nodes().get(0).getHealth();
                    return health.contains("\"connectedPeers\":1");
@@ -80,8 +80,8 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
         cluster.awaitQuorum();
 
         // Cluster should recover and deployment should eventually complete
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    try {
                        var slices = cluster.anyNode().getSlices();

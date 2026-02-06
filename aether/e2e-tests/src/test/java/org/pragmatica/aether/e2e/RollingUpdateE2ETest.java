@@ -37,8 +37,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class RollingUpdateE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
-    private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice:0.16.0";
+    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.16.0";
     private static final Duration UPDATE_TIMEOUT = Duration.ofSeconds(120);
 
     // Common timeouts
@@ -54,6 +54,7 @@ class RollingUpdateE2ETest {
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
+        cluster.awaitLeader();
         cluster.uploadTestArtifacts();
     }
 
@@ -284,7 +285,7 @@ class RollingUpdateE2ETest {
         assertThat(status).contains("\"state\":\"ROUTING\"");
 
         // Restore node
-        cluster.restartNode("node-3");
+        cluster.node("node-3").start();
         cluster.awaitQuorum();
 
         // Complete update

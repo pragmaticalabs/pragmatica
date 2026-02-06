@@ -56,7 +56,7 @@ class ControllerE2ETest extends AbstractE2ETest {
             cluster.anyNode().setControllerConfig(newConfig);
 
             // Verify it persists
-            await().atMost(DEFAULT_TIMEOUT.duration()).until(() -> {
+            await().atMost(DEFAULT_TIMEOUT).until(() -> {
                 var config = cluster.anyNode().getControllerConfig();
                 return !config.contains("\"error\"");
             });

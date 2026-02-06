@@ -5,15 +5,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.testcontainers.containers.Network;
 
+import org.pragmatica.aether.e2e.TestEnvironment;
+
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 
 /**
  * Helper for managing multi-node Aether clusters in E2E tests.
@@ -42,15 +44,16 @@ import static org.awaitility.Awaitility.await;
  */
 public class AetherCluster implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(AetherCluster.class);
-    private static final Duration QUORUM_TIMEOUT = Duration.ofSeconds(120);
+    private static final Duration QUORUM_TIMEOUT = adapt(Duration.ofSeconds(120));
     private static final Duration POLL_INTERVAL = Duration.ofSeconds(2);
 
     // Local Maven repository path and test artifacts
     private static final Path M2_REPO_PATH = Path.of(System.getProperty("user.home"), ".m2", "repository");
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
+    // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
     private static final String[][] TEST_ARTIFACTS = {
-        {"echo-slice", "0.15.0"},
-        {"echo-slice", "0.16.0"}
+        {"echo-slice-echo-service", "0.15.0"},
+        {"echo-slice-echo-service", "0.16.0"}
     };
 
     private final List<AetherNodeContainer> nodes;
@@ -60,18 +63,25 @@ public class AetherCluster implements AutoCloseable {
 
     // Use predictable IPs for container-to-container communication
     // Podman's DNS doesn't reliably resolve network aliases, so we use explicit IPs
-    // Use random second octet (100-254) to avoid subnet conflicts between test runs
-    private static final java.util.Random RANDOM = new java.util.Random();
+    // Use PID + counter for deterministic, collision-free subnets
+    private static final java.util.concurrent.atomic.AtomicInteger SUBNET_COUNTER = new java.util.concurrent.atomic.AtomicInteger(0);
     private static final int IP_START = 2; // Gateway is .1, containers start at .2
 
     private final String subnetPrefix;
 
+    private String generateSubnet() {
+        // Use PID + counter for deterministic, collision-free subnets
+        long pid = ProcessHandle.current().pid();
+        int counter = SUBNET_COUNTER.incrementAndGet();
+        int second = (int) ((pid % 256));
+        int third = counter % 256;
+        return String.format("172.%d.%d", second, third);
+    }
+
     private AetherCluster(int size, Path projectRoot) {
         this.projectRoot = projectRoot;
         // Generate unique subnet per cluster instance to avoid conflicts
-        int secondOctet = 100 + RANDOM.nextInt(155); // 100-254
-        int thirdOctet = RANDOM.nextInt(256); // 0-255
-        this.subnetPrefix = "10." + secondOctet + "." + thirdOctet;
+        this.subnetPrefix = generateSubnet();
         System.out.println("[DEBUG] Using subnet: " + subnetPrefix + ".0/24");
 
         // Create network with unique subnet for predictable IPs
@@ -132,15 +142,17 @@ public class AetherCluster implements AutoCloseable {
     }
 
     /**
-     * Starts all nodes in the cluster.
+     * Starts all nodes in the cluster in parallel for faster startup.
      * Uses hostname-based peer configuration since containers share a Docker network.
      */
     public void start() {
-        System.out.println("[DEBUG] Starting cluster with " + nodes.size() + " nodes...");
+        System.out.println("[DEBUG] Starting cluster with " + nodes.size() + " nodes in parallel...");
 
-        // Start nodes sequentially
+        // Start all nodes in parallel - each container is independent
+        nodes.parallelStream().forEach(AetherNodeContainer::start);
+
+        // Log IPs after all nodes are started
         for (var node : nodes) {
-            node.start();
             var ip = getContainerIp(node).or("unknown");
             System.out.println("[DEBUG] Node " + node.nodeId() + " started with IP: " + ip);
         }
@@ -191,13 +203,6 @@ public class AetherCluster implements AutoCloseable {
         return Option.none();
     }
 
-    /**
-     * Starts all nodes in parallel for faster startup.
-     * Use with caution - may cause cluster formation issues.
-     */
-    public void startParallel() {
-        nodes.parallelStream().forEach(AetherNodeContainer::start);
-    }
 
     /**
      * Waits for the cluster to reach quorum.
@@ -281,11 +286,11 @@ public class AetherCluster implements AutoCloseable {
 
     // Track stuck states to detect infrastructure issues early
     private final Map<String, Long> stuckStateStartTime = new java.util.concurrent.ConcurrentHashMap<>();
-    private static final Duration STUCK_STATE_THRESHOLD = Duration.ofMinutes(2);
+    private static final Duration STUCK_STATE_THRESHOLD = adapt(Duration.ofSeconds(60));
 
     /**
      * Checks slice state, throwing exception on FAILED, returning true on ACTIVE.
-     * Also detects when a slice is stuck in an intermediate state for too long.
+     * Also detects when a slice is stuck in an intermediate or NOT_FOUND state for too long.
      */
     private boolean checkSliceState(String artifact) {
         try {
@@ -303,20 +308,21 @@ public class AetherCluster implements AutoCloseable {
                     "\n\n=== Container Logs ===\n" + logs);
             }
 
-            // Detect stuck intermediate states (LOADING, ACTIVATING, etc.)
-            if (isIntermediateState(state)) {
+            // Detect stuck states (LOADING, ACTIVATING, NOT_FOUND, etc.)
+            if (isStuckableState(state)) {
                 var stuckSince = stuckStateStartTime.computeIfAbsent(artifact + ":" + state,
                     k -> System.currentTimeMillis());
                 var stuckDuration = Duration.ofMillis(System.currentTimeMillis() - stuckSince);
                 if (stuckDuration.compareTo(STUCK_STATE_THRESHOLD) > 0) {
-                    var logs = getContainerLogs(node);
+                    System.out.println("\n[ERROR] Slice stuck in " + state + " - dumping all container logs:\n");
+                    dumpAllDeploymentLogs();
                     throw new SliceDeploymentException(
                         "Slice " + artifact + " stuck in " + state + " state for " +
                         stuckDuration.toSeconds() + "s. This indicates an infrastructure issue.\n" +
-                        "\n=== Container Logs ===\n" + logs);
+                        "Check logs above for details.");
                 }
             } else {
-                // Clear tracking when state changes to non-intermediate
+                // Clear tracking when state changes to non-stuckable
                 stuckStateStartTime.keySet().removeIf(k -> k.startsWith(artifact + ":"));
             }
 
@@ -332,6 +338,10 @@ public class AetherCluster implements AutoCloseable {
     private boolean isIntermediateState(String state) {
         return "LOADING".equals(state) || "ACTIVATING".equals(state) ||
                "DEACTIVATING".equals(state) || "UNLOADING".equals(state);
+    }
+
+    private boolean isStuckableState(String state) {
+        return isIntermediateState(state) || "NOT_FOUND".equals(state);
     }
 
     /**
@@ -358,6 +368,68 @@ public class AetherCluster implements AutoCloseable {
     }
 
     /**
+     * Dumps deployment-related logs from all containers for debugging stuck slices.
+     */
+    public void dumpAllDeploymentLogs() {
+        for (var node : nodes) {
+            if (!node.isRunning()) {
+                System.out.println("[DEBUG] Node " + node.nodeId() + " is not running");
+                continue;
+            }
+            try {
+                System.out.println("\n===== DEPLOYMENT LOGS FOR " + node.nodeId() + " =====");
+                var logs = node.getLogs();
+                // Filter for deployment-related messages
+                logs.lines()
+                    .filter(line -> line.contains("ERROR") ||
+                                   line.contains("WARN") ||
+                                   line.contains("leader") ||
+                                   line.contains("Leader") ||
+                                   line.contains("became") ||
+                                   line.contains("activat") ||
+                                   line.contains("Activat") ||
+                                   line.contains("slice") ||
+                                   line.contains("Slice") ||
+                                   line.contains("deploy") ||
+                                   line.contains("Deploy") ||
+                                   line.contains("LOAD") ||
+                                   line.contains("Loading") ||
+                                   line.contains("target") ||
+                                   line.contains("Target") ||
+                                   line.contains("allocat") ||
+                                   line.contains("Allocat") ||
+                                   line.contains("artifact") ||
+                                   line.contains("Artifact") ||
+                                   line.contains("repository") ||
+                                   line.contains("Repository") ||
+                                   line.contains("repositories") ||
+                                   line.contains("BUILTIN") ||
+                                   line.contains("builtin") ||
+                                   line.contains("LOCAL") ||
+                                   line.contains("resolv") ||
+                                   line.contains("Resolv") ||
+                                   line.contains("DHT") ||
+                                   line.contains("dht") ||
+                                   line.contains("ValuePut") ||
+                                   line.contains("issuing") ||
+                                   line.contains("Issuing") ||
+                                   line.contains("reconcil") ||
+                                   line.contains("Reconcil") ||
+                                   line.contains("blueprint") ||
+                                   line.contains("Blueprint") ||
+                                   line.contains("Exception") ||
+                                   line.contains("NotFound") ||
+                                   line.contains("not found") ||
+                                   line.contains("Starting Aether"))
+                    .forEach(System.out::println);
+                System.out.println("===== END LOGS FOR " + node.nodeId() + " =====\n");
+            } catch (Exception ex) {
+                System.out.println("[DEBUG] Failed to get logs for " + node.nodeId() + ": " + ex.getMessage());
+            }
+        }
+    }
+
+    /**
      * Exception thrown when slice deployment fails.
      */
     public static class SliceDeploymentException extends RuntimeException {
@@ -373,28 +445,68 @@ public class AetherCluster implements AutoCloseable {
      */
     public void awaitLeader() {
         System.out.println("[DEBUG] Waiting for leader election...");
-        await().atMost(QUORUM_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .until(() -> {
-                   var leaderOpt = leader();
-                   if (leaderOpt.isEmpty()) {
-                       // Debug: log status from first running node
-                       nodes.stream()
-                            .filter(AetherNodeContainer::isRunning)
-                            .findFirst()
-                            .ifPresent(node -> {
-                                try {
-                                    System.out.println("[DEBUG] awaitLeader: no leader yet, status=" + node.getStatus());
-                                } catch (Exception e) {
-                                    System.out.println("[DEBUG] awaitLeader: failed to get status: " + e.getMessage());
-                                }
-                            });
-                       return false;
-                   }
-                   leaderOpt.onPresent(leader ->
-                       System.out.println("[DEBUG] Leader elected: " + leader.nodeId()));
-                   return true;
-               });
+        try {
+            await().atMost(QUORUM_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .until(() -> {
+                       var leaderOpt = leader();
+                       if (leaderOpt.isEmpty()) {
+                           // Debug: log status from first running node
+                           nodes.stream()
+                                .filter(AetherNodeContainer::isRunning)
+                                .findFirst()
+                                .ifPresent(node -> {
+                                    try {
+                                        System.out.println("[DEBUG] awaitLeader: no leader yet, status=" + node.getStatus());
+                                    } catch (Exception e) {
+                                        System.out.println("[DEBUG] awaitLeader: failed to get status: " + e.getMessage());
+                                    }
+                                });
+                           return false;
+                       }
+                       leaderOpt.onPresent(leader ->
+                           System.out.println("[DEBUG] Leader elected: " + leader.nodeId()));
+                       return true;
+                   });
+        } catch (org.awaitility.core.ConditionTimeoutException e) {
+            // Dump container logs on timeout to help debug
+            System.out.println("\n[DEBUG] ===== LEADER ELECTION TIMEOUT - DUMPING CONTAINER LOGS =====\n");
+            dumpAllContainerLogs();
+            throw e;
+        }
+    }
+
+    /**
+     * Dumps full logs from all running containers for debugging.
+     */
+    public void dumpAllContainerLogs() {
+        for (var node : nodes) {
+            if (!node.isRunning()) {
+                System.out.println("[DEBUG] Node " + node.nodeId() + " is not running");
+                continue;
+            }
+            try {
+                System.out.println("\n===== LOGS FOR " + node.nodeId() + " =====");
+                var logs = node.getLogs();
+                // Filter for key consensus messages
+                logs.lines()
+                    .filter(line -> line.contains("quorum") ||
+                                   line.contains("sync") ||
+                                   line.contains("Sync") ||
+                                   line.contains("activated") ||
+                                   line.contains("leader") ||
+                                   line.contains("Leader") ||
+                                   line.contains("ERROR") ||
+                                   line.contains("WARN") ||
+                                   line.contains("connect") ||
+                                   line.contains("Connect") ||
+                                   line.contains("processViewChange"))
+                    .forEach(System.out::println);
+                System.out.println("===== END LOGS FOR " + node.nodeId() + " =====\n");
+            } catch (Exception ex) {
+                System.out.println("[DEBUG] Failed to get logs for " + node.nodeId() + ": " + ex.getMessage());
+            }
+        }
     }
 
     /**
@@ -465,29 +577,6 @@ public class AetherCluster implements AutoCloseable {
     }
 
     /**
-     * Restarts a previously killed node.
-     *
-     * @param nodeId node to restart
-     */
-    public void restartNode(String nodeId) {
-        node(nodeId).start();
-    }
-
-    /**
-     * Performs a rolling restart of all nodes.
-     *
-     * @param delayBetweenNodes delay between restarting each node
-     */
-    public void rollingRestart(Duration delayBetweenNodes) {
-        for (var node : nodes) {
-            node.stop();
-            sleep(delayBetweenNodes);
-            node.start();
-            awaitQuorum();
-        }
-    }
-
-    /**
      * Returns the number of running nodes.
      */
     public int runningNodeCount() {
@@ -505,8 +594,20 @@ public class AetherCluster implements AutoCloseable {
 
     @Override
     public void close() {
-        nodes.forEach(AetherNodeContainer::stop);
-        network.close();
+        // Stop all nodes first
+        for (var node : nodes) {
+            try {
+                node.stop();
+            } catch (Exception e) {
+                LOG.warn("Failed to stop node {}: {}", node.nodeId(), e.getMessage());
+            }
+        }
+        // Defensive network cleanup - ensure network is removed even on errors
+        try {
+            network.close();
+        } catch (Exception e) {
+            LOG.warn("Failed to close network: {}", e.getMessage());
+        }
     }
 
     // ===== Internal Methods =====
@@ -590,14 +691,6 @@ public class AetherCluster implements AutoCloseable {
                    status.contains("\"leader\":\"" + node.nodeId() + "\"");
         } catch (Exception e) {
             return false;
-        }
-    }
-
-    private void sleep(Duration duration) {
-        try {
-            TimeUnit.MILLISECONDS.sleep(duration.toMillis());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
         }
     }
 }

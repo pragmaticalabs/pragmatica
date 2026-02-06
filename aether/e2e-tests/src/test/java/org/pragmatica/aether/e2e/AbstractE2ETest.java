@@ -10,6 +10,7 @@ import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
@@ -22,22 +23,24 @@ public abstract class AbstractE2ETest {
     protected static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
 
     // Common timeouts as TimeSpan (use .duration() for awaitility compatibility)
-    protected static final TimeSpan DEFAULT_TIMEOUT = timeSpan(30).seconds();
-    protected static final TimeSpan DEPLOY_TIMEOUT = timeSpan(3).minutes();
-    protected static final TimeSpan RECOVERY_TIMEOUT = timeSpan(60).seconds();
-    protected static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
+    // CI environments get 2x multiplier via TestEnvironment.adapt()
+    protected static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());
+    protected static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
+    protected static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    protected static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
 
     // Common artifact for slice deployment tests - pure function echo slice
-    protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
+    // Note: Uses slice artifact ID (echo-slice-echo-service), not module artifact ID (echo-slice)
+    protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
 
     protected AetherCluster cluster;
 
     /**
      * Returns the cluster size for this test class.
-     * Override to specify a different size (default is 3).
+     * Override to specify a different size (default is 5).
      */
     protected int clusterSize() {
-        return 3;
+        return 5;
     }
 
     /**
@@ -112,7 +115,7 @@ public abstract class AbstractE2ETest {
      */
     protected void deployAndAwaitActive(String artifact, int instances) {
         deployAndAssert(artifact, instances);
-        cluster.awaitSliceActive(artifact, DEPLOY_TIMEOUT.duration());
+        cluster.awaitSliceActive(artifact, DEPLOY_TIMEOUT);
     }
 
     /**
@@ -122,8 +125,8 @@ public abstract class AbstractE2ETest {
      * @param artifactPartial partial artifact name to match
      */
     protected void awaitSliceVisible(String artifactPartial) {
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    var state = cluster.anyNode().getSliceState(artifactPartial);
                    if ("FAILED".equals(state)) {
@@ -143,8 +146,8 @@ public abstract class AbstractE2ETest {
      * @param artifactPartial partial artifact name to match
      */
     protected void awaitSliceRemoved(String artifactPartial) {
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var status = cluster.anyNode().getSlicesStatus();
                    return !status.contains(artifactPartial);

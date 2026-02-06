@@ -35,7 +35,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class NetworkPartitionE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
 
     // Common timeouts
     private static final TimeSpan DEFAULT_TIMEOUT = timeSpan(2).minutes();
@@ -46,10 +46,11 @@ class NetworkPartitionE2ETest {
 
     @BeforeAll
     static void createCluster() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
+        cluster.awaitLeader();
     }
 
     @AfterAll
@@ -140,8 +141,8 @@ class NetworkPartitionE2ETest {
                .until(() -> cluster.runningNodeCount() == 1);
 
         // Heal partition - restart nodes
-        cluster.restartNode("node-2");
-        cluster.restartNode("node-3");
+        cluster.node("node-2").start();
+        cluster.node("node-3").start();
 
         // Cluster should reconverge
         await().atMost(DEFAULT_TIMEOUT.duration())
@@ -176,7 +177,7 @@ class NetworkPartitionE2ETest {
         assertThat(slices).contains("echo-slice");
 
         // Restore full cluster
-        cluster.restartNode("node-3");
+        cluster.node("node-3").start();
         await().atMost(DEFAULT_TIMEOUT.duration())
                .pollInterval(POLL_INTERVAL.duration())
                .until(() -> cluster.runningNodeCount() == 3);
@@ -193,7 +194,7 @@ class NetworkPartitionE2ETest {
         for (int i = 1; i <= 3; i++) {
             var nodeName = "node-" + i;
             try {
-                cluster.restartNode(nodeName);
+                cluster.node(nodeName).start();
             } catch (Exception e) {
                 // Node may already be running
                 System.out.println("[DEBUG] Could not restart " + nodeName + ": " + e.getMessage());

@@ -33,7 +33,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class ManagementApiE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
 
     // Common timeouts
     private static final TimeSpan DEFAULT_TIMEOUT = timeSpan(30).seconds();
@@ -45,10 +45,11 @@ class ManagementApiE2ETest {
 
     @BeforeAll
     static void createCluster() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
+        cluster.awaitLeader();
     }
 
     @AfterAll

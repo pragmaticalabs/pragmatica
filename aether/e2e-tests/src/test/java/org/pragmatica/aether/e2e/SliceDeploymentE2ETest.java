@@ -32,7 +32,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceDeploymentE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice:0.15.0";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
 
     // Common timeouts
     private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(3).minutes();
@@ -44,12 +44,14 @@ class SliceDeploymentE2ETest {
     @BeforeAll
     static void createCluster() {
         System.out.println("[DEBUG] Creating cluster...");
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
         cluster.start();
         System.out.println("[DEBUG] Awaiting quorum...");
         cluster.awaitQuorum();
         System.out.println("[DEBUG] Awaiting all healthy...");
         cluster.awaitAllHealthy();
+        System.out.println("[DEBUG] Awaiting leader election...");
+        cluster.awaitLeader();
         System.out.println("[DEBUG] Uploading test artifacts to DHT...");
         cluster.uploadTestArtifacts();
         System.out.println("[DEBUG] Cluster ready for tests");
@@ -180,7 +182,7 @@ class SliceDeploymentE2ETest {
         assertThat(slices).contains(TEST_ARTIFACT);
 
         // Restore node for subsequent tests
-        cluster.restartNode("node-3");
+        cluster.node("node-3").start();
         cluster.awaitQuorum();
     }
 
@@ -191,7 +193,7 @@ class SliceDeploymentE2ETest {
             id = "org.test:e2e-blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.test:echo-slice:0.15.0"
+            artifact = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0"
             instances = 1
             """;
 

@@ -47,6 +47,7 @@ class NodeFailureE2ETest {
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
+        cluster.awaitLeader();
     }
 
     @AfterAll
@@ -63,7 +64,7 @@ class NodeFailureE2ETest {
             if (!node.isRunning()) {
                 try {
                     System.out.println("[DEBUG] Restarting stopped node: " + node.nodeId());
-                    cluster.restartNode(node.nodeId());
+                    cluster.node(node.nodeId()).start();
                 } catch (Exception e) {
                     System.out.println("[DEBUG] Error restarting " + node.nodeId() + ": " + e.getMessage());
                 }
@@ -136,88 +137,4 @@ class NodeFailureE2ETest {
         assertThat(newLeader.nodeId()).isNotEqualTo(originalLeaderId);
     }
 
-    @Test
-    @Order(4)
-    @Disabled("Node restart infrastructure doesn't support proper cluster rejoin - restarted nodes get new identities")
-    void nodeRecovery_rejoinsCluster() {
-        // Kill a node
-        cluster.killNode("node-2");
-        cluster.awaitNodeCount(4);
-
-        // Restart the node
-        cluster.restartNode("node-2");
-
-        // Wait for node to rejoin
-        await().atMost(RECOVERY_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
-               .until(() -> cluster.runningNodeCount() == 5);
-
-        // All nodes should be visible again
-        cluster.awaitQuorum();
-        var nodes = cluster.anyNode().getNodes();
-        assertThat(nodes).contains("node-2");
-    }
-
-    @Test
-    @Order(5)
-    @Disabled("Node restart infrastructure doesn't support proper cluster rejoin - restarted nodes get new identities")
-    void rollingRestart_maintainsQuorum() {
-        // Track that quorum is maintained throughout
-        var quorumMaintained = new boolean[] { true };
-
-        // Perform rolling restart with health checks
-        for (int i = 1; i <= 5; i++) {
-            var nodeId = "node-" + i;
-
-            cluster.killNode(nodeId);
-
-            // Check quorum is still present
-            try {
-                cluster.awaitQuorum();
-            } catch (Exception e) {
-                quorumMaintained[0] = false;
-            }
-
-            cluster.restartNode(nodeId);
-
-            // Wait for node to be fully ready before proceeding
-            await().atMost(RECOVERY_TIMEOUT.duration())
-                   .pollInterval(POLL_INTERVAL.duration())
-                   .until(() -> cluster.runningNodeCount() == 5);
-
-            cluster.awaitQuorum();
-        }
-
-        assertThat(quorumMaintained[0]).isTrue();
-        assertThat(cluster.runningNodeCount()).isEqualTo(5);
-    }
-
-    @Test
-    @Order(6)
-    @Disabled("Node restart infrastructure doesn't support proper cluster rejoin - restarted nodes get new identities")
-    void minorityPartition_quorumLost_thenRecovered() {
-        // Kill majority (3 of 5)
-        cluster.killNode("node-1");
-        cluster.killNode("node-2");
-        cluster.killNode("node-3");
-
-        assertThat(cluster.runningNodeCount()).isEqualTo(2);
-
-        // Remaining nodes should report degraded/unhealthy
-        var health = cluster.anyNode().getHealth();
-        // May contain error or degraded status
-
-        // Restore one node to regain quorum (3 of 5)
-        cluster.restartNode("node-1");
-
-        await().atMost(RECOVERY_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
-               .until(() -> cluster.runningNodeCount() == 3);
-
-        cluster.awaitQuorum();
-
-        // Cluster should be healthy again
-        var restoredHealth = cluster.anyNode().getHealth();
-        assertThat(restoredHealth).doesNotContain("\"error\"");
-    }
 }

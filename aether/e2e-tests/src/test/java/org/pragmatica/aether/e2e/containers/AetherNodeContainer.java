@@ -68,10 +68,11 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     private static final String CONTAINER_M2_PATH = "/home/aether/.m2/repository";
 
     // Test artifact paths relative to Maven repository
+    // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
     private static final String[] TEST_ARTIFACTS = {
-        "echo-slice/0.15.0/echo-slice-0.15.0.jar",
-        "echo-slice/0.16.0/echo-slice-0.16.0.jar"
+        "echo-slice-echo-service/0.15.0/echo-slice-echo-service-0.15.0.jar",
+        "echo-slice-echo-service/0.16.0/echo-slice-echo-service-0.16.0.jar"
     };
 
     /**
@@ -155,6 +156,10 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
             "aether/docker/aether-node/Dockerfile",  // CI: from repo root
             "../docker/aether-node/Dockerfile",      // Local: from aether/e2e-tests/
             "docker/aether-node/Dockerfile");
+        var configPath = resolveExistingPath(projectRoot,
+            "aether/docker/aether-node/aether.toml",  // CI: from repo root
+            "../docker/aether-node/aether.toml",      // Local: from aether/e2e-tests/
+            "docker/aether-node/aether.toml");
 
         if (jarPath == null) {
             throw new IllegalStateException(
@@ -169,7 +174,9 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         var image = new ImageFromDockerfile(IMAGE_NAME, false)
             .withFileFromPath("Dockerfile", dockerfilePath)
             .withFileFromPath("aether-node.jar", jarPath)
-            .withBuildArg("JAR_PATH", "aether-node.jar");
+            .withFileFromPath("aether.toml", configPath)
+            .withBuildArg("JAR_PATH", "aether-node.jar")
+            .withBuildArg("CONFIG_PATH", "aether.toml");
 
         cachedImage = image;
         cachedProjectRoot = projectRoot;
@@ -203,7 +210,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      */
     public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot, String peers) {
         var container = aetherNode(nodeId, projectRoot);
-        container.withEnv("PEERS", peers);
+        container.withEnv("CLUSTER_PEERS", peers);
         return container;
     }
 
