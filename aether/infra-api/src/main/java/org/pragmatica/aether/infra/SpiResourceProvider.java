@@ -34,7 +34,7 @@ public final class SpiResourceProvider implements ResourceProvider {
                      .stream()
                      .map(ServiceLoader.Provider::get)
                      .forEach(factory -> factoryMap.putIfAbsent(factory.resourceType(), factory));
-        this.factories = factoryMap;
+        this.factories = Map.copyOf(factoryMap);
     }
 
     /**
@@ -115,7 +115,7 @@ public final class SpiResourceProvider implements ResourceProvider {
                                               C config,
                                               Class<T> resourceType,
                                               String configSection) {
-        return factory.create(config)
+        return factory.provision(config)
                       .mapError(cause -> ResourceProvisioningError.creationFailed(resourceType, configSection, cause));
     }
 

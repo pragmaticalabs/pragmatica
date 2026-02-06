@@ -78,6 +78,16 @@ class SpiResourceProviderTest {
                 assertThat(cause).isInstanceOf(ResourceProvisioningError.FactoryNotFound.class)
             );
         }
+
+        @Test
+        void provide_returnsSamePromise_whenCalledTwiceWithSameKey() {
+            var provider = spiResourceProvider((section, configClass) -> Result.success("dummy"));
+
+            var promise1 = provider.provide(String.class, "test");
+            var promise2 = provider.provide(String.class, "test");
+
+            assertThat(promise1).isSameAs(promise2);
+        }
     }
 
     @Nested

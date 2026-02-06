@@ -1,5 +1,6 @@
 package org.pragmatica.aether.config;
 
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
@@ -9,6 +10,7 @@ import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.time.Duration;
+import java.time.format.DateTimeParseException;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -84,7 +86,8 @@ public final class ProviderBasedConfigService implements ConfigService {
         }
     }
 
-    @SuppressWarnings("unchecked")
+    // --- Fix #2: Extract resolveComponentArgs from bindToClass ---
+
     private <T> Result<T> bindToClass(String section, Class<T> configClass) {
         if (!configClass.isRecord()) {
             return ConfigError.typeMismatch(section, "record", configClass.getSimpleName()).result();
@@ -98,97 +101,149 @@ public final class ProviderBasedConfigService implements ConfigService {
 
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
 
-            var args = new Object[components.length];
-            for (int i = 0; i < components.length; i++) {
-                var component = components[i];
-                var value = extractValue(section, component);
-                if (value.isFailure()) {
-                    return (Result<T>) value;
-                }
-                args[i] = value.unwrap();
-            }
-
-            return Result.success(constructor.newInstance(args));
-        } catch (Exception e) {
+            return resolveComponentArgs(section, components)
+                .map(args -> invokeConstructor(constructor, args))
+                .flatMap(r -> r);
+        } catch (ReflectiveOperationException e) {
             return ConfigError.parseFailed(section, e).result();
         }
     }
 
-    @SuppressWarnings("unchecked")
+    private <T> Result<T> invokeConstructor(Constructor<T> constructor, Object[] args) {
+        try {
+            return Result.success(constructor.newInstance(args));
+        } catch (ReflectiveOperationException e) {
+            return ConfigError.parseFailed(constructor.getDeclaringClass().getSimpleName(), e).result();
+        }
+    }
+
+    private Result<Object[]> resolveComponentArgs(String section, RecordComponent[] components) {
+        var args = new Object[components.length];
+
+        for (int i = 0; i < components.length; i++) {
+            var value = extractValue(section, components[i]);
+            if (value.isFailure()) {
+                return value.map(_ -> args);
+            }
+            args[i] = value.unwrap();
+        }
+
+        return Result.success(args);
+    }
+
+    // --- Fix #1: Decompose extractValue into clean Condition dispatcher ---
+
     private Result<Object> extractValue(String section, RecordComponent component) {
         var key = component.getName();
         var type = component.getType();
         var fullKey = section + "." + toSnakeCase(key);
 
-        if (type == String.class) {
-            return provider.getString(fullKey)
-                           .toResult(ConfigError.sectionNotFound(fullKey))
-                           .map(Object.class::cast);
-        }
-
-        if (type == int.class || type == Integer.class) {
-            return provider.getString(fullKey)
-                           .flatMap(this::parseInteger)
-                           .toResult(ConfigError.sectionNotFound(fullKey))
-                           .map(Object.class::cast);
-        }
-
-        if (type == long.class || type == Long.class) {
-            return provider.getString(fullKey)
-                           .flatMap(this::parseLong)
-                           .toResult(ConfigError.sectionNotFound(fullKey))
-                           .map(Object.class::cast);
-        }
-
-        if (type == boolean.class || type == Boolean.class) {
-            return provider.getString(fullKey)
-                           .map(Boolean::parseBoolean)
-                           .toResult(ConfigError.sectionNotFound(fullKey))
-                           .map(Object.class::cast);
-        }
-
-        if (type == double.class || type == Double.class) {
-            return provider.getString(fullKey)
-                           .flatMap(this::parseDouble)
-                           .toResult(ConfigError.sectionNotFound(fullKey))
-                           .map(Object.class::cast);
-        }
-
-        if (type == Duration.class) {
-            return provider.getString(fullKey)
-                           .flatMap(ProviderBasedConfigService::parseDuration)
-                           .toResult(ConfigError.sectionNotFound(fullKey))
-                           .map(Object.class::cast);
-        }
-
-        if (type.isEnum()) {
-            return provider.getString(fullKey)
-                           .toResult(ConfigError.sectionNotFound(fullKey))
-                           .flatMap(value -> parseEnum(value, type, fullKey));
-        }
-
-        if (type.isRecord()) {
-            var nestedSection = section + "." + toSnakeCase(key);
-            if (!hasSection(nestedSection)) {
-                return findDefaultField(type)
-                    .map(Result::success)
-                    .or(ConfigError.sectionNotFound(nestedSection).result());
-            }
-            return (Result<Object>) bindToClass(nestedSection, type);
-        }
-
-        if (type == Map.class) {
-            return extractMapValue(fullKey, component.getGenericType());
-        }
-
-        if (type == Option.class) {
-            return extractOptionValue(section, toSnakeCase(key), key, component.getGenericType());
-        }
-
-        return ConfigError.typeMismatch(fullKey, "supported type", type.getSimpleName()).result();
+        // Condition dispatcher: delegates to type-specific resolvers
+        return resolvePrimitive(fullKey, type)
+            .orElse(() -> resolveEnum(fullKey, type))
+            .orElse(() -> resolveNestedRecord(section, key, type))
+            .orElse(() -> resolveMap(fullKey, type, component.getGenericType()))
+            .orElse(() -> resolveOption(section, key, type, component.getGenericType()))
+            .or(ConfigError.typeMismatch(fullKey, "supported type", type.getSimpleName()).result());
     }
 
-    private Option<Long> parseLong(String value) {
+    /**
+     * Returns a parser function for primitive/simple types, or None if the type is not a primitive.
+     * Parser takes a String and returns Option of the parsed value (type-erased to Object).
+     */
+    @SuppressWarnings("unchecked")
+    static Option<Fn1<Option<Object>, String>> primitiveParser(Class<?> type) {
+        if (type == String.class) {
+            return Option.some(v -> Option.some(v));
+        }
+        if (type == int.class || type == Integer.class) {
+            return Option.some(v -> safeParseInteger(v).map(Object.class::cast));
+        }
+        if (type == long.class || type == Long.class) {
+            return Option.some(v -> safeParseLong(v).map(Object.class::cast));
+        }
+        if (type == boolean.class || type == Boolean.class) {
+            return Option.some(v -> Option.some(Boolean.parseBoolean(v)));
+        }
+        if (type == double.class || type == Double.class) {
+            return Option.some(v -> safeParseDouble(v).map(Object.class::cast));
+        }
+        if (type == Duration.class) {
+            return Option.some(v -> parseDuration(v).map(Object.class::cast));
+        }
+        return Option.none();
+    }
+
+    /**
+     * Resolves a primitive type value from config. Returns Some(Result) if type recognized, None otherwise.
+     */
+    private Option<Result<Object>> resolvePrimitive(String fullKey, Class<?> type) {
+        return primitiveParser(type)
+            .map(parser -> provider.getString(fullKey)
+                                   .flatMap(parser)
+                                   .toResult(ConfigError.sectionNotFound(fullKey)));
+    }
+
+    /**
+     * Resolves an enum type value from config. Returns Some(Result) if type is enum, None otherwise.
+     */
+    private Option<Result<Object>> resolveEnum(String fullKey, Class<?> type) {
+        if (!type.isEnum()) {
+            return Option.none();
+        }
+        return Option.some(
+            provider.getString(fullKey)
+                    .toResult(ConfigError.sectionNotFound(fullKey))
+                    .flatMap(value -> parseEnum(value, type, fullKey))
+        );
+    }
+
+    /**
+     * Resolves a nested record type value from config. Returns Some(Result) if type is record, None otherwise.
+     */
+    @SuppressWarnings("unchecked")
+    private Option<Result<Object>> resolveNestedRecord(String section, String key, Class<?> type) {
+        if (!type.isRecord()) {
+            return Option.none();
+        }
+
+        var nestedSection = section + "." + toSnakeCase(key);
+
+        if (!hasSection(nestedSection)) {
+            return Option.some(
+                findDefaultField(type)
+                    .map(Result::success)
+                    .or(ConfigError.sectionNotFound(nestedSection).result())
+            );
+        }
+        return Option.some((Result<Object>) bindToClass(nestedSection, type));
+    }
+
+    private Option<Result<Object>> resolveMap(String fullKey, Class<?> type, Type genericType) {
+        if (type != Map.class) {
+            return Option.none();
+        }
+        return Option.some(extractMapValue(fullKey, genericType));
+    }
+
+    private Option<Result<Object>> resolveOption(String section, String key, Class<?> type, Type genericType) {
+        if (type != Option.class) {
+            return Option.none();
+        }
+        return Option.some(extractOptionValue(section, toSnakeCase(key), key, genericType));
+    }
+
+    // --- Primitive parsers (static, no instance dependency) ---
+
+    private static Option<Integer> safeParseInteger(String value) {
+        try {
+            return Option.some(Integer.parseInt(value));
+        } catch (NumberFormatException e) {
+            return Option.none();
+        }
+    }
+
+    private static Option<Long> safeParseLong(String value) {
         try {
             return Option.some(Long.parseLong(value));
         } catch (NumberFormatException e) {
@@ -196,7 +251,7 @@ public final class ProviderBasedConfigService implements ConfigService {
         }
     }
 
-    private Option<Double> parseDouble(String value) {
+    private static Option<Double> safeParseDouble(String value) {
         try {
             return Option.some(Double.parseDouble(value));
         } catch (NumberFormatException e) {
@@ -204,8 +259,10 @@ public final class ProviderBasedConfigService implements ConfigService {
         }
     }
 
+    // --- Fix #5: Remove null check from parseDuration ---
+
     static Option<Duration> parseDuration(String value) {
-        if (value == null || value.isBlank()) {
+        if (value.isBlank()) {
             return Option.none();
         }
 
@@ -225,14 +282,14 @@ public final class ProviderBasedConfigService implements ConfigService {
         }
 
         // Try ISO-8601 format: "PT30S", "PT10M", etc.
+        // Fix #7: Narrow catch to DateTimeParseException
         try {
             return Option.some(Duration.parse(value.trim()));
-        } catch (Exception e) {
+        } catch (DateTimeParseException e) {
             return Option.none();
         }
     }
 
-    @SuppressWarnings("unchecked")
     private Result<Object> extractMapValue(String fullKey, Type genericType) {
         // Collect all sub-keys under the prefix into a Map<String, String>
         var prefix = fullKey + ".";
@@ -263,52 +320,45 @@ public final class ProviderBasedConfigService implements ConfigService {
         return Option.none();
     }
 
+    // --- Fix #4: Flatten extractOptionValue nesting ---
+
     @SuppressWarnings("unchecked")
     private Result<Object> extractOptionValue(String section, String tomlKey, String key, Type genericType) {
         var fullKey = section + "." + tomlKey;
-        // Extract the type parameter from Option<T>
-        if (genericType instanceof ParameterizedType paramType) {
-            var typeArgs = paramType.getActualTypeArguments();
-            if (typeArgs.length == 1) {
-                var innerType = typeArgs[0];
-                if (innerType instanceof Class<?> innerClass) {
-                    return extractOptionalPrimitive(fullKey, innerClass);
-                }
-            }
-        }
-        // If we can't determine the inner type, treat as Option<String>
-        return Result.success(provider.getString(fullKey));
-    }
 
-    private Result<Object> extractOptionalPrimitive(String fullKey, Class<?> innerClass) {
-        if (innerClass == String.class) {
+        if (!(genericType instanceof ParameterizedType paramType)) {
             return Result.success(provider.getString(fullKey));
         }
-        if (innerClass == Integer.class) {
-            return Result.success(provider.getString(fullKey).flatMap(this::parseInteger));
+
+        var typeArgs = paramType.getActualTypeArguments();
+
+        if (typeArgs.length != 1 || !(typeArgs[0] instanceof Class<?> innerClass)) {
+            return Result.success(provider.getString(fullKey));
         }
-        if (innerClass == Long.class) {
-            return Result.success(provider.getString(fullKey).flatMap(this::parseLong));
+
+        return extractOptionalPrimitive(fullKey, innerClass);
+    }
+
+    // --- Fix #3: Reuse primitiveParser in extractOptionalPrimitive ---
+
+    private Result<Object> extractOptionalPrimitive(String fullKey, Class<?> innerClass) {
+        return primitiveParser(innerClass)
+            .map(parser -> Result.<Object>success(provider.getString(fullKey).flatMap(parser)))
+            .or(() -> resolveOptionalEnum(fullKey, innerClass));
+    }
+
+    private Result<Object> resolveOptionalEnum(String fullKey, Class<?> innerClass) {
+        if (!innerClass.isEnum()) {
+            return Result.success(Option.none());
         }
-        if (innerClass == Boolean.class) {
-            return Result.success(provider.getString(fullKey).map(Boolean::parseBoolean));
+
+        var stringOpt = provider.getString(fullKey);
+        if (stringOpt.isEmpty()) {
+            return Result.success(Option.none());
         }
-        if (innerClass == Double.class) {
-            return Result.success(provider.getString(fullKey).flatMap(this::parseDouble));
-        }
-        if (innerClass == Duration.class) {
-            return Result.success(provider.getString(fullKey).flatMap(ProviderBasedConfigService::parseDuration));
-        }
-        if (innerClass.isEnum()) {
-            var stringOpt = provider.getString(fullKey);
-            if (stringOpt.isEmpty()) {
-                return Result.success(Option.none());
-            }
-            return parseEnum(stringOpt.unwrap(), innerClass, fullKey)
-                .map(Option::option);
-        }
-        // For unsupported types, return none
-        return Result.success(Option.none());
+
+        return parseEnum(stringOpt.unwrap(), innerClass, fullKey)
+            .map(Option::option);
     }
 
     @SuppressWarnings({"unchecked", "rawtypes"})

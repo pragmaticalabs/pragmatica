@@ -97,14 +97,29 @@ class ProviderBasedConfigServiceTest {
         }
 
         @Test
-        void parseDuration_blank_returnsNone() {
+        void parseDuration_emptyString_returnsNone() {
             assertThat(parseDuration("").isEmpty()).isTrue();
+        }
+
+        @Test
+        void parseDuration_whitespaceOnly_returnsNone() {
             assertThat(parseDuration("   ").isEmpty()).isTrue();
         }
 
         @Test
-        void parseDuration_null_returnsNone() {
-            assertThat(parseDuration(null).isEmpty()).isTrue();
+        void parseDuration_invalidText_returnsNone() {
+            assertThat(parseDuration("abc").isEmpty()).isTrue();
+        }
+
+        @Test
+        void parseDuration_invalidUnit_returnsNone() {
+            assertThat(parseDuration("10x").isEmpty()).isTrue();
+        }
+
+        @Test
+        void parseDuration_null_throwsNpe() {
+            // parseDuration is only called via flatMap which guarantees non-null
+            org.junit.jupiter.api.Assertions.assertThrows(NullPointerException.class, () -> parseDuration(null));
         }
     }
 
@@ -129,6 +144,16 @@ class ProviderBasedConfigServiceTest {
         @Test
         void toSnakeCase_singleWord_unchanged() {
             assertThat(toSnakeCase("simple")).isEqualTo("simple");
+        }
+
+        @Test
+        void toSnakeCase_emptyString_unchanged() {
+            assertThat(toSnakeCase("")).isEqualTo("");
+        }
+
+        @Test
+        void toSnakeCase_consecutiveUppercase_splitsSeparately() {
+            assertThat(toSnakeCase("parseHTML")).isEqualTo("parse_h_t_m_l");
         }
     }
 
@@ -346,6 +371,30 @@ class ProviderBasedConfigServiceTest {
             ));
 
             var result = service.config("test", String.class);
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void config_missingRequiredField_returnsFailure() {
+            var service = serviceFrom(Map.of(
+                "test.name", "myapp"
+                // missing "test.port" and "test.enabled"
+            ));
+
+            var result = service.config("test", SimpleConfig.class);
+
+            assertThat(result.isFailure()).isTrue();
+        }
+
+        @Test
+        void config_invalidEnumValue_returnsFailure() {
+            var service = serviceFrom(Map.of(
+                "test.name", "primary",
+                "test.type", "INVALID_DB"
+            ));
+
+            var result = service.config("test", EnumConfig.class);
 
             assertThat(result.isFailure()).isTrue();
         }
