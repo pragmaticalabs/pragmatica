@@ -152,8 +152,7 @@ var cluster = AetherCluster.aetherCluster(5, projectRoot);
 ### Lifecycle
 
 ```java
-cluster.start();           // Start all nodes sequentially
-cluster.startParallel();   // Start all nodes in parallel
+cluster.start();           // Start all nodes in parallel
 cluster.close();           // Stop all nodes
 ```
 
@@ -177,9 +176,8 @@ cluster.leader();              // Get leader (Optional)
 ### Chaos Operations
 
 ```java
-cluster.killNode("node-2");           // Stop a node
-cluster.restartNode("node-2");        // Restart a node
-cluster.rollingRestart(Duration.ofSeconds(5));  // Rolling restart
+cluster.killNode("node-2");              // Stop a node
+cluster.node("node-2").start();          // Restart a node
 ```
 
 ### Status
@@ -260,7 +258,7 @@ void cluster_recovers_afterNodeRestart() {
     cluster.awaitQuorum();
 
     cluster.killNode("node-2");
-    cluster.restartNode("node-2");
+    cluster.node("node-2").start();
     cluster.awaitNodeCount(3);
 
     assertThat(cluster.runningNodeCount()).isEqualTo(3);
@@ -320,15 +318,17 @@ void cluster_rebalances_afterLeaderFailure() {
 }
 
 @Test
-void cluster_survives_rollingRestart() {
+void cluster_reelectsLeader_afterLeaderKilled() {
     cluster.start();
     cluster.awaitQuorum();
 
-    cluster.rollingRestart(Duration.ofSeconds(5));
+    var oldLeader = cluster.leader().orElseThrow();
+    cluster.killNode(oldLeader.nodeId());
+    cluster.awaitQuorum();
 
-    // Cluster should still be healthy
-    cluster.awaitAllHealthy();
-    assertThat(cluster.runningNodeCount()).isEqualTo(3);
+    // New leader should be elected
+    var newLeader = cluster.leader().orElseThrow();
+    assertThat(newLeader.nodeId()).isNotEqualTo(oldLeader.nodeId());
 }
 ```
 

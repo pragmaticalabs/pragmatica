@@ -23,6 +23,11 @@ WORKDIR /app
 ARG JAR_PATH=node/target/aether-node.jar
 COPY --chown=aether:aether ${JAR_PATH} /app/aether-node.jar
 
+# Copy default config (uses builtin repository for DHT-based artifact resolution)
+# CONFIG_PATH can be overridden for Testcontainers
+ARG CONFIG_PATH=docker/aether-node/aether.toml
+COPY --chown=aether:aether ${CONFIG_PATH} /app/aether.toml
+
 # Environment variables for configuration
 # These map to Main.java command-line arguments
 ENV NODE_ID=""
@@ -46,6 +51,7 @@ USER aether
 # Entrypoint builds command from environment variables
 ENTRYPOINT ["sh", "-c", "\
     java $JAVA_OPTS -jar /app/aether-node.jar \
+    --config=/app/aether.toml \
     ${NODE_ID:+--node-id=$NODE_ID} \
     --port=$CLUSTER_PORT \
     ${PEERS:+--peers=$PEERS} \

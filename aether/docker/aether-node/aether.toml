@@ -1,0 +1,5 @@
+# Aether Node Configuration for Containerized Deployment
+# Artifacts are fetched from DHT (builtin repository), not local Maven repo
+
+[slice]
+repositories = ["builtin"]
