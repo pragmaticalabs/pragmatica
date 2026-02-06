@@ -5,7 +5,11 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.RollingUpdateKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.RollingUpdateValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -202,34 +206,34 @@ public interface RollingUpdateManager {
             }
 
             private void restoreState() {
-                var snapshot = kvStore.snapshot();
-                int restoredCount = 0;
-                for (var entry : snapshot.entrySet()) {
-                    if (entry.getKey() instanceof AetherKey.RollingUpdateKey && entry.getValue() instanceof AetherValue.RollingUpdateValue ruv) {
-                        var state = RollingUpdateState.valueOf(ruv.state());
-                        var routing = new VersionRouting(ruv.newWeight(), ruv.oldWeight());
-                        var thresholds = new HealthThresholds(ruv.maxErrorRate(),
-                                                              ruv.maxLatencyMs(),
-                                                              ruv.requireManualApproval());
-                        var cleanupPolicy = CleanupPolicy.valueOf(ruv.cleanupPolicy());
-                        var update = new RollingUpdate(ruv.updateId(),
-                                                       ruv.artifactBase(),
-                                                       ruv.oldVersion(),
-                                                       ruv.newVersion(),
-                                                       state,
-                                                       routing,
-                                                       thresholds,
-                                                       cleanupPolicy,
-                                                       ruv.newInstances(),
-                                                       ruv.createdAt(),
-                                                       ruv.updatedAt());
-                        updates.put(update.updateId(), update);
-                        restoredCount++;
-                    }
-                }
+                int beforeCount = updates.size();
+                kvStore.forEach(RollingUpdateKey.class, RollingUpdateValue.class,
+                                (key, value) -> restoreUpdate(value));
+                int restoredCount = updates.size() - beforeCount;
                 if (restoredCount > 0) {
                     log.info("Restored {} rolling updates from KV-Store", restoredCount);
                 }
+            }
+
+            private void restoreUpdate(RollingUpdateValue ruv) {
+                var state = RollingUpdateState.valueOf(ruv.state());
+                var routing = new VersionRouting(ruv.newWeight(), ruv.oldWeight());
+                var thresholds = new HealthThresholds(ruv.maxErrorRate(),
+                                                      ruv.maxLatencyMs(),
+                                                      ruv.requireManualApproval());
+                var cleanupPolicy = CleanupPolicy.valueOf(ruv.cleanupPolicy());
+                var update = new RollingUpdate(ruv.updateId(),
+                                               ruv.artifactBase(),
+                                               ruv.oldVersion(),
+                                               ruv.newVersion(),
+                                               state,
+                                               routing,
+                                               thresholds,
+                                               cleanupPolicy,
+                                               ruv.newInstances(),
+                                               ruv.createdAt(),
+                                               ruv.updatedAt());
+                updates.put(update.updateId(), update);
             }
 
             private Promise<Unit> requireLeader() {
@@ -418,15 +422,10 @@ public interface RollingUpdateManager {
             }
 
             private Promise<Version> findCurrentVersion(ArtifactBase artifactBase) {
-                var snapshot = kvStore.snapshot();
-                for (var entry : snapshot.entrySet()) {
-                    if (entry.getKey() instanceof AetherKey.SliceTargetKey(ArtifactBase base) && base.equals(artifactBase)) {
-                        var targetValue = (AetherValue.SliceTargetValue) entry.getValue();
-                        return Promise.success(targetValue.currentVersion());
-                    }
-                }
-                return Version.version("0.0.0")
-                              .mapError(_ -> RollingUpdateError.InitialDeployment.initialDeployment(artifactBase))
+                var key = SliceTargetKey.sliceTargetKey(artifactBase);
+                return kvStore.get(key)
+                              .map(value -> ((SliceTargetValue) value).currentVersion())
+                              .toResult(RollingUpdateError.InitialDeployment.initialDeployment(artifactBase))
                               .async();
             }
 
@@ -541,18 +540,11 @@ public interface RollingUpdateManager {
 
             @SuppressWarnings("unchecked")
             private Promise<Unit> updateSliceTargetVersion(ArtifactBase artifactBase, Version version) {
-                var instances = Option.from(kvStore.snapshot()
-                                                   .entrySet()
-                                                   .stream()
-                                                   .filter(e -> e.getKey() instanceof AetherKey.SliceTargetKey stk &&
-                stk.artifactBase()
-                   .equals(artifactBase))
-                                                   .findFirst()
-                                                   .map(e -> (AetherValue.SliceTargetValue) e.getValue()))
-                                      .map(AetherValue.SliceTargetValue::targetInstances)
-                                      .or(1);
-                var key = AetherKey.SliceTargetKey.sliceTargetKey(artifactBase);
-                var value = AetherValue.SliceTargetValue.sliceTargetValue(version, instances);
+                var key = SliceTargetKey.sliceTargetKey(artifactBase);
+                var instances = kvStore.get(key)
+                                       .map(value -> ((SliceTargetValue) value).targetInstances())
+                                       .or(1);
+                var value = SliceTargetValue.sliceTargetValue(version, instances);
                 var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
                 return clusterNode.<Unit> apply(List.of(command))
                                   .timeout(KV_OPERATION_TIMEOUT)

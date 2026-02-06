@@ -3,6 +3,7 @@ package org.pragmatica.aether;
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.ConfigLoader;
 import org.pragmatica.aether.config.Environment;
+import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.consensus.NodeId;
@@ -50,16 +51,24 @@ public record Main(String[] args) {
         var port = parsePort(aetherConfig);
         var managementPort = parseManagementPort(aetherConfig);
         var peers = parsePeers(nodeId, port, aetherConfig);
-        logStartupInfo(nodeId, port, managementPort, peers, aetherConfig);
+        var sliceConfig = parseSliceConfig(aetherConfig);
+        logStartupInfo(nodeId, port, managementPort, peers, aetherConfig, sliceConfig);
         var config = AetherNodeConfig.aetherNodeConfig(nodeId,
                                                        port,
                                                        peers,
                                                        AetherNodeConfig.defaultSliceActionConfig(),
-                                                       managementPort);
+                                                       sliceConfig,
+                                                       managementPort,
+                                                       org.pragmatica.dht.DHTConfig.DEFAULT);
         var node = AetherNode.aetherNode(config)
                              .unwrap();
         registerShutdownHook(node);
         startNodeAndWait(node, nodeId);
+    }
+
+    private SliceConfig parseSliceConfig(Option<AetherConfig> aetherConfig) {
+        return aetherConfig.map(AetherConfig::slice)
+                           .or(SliceConfig.defaultConfig());
     }
 
     private Option<AetherConfig> loadConfig() {
@@ -80,10 +89,12 @@ public record Main(String[] args) {
                                 int port,
                                 int managementPort,
                                 List<NodeInfo> peers,
-                                Option<AetherConfig> aetherConfig) {
+                                Option<AetherConfig> aetherConfig,
+                                SliceConfig sliceConfig) {
         log.info("Starting Aether node {} on port {}", nodeId, port);
         log.info("Management API on port {}", managementPort);
         log.info("Peers: {}", peers);
+        log.info("Slice repositories: {}", sliceConfig.repositories());
         aetherConfig.onPresent(cfg -> logConfigDetails(cfg));
     }
 

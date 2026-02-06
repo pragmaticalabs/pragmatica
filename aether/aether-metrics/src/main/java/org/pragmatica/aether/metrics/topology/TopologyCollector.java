@@ -1,7 +1,9 @@
 package org.pragmatica.aether.metrics.topology;
 
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
@@ -152,35 +154,30 @@ public final class TopologyCollector {
 
     private Map<String, ClusterTopology.SliceInfo> collectSliceInfo(KVStore<AetherKey, AetherValue> store) {
         Map<String, ClusterTopology.SliceInfo> sliceInfos = new HashMap<>();
-        try{
-            var snapshot = store.snapshot();
+        try {
             var sliceCounts = new HashMap<String, Map<String, Integer>>();
             // Count slices per artifact per node
-            for (var entry : snapshot.entrySet()) {
-                if (entry.getKey() instanceof AetherKey.SliceNodeKey sliceKey) {
-                    String artifact = sliceKey.artifact()
-                                              .asString();
-                    String nodeId = sliceKey.nodeId()
-                                            .id();
-                    sliceCounts.computeIfAbsent(artifact,
-                                                _ -> new HashMap<>())
-                               .merge(nodeId, 1, Integer::sum);
-                }
-            }
+            store.forEach(SliceNodeKey.class, SliceNodeValue.class,
+                          (key, _) -> countSlice(sliceCounts, key));
             // Build SliceInfo for each artifact
-            for (var entry : sliceCounts.entrySet()) {
-                String artifact = entry.getKey();
-                var distribution = entry.getValue();
+            sliceCounts.forEach((artifact, distribution) -> {
                 int totalInstances = distribution.values()
                                                  .stream()
                                                  .mapToInt(Integer::intValue)
                                                  .sum();
                 sliceInfos.put(artifact,
                                new ClusterTopology.SliceInfo(artifact, totalInstances, totalInstances, distribution));
-            }
+            });
         } catch (Exception e) {
             log.debug("Failed to collect slice info: {}", e.getMessage());
         }
         return sliceInfos;
+    }
+
+    private void countSlice(Map<String, Map<String, Integer>> sliceCounts, SliceNodeKey sliceKey) {
+        String artifact = sliceKey.artifact().asString();
+        String nodeId = sliceKey.nodeId().id();
+        sliceCounts.computeIfAbsent(artifact, _ -> new HashMap<>())
+                   .merge(nodeId, 1, Integer::sum);
     }
 }

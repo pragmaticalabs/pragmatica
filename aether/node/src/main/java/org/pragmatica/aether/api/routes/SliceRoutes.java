@@ -26,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -257,13 +258,17 @@ public final class SliceRoutes implements RouteSource {
     }
 
     private int countActiveInstances(AetherNode node, Artifact artifact) {
-        return (int) node.kvStore()
-                        .snapshot()
-                        .entrySet()
-                        .stream()
-                        .filter(entry -> entry.getKey() instanceof SliceNodeKey key && key.artifact()
-                                                                                          .equals(artifact) && entry.getValue() instanceof SliceNodeValue value && value.state() == SliceState.ACTIVE)
-                        .count();
+        var count = new AtomicInteger(0);
+        node.kvStore()
+            .forEach(SliceNodeKey.class, SliceNodeValue.class,
+                     (key, value) -> countIfActive(count, key, value, artifact));
+        return count.get();
+    }
+
+    private void countIfActive(AtomicInteger count, SliceNodeKey key, SliceNodeValue value, Artifact artifact) {
+        if (key.artifact().equals(artifact) && value.state() == SliceState.ACTIVE) {
+            count.incrementAndGet();
+        }
     }
 
     private String determineSliceDeploymentStatus(int target, int active) {
@@ -372,8 +377,8 @@ public final class SliceRoutes implements RouteSource {
         var node = nodeSupplier.get();
         Map<Artifact, List<SliceInstance>> slicesByArtifact = new HashMap<>();
         node.kvStore()
-            .snapshot()
-            .forEach((key, value) -> collectSliceInstance(slicesByArtifact, key, value));
+            .forEach(SliceNodeKey.class, SliceNodeValue.class,
+                     (key, value) -> collectSliceInstance(slicesByArtifact, key, value));
         var slices = slicesByArtifact.entrySet()
                                      .stream()
                                      .map(this::toSliceStatus)
@@ -413,13 +418,11 @@ public final class SliceRoutes implements RouteSource {
                                      health);
     }
 
-    private void collectSliceInstance(Map<Artifact, List<SliceInstance>> map, AetherKey key, AetherValue value) {
-        if (key instanceof SliceNodeKey sliceKey && value instanceof SliceNodeValue sliceValue) {
-            map.computeIfAbsent(sliceKey.artifact(),
-                                _ -> new ArrayList<>())
-               .add(new SliceInstance(sliceKey.nodeId(),
-                                      sliceValue.state()));
-        }
+    private void collectSliceInstance(Map<Artifact, List<SliceInstance>> map,
+                                       SliceNodeKey sliceKey,
+                                       SliceNodeValue sliceValue) {
+        map.computeIfAbsent(sliceKey.artifact(), _ -> new ArrayList<>())
+           .add(new SliceInstance(sliceKey.nodeId(), sliceValue.state()));
     }
 
     private record SliceInstance(NodeId nodeId, SliceState state) {}

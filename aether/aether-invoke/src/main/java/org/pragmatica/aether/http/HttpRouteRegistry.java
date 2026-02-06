@@ -188,7 +188,7 @@ public interface HttpRouteRegistry {
              * Same algorithm as RequestRouter.
              */
             private boolean isSameOrStartOfPath(String inputPath, String routePath) {
-                return (inputPath.length() == routePath.length() && inputPath.equals(routePath)) || (inputPath.length() > routePath.length() && inputPath.charAt(routePath.length() - 1) == '/');
+                return (inputPath.length() == routePath.length() && inputPath.equals(routePath)) || (inputPath.length() > routePath.length() && inputPath.startsWith(routePath) && inputPath.charAt(routePath.length() - 1) == '/');
             }
         }
         return new httpRouteRegistry(new ConcurrentHashMap<>());

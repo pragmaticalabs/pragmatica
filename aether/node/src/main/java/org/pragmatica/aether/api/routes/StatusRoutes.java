@@ -8,6 +8,8 @@ import org.pragmatica.aether.api.ManagementApiResponses.NodesResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.StatusResponse;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -96,13 +98,8 @@ public final class StatusRoutes implements RouteSource {
         }
         // Add nodes from KV-Store slice entries
         node.kvStore()
-            .snapshot()
-            .keySet()
-            .stream()
-            .filter(key -> key instanceof AetherKey.SliceNodeKey)
-            .map(key -> ((AetherKey.SliceNodeKey) key).nodeId()
-                                   .id())
-            .forEach(nodeIds::add);
+            .forEach(SliceNodeKey.class, SliceNodeValue.class,
+                     (key, _) -> nodeIds.add(key.nodeId().id()));
         return new NodesResponse(List.copyOf(nodeIds));
     }
 

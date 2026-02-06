@@ -4,7 +4,9 @@ import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.AlertThresholdKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.AlertThresholdValue;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -61,19 +63,17 @@ public class AlertManager {
      * Load thresholds from KV-Store on startup.
      */
     private void loadThresholdsFromKvStore() {
-        var snapshot = kvStore.snapshot();
-        for (var entry : snapshot.entrySet()) {
-            if (entry.getKey() instanceof AetherKey.AlertThresholdKey thresholdKey &&
-            entry.getValue() instanceof AetherValue.AlertThresholdValue thresholdValue) {
-                thresholds.put(thresholdKey.metricName(),
-                               new Threshold(thresholdValue.warningThreshold(), thresholdValue.criticalThreshold()));
-                log.debug("Loaded threshold from KV-Store: {} warning={}, critical={}",
-                          thresholdKey.metricName(),
-                          thresholdValue.warningThreshold(),
-                          thresholdValue.criticalThreshold());
-            }
-        }
+        kvStore.forEach(AlertThresholdKey.class, AlertThresholdValue.class, this::loadThreshold);
         log.info("Loaded {} thresholds from KV-Store", thresholds.size());
+    }
+
+    private void loadThreshold(AlertThresholdKey thresholdKey, AlertThresholdValue thresholdValue) {
+        thresholds.put(thresholdKey.metricName(),
+                       new Threshold(thresholdValue.warningThreshold(), thresholdValue.criticalThreshold()));
+        log.debug("Loaded threshold from KV-Store: {} warning={}, critical={}",
+                  thresholdKey.metricName(),
+                  thresholdValue.warningThreshold(),
+                  thresholdValue.criticalThreshold());
     }
 
     /**
