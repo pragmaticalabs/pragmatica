@@ -55,6 +55,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Tuple.Tuple2;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
@@ -398,7 +401,10 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
     private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus, NodeId candidate) {
         log.info("Submitting leader proposal: candidate={}", candidate);
         var command = new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(candidate));
+        // Timeout for leader proposals - if consensus doesn't complete in this time, fail and retry.
+        // This handles the case where other nodes are still syncing and ignoring proposals.
         return consensus.apply(List.of((C) command))
+                        .timeout(timeSpan(3).seconds())
                         .mapToUnit();
     }
 }

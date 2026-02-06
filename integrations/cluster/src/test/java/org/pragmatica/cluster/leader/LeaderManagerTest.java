@@ -151,11 +151,11 @@ class LeaderManagerTest {
                 localRouter.route(nodeAdded(nodeId, topology));
             }
 
-            // Establish quorum - this schedules a proposal with PROPOSAL_RETRY_DELAY (500ms)
+            // Establish quorum - first election uses INITIAL_ELECTION_DELAY (10s) for Fury warmup
             localRouter.route(QuorumStateNotification.ESTABLISHED);
 
-            // Wait for scheduled proposal (500ms delay + margin)
-            Thread.sleep(600);
+            // Wait for scheduled proposal (10s initial delay + margin)
+            Thread.sleep(10_500);
 
             // Proposal should have been submitted by min node
             assertThat(localProposals).hasSize(1);

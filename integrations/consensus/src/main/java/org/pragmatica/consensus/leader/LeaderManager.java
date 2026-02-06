@@ -153,6 +153,12 @@ public interface LeaderManager {
     /// Retry delay for leader proposals that fail (e.g., when consensus not ready yet)
     TimeSpan PROPOSAL_RETRY_DELAY = timeSpan(500).millis();
 
+    /// Initial delay before first leader election attempt.
+    /// This allows all nodes time to complete synchronization (Fury codec compilation, state sync)
+    /// before leader proposals are submitted. Without this delay, early nodes submit proposals
+    /// that are ignored by dormant nodes, causing leader election to stall.
+    TimeSpan INITIAL_ELECTION_DELAY = timeSpan(3).seconds();
+
     private static LeaderManager leaderManager(NodeId self,
                                                MessageRouter router,
                                                Option<LeaderProposalHandler> proposalHandler,
@@ -202,7 +208,11 @@ public interface LeaderManager {
                                   newLeader,
                                   forceNotify,
                                   !newLeader.equals(oldLeader));
-                        notifyLeaderChangeAsync();
+                        // Use synchronous notification to ensure all handlers (especially
+                        // ClusterDeploymentManager) process LeaderChange BEFORE any API
+                        // can report isLeader=true. This prevents race conditions where
+                        // deploy commands arrive before ClusterDeploymentManager is active.
+                        notifyLeaderChange();
                     } else {
                         LOG.debug("Leader unchanged ({}), skipping notification", newLeader);
                     }
@@ -435,8 +445,13 @@ public interface LeaderManager {
                     // Consensus mode: only schedule election trigger.
                     // DO NOT re-notify here - it causes flapping when nodes have different partial views.
                     // Notification will come from onLeaderCommitted() with forceNotify if this is re-establishment.
-                    LOG.debug("Quorum established, scheduling leader election trigger");
-                    SharedScheduler.schedule(this::triggerElection, PROPOSAL_RETRY_DELAY);
+                    // Use INITIAL_ELECTION_DELAY on first election to allow all nodes to complete
+                    // synchronization before leader proposals are submitted.
+                    var isFirstElection = !hasEverHadLeader.get();
+                    var delay = isFirstElection ? INITIAL_ELECTION_DELAY : PROPOSAL_RETRY_DELAY;
+                    LOG.debug("Quorum established, scheduling leader election trigger (initial={}, delay={}ms)",
+                              isFirstElection, delay.millis());
+                    SharedScheduler.schedule(this::triggerElection, delay);
                 } else {
                     // Local mode: notify if we have a candidate
                     currentLeader.get()
