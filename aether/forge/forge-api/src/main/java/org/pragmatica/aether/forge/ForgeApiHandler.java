@@ -12,6 +12,7 @@ import org.pragmatica.aether.forge.simulator.SimulatorMode;
 import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Option;
+import org.pragmatica.http.routing.ContentCategory;
 import org.pragmatica.http.routing.JsonCodec;
 
 import java.nio.file.Path;
@@ -211,14 +212,22 @@ public final class ForgeApiHandler {
 
     @SuppressWarnings("unchecked")
     private void sendSuccessResponse(ResponseWriter response, Route<?> route, Object result) {
+        var serverContentType = toServerContentType(route.contentType());
+        var category = route.contentType().category();
+
+        // HTML and PLAIN_TEXT String responses must bypass JSON serialization
+        if ((category == ContentCategory.HTML || category == ContentCategory.PLAIN_TEXT)
+            && result instanceof String text) {
+            response.write(HttpStatus.OK, text.getBytes(StandardCharsets.UTF_8), serverContentType);
+            return;
+        }
+
         jsonCodec.serialize(result)
                  .onSuccess(byteBuf -> {
                                 var bytes = new byte[byteBuf.readableBytes()];
                                 byteBuf.readBytes(bytes);
                                 byteBuf.release();
-                                response.write(HttpStatus.OK,
-                                               bytes,
-                                               toServerContentType(route.contentType()));
+                                response.write(HttpStatus.OK, bytes, serverContentType);
                             })
                  .onFailure(cause -> sendError(response,
                                                HttpStatus.INTERNAL_SERVER_ERROR,
