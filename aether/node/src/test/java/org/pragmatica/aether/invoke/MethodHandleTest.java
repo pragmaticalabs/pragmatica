@@ -14,6 +14,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.pragmatica.lang.Unit.unit;
 
 class MethodHandleTest {
@@ -33,7 +34,7 @@ class MethodHandleTest {
                                      "processRequest",
                                      TypeToken.typeToken(String.class),
                                      TypeToken.typeToken(String.class))
-                       .onFailureRun(Assertions::fail)
+                       .onFailureRun(() -> fail("Expected success"))
                        .onSuccess(handle -> {
                            assertThat(handle.artifactCoordinate()).isEqualTo("org.example:test-slice:1.0.0");
                            assertThat(handle.methodName().name()).isEqualTo("processRequest");
@@ -46,7 +47,7 @@ class MethodHandleTest {
                                      "processRequest",
                                      TypeToken.typeToken(String.class),
                                      TypeToken.typeToken(String.class))
-                       .onSuccessRun(Assertions::fail)
+                       .onSuccessRun(() -> fail("Expected failure"))
                        .onFailure(cause -> assertThat(cause.message()).contains("Invalid"));
         }
 
@@ -56,7 +57,7 @@ class MethodHandleTest {
                                      "InvalidMethod",  // Uppercase first letter
                                      TypeToken.typeToken(String.class),
                                      TypeToken.typeToken(String.class))
-                       .onSuccessRun(Assertions::fail);
+                       .onSuccessRun(() -> fail("Expected failure"));
         }
 
         @Test
@@ -65,7 +66,7 @@ class MethodHandleTest {
                                      "",
                                      TypeToken.typeToken(String.class),
                                      TypeToken.typeToken(String.class))
-                       .onSuccessRun(Assertions::fail);
+                       .onSuccessRun(() -> fail("Expected failure"));
         }
     }
 
@@ -81,7 +82,7 @@ class MethodHandleTest {
 
             handle.invoke("test-input")
                   .await()
-                  .onFailureRun(Assertions::fail)
+                  .onFailureRun(() -> fail("Expected success"))
                   .onSuccess(response -> assertThat(response).isEqualTo("response:test-input"));
 
             // Verify the typed invoke method was called
@@ -101,7 +102,7 @@ class MethodHandleTest {
 
             handle.fireAndForget("test-input")
                   .await()
-                  .onFailureRun(Assertions::fail);
+                  .onFailureRun(() -> fail("Expected success"));
 
             // Verify the fire-and-forget method was called
             assertThat(stubInvoker.lastArtifact).isNotNull();

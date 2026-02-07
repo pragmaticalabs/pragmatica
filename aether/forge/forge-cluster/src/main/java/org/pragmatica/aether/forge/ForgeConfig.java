@@ -22,38 +22,33 @@ public record ForgeConfig(int nodes,
                           int managementPort,
                           int dashboardPort,
                           int appHttpPort,
-                          boolean autoHealEnabled,
                           ForgeH2Config h2Config) {
     public static final int DEFAULT_NODES = 5;
     public static final int DEFAULT_MANAGEMENT_PORT = 5150;
     public static final int DEFAULT_DASHBOARD_PORT = 8888;
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
-    public static final boolean DEFAULT_AUTO_HEAL_ENABLED = false;
 
     /**
      * Default configuration.
      */
-    public static ForgeConfig defaultConfig() {
-        return new ForgeConfig(DEFAULT_NODES,
-                               DEFAULT_MANAGEMENT_PORT,
-                               DEFAULT_DASHBOARD_PORT,
-                               DEFAULT_APP_HTTP_PORT,
-                               DEFAULT_AUTO_HEAL_ENABLED,
-                               ForgeH2Config.disabled());
-    }
+    public static final ForgeConfig DEFAULT = new ForgeConfig(DEFAULT_NODES,
+                                                               DEFAULT_MANAGEMENT_PORT,
+                                                               DEFAULT_DASHBOARD_PORT,
+                                                               DEFAULT_APP_HTTP_PORT,
+                                                               ForgeH2Config.disabled());
 
     /**
      * Create configuration with specified values and validation.
      */
     public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort) {
-        return forgeConfig(nodes, managementPort, dashboardPort, DEFAULT_APP_HTTP_PORT, DEFAULT_AUTO_HEAL_ENABLED, ForgeH2Config.disabled());
+        return forgeConfig(nodes, managementPort, dashboardPort, DEFAULT_APP_HTTP_PORT, ForgeH2Config.disabled());
     }
 
     /**
      * Create configuration with specified values and validation.
      */
     public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort, int appHttpPort) {
-        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, DEFAULT_AUTO_HEAL_ENABLED, ForgeH2Config.disabled());
+        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, ForgeH2Config.disabled());
     }
 
     /**
@@ -63,18 +58,6 @@ public record ForgeConfig(int nodes,
                                                   int managementPort,
                                                   int dashboardPort,
                                                   int appHttpPort,
-                                                  boolean autoHealEnabled) {
-        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, autoHealEnabled, ForgeH2Config.disabled());
-    }
-
-    /**
-     * Create configuration with specified values and validation.
-     */
-    public static Result<ForgeConfig> forgeConfig(int nodes,
-                                                  int managementPort,
-                                                  int dashboardPort,
-                                                  int appHttpPort,
-                                                  boolean autoHealEnabled,
                                                   ForgeH2Config h2Config) {
         if (nodes < 1) {
             return ForgeConfigError.invalidValue("nodes", nodes, "must be at least 1")
@@ -100,7 +83,7 @@ public record ForgeConfig(int nodes,
             return ForgeConfigError.portConflict(managementPort)
                                    .result();
         }
-        return Result.success(new ForgeConfig(nodes, managementPort, dashboardPort, appHttpPort, autoHealEnabled, h2Config));
+        return Result.success(new ForgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config));
     }
 
     /**
@@ -138,10 +121,8 @@ public record ForgeConfig(int nodes,
                                .or(DEFAULT_DASHBOARD_PORT);
         int appHttpPort = doc.getInt("cluster", "app_http_port")
                              .or(DEFAULT_APP_HTTP_PORT);
-        boolean autoHealEnabled = doc.getBoolean("cluster", "auto_heal_enabled")
-                                     .or(DEFAULT_AUTO_HEAL_ENABLED);
         var h2Config = parseH2Config(doc, baseDir);
-        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, autoHealEnabled, h2Config);
+        return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config);
     }
 
     private static ForgeH2Config parseH2Config(org.pragmatica.config.toml.TomlDocument doc, Option<Path> baseDir) {

@@ -50,18 +50,6 @@ public record ControllerConfig(double cpuScaleUpThreshold,
                                                                         ScalingConfig.productionDefaults());
 
     /**
-     * Creates default configuration.
-     *
-     * <p>This is a semantic factory variant (not following {@code typeName()} pattern)
-     * because it represents a named configuration profile rather than generic construction.
-     * See also: {@link #forgeDefaults()}, {@link #controllerConfig(double, double, double, long)}.
-     * @deprecated Use {@link #defaultConfig()} instead.
-     */
-    public static ControllerConfig defaultConfig() {
-        return DEFAULT;
-    }
-
-    /**
      * Factory method with validation following JBCT naming convention.
      *
      * @return Result containing valid config or validation error

@@ -24,6 +24,10 @@
             <groupId>org.pragmatica-lite</groupId>
             <artifactId>cluster</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>node-provider</artifactId>
+        </dependency>
 
         <!-- Pragmatica -->
         <dependency>

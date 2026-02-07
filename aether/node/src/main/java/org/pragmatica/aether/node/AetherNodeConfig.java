@@ -6,6 +6,8 @@ import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TTMConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
+import org.pragmatica.aether.provider.AutoHealConfig;
+import org.pragmatica.aether.provider.NodeProvider;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
 import org.pragmatica.consensus.NodeId;
@@ -39,6 +41,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  * @param appHttp          Application HTTP server configuration for slice routes
  * @param controllerConfig Controller configuration for scaling thresholds and behavior
  * @param configProvider   Configuration provider for resource provisioning (empty to disable)
+ * @param nodeProvider     Node provider for cluster auto-healing (empty to disable)
+ * @param autoHeal         Auto-heal retry configuration
  */
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
@@ -51,7 +55,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                RollbackConfig rollback,
                                AppHttpConfig appHttp,
                                ControllerConfig controllerConfig,
-                               Option<ConfigurationProvider> configProvider) {
+                               Option<ConfigurationProvider> configProvider,
+                               Option<NodeProvider> nodeProvider,
+                               AutoHealConfig autoHeal) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
 
@@ -120,8 +126,10 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     TTMConfig.disabled(),
                                     RollbackConfig.defaultConfig(),
                                     AppHttpConfig.disabled(),
-                                    ControllerConfig.defaultConfig(),
-                                    Option.empty());
+                                    ControllerConfig.DEFAULT,
+                                    Option.empty(),
+                                    Option.empty(),
+                                    AutoHealConfig.DEFAULT);
     }
 
     public static AetherNodeConfig testConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
@@ -141,8 +149,10 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     TTMConfig.disabled(),
                                     RollbackConfig.defaultConfig(),
                                     AppHttpConfig.disabled(),
-                                    ControllerConfig.defaultConfig(),
-                                    Option.empty());
+                                    ControllerConfig.DEFAULT,
+                                    Option.empty(),
+                                    Option.empty(),
+                                    AutoHealConfig.DEFAULT);
     }
 
     /**
@@ -166,7 +176,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     RollbackConfig.defaultConfig(),
                                     AppHttpConfig.disabled(),
                                     ControllerConfig.forgeDefaults(),
-                                    Option.empty());
+                                    Option.empty(),
+                                    Option.empty(),
+                                    AutoHealConfig.DEFAULT);
     }
 
     /**
@@ -193,7 +205,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     rollback,
                                     appHttp,
                                     controllerConfig,
-                                    configProvider);
+                                    configProvider,
+                                    nodeProvider,
+                                    autoHeal);
     }
 
     /**
@@ -211,7 +225,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     rollback,
                                     appHttp,
                                     controllerConfig,
-                                    configProvider);
+                                    configProvider,
+                                    nodeProvider,
+                                    autoHeal);
     }
 
     /**
@@ -229,7 +245,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     rollbackConfig,
                                     appHttp,
                                     controllerConfig,
-                                    configProvider);
+                                    configProvider,
+                                    nodeProvider,
+                                    autoHeal);
     }
 
     /**
@@ -247,7 +265,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     rollback,
                                     appHttp,
                                     controllerConfig,
-                                    configProvider);
+                                    configProvider,
+                                    nodeProvider,
+                                    autoHeal);
     }
 
     /**
@@ -265,7 +285,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     rollback,
                                     appHttpConfig,
                                     controllerConfig,
-                                    configProvider);
+                                    configProvider,
+                                    nodeProvider,
+                                    autoHeal);
     }
 
     /**
@@ -283,7 +305,9 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     rollback,
                                     appHttp,
                                     newControllerConfig,
-                                    configProvider);
+                                    configProvider,
+                                    nodeProvider,
+                                    autoHeal);
     }
 
     /**
@@ -301,7 +325,49 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     rollback,
                                     appHttp,
                                     controllerConfig,
-                                    Option.some(provider));
+                                    Option.some(provider),
+                                    nodeProvider,
+                                    autoHeal);
+    }
+
+    /**
+     * Create a new configuration with a NodeProvider for cluster auto-healing.
+     */
+    public AetherNodeConfig withNodeProvider(NodeProvider provider) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    Option.some(provider),
+                                    autoHeal);
+    }
+
+    /**
+     * Create a new configuration with custom auto-heal settings.
+     */
+    public AetherNodeConfig withAutoHeal(AutoHealConfig autoHealConfig) {
+        return new AetherNodeConfig(topology,
+                                    protocol,
+                                    sliceAction,
+                                    sliceConfig,
+                                    managementPort,
+                                    artifactRepo,
+                                    tls,
+                                    ttm,
+                                    rollback,
+                                    appHttp,
+                                    controllerConfig,
+                                    configProvider,
+                                    nodeProvider,
+                                    autoHealConfig);
     }
 
     public NodeId self() {

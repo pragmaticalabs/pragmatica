@@ -7,11 +7,13 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.provider.AutoHealConfig;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -46,7 +48,8 @@ class ClusterDeploymentManagerTest {
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
         router = MessageRouter.mutable();
-        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3));
+        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
+                                                                      clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT);
     }
 
     // === Leader State Tests ===
@@ -173,7 +176,8 @@ class ClusterDeploymentManagerTest {
     void no_allocation_when_no_nodes_available() {
         // Create manager with empty initial topology
         var emptyTopologyManager = ClusterDeploymentManager.clusterDeploymentManager(
-            self, clusterNode, kvStore, router, List.of());
+            self, clusterNode, kvStore, router, List.of(),
+            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT);
         emptyTopologyManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
         clusterNode.appliedCommands.clear();
 
@@ -423,6 +427,11 @@ class ClusterDeploymentManagerTest {
         @Override
         public NodeId self() {
             return self;
+        }
+
+        @Override
+        public TopologyManager topologyManager() {
+            return null;
         }
 
         @Override

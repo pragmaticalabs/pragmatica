@@ -2,7 +2,8 @@ package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.ManagementServer;
-import org.pragmatica.aether.artifact.Artifact;
+import org.pragmatica.aether.config.ConfigService;
+import org.pragmatica.aether.config.ProviderBasedConfigService;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
@@ -14,9 +15,10 @@ import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
 import org.pragmatica.aether.http.HttpRoutePublisher;
 import org.pragmatica.aether.http.HttpRouteRegistry;
+import org.pragmatica.aether.infra.ResourceProvider;
+import org.pragmatica.aether.infra.SpiResourceProvider;
 import org.pragmatica.aether.infra.artifact.ArtifactStore;
 import org.pragmatica.aether.infra.artifact.MavenProtocolHandler;
-import org.pragmatica.aether.repository.RepositoryFactory;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
@@ -25,46 +27,33 @@ import org.pragmatica.aether.metrics.ComprehensiveSnapshotCollector;
 import org.pragmatica.aether.metrics.MetricsCollector;
 import org.pragmatica.aether.metrics.MetricsScheduler;
 import org.pragmatica.aether.metrics.MinuteAggregator;
-import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
-import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
+import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
 import org.pragmatica.aether.metrics.consensus.RabiaMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent;
 import org.pragmatica.aether.metrics.deployment.DeploymentMetricsCollector;
 import org.pragmatica.aether.metrics.deployment.DeploymentMetricsScheduler;
-import org.pragmatica.aether.metrics.artifact.ArtifactMetricsCollector;
+import org.pragmatica.aether.metrics.eventloop.EventLoopMetricsCollector;
+import org.pragmatica.aether.metrics.gc.GCMetricsCollector;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.metrics.network.NetworkMetricsHandler;
-import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
-import org.pragmatica.aether.ttm.TTMManager;
-import org.pragmatica.aether.ttm.TTMState;
-import org.pragmatica.aether.update.RollingUpdateManager;
-import org.pragmatica.aether.config.ConfigService;
-import org.pragmatica.aether.config.ProviderBasedConfigService;
-import org.pragmatica.aether.infra.ResourceProvider;
-import org.pragmatica.aether.infra.SpiResourceProvider;
-import org.pragmatica.aether.slice.DeferredSliceInvokerFacade;
-import org.pragmatica.aether.slice.FrameworkClassLoader;
-import org.pragmatica.aether.slice.ResourceProviderFacade;
-import org.pragmatica.aether.slice.SharedLibraryClassLoader;
-import org.pragmatica.aether.slice.SliceRuntime;
-import org.pragmatica.aether.slice.SliceStore;
+import org.pragmatica.aether.repository.RepositoryFactory;
+import org.pragmatica.aether.slice.*;
 import org.pragmatica.aether.slice.dependency.SliceRegistry;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
-import org.pragmatica.cluster.state.kvstore.LeaderKey;
-import org.pragmatica.cluster.state.kvstore.LeaderValue;
-import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.aether.slice.repository.Repository;
-import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.aether.ttm.AdaptiveDecisionTree;
+import org.pragmatica.aether.ttm.TTMManager;
+import org.pragmatica.aether.update.RollingUpdateManager;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.MetricsMessage;
-import org.pragmatica.consensus.NodeId;
 import org.pragmatica.cluster.node.rabia.NodeConfig;
 import org.pragmatica.cluster.node.rabia.RabiaNode;
-import org.pragmatica.cluster.state.kvstore.KVCommand;
-import org.pragmatica.cluster.state.kvstore.KVStore;
-import org.pragmatica.cluster.state.kvstore.KVStoreLocalIO;
-import org.pragmatica.cluster.state.kvstore.KVStoreNotification;
+import org.pragmatica.cluster.state.kvstore.*;
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.leader.LeaderManager;
+import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.dht.ConsistentHashRing;
@@ -72,20 +61,19 @@ import org.pragmatica.dht.DHTNode;
 import org.pragmatica.dht.LocalDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.lang.Option;
-import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.cluster.state.kvstore.KVStoreNotification.filterPut;
 import static org.pragmatica.cluster.state.kvstore.KVStoreNotification.filterRemove;
@@ -135,7 +123,7 @@ public interface AetherNode {
     /**
      * Get the cluster controller for scaling decisions.
      */
-    DecisionTreeController controller();
+    ClusterController controller();
 
     /**
      * Get the rolling update manager for managing version transitions.
@@ -319,39 +307,39 @@ public interface AetherNode {
                                                    Deserializer deserializer,
                                                    ArtifactStore artifactStore,
                                                    List<Repository> repositories) {
-        record aetherNodeImpl(AetherNodeConfig config,
-                              MessageRouter.DelegateRouter router,
-                              KVStore<AetherKey, AetherValue> kvStore,
-                              SliceRegistry sliceRegistry,
-                              SliceStore sliceStore,
-                              RabiaNode<KVCommand<AetherKey>> clusterNode,
-                              NodeDeploymentManager nodeDeploymentManager,
-                              ClusterDeploymentManager clusterDeploymentManager,
-                              EndpointRegistry endpointRegistry,
-                              HttpRouteRegistry httpRouteRegistry,
-                              MetricsCollector metricsCollector,
-                              MetricsScheduler metricsScheduler,
-                              DeploymentMetricsCollector deploymentMetricsCollector,
-                              DeploymentMetricsScheduler deploymentMetricsScheduler,
-                              ControlLoop controlLoop,
-                              SliceInvoker sliceInvoker,
-                              InvocationHandler invocationHandler,
-                              BlueprintService blueprintService,
-                              MavenProtocolHandler mavenProtocolHandler,
-                              ArtifactStore artifactStore,
-                              InvocationMetricsCollector invocationMetrics,
-                              DecisionTreeController controller,
-                              RollingUpdateManager rollingUpdateManager,
-                              AlertManager alertManager,
-                              AppHttpServer appHttpServer,
-                              TTMManager ttmManager,
-                              RollbackManager rollbackManager,
-                              ComprehensiveSnapshotCollector snapshotCollector,
-                              ArtifactMetricsCollector artifactMetricsCollector,
-                              EventLoopMetricsCollector eventLoopMetricsCollector,
-                              Option<ManagementServer> managementServer,
-                              long startTimeMs) implements AetherNode {
-            private static final Logger log = LoggerFactory.getLogger(aetherNodeImpl.class);
+        record aetherNode(AetherNodeConfig config,
+                          MessageRouter.DelegateRouter router,
+                          KVStore<AetherKey, AetherValue> kvStore,
+                          SliceRegistry sliceRegistry,
+                          SliceStore sliceStore,
+                          RabiaNode<KVCommand<AetherKey>> clusterNode,
+                          NodeDeploymentManager nodeDeploymentManager,
+                          ClusterDeploymentManager clusterDeploymentManager,
+                          EndpointRegistry endpointRegistry,
+                          HttpRouteRegistry httpRouteRegistry,
+                          MetricsCollector metricsCollector,
+                          MetricsScheduler metricsScheduler,
+                          DeploymentMetricsCollector deploymentMetricsCollector,
+                          DeploymentMetricsScheduler deploymentMetricsScheduler,
+                          ControlLoop controlLoop,
+                          SliceInvoker sliceInvoker,
+                          InvocationHandler invocationHandler,
+                          BlueprintService blueprintService,
+                          MavenProtocolHandler mavenProtocolHandler,
+                          ArtifactStore artifactStore,
+                          InvocationMetricsCollector invocationMetrics,
+                          DecisionTreeController controller,
+                          RollingUpdateManager rollingUpdateManager,
+                          AlertManager alertManager,
+                          AppHttpServer appHttpServer,
+                          TTMManager ttmManager,
+                          RollbackManager rollbackManager,
+                          ComprehensiveSnapshotCollector snapshotCollector,
+                          ArtifactMetricsCollector artifactMetricsCollector,
+                          EventLoopMetricsCollector eventLoopMetricsCollector,
+                          Option<ManagementServer> managementServer,
+                          long startTimeMs) implements AetherNode {
+            private static final Logger log = LoggerFactory.getLogger(aetherNode.class);
 
             @Override
             public NodeId self() {
@@ -529,7 +517,7 @@ public interface AetherNode {
                 return config.topology()
                              .coreNodes()
                              .stream()
-                             .map(org.pragmatica.consensus.net.NodeInfo::id)
+                             .map(NodeInfo::id)
                              .toList();
             }
 
@@ -560,13 +548,16 @@ public interface AetherNode {
         var initialTopology = config.topology()
                                     .coreNodes()
                                     .stream()
-                                    .map(org.pragmatica.consensus.net.NodeInfo::id)
+                                    .map(NodeInfo::id)
                                     .toList();
         var clusterDeploymentManager = ClusterDeploymentManager.clusterDeploymentManager(config.self(),
                                                                                          clusterNode,
                                                                                          kvStore,
                                                                                          delegateRouter,
-                                                                                         initialTopology);
+                                                                                         initialTopology,
+                                                                                         clusterNode.topologyManager(),
+                                                                                         config.nodeProvider(),
+                                                                                         config.autoHeal());
         // Create endpoint registry
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         // Create HTTP route registry for application HTTP routing
@@ -611,7 +602,7 @@ public interface AetherNode {
         var controlLoop = ControlLoop.controlLoop(config.self(),
                                                   effectiveController,
                                                   metricsCollector,
-                                                  invocationMetrics,
+                                                  Option.some(invocationMetrics),
                                                   clusterNode,
                                                   TimeSpan.timeSpan(config.controllerConfig()
                                                                           .scalingConfig()
@@ -677,38 +668,38 @@ public interface AetherNode {
         allEntries.addAll(aetherEntries);
         // Create the node first (without management server reference)
         var startTimeMs = System.currentTimeMillis();
-        var node = new aetherNodeImpl(config,
-                                      delegateRouter,
-                                      kvStore,
-                                      sliceRegistry,
-                                      sliceStore,
-                                      clusterNode,
-                                      nodeDeploymentManager,
-                                      clusterDeploymentManager,
-                                      endpointRegistry,
-                                      httpRouteRegistry,
-                                      metricsCollector,
-                                      metricsScheduler,
-                                      deploymentMetricsCollector,
-                                      deploymentMetricsScheduler,
-                                      controlLoop,
-                                      sliceInvoker,
-                                      invocationHandler,
-                                      blueprintService,
-                                      mavenProtocolHandler,
-                                      artifactStore,
-                                      invocationMetrics,
-                                      controller,
-                                      rollingUpdateManager,
-                                      alertManager,
-                                      appHttpServer,
-                                      ttmManager,
-                                      rollbackManager,
-                                      snapshotCollector,
-                                      artifactMetricsCollector,
-                                      eventLoopMetricsCollector,
-                                      Option.empty(),
-                                      startTimeMs);
+        var node = new aetherNode(config,
+                                  delegateRouter,
+                                  kvStore,
+                                  sliceRegistry,
+                                  sliceStore,
+                                  clusterNode,
+                                  nodeDeploymentManager,
+                                  clusterDeploymentManager,
+                                  endpointRegistry,
+                                  httpRouteRegistry,
+                                  metricsCollector,
+                                  metricsScheduler,
+                                  deploymentMetricsCollector,
+                                  deploymentMetricsScheduler,
+                                  controlLoop,
+                                  sliceInvoker,
+                                  invocationHandler,
+                                  blueprintService,
+                                  mavenProtocolHandler,
+                                  artifactStore,
+                                  invocationMetrics,
+                                  controller,
+                                  rollingUpdateManager,
+                                  alertManager,
+                                  appHttpServer,
+                                  ttmManager,
+                                  rollbackManager,
+                                  snapshotCollector,
+                                  artifactMetricsCollector,
+                                  eventLoopMetricsCollector,
+                                  Option.empty(),
+                                  startTimeMs);
         // Build and wire ImmutableRouter, then create final node
         return RabiaNode.buildAndWireRouter(delegateRouter, allEntries)
                         .map(_ -> {
@@ -718,38 +709,38 @@ public interface AetherNode {
                                                                                               () -> node,
                                                                                               alertManager,
                                                                                               config.tls());
-                                     return new aetherNodeImpl(config,
-                                                               delegateRouter,
-                                                               kvStore,
-                                                               sliceRegistry,
-                                                               sliceStore,
-                                                               clusterNode,
-                                                               nodeDeploymentManager,
-                                                               clusterDeploymentManager,
-                                                               endpointRegistry,
-                                                               httpRouteRegistry,
-                                                               metricsCollector,
-                                                               metricsScheduler,
-                                                               deploymentMetricsCollector,
-                                                               deploymentMetricsScheduler,
-                                                               controlLoop,
-                                                               sliceInvoker,
-                                                               invocationHandler,
-                                                               blueprintService,
-                                                               mavenProtocolHandler,
-                                                               artifactStore,
-                                                               invocationMetrics,
-                                                               controller,
-                                                               rollingUpdateManager,
-                                                               alertManager,
-                                                               appHttpServer,
-                                                               ttmManager,
-                                                               rollbackManager,
-                                                               snapshotCollector,
-                                                               artifactMetricsCollector,
-                                                               eventLoopMetricsCollector,
-                                                               Option.some(managementServer),
-                                                               startTimeMs);
+                                     return new aetherNode(config,
+                                                           delegateRouter,
+                                                           kvStore,
+                                                           sliceRegistry,
+                                                           sliceStore,
+                                                           clusterNode,
+                                                           nodeDeploymentManager,
+                                                           clusterDeploymentManager,
+                                                           endpointRegistry,
+                                                           httpRouteRegistry,
+                                                           metricsCollector,
+                                                           metricsScheduler,
+                                                           deploymentMetricsCollector,
+                                                           deploymentMetricsScheduler,
+                                                           controlLoop,
+                                                           sliceInvoker,
+                                                           invocationHandler,
+                                                           blueprintService,
+                                                           mavenProtocolHandler,
+                                                           artifactStore,
+                                                           invocationMetrics,
+                                                           controller,
+                                                           rollingUpdateManager,
+                                                           alertManager,
+                                                           appHttpServer,
+                                                           ttmManager,
+                                                           rollbackManager,
+                                                           snapshotCollector,
+                                                           artifactMetricsCollector,
+                                                           eventLoopMetricsCollector,
+                                                           Option.some(managementServer),
+                                                           startTimeMs);
                                  }
                                  return node;
                              });

@@ -64,10 +64,10 @@ public final class ControllerRoutes implements RouteSource {
 
     private Promise<ControllerConfigUpdatedResponse> handleControllerConfig(ControllerConfigRequest req) {
         var node = nodeSupplier.get();
-        var currentConfig = node.controller()
+        var currentConfig = node.controlLoop()
                                 .configuration();
         return mergeConfig(req, currentConfig).async()
-                          .withSuccess(node.controller()::updateConfiguration)
+                          .withSuccess(node.controlLoop()::updateConfiguration)
                           .map(newConfig -> new ControllerConfigUpdatedResponse("updated", newConfig));
     }
 
@@ -93,13 +93,13 @@ public final class ControllerRoutes implements RouteSource {
 
     private ControllerConfig buildControllerConfigResponse() {
         return nodeSupplier.get()
-                           .controller()
+                           .controlLoop()
                            .configuration();
     }
 
     private ControllerStatusResponse buildControllerStatusResponse() {
         var node = nodeSupplier.get();
-        var config = node.controller()
+        var config = node.controlLoop()
                          .configuration();
         return new ControllerStatusResponse(true, config.evaluationIntervalMs(), config);
     }

@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -213,6 +214,11 @@ class RollbackManagerTest {
         @Override
         public NodeId self() {
             return self;
+        }
+
+        @Override
+        public TopologyManager topologyManager() {
+            return null;
         }
 
         @Override

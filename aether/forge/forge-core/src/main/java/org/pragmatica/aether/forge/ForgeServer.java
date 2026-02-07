@@ -108,7 +108,7 @@ public final class ForgeServer {
                             .map(ForgeConfig::load)
                             .map(r -> r.onFailure(c -> log.error("Failed to load forge config: {}",
                                                                   c.message()))
-                                       .or(ForgeConfig.defaultConfig()))
+                                       .or(ForgeConfig.DEFAULT))
                             .or(createDefaultForgeConfig(startupConfig));
     }
 
@@ -117,7 +117,7 @@ public final class ForgeServer {
         return ForgeConfig.forgeConfig(startupConfig.clusterSize(),
                                        ForgeConfig.DEFAULT_MANAGEMENT_PORT,
                                        startupConfig.port())
-                          .or(ForgeConfig.defaultConfig());
+                          .or(ForgeConfig.DEFAULT);
     }
 
     private static void printBanner(ForgeConfig forgeConfig, StartupConfig startupConfig) {
@@ -127,9 +127,6 @@ public final class ForgeServer {
         log.info("  Dashboard: http://localhost:{}", forgeConfig.dashboardPort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
         log.info("  App HTTP port: {} (load target)", forgeConfig.appHttpPort());
-        if (forgeConfig.autoHealEnabled()) {
-            log.info("  Auto-heal: enabled");
-        }
         if (forgeConfig.h2Config().enabled()) {
             log.info("  H2 Database: port {} ({})",
                      forgeConfig.h2Config().port(),
@@ -170,7 +167,6 @@ public final class ForgeServer {
                                                         forgeConfig.managementPort(),
                                                         forgeConfig.appHttpPort(),
                                                         "node",
-                                                        forgeConfig.autoHealEnabled(),
                                                         configProvider);
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
         var loadGeneratorInstance = LoadGenerator.loadGenerator(forgeConfig.appHttpPort(),

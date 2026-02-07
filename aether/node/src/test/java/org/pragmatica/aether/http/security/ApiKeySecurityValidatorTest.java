@@ -11,6 +11,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 class ApiKeySecurityValidatorTest {
     private static final String VALID_KEY = "test-api-key-12345";
@@ -23,7 +24,7 @@ class ApiKeySecurityValidatorTest {
         var request = createRequest(Map.of());
 
         validator.validate(request, RouteSecurityPolicy.publicRoute())
-                 .onFailureRun(Assertions::fail)
+                 .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
                      assertThat(context.isAuthenticated()).isFalse();
                      assertThat(context.principal().isAnonymous()).isTrue();
@@ -36,7 +37,7 @@ class ApiKeySecurityValidatorTest {
         var request = createRequest(Map.of("X-API-Key", List.of(VALID_KEY)));
 
         validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
-                 .onFailureRun(Assertions::fail)
+                 .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
                      assertThat(context.isAuthenticated()).isTrue();
                      assertThat(context.principal().isApiKey()).isTrue();
@@ -50,7 +51,7 @@ class ApiKeySecurityValidatorTest {
         var request = createRequest(Map.of("X-API-Key", List.of(INVALID_KEY)));
 
         validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
-                 .onSuccessRun(Assertions::fail)
+                 .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> {
                      assertThat(cause).isInstanceOf(SecurityError.InvalidCredentials.class);
                      assertThat(cause.message()).contains("Invalid API key");
@@ -63,7 +64,7 @@ class ApiKeySecurityValidatorTest {
         var request = createRequest(Map.of());
 
         validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
-                 .onSuccessRun(Assertions::fail)
+                 .onSuccessRun(() -> fail("Expected failure"))
                  .onFailure(cause -> {
                      assertThat(cause).isInstanceOf(SecurityError.MissingCredentials.class);
                      assertThat(cause.message()).contains("X-API-Key");
@@ -76,7 +77,7 @@ class ApiKeySecurityValidatorTest {
         var request = createRequest(Map.of("x-api-key", List.of(VALID_KEY)));
 
         validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
-                 .onFailureRun(Assertions::fail)
+                 .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
                      assertThat(context.isAuthenticated()).isTrue();
                  });
@@ -88,7 +89,7 @@ class ApiKeySecurityValidatorTest {
         var request = createRequest(Map.of());
 
         validator.validate(request, RouteSecurityPolicy.apiKeyRequired())
-                 .onFailureRun(Assertions::fail)
+                 .onFailureRun(() -> fail("Expected success"))
                  .onSuccess(context -> {
                      assertThat(context).isEqualTo(SecurityContext.anonymous());
                  });

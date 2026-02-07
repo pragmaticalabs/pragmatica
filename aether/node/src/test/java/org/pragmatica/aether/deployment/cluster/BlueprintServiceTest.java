@@ -1,6 +1,5 @@
 package org.pragmatica.aether.deployment.cluster;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -14,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 class BlueprintServiceTest {
 
@@ -57,7 +58,7 @@ class BlueprintServiceTest {
 
             service.publish(dsl)
                    .await()
-                   .onSuccessRun(Assertions::fail)
+                   .onSuccessRun(() -> fail("Expected failure"))
                    .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }
 
@@ -70,7 +71,7 @@ class BlueprintServiceTest {
 
             service.publish(dsl)
                    .await()
-                   .onSuccessRun(Assertions::fail)
+                   .onSuccessRun(() -> fail("Expected failure"))
                    .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }
     }
@@ -158,7 +159,7 @@ class BlueprintServiceTest {
 
             service.delete(blueprintId)
                    .await()
-                   .onFailureRun(Assertions::fail);
+                   .onFailureRun(() -> fail("Expected success"));
 
             var result = service.get(blueprintId);
             assertThat(result.isPresent()).isFalse();
@@ -170,7 +171,7 @@ class BlueprintServiceTest {
 
             service.delete(id)
                    .await()
-                   .onFailureRun(Assertions::fail);
+                   .onFailureRun(() -> fail("Expected success"));
         }
     }
 
@@ -191,7 +192,7 @@ class BlueprintServiceTest {
                     """;
 
             service.validate(dsl)
-                   .onFailure(cause -> Assertions.fail("Expected success but got: " + cause.message()))
+                   .onFailure(cause -> fail("Expected success but got: " + cause.message()))
                    .onSuccess(blueprint -> {
                        assertThat(blueprint.id().asString()).isEqualTo("org.example:my-app:1.0.0");
                        assertThat(blueprint.slices()).hasSize(2);
@@ -203,7 +204,7 @@ class BlueprintServiceTest {
             var dsl = "invalid blueprint";
 
             service.validate(dsl)
-                   .onSuccessRun(Assertions::fail)
+                   .onSuccessRun(() -> fail("Expected failure"))
                    .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }
 
@@ -216,7 +217,7 @@ class BlueprintServiceTest {
                     """;
 
             service.validate(dsl)
-                   .onSuccessRun(Assertions::fail)
+                   .onSuccessRun(() -> fail("Expected failure"))
                    .onFailure(cause -> assertThat(cause.message()).contains("Missing"));
         }
 
@@ -231,7 +232,7 @@ class BlueprintServiceTest {
                     """;
 
             service.validate(dsl)
-                   .onSuccessRun(Assertions::fail)
+                   .onSuccessRun(() -> fail("Expected failure"))
                    .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }
     }
@@ -247,6 +248,11 @@ class BlueprintServiceTest {
         @Override
         public NodeId self() {
             return NodeId.nodeId("test-node").unwrap();
+        }
+
+        @Override
+        public TopologyManager topologyManager() {
+            return null;
         }
 
         @Override

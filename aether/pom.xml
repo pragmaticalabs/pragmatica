@@ -49,6 +49,7 @@
         <module>aether-setup</module>
         <module>dashboard</module>
         <module>slice-api</module>
+        <module>node-provider</module>
         <module>infra-api</module>
         <module>infra-slices</module>
         <module>slice</module>
@@ -175,6 +176,12 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>slice-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>node-provider</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

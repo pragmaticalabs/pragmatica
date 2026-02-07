@@ -15,6 +15,7 @@ import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.*;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -475,6 +476,11 @@ class NodeDeploymentManagerTest {
         @Override
         public NodeId self() {
             return self;
+        }
+
+        @Override
+        public TopologyManager topologyManager() {
+            return null;
         }
 
         @Override

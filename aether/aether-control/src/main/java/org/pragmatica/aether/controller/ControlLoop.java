@@ -85,82 +85,19 @@ public interface ControlLoop {
     void unregisterBlueprint(Artifact artifact);
 
     /**
+     * Get current controller configuration.
+     */
+    ControllerConfig configuration();
+
+    /**
+     * Update controller configuration at runtime.
+     */
+    void updateConfiguration(ControllerConfig config);
+
+    /**
      * Stop the control loop.
      */
     void stop();
-
-    static ControlLoop controlLoop(NodeId self,
-                                   ClusterController controller,
-                                   MetricsCollector metricsCollector,
-                                   ClusterNode<KVCommand<AetherKey>> cluster,
-                                   TimeSpan interval,
-                                   ControllerConfig config) {
-        return controlLoop(self, controller, metricsCollector, Option.none(), cluster, interval, config);
-    }
-
-    /**
-     * Create with invocation metrics collector for active invocation tracking.
-     */
-    static ControlLoop controlLoop(NodeId self,
-                                   ClusterController controller,
-                                   MetricsCollector metricsCollector,
-                                   InvocationMetricsCollector invocationMetricsCollector,
-                                   ClusterNode<KVCommand<AetherKey>> cluster,
-                                   TimeSpan interval,
-                                   ControllerConfig config) {
-        return controlLoop(self,
-                           controller,
-                           metricsCollector,
-                           Option.option(invocationMetricsCollector),
-                           cluster,
-                           interval,
-                           config);
-    }
-
-    /**
-     * Create with default 5-second interval and default config.
-     */
-    static ControlLoop controlLoop(NodeId self,
-                                   ClusterController controller,
-                                   MetricsCollector metricsCollector,
-                                   ClusterNode<KVCommand<AetherKey>> cluster) {
-        return controlLoop(self,
-                           controller,
-                           metricsCollector,
-                           cluster,
-                           TimeSpan.timeSpan(5)
-                                   .seconds(),
-                           ControllerConfig.defaultConfig());
-    }
-
-    /**
-     * Create with custom interval and default config.
-     */
-    static ControlLoop controlLoop(NodeId self,
-                                   ClusterController controller,
-                                   MetricsCollector metricsCollector,
-                                   ClusterNode<KVCommand<AetherKey>> cluster,
-                                   TimeSpan interval) {
-        return controlLoop(self, controller, metricsCollector, cluster, interval, ControllerConfig.defaultConfig());
-    }
-
-    /**
-     * Create with invocation metrics and default config.
-     */
-    static ControlLoop controlLoop(NodeId self,
-                                   ClusterController controller,
-                                   MetricsCollector metricsCollector,
-                                   InvocationMetricsCollector invocationMetricsCollector,
-                                   ClusterNode<KVCommand<AetherKey>> cluster) {
-        return controlLoop(self,
-                           controller,
-                           metricsCollector,
-                           invocationMetricsCollector,
-                           cluster,
-                           TimeSpan.timeSpan(5)
-                                   .seconds(),
-                           ControllerConfig.defaultConfig());
-    }
 
     static ControlLoop controlLoop(NodeId self,
                                    ClusterController controller,
@@ -175,7 +112,7 @@ public interface ControlLoop {
                            Option<InvocationMetricsCollector> invocationMetricsCollector,
                            ClusterNode<KVCommand<AetherKey>> cluster,
                            TimeSpan interval,
-                           ControllerConfig config,
+                           AtomicReference<ControllerConfig> configRef,
                            CompositeLoadFactor compositeLoadFactor,
                            AtomicReference<ScheduledFuture<?>> evaluationTask,
                            AtomicReference<List<NodeId>> topology,
@@ -221,12 +158,10 @@ public interface ControlLoop {
                                   .key();
                 var value = valuePut.cause()
                                     .value();
-                if (key instanceof SliceTargetKey sliceTargetKey && value instanceof SliceTargetValue sliceTargetValue) {
-                    var artifact = sliceTargetKey.artifactBase()
-                                                 .withVersion(sliceTargetValue.currentVersion());
-                    registerBlueprint(artifact, sliceTargetValue.targetInstances());
-                } else if (key instanceof SliceNodeKey sliceNodeKey && value instanceof SliceNodeValue sliceNodeValue) {
-                    handleSliceStateChange(sliceNodeKey, sliceNodeValue.state());
+                switch (key) {
+                    case SliceTargetKey(var artifactBase) when value instanceof SliceTargetValue sliceTargetValue -> registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()), sliceTargetValue.targetInstances());
+                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue(SliceState state) -> handleSliceStateChange(sliceNodeKey, state);
+                    case null, default -> {}
                 }
             }
 
@@ -234,16 +169,17 @@ public interface ControlLoop {
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
                 var key = valueRemove.cause()
                                      .key();
-                if (key instanceof SliceTargetKey sliceTargetKey) {
-                    blueprints.keySet()
-                              .stream()
-                              .filter(artifact -> sliceTargetKey.artifactBase()
-                                                                .matches(artifact))
-                              .findFirst()
-                              .ifPresent(this::unregisterBlueprint);
-                } else if (key instanceof SliceNodeKey sliceNodeKey) {
-                    sliceStates.remove(sliceNodeKey);
-                    log.debug("Removed slice state tracking for {}", sliceNodeKey);
+                switch (key) {
+                    case SliceTargetKey(var artifactBase) -> blueprints.keySet()
+                                                                       .stream()
+                                                                       .filter(artifactBase::matches)
+                                                                       .findFirst()
+                                                                       .ifPresent(this::unregisterBlueprint);
+                    case SliceNodeKey sliceNodeKey -> {
+                        sliceStates.remove(sliceNodeKey);
+                        log.debug("Removed slice state tracking for {}", sliceNodeKey);
+                    }
+                    case null, default -> {}
                 }
             }
 
@@ -260,6 +196,16 @@ public interface ControlLoop {
             }
 
             @Override
+            public ControllerConfig configuration() {
+                return configRef.get();
+            }
+
+            @Override
+            public void updateConfiguration(ControllerConfig config) {
+                configRef.set(config);
+            }
+
+            @Override
             public void stop() {
                 stopEvaluation();
             }
@@ -271,15 +217,13 @@ public interface ControlLoop {
             }
 
             private void stopEvaluation() {
-                var existing = evaluationTask.getAndSet(null);
-                if (existing != null) {
-                    existing.cancel(false);
-                }
+                Option.option(evaluationTask.getAndSet(null))
+                      .onPresent(existing -> existing.cancel(false));
             }
 
             private void runEvaluation() {
                 // Scheduler boundary - generic catch prevents scheduler thread death
-                try{
+                try {
                     if (blueprints.isEmpty()) {
                         log.trace("No blueprints registered, skipping evaluation");
                         return;
@@ -303,6 +247,7 @@ public interface ControlLoop {
 
             private void evaluateScalingDecisions(Map<ScalingMetric, Double> currentMetrics) {
                 var loadFactorResult = computeLoadFactorWithCurrentValues(currentMetrics);
+                cleanupExpiredCooldowns();
                 var guardResult = checkGuardRails(loadFactorResult);
                 if (guardResult.isPresent()) {
                     guardResult.onPresent(reason -> log.debug("Auto-scaling blocked: {}", reason));
@@ -326,7 +271,6 @@ public interface ControlLoop {
                 if (sliceInProgress.isPresent()) {
                     return sliceInProgress;
                 }
-                cleanupExpiredCooldowns();
                 return checkLegacyScalingBlocked();
             }
 
@@ -400,7 +344,7 @@ public interface ControlLoop {
                     log.trace("No scaling decisions");
                     return;
                 }
-                var scalingConfig = config.scalingConfig();
+                var scalingConfig = configRef.get().scalingConfig();
                 var errorRateHigh = compositeLoadFactor.isErrorRateHigh();
                 for (var change : decisions.changes()) {
                     var shouldApply = shouldApplyScalingDecision(change, loadFactorResult, scalingConfig, errorRateHigh);
@@ -474,14 +418,15 @@ public interface ControlLoop {
             private Option<String> checkLegacyScalingBlocked() {
                 var now = System.currentTimeMillis();
                 var activation = activationTime.get();
-                if (activation != null && (now - activation) < config.warmUpPeriodMs()) {
-                    var remaining = config.warmUpPeriodMs() - (now - activation);
+                var currentConfig = configRef.get();
+                if (activation != null && (now - activation) < currentConfig.warmUpPeriodMs()) {
+                    var remaining = currentConfig.warmUpPeriodMs() - (now - activation);
                     return Option.some("Warm-up period active (" + remaining + "ms remaining)");
                 }
                 for (var entry : sliceActivationTimes.entrySet()) {
                     var elapsed = now - entry.getValue();
-                    if (elapsed < config.sliceCooldownMs()) {
-                        var remaining = config.sliceCooldownMs() - elapsed;
+                    if (elapsed < currentConfig.sliceCooldownMs()) {
+                        var remaining = currentConfig.sliceCooldownMs() - elapsed;
                         return Option.some("Slice " + entry.getKey() + " in cooldown (" + remaining + "ms remaining)");
                     }
                 }
@@ -489,7 +434,7 @@ public interface ControlLoop {
             }
 
             private boolean isSliceCooldownExpired(Map.Entry<Artifact, Long> entry, long now) {
-                return (now - entry.getValue()) >= config.sliceCooldownMs();
+                return (now - entry.getValue()) >= configRef.get().sliceCooldownMs();
             }
 
             private void applyChange(BlueprintChange change) {
@@ -552,7 +497,7 @@ public interface ControlLoop {
 
             private void handleSliceStateChange(SliceNodeKey sliceNodeKey, SliceState newState) {
                 var previousState = sliceStates.put(sliceNodeKey, newState);
-                if (newState == SliceState.ACTIVE && (previousState == null || previousState != SliceState.ACTIVE)) {
+                if (newState == SliceState.ACTIVE && previousState != SliceState.ACTIVE) {
                     sliceActivationTimes.put(sliceNodeKey.artifact(), System.currentTimeMillis());
                     log.debug("Slice {} reached ACTIVE, cooldown started", sliceNodeKey.artifact());
                 }
@@ -567,7 +512,7 @@ public interface ControlLoop {
                                invocationMetricsCollector,
                                cluster,
                                interval,
-                               config,
+                               new AtomicReference<>(config),
                                CompositeLoadFactor.compositeLoadFactor(config.scalingConfig()),
                                new AtomicReference<>(),
                                new AtomicReference<>(List.of()),
