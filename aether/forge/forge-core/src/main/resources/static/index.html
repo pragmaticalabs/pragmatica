@@ -10,19 +10,6 @@
 </head>
 <body>
     <div class="container">
-        <!-- Header -->
-        <header class="header">
-            <h1>AETHER FORGE</h1>
-            <div class="header-stats"
-                 hx-get="/api/view/header"
-                 hx-trigger="load, every 2s"
-                 hx-swap="innerHTML">
-                <span class="stat"><span class="stat-label">Uptime:</span><span class="stat-value">0:00</span></span>
-                <span class="stat"><span class="stat-label">Nodes:</span><span class="stat-value">0</span></span>
-                <span class="stat"><span class="stat-label">Slices:</span><span class="stat-value">0</span></span>
-            </div>
-        </header>
-
         <!-- Navigation Tabs -->
         <nav class="nav-tabs">
             <button class="nav-tab active" data-tab="overview"
@@ -40,6 +27,10 @@
                     hx-target="#tab-content"
                     hx-swap="innerHTML"
                     onclick="switchTab(this)">Alerts</button>
+            <span class="nav-uptime"
+                  hx-get="/api/view/uptime"
+                  hx-trigger="load, every 2s"
+                  hx-swap="innerHTML">0:00</span>
         </nav>
 
         <!-- Tab Content (loaded lazily via HTMX) -->

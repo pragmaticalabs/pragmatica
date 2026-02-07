@@ -37,44 +37,29 @@ body {
     min-height: 100vh;
 }
 
-/* Header */
-.header {
+/* Nav Uptime */
+.nav-uptime {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--accent-cyan);
+    padding: 8px 12px;
+    display: flex;
+    align-items: center;
+}
+
+/* Panel Header (h2 with right-aligned badge) */
+.panel-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    padding: 8px 16px;
-    background: var(--bg-card);
-    border-radius: 6px;
-    border: 1px solid var(--border-color);
 }
 
-.header h1 {
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: 1px;
+.panel-badge {
+    font-size: 10px;
+    font-weight: 500;
     color: var(--accent-cyan);
-}
-
-.header-stats {
-    display: flex;
-    gap: 20px;
-}
-
-.stat {
-    display: flex;
-    gap: 6px;
-    align-items: center;
-}
-
-.stat-label {
-    color: var(--text-muted);
-    font-size: 11px;
-}
-
-.stat-value {
     font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--accent-cyan);
 }
 
 /* Navigation Tabs */

@@ -36,7 +36,7 @@ public sealed interface ViewRoutes {
                                    Option<Path> loadConfigPath) {
         var http = JdkHttpOperations.jdkHttpOperations();
         return in("/api/view")
-        .serve(headerRoute(cluster, startTime),
+        .serve(uptimeRoute(startTime),
                overviewRoute(),
                nodesRoute(cluster),
                slicesRoute(cluster),
@@ -48,27 +48,18 @@ public sealed interface ViewRoutes {
                alertHistoryRoute(cluster, http));
     }
 
-    // ========== Header Stats ==========
-    private static Route<String> headerRoute(ForgeCluster cluster, long startTime) {
-        return Route.<String> get("/header")
-                    .to(_ -> Promise.success(renderHeader(cluster, startTime)))
+    // ========== Uptime ==========
+    private static Route<String> uptimeRoute(long startTime) {
+        return Route.<String> get("/uptime")
+                    .to(_ -> Promise.success(renderUptime(startTime)))
                     .as(CommonContentTypes.TEXT_HTML);
     }
 
-    private static String renderHeader(ForgeCluster cluster, long startTime) {
+    private static String renderUptime(long startTime) {
         var uptimeSeconds = (System.currentTimeMillis() - startTime) / 1000;
         var mins = uptimeSeconds / 60;
         var secs = uptimeSeconds % 60;
-        var uptime = mins + ":" + String.format("%02d", secs);
-        var nodeCount = cluster.nodeCount();
-        var sliceCount = cluster.slicesStatus().stream()
-                                .filter(s -> "ACTIVE".equals(s.state()))
-                                .count();
-        return """
-            <span class="stat"><span class="stat-label">Uptime:</span><span class="stat-value">%s</span></span>
-            <span class="stat"><span class="stat-label">Nodes:</span><span class="stat-value">%d</span></span>
-            <span class="stat"><span class="stat-label">Slices:</span><span class="stat-value">%d</span></span>
-            """.formatted(uptime, nodeCount, sliceCount);
+        return mins + ":" + String.format("%02d", secs);
     }
 
     // ========== Overview Tab Shell ==========
@@ -82,25 +73,23 @@ public sealed interface ViewRoutes {
         return """
             <div class="overview-grid">
                 <div class="left-column">
-                    <div class="panel panel-grow">
+                    <div class="panel panel-grow"
+                         id="nodes-panel"
+                         hx-get="/api/view/overview/nodes"
+                         hx-trigger="load, every 1s"
+                         hx-swap="innerHTML">
                         <h2>Cluster Nodes</h2>
-                        <div id="nodes-list" class="nodes-list"
-                             hx-get="/api/view/overview/nodes"
-                             hx-trigger="load, every 1s"
-                             hx-swap="innerHTML">
-                            <div class="node-item placeholder">Loading...</div>
-                        </div>
+                        <div class="node-item placeholder">Loading...</div>
                     </div>
                 </div>
                 <div class="right-column">
-                    <div class="panel">
+                    <div class="panel"
+                         id="slices-panel"
+                         hx-get="/api/view/overview/slices"
+                         hx-trigger="load, every 3s"
+                         hx-swap="innerHTML">
                         <h2>Slices Status</h2>
-                        <div id="slices-status" class="slices-content"
-                             hx-get="/api/view/overview/slices"
-                             hx-trigger="load, every 3s"
-                             hx-swap="innerHTML">
-                            <div class="placeholder">Loading...</div>
-                        </div>
+                        <div class="placeholder">Loading...</div>
                     </div>
                     <div class="panel">
                         <h2>Metrics</h2>
@@ -153,10 +142,14 @@ public sealed interface ViewRoutes {
         var status = cluster.status();
         var nodeMetrics = cluster.nodeMetrics();
         var slicesStatus = cluster.slicesStatus();
-        if (status.nodes().isEmpty()) {
-            return "<div class=\"node-item placeholder\">No nodes available</div>";
-        }
+        var targetSize = cluster.effectiveClusterSize();
         var sb = new StringBuilder();
+        sb.append("<h2 class=\"panel-header\">Cluster Nodes<span class=\"panel-badge\">Target Size: ")
+          .append(targetSize).append("</span></h2>");
+        if (status.nodes().isEmpty()) {
+            sb.append("<div class=\"node-item placeholder\">No nodes available</div>");
+            return sb.toString();
+        }
         var sortedNodes = status.nodes().stream()
                                 .sorted((a, b) -> a.isLeader() ? -1 : b.isLeader() ? 1 : a.id().compareTo(b.id()))
                                 .toList();
@@ -208,10 +201,14 @@ public sealed interface ViewRoutes {
 
     private static String renderSlices(ForgeCluster cluster) {
         var slices = cluster.slicesStatus();
-        if (slices.isEmpty()) {
-            return "<div class=\"placeholder\">No slices deployed</div>";
-        }
+        var activeCount = slices.stream().filter(s -> "ACTIVE".equals(s.state())).count();
         var sb = new StringBuilder();
+        sb.append("<h2 class=\"panel-header\">Slices Status<span class=\"panel-badge\">")
+          .append(activeCount).append(" active</span></h2>");
+        if (slices.isEmpty()) {
+            sb.append("<div class=\"placeholder\">No slices deployed</div>");
+            return sb.toString();
+        }
         for (var slice : slices) {
             var stateClass = "ACTIVE".equals(slice.state()) ? ""
                              : "LOADING".equals(slice.state()) || "ACTIVATING".equals(slice.state()) ? " loading" : " failed";
