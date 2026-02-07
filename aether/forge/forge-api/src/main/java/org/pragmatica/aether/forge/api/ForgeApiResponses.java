@@ -36,7 +36,11 @@ public final class ForgeApiResponses {
                                      MetricsInfo metrics,
                                      LoadInfo load,
                                      long uptimeSeconds,
-                                     int sliceCount) {}
+                                     int sliceCount,
+                                     int targetClusterSize,
+                                     List<NodeMetricsResponse> nodeMetrics,
+                                     List<SliceStatusInfo> slices,
+                                     List<LoadRunnerTargetInfo> loadTargets) {}
 
     /**
      * Cluster information including all nodes.
@@ -52,6 +56,19 @@ public final class ForgeApiResponses {
                            int port,
                            String state,
                            boolean isLeader) {}
+
+    /**
+     * Slice status information for the full status response.
+     */
+    public record SliceStatusInfo(String artifact,
+                                  String state,
+                                  List<SliceInstanceInfo> instances) {}
+
+    /**
+     * Individual slice instance on a node.
+     */
+    public record SliceInstanceInfo(String nodeId,
+                                    String state) {}
 
     /**
      * Aggregated metrics information.

@@ -1,9 +1,6 @@
 package org.pragmatica.aether.forge.api;
 
 import org.pragmatica.aether.forge.ForgeCluster;
-import org.pragmatica.aether.forge.ForgeMetrics;
-import org.pragmatica.aether.forge.api.ForgeApiResponses.ForgeEvent;
-import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.http.JdkHttpOperations;
 import org.pragmatica.http.routing.CommonContentTypes;
 import org.pragmatica.http.routing.Route;
@@ -17,49 +14,26 @@ import java.net.http.HttpRequest;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
-import java.util.Deque;
 
 import static org.pragmatica.http.routing.Route.in;
 
 /**
- * HTML fragment endpoints for HTMX-driven dashboard.
- * Each endpoint returns server-rendered HTML that HTMX swaps into the page.
+ * HTML view endpoints for the dashboard.
+ * Returns static shell HTML with placeholder divs that client-side JS populates
+ * via a single /api/status fetch.
  */
 public sealed interface ViewRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 
     static RouteSource viewRoutes(ForgeCluster cluster,
-                                   ForgeMetrics metrics,
-                                   ConfigurableLoadRunner loadRunner,
-                                   Deque<ForgeEvent> events,
-                                   long startTime,
                                    Option<Path> loadConfigPath) {
         var http = JdkHttpOperations.jdkHttpOperations();
         return in("/api/view")
-        .serve(uptimeRoute(startTime),
-               overviewRoute(),
-               nodesRoute(cluster),
-               slicesRoute(cluster),
-               metricsRoute(cluster, http),
+        .serve(overviewRoute(),
                loadTabRoute(loadConfigPath),
-               loadStatusRoute(loadRunner),
                alertsTabRoute(),
                activeAlertsRoute(cluster, http),
                alertHistoryRoute(cluster, http));
-    }
-
-    // ========== Uptime ==========
-    private static Route<String> uptimeRoute(long startTime) {
-        return Route.<String> get("/uptime")
-                    .to(_ -> Promise.success(renderUptime(startTime)))
-                    .as(CommonContentTypes.TEXT_HTML);
-    }
-
-    private static String renderUptime(long startTime) {
-        var uptimeSeconds = (System.currentTimeMillis() - startTime) / 1000;
-        var mins = uptimeSeconds / 60;
-        var secs = uptimeSeconds % 60;
-        return mins + ":" + String.format("%02d", secs);
     }
 
     // ========== Overview Tab Shell ==========
@@ -73,30 +47,23 @@ public sealed interface ViewRoutes {
         return """
             <div class="overview-grid">
                 <div class="left-column">
-                    <div class="panel panel-grow"
-                         id="nodes-panel"
-                         hx-get="/api/view/overview/nodes"
-                         hx-trigger="load, every 1s"
-                         hx-swap="innerHTML">
-                        <h2>Cluster Nodes</h2>
-                        <div class="node-item placeholder">Loading...</div>
+                    <div class="panel panel-grow">
+                        <h2 class="panel-header" id="nodes-header">Cluster Nodes</h2>
+                        <div id="nodes-list" class="nodes-list">
+                            <div class="node-item placeholder">Loading...</div>
+                        </div>
                     </div>
                 </div>
                 <div class="right-column">
-                    <div class="panel"
-                         id="slices-panel"
-                         hx-get="/api/view/overview/slices"
-                         hx-trigger="load, every 3s"
-                         hx-swap="innerHTML">
-                        <h2>Slices Status</h2>
-                        <div class="placeholder">Loading...</div>
+                    <div class="panel">
+                        <h2 class="panel-header" id="slices-header">Slices Status</h2>
+                        <div id="slices-content" class="slices-content">
+                            <div class="placeholder">Loading...</div>
+                        </div>
                     </div>
                     <div class="panel">
                         <h2>Metrics</h2>
-                        <div id="comprehensive-metrics" class="config-content"
-                             hx-get="/api/view/overview/metrics"
-                             hx-trigger="load, every 3s"
-                             hx-swap="innerHTML">
+                        <div id="metrics-content" class="config-content">
                             <div class="placeholder">Loading...</div>
                         </div>
                     </div>
@@ -129,208 +96,6 @@ public sealed interface ViewRoutes {
                  hx-swap="innerHTML">
             </div>
             """;
-    }
-
-    // ========== Cluster Nodes Fragment ==========
-    private static Route<String> nodesRoute(ForgeCluster cluster) {
-        return Route.<String> get("/overview/nodes")
-                    .to(_ -> Promise.success(renderNodes(cluster)))
-                    .as(CommonContentTypes.TEXT_HTML);
-    }
-
-    private static String renderNodes(ForgeCluster cluster) {
-        var status = cluster.status();
-        var nodeMetrics = cluster.nodeMetrics();
-        var slicesStatus = cluster.slicesStatus();
-        var targetSize = cluster.effectiveClusterSize();
-        var sb = new StringBuilder();
-        sb.append("<h2 class=\"panel-header\">Cluster Nodes<span class=\"panel-badge\">Target Size: ")
-          .append(targetSize).append("</span></h2>");
-        if (status.nodes().isEmpty()) {
-            sb.append("<div class=\"node-item placeholder\">No nodes available</div>");
-            return sb.toString();
-        }
-        var sortedNodes = status.nodes().stream()
-                                .sorted((a, b) -> a.isLeader() ? -1 : b.isLeader() ? 1 : a.id().compareTo(b.id()))
-                                .toList();
-        for (var node : sortedNodes) {
-            var metrics = nodeMetrics.stream()
-                                     .filter(m -> m.nodeId().equals(node.id()))
-                                     .findFirst();
-            var cpu = metrics.map(m -> String.valueOf((int) (m.cpuUsage() * 100))).orElse("?");
-            var heap = metrics.map(m -> m.heapUsedMb() + "/" + m.heapMaxMb()).orElse("?/?");
-            var leaderClass = node.isLeader() ? " leader" : "";
-            sb.append("<div class=\"node-item").append(leaderClass).append("\">");
-            sb.append("<span class=\"node-id\">").append(escapeHtml(node.id())).append("</span>");
-            if (node.isLeader()) {
-                sb.append("<span class=\"leader-badge\">LEADER</span>");
-            }
-            sb.append("<span class=\"node-stats\"><span>CPU ").append(cpu).append("%</span>");
-            sb.append("<span>Heap ").append(heap).append("MB</span></span>");
-            // Render slice tags for this node
-            sb.append("<span class=\"node-slices\">");
-            var hasSlices = false;
-            for (var slice : slicesStatus) {
-                for (var inst : slice.instances()) {
-                    if (inst.nodeId().equals(node.id())) {
-                        var artifactParts = slice.artifact().split(":");
-                        var shortName = artifactParts.length >= 2 ? artifactParts[1] : slice.artifact();
-                        var stateClass = "ACTIVE".equals(inst.state()) ? "active"
-                                         : "LOADING".equals(inst.state()) ? "loading" : "inactive";
-                        sb.append("<span class=\"slice-tag ").append(stateClass)
-                          .append("\" title=\"").append(escapeHtml(inst.state())).append("\">")
-                          .append(escapeHtml(shortName)).append("</span>");
-                        hasSlices = true;
-                    }
-                }
-            }
-            if (!hasSlices) {
-                sb.append("<span class=\"no-slices\">No slices</span>");
-            }
-            sb.append("</span></div>");
-        }
-        return sb.toString();
-    }
-
-    // ========== Slices Status Fragment ==========
-    private static Route<String> slicesRoute(ForgeCluster cluster) {
-        return Route.<String> get("/overview/slices")
-                    .to(_ -> Promise.success(renderSlices(cluster)))
-                    .as(CommonContentTypes.TEXT_HTML);
-    }
-
-    private static String renderSlices(ForgeCluster cluster) {
-        var slices = cluster.slicesStatus();
-        var activeCount = slices.stream().filter(s -> "ACTIVE".equals(s.state())).count();
-        var sb = new StringBuilder();
-        sb.append("<h2 class=\"panel-header\">Slices Status<span class=\"panel-badge\">")
-          .append(activeCount).append(" active</span></h2>");
-        if (slices.isEmpty()) {
-            sb.append("<div class=\"placeholder\">No slices deployed</div>");
-            return sb.toString();
-        }
-        for (var slice : slices) {
-            var stateClass = "ACTIVE".equals(slice.state()) ? ""
-                             : "LOADING".equals(slice.state()) || "ACTIVATING".equals(slice.state()) ? " loading" : " failed";
-            sb.append("<div class=\"slice-item").append(stateClass).append("\">");
-            sb.append("<div class=\"slice-header\">");
-            sb.append("<span class=\"slice-artifact\">").append(escapeHtml(slice.artifact())).append("</span>");
-            sb.append("<span class=\"slice-state ").append(slice.state()).append("\">")
-              .append(slice.state()).append("</span>");
-            sb.append("</div>");
-            sb.append("<div class=\"slice-instances\">");
-            if (slice.instances().isEmpty()) {
-                sb.append("<span class=\"no-slices\">No instances</span>");
-            } else {
-                for (var inst : slice.instances()) {
-                    var healthClass = "ACTIVE".equals(inst.state()) ? " healthy" : "";
-                    sb.append("<span class=\"instance-badge").append(healthClass).append("\">")
-                      .append(escapeHtml(inst.nodeId())).append(": ").append(inst.state())
-                      .append("</span>");
-                }
-            }
-            sb.append("</div></div>");
-        }
-        return sb.toString();
-    }
-
-    // ========== Comprehensive Metrics Fragment ==========
-    private static Route<String> metricsRoute(ForgeCluster cluster, JdkHttpOperations http) {
-        return Route.<String> get("/overview/metrics")
-                    .to(_ -> renderMetrics(cluster, http))
-                    .as(CommonContentTypes.TEXT_HTML);
-    }
-
-    private static Promise<String> renderMetrics(ForgeCluster cluster, JdkHttpOperations http) {
-        return cluster.getLeaderManagementPort()
-                      .async(MetricsNotAvailable.INSTANCE)
-                      .flatMap(port -> sendGet(http, port, "/api/metrics/comprehensive"))
-                      .map(ViewRoutes::formatMetricsHtml)
-                      .recover(_ -> "<div class=\"placeholder\">Metrics not available (no leader)</div>");
-    }
-
-    private static String formatMetricsHtml(String jsonBody) {
-        var sb = new StringBuilder();
-        sb.append("<div class=\"metrics-grid\">");
-        appendMetricCard(sb, "CPU", formatPercent(extractDouble(jsonBody, "avgCpuUsage")), "cpu");
-        appendMetricCard(sb, "Heap", formatPercent(extractDouble(jsonBody, "avgHeapUsage")), "heap");
-        appendMetricCard(sb, "Avg Latency", formatMs(extractDouble(jsonBody, "avgLatencyMs")), "latency");
-        appendMetricCard(sb, "P50", formatMs(extractDouble(jsonBody, "latencyP50")), "latency");
-        appendMetricCard(sb, "P95", formatMs(extractDouble(jsonBody, "latencyP95")), "latency");
-        appendMetricCard(sb, "P99", formatMs(extractDouble(jsonBody, "latencyP99")), "latency");
-        appendMetricCard(sb, "Invocations", formatLong(extractLong(jsonBody, "totalInvocations")), "invocations");
-        appendMetricCard(sb, "Error Rate", formatPercent(extractDouble(jsonBody, "errorRate")), "error");
-        appendMetricCard(sb, "GC Pause", extractLong(jsonBody, "totalGcPauseMs") + "ms", "gc");
-        appendMetricCard(sb, "Event Loop Lag", formatMs(extractDouble(jsonBody, "avgEventLoopLagMs")), "lag");
-        appendMetricCard(sb, "Events", String.valueOf(extractLong(jsonBody, "eventCount")), "events");
-        appendMetricCard(sb, "Samples", String.valueOf(extractLong(jsonBody, "sampleCount")), "samples");
-        sb.append("</div>");
-        return sb.toString();
-    }
-
-    private static void appendMetricCard(StringBuilder sb, String label, String value, String cssClass) {
-        sb.append("<div class=\"mini-metric ").append(cssClass).append("\">");
-        sb.append("<span class=\"mini-metric-value\">").append(value).append("</span>");
-        sb.append("<span class=\"mini-metric-label\">").append(label).append("</span>");
-        sb.append("</div>");
-    }
-
-    private static double extractDouble(String json, String key) {
-        var search = "\"" + key + "\":";
-        var idx = json.indexOf(search);
-        if (idx < 0) {
-            return 0.0;
-        }
-        var start = idx + search.length();
-        var end = start;
-        while (end < json.length() && (Character.isDigit(json.charAt(end))
-                                        || json.charAt(end) == '.'
-                                        || json.charAt(end) == '-'
-                                        || json.charAt(end) == 'E'
-                                        || json.charAt(end) == 'e')) {
-            end++;
-        }
-        try {
-            return Double.parseDouble(json.substring(start, end));
-        } catch (NumberFormatException _) {
-            return 0.0;
-        }
-    }
-
-    private static long extractLong(String json, String key) {
-        var search = "\"" + key + "\":";
-        var idx = json.indexOf(search);
-        if (idx < 0) {
-            return 0;
-        }
-        var start = idx + search.length();
-        var end = start;
-        while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-')) {
-            end++;
-        }
-        try {
-            return Long.parseLong(json.substring(start, end));
-        } catch (NumberFormatException _) {
-            return 0;
-        }
-    }
-
-    private static String formatPercent(double ratio) {
-        return String.format("%.1f%%", ratio * 100);
-    }
-
-    private static String formatMs(double ms) {
-        return String.format("%.1fms", ms);
-    }
-
-    private static String formatLong(long value) {
-        if (value >= 1_000_000) {
-            return String.format("%.1fM", value / 1_000_000.0);
-        }
-        if (value >= 1_000) {
-            return String.format("%.1fK", value / 1_000.0);
-        }
-        return String.valueOf(value);
     }
 
     // ========== Load Testing Tab ==========
@@ -387,10 +152,7 @@ public sealed interface ViewRoutes {
                 </div>
                 <div class="panel panel-wide">
                     <h2>Per-Target Metrics</h2>
-                    <div id="load-metrics-container"
-                         hx-get="/api/view/load/status"
-                         hx-trigger="load, every 1s"
-                         hx-swap="innerHTML">
+                    <div id="load-metrics-container">
                         <div class="placeholder">No targets running</div>
                     </div>
                 </div>
@@ -406,39 +168,6 @@ public sealed interface ViewRoutes {
                 </div>
             </div>
             """.formatted(escapeHtml(configContent));
-    }
-
-    // ========== Load Runner Status Fragment ==========
-    private static Route<String> loadStatusRoute(ConfigurableLoadRunner loadRunner) {
-        return Route.<String> get("/load/status")
-                    .to(_ -> Promise.success(renderLoadStatus(loadRunner)))
-                    .as(CommonContentTypes.TEXT_HTML);
-    }
-
-    private static String renderLoadStatus(ConfigurableLoadRunner loadRunner) {
-        var targets = loadRunner.allTargetMetrics();
-        if (targets.isEmpty()) {
-            return "<div class=\"placeholder\">No targets running</div>";
-        }
-        var sb = new StringBuilder();
-        sb.append("<table class=\"load-metrics-table-inner\"><thead><tr>");
-        sb.append("<th>Target</th><th>Rate (actual/target)</th><th>Requests</th>");
-        sb.append("<th>Success</th><th>Failures</th><th>Success %</th><th>Avg Latency</th><th>Remaining</th>");
-        sb.append("</tr></thead><tbody>");
-        for (var entry : targets.values()) {
-            sb.append("<tr>");
-            sb.append("<td>").append(escapeHtml(entry.name())).append("</td>");
-            sb.append("<td>").append(entry.actualRate()).append(" / ").append(entry.targetRate()).append("</td>");
-            sb.append("<td>").append(entry.totalRequests()).append("</td>");
-            sb.append("<td class=\"success\">").append(entry.successCount()).append("</td>");
-            sb.append("<td class=\"error\">").append(entry.failureCount()).append("</td>");
-            sb.append("<td>").append(String.format("%.1f", entry.successRate())).append("%</td>");
-            sb.append("<td>").append(String.format("%.1f", entry.avgLatencyMs())).append("ms</td>");
-            sb.append("<td>").append(entry.remainingDuration().map(Object::toString).or("-")).append("</td>");
-            sb.append("</tr>");
-        }
-        sb.append("</tbody></table>");
-        return sb.toString();
     }
 
     // ========== Alerts Tab Shell ==========
@@ -504,9 +233,6 @@ public sealed interface ViewRoutes {
     }
 
     private static String formatAlertHtml(String jsonBody) {
-        // Render raw JSON response as pre-formatted text
-        // A proper implementation would parse JSON and render structured HTML,
-        // but this avoids adding a JSON parser dependency to the view layer
         if (jsonBody.contains("\"alerts\":[]") || jsonBody.contains("\"alerts\": []")) {
             return "<div class=\"no-alerts\">No alerts</div>";
         }

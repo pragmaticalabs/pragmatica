@@ -27,10 +27,7 @@
                     hx-target="#tab-content"
                     hx-swap="innerHTML"
                     onclick="switchTab(this)">Alerts</button>
-            <span class="nav-uptime"
-                  hx-get="/api/view/uptime"
-                  hx-trigger="load, every 2s"
-                  hx-swap="innerHTML">0:00</span>
+            <span class="nav-uptime" id="nav-uptime">0:00</span>
         </nav>
 
         <!-- Tab Content (loaded lazily via HTMX) -->

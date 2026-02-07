@@ -4,6 +4,7 @@ import org.pragmatica.aether.forge.ForgeCluster;
 import org.pragmatica.aether.forge.ForgeMetrics;
 import org.pragmatica.aether.forge.ForgeMetrics.MetricsSnapshot;
 import org.pragmatica.aether.forge.LoadGenerator;
+import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 
@@ -34,8 +35,9 @@ public final class StatusRoutes {
                                            LoadGenerator loadGenerator,
                                            ForgeMetrics metrics,
                                            Deque<ForgeEvent> events,
-                                           long startTime) {
-        return RouteSource.of(statusRoute(cluster, loadGenerator, metrics, startTime),
+                                           long startTime,
+                                           ConfigurableLoadRunner loadRunner) {
+        return RouteSource.of(statusRoute(cluster, loadGenerator, metrics, startTime, loadRunner),
                               nodeMetricsRoute(cluster),
                               eventsRoute(events),
                               healthRoute());
@@ -44,9 +46,10 @@ public final class StatusRoutes {
     private static Route<FullStatusResponse> statusRoute(ForgeCluster cluster,
                                                          LoadGenerator loadGenerator,
                                                          ForgeMetrics metrics,
-                                                         long startTime) {
+                                                         long startTime,
+                                                         ConfigurableLoadRunner loadRunner) {
         return Route.<FullStatusResponse> get("/api/status")
-                    .toJson(() -> buildFullStatus(cluster, loadGenerator, metrics, startTime));
+                    .toJson(() -> buildFullStatus(cluster, loadGenerator, metrics, startTime, loadRunner));
     }
 
     private static Route<List<NodeMetricsResponse>> nodeMetricsRoute(ForgeCluster cluster) {
@@ -68,7 +71,8 @@ public final class StatusRoutes {
     private static FullStatusResponse buildFullStatus(ForgeCluster cluster,
                                                       LoadGenerator loadGenerator,
                                                       ForgeMetrics metrics,
-                                                      long startTime) {
+                                                      long startTime,
+                                                      ConfigurableLoadRunner loadRunner) {
         var clusterStatus = cluster.status();
         var metricsSnapshot = metrics.currentMetrics();
         var nodeInfos = buildNodeInfos(clusterStatus);
@@ -77,7 +81,12 @@ public final class StatusRoutes {
         var loadInfo = buildLoadInfo(loadGenerator);
         var uptimeSeconds = uptimeSeconds(startTime);
         var sliceCount = countSlices(cluster);
-        return new FullStatusResponse(clusterInfo, metricsInfo, loadInfo, uptimeSeconds, sliceCount);
+        var targetClusterSize = cluster.effectiveClusterSize();
+        var nodeMetrics = buildNodeMetrics(cluster);
+        var slices = buildSliceStatusInfos(cluster);
+        var loadTargets = buildLoadTargets(loadRunner);
+        return new FullStatusResponse(clusterInfo, metricsInfo, loadInfo, uptimeSeconds, sliceCount,
+                                      targetClusterSize, nodeMetrics, slices, loadTargets);
     }
 
     private static List<NodeInfo> buildNodeInfos(ForgeCluster.ClusterStatus clusterStatus) {
@@ -124,6 +133,35 @@ public final class StatusRoutes {
                                                         m.heapUsedMb(),
                                                         m.heapMaxMb()))
                       .toList();
+    }
+
+    private static List<SliceStatusInfo> buildSliceStatusInfos(ForgeCluster cluster) {
+        return cluster.slicesStatus()
+                      .stream()
+                      .map(s -> new SliceStatusInfo(s.artifact(),
+                                                    s.state(),
+                                                    s.instances()
+                                                     .stream()
+                                                     .map(i -> new SliceInstanceInfo(i.nodeId(), i.state()))
+                                                     .toList()))
+                      .toList();
+    }
+
+    private static List<LoadRunnerTargetInfo> buildLoadTargets(ConfigurableLoadRunner loadRunner) {
+        return loadRunner.allTargetMetrics()
+                         .values()
+                         .stream()
+                         .map(t -> new LoadRunnerTargetInfo(t.name(),
+                                                            t.targetRate(),
+                                                            t.actualRate(),
+                                                            t.totalRequests(),
+                                                            t.successCount(),
+                                                            t.failureCount(),
+                                                            t.avgLatencyMs(),
+                                                            t.successRate(),
+                                                            t.remainingDuration()
+                                                             .map(Object::toString)))
+                         .toList();
     }
 
     private static List<ForgeEvent> buildEventsList(Deque<ForgeEvent> events) {

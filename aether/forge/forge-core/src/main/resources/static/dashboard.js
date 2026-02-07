@@ -1,39 +1,94 @@
-// Aether Forge - Dashboard Controller (HTMX + Chart.js)
+// Aether Forge - Dashboard Controller (Single-poll + Chart.js)
 
 // ===============================
 // State
 // ===============================
-let successChart = null;
-let throughputChart = null;
-let successHistory = [];
-let throughputHistory = [];
-const MAX_HISTORY = 60;
-let rollingRestartActive = false;
+var successChart = null;
+var throughputChart = null;
+var successHistory = [];
+var throughputHistory = [];
+var MAX_HISTORY = 60;
+var rollingRestartActive = false;
+var pollInterval = null;
 
 // ===============================
 // Tab Management
 // ===============================
 function switchTab(btn) {
-    document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.nav-tab').forEach(function(t) { t.classList.remove('active'); });
     btn.classList.add('active');
 }
 
-// Re-initialize charts when Overview tab loads
+// Re-initialize charts when Overview tab loads via HTMX
 document.body.addEventListener('htmx:afterSwap', function(event) {
     if (event.detail.target.id === 'tab-content') {
         var canvas = document.getElementById('success-chart');
         if (canvas) {
             initCharts();
-            startChartPolling();
         }
+        startPolling();
     }
 });
 
 // ===============================
-// Charts (Chart.js) - 500ms poll
+// Single Poll Loop (500ms)
 // ===============================
-let chartPollInterval = null;
+function startPolling() {
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = setInterval(poll, 500);
+    poll();
+}
 
+async function poll() {
+    try {
+        var response = await fetch('/api/status');
+        if (!response.ok) return;
+        var s = await response.json();
+        updateUptime(s.uptimeSeconds);
+        updatePerformance(s.metrics);
+        updateCharts(s.metrics);
+        updateNodes(s.cluster, s.nodeMetrics, s.slices, s.targetClusterSize);
+        updateSlices(s.slices);
+        updateMetrics(s.metrics, s.nodeMetrics);
+        updateLoadTargets(s.loadTargets);
+    } catch (e) { /* ignore */ }
+}
+
+// ===============================
+// Uptime
+// ===============================
+function updateUptime(secs) {
+    var el = document.getElementById('nav-uptime');
+    if (el) {
+        var m = Math.floor(secs / 60);
+        var ss = secs % 60;
+        el.textContent = m + ':' + (ss < 10 ? '0' : '') + ss;
+    }
+}
+
+// ===============================
+// Performance Cards
+// ===============================
+function updatePerformance(m) {
+    var rps = document.getElementById('requests-per-sec');
+    if (rps) rps.textContent = Math.round(m.requestsPerSecond).toLocaleString();
+
+    var sr = document.getElementById('success-rate');
+    if (sr) {
+        sr.textContent = m.successRate.toFixed(1) + '%';
+        var card = sr.closest('.metric-card');
+        var color = m.successRate >= 99 ? '#22c55e' : m.successRate >= 95 ? '#f59e0b' : '#ef4444';
+        if (card) card.style.borderColor = color;
+        sr.style.color = color;
+    }
+
+    var lat = document.getElementById('avg-latency');
+    if (lat) lat.textContent = m.avgLatencyMs.toFixed(1) + 'ms';
+}
+
+// ===============================
+// Charts (Chart.js)
+// ===============================
 function initCharts() {
     var chartOptions = {
         responsive: true,
@@ -61,7 +116,7 @@ function initCharts() {
                 fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5
             }]
         },
-        options: { ...chartOptions, scales: { ...chartOptions.scales, y: { ...chartOptions.scales.y, max: 100, ticks: { ...chartOptions.scales.y.ticks, callback: v => v + '%' } } } }
+        options: { ...chartOptions, scales: { ...chartOptions.scales, y: { ...chartOptions.scales.y, max: 100, ticks: { ...chartOptions.scales.y.ticks, callback: function(v) { return v + '%'; } } } } }
     });
 
     throughputChart = new Chart(document.getElementById('throughput-chart'), {
@@ -79,59 +134,193 @@ function initCharts() {
     });
 }
 
-function startChartPolling() {
-    if (chartPollInterval) clearInterval(chartPollInterval);
-    chartPollInterval = setInterval(pollCharts, 500);
-    pollCharts();
+function updateCharts(m) {
+    successHistory.push(m.successRate);
+    if (successHistory.length > MAX_HISTORY) successHistory.shift();
+    throughputHistory.push(m.requestsPerSecond);
+    if (throughputHistory.length > MAX_HISTORY) throughputHistory.shift();
+
+    if (successChart) {
+        successChart.data.labels = successHistory.map(function() { return ''; });
+        successChart.data.datasets[0].data = successHistory;
+        successChart.data.datasets[0].borderColor = m.successRate >= 99 ? '#22c55e' : m.successRate >= 95 ? '#f59e0b' : '#ef4444';
+        successChart.update('none');
+    }
+    if (throughputChart) {
+        throughputChart.data.labels = throughputHistory.map(function() { return ''; });
+        throughputChart.data.datasets[0].data = throughputHistory;
+        throughputChart.update('none');
+    }
 }
 
-async function pollCharts() {
-    if (!document.getElementById('success-chart')) {
-        clearInterval(chartPollInterval);
-        chartPollInterval = null;
+// ===============================
+// Cluster Nodes
+// ===============================
+function updateNodes(cluster, nodeMetrics, slices, targetSize) {
+    var header = document.getElementById('nodes-header');
+    if (header) {
+        header.innerHTML = 'Cluster Nodes<span class="panel-badge">Target Size: ' + targetSize + '</span>';
+    }
+    var list = document.getElementById('nodes-list');
+    if (!list) return;
+    if (!cluster.nodes.length) {
+        list.innerHTML = '<div class="node-item placeholder">No nodes available</div>';
         return;
     }
-    try {
-        var response = await fetch('/api/status');
-        if (!response.ok) return;
-        var status = await response.json();
-        var m = status.metrics;
+    var sorted = cluster.nodes.slice().sort(function(a, b) {
+        return a.isLeader ? -1 : b.isLeader ? 1 : a.id.localeCompare(b.id);
+    });
+    var html = '';
+    for (var i = 0; i < sorted.length; i++) {
+        var node = sorted[i];
+        var nm = findNodeMetrics(nodeMetrics, node.id);
+        var cpu = nm ? Math.round(nm.cpuUsage * 100) : '?';
+        var heap = nm ? (nm.heapUsedMb + '/' + nm.heapMaxMb) : '?/?';
+        var leaderCls = node.isLeader ? ' leader' : '';
+        html += '<div class="node-item' + leaderCls + '">';
+        html += '<span class="node-id">' + escapeHtml(node.id) + '</span>';
+        if (node.isLeader) html += '<span class="leader-badge">LEADER</span>';
+        html += '<span class="node-stats"><span>CPU ' + cpu + '%</span><span>Heap ' + heap + 'MB</span></span>';
+        html += '<span class="node-slices">' + renderNodeSlices(node.id, slices) + '</span>';
+        html += '</div>';
+    }
+    list.innerHTML = html;
+}
 
-        // Update metric cards
-        var rps = document.getElementById('requests-per-sec');
-        if (rps) rps.textContent = Math.round(m.requestsPerSecond).toLocaleString();
+function findNodeMetrics(nodeMetrics, nodeId) {
+    if (!nodeMetrics) return null;
+    for (var i = 0; i < nodeMetrics.length; i++) {
+        if (nodeMetrics[i].nodeId === nodeId) return nodeMetrics[i];
+    }
+    return null;
+}
 
-        var sr = document.getElementById('success-rate');
-        if (sr) {
-            sr.textContent = m.successRate.toFixed(1) + '%';
-            var card = sr.closest('.metric-card');
-            var color = m.successRate >= 99 ? '#22c55e' : m.successRate >= 95 ? '#f59e0b' : '#ef4444';
-            if (card) card.style.borderColor = color;
-            sr.style.color = color;
+function renderNodeSlices(nodeId, slices) {
+    if (!slices || !slices.length) return '<span class="no-slices">No slices</span>';
+    var html = '';
+    var found = false;
+    for (var i = 0; i < slices.length; i++) {
+        var slice = slices[i];
+        for (var j = 0; j < slice.instances.length; j++) {
+            if (slice.instances[j].nodeId === nodeId) {
+                var parts = slice.artifact.split(':');
+                var name = parts.length >= 2 ? parts[1] : slice.artifact;
+                var cls = slice.instances[j].state === 'ACTIVE' ? 'active'
+                        : slice.instances[j].state === 'LOADING' ? 'loading' : 'inactive';
+                html += '<span class="slice-tag ' + cls + '" title="' + escapeHtml(slice.instances[j].state) + '">' + escapeHtml(name) + '</span>';
+                found = true;
+            }
         }
+    }
+    return found ? html : '<span class="no-slices">No slices</span>';
+}
 
-        var lat = document.getElementById('avg-latency');
-        if (lat) lat.textContent = m.avgLatencyMs.toFixed(1) + 'ms';
-
-        // Update charts
-        successHistory.push(m.successRate);
-        if (successHistory.length > MAX_HISTORY) successHistory.shift();
-        throughputHistory.push(m.requestsPerSecond);
-        if (throughputHistory.length > MAX_HISTORY) throughputHistory.shift();
-
-        if (successChart) {
-            successChart.data.labels = successHistory.map(() => '');
-            successChart.data.datasets[0].data = successHistory;
-            var rate = m.successRate;
-            successChart.data.datasets[0].borderColor = rate >= 99 ? '#22c55e' : rate >= 95 ? '#f59e0b' : '#ef4444';
-            successChart.update('none');
+// ===============================
+// Slices Status
+// ===============================
+function updateSlices(slices) {
+    var header = document.getElementById('slices-header');
+    if (header) {
+        var active = 0;
+        if (slices) {
+            for (var i = 0; i < slices.length; i++) {
+                if (slices[i].state === 'ACTIVE') active++;
+            }
         }
-        if (throughputChart) {
-            throughputChart.data.labels = throughputHistory.map(() => '');
-            throughputChart.data.datasets[0].data = throughputHistory;
-            throughputChart.update('none');
+        header.innerHTML = 'Slices Status<span class="panel-badge">' + active + ' active</span>';
+    }
+    var container = document.getElementById('slices-content');
+    if (!container) return;
+    if (!slices || !slices.length) {
+        container.innerHTML = '<div class="placeholder">No slices deployed</div>';
+        return;
+    }
+    var html = '';
+    for (var i = 0; i < slices.length; i++) {
+        var s = slices[i];
+        var stCls = s.state === 'ACTIVE' ? '' : (s.state === 'LOADING' || s.state === 'ACTIVATING') ? ' loading' : ' failed';
+        html += '<div class="slice-item' + stCls + '">';
+        html += '<div class="slice-header">';
+        html += '<span class="slice-artifact">' + escapeHtml(s.artifact) + '</span>';
+        html += '<span class="slice-state ' + s.state + '">' + s.state + '</span>';
+        html += '</div><div class="slice-instances">';
+        if (!s.instances.length) {
+            html += '<span class="no-slices">No instances</span>';
+        } else {
+            for (var j = 0; j < s.instances.length; j++) {
+                var inst = s.instances[j];
+                var hCls = inst.state === 'ACTIVE' ? ' healthy' : '';
+                html += '<span class="instance-badge' + hCls + '">' + escapeHtml(inst.nodeId) + ': ' + inst.state + '</span>';
+            }
         }
-    } catch (e) { /* ignore */ }
+        html += '</div></div>';
+    }
+    container.innerHTML = html;
+}
+
+// ===============================
+// Metrics Panel (from extended status)
+// ===============================
+function updateMetrics(m, nodeMetrics) {
+    var container = document.getElementById('metrics-content');
+    if (!container) return;
+    // Aggregate node-level metrics for the mini cards
+    var totalCpu = 0, totalHeap = 0, maxHeap = 0, count = nodeMetrics ? nodeMetrics.length : 0;
+    if (nodeMetrics) {
+        for (var i = 0; i < nodeMetrics.length; i++) {
+            totalCpu += nodeMetrics[i].cpuUsage;
+            totalHeap += nodeMetrics[i].heapUsedMb;
+            maxHeap += nodeMetrics[i].heapMaxMb;
+        }
+    }
+    var avgCpu = count > 0 ? (totalCpu / count * 100).toFixed(1) + '%' : '?';
+    var heapStr = count > 0 ? totalHeap + '/' + maxHeap + 'MB' : '?';
+    var html = '<div class="metrics-grid">';
+    html += miniMetric(avgCpu, 'Avg CPU', 'cpu');
+    html += miniMetric(heapStr, 'Total Heap', 'heap');
+    html += miniMetric(Math.round(m.requestsPerSecond).toLocaleString(), 'Req/s', 'invocations');
+    html += miniMetric(m.successRate.toFixed(1) + '%', 'Success', 'latency');
+    html += miniMetric(m.avgLatencyMs.toFixed(1) + 'ms', 'Avg Latency', 'latency');
+    html += miniMetric((m.totalSuccess + m.totalFailures).toLocaleString(), 'Total Reqs', 'invocations');
+    html += miniMetric(m.totalSuccess.toLocaleString(), 'Success', 'invocations');
+    html += miniMetric(m.totalFailures.toLocaleString(), 'Failures', 'error');
+    html += '</div>';
+    container.innerHTML = html;
+}
+
+function miniMetric(value, label, cls) {
+    return '<div class="mini-metric ' + cls + '"><span class="mini-metric-value">' + value + '</span><span class="mini-metric-label">' + label + '</span></div>';
+}
+
+// ===============================
+// Load Targets (Per-Target Metrics)
+// ===============================
+function updateLoadTargets(targets) {
+    var container = document.getElementById('load-metrics-container');
+    if (!container) return;
+    if (!targets || !targets.length) {
+        container.innerHTML = '<div class="placeholder">No targets running</div>';
+        return;
+    }
+    var html = '<table class="load-metrics-table-inner"><thead><tr>';
+    html += '<th>Target</th><th>Rate (actual/target)</th><th>Requests</th>';
+    html += '<th>Success</th><th>Failures</th><th>Success %</th><th>Avg Latency</th><th>Remaining</th>';
+    html += '</tr></thead><tbody>';
+    for (var i = 0; i < targets.length; i++) {
+        var t = targets[i];
+        html += '<tr>';
+        html += '<td>' + escapeHtml(t.name) + '</td>';
+        html += '<td>' + t.actualRate + ' / ' + t.targetRate + '</td>';
+        html += '<td>' + t.requests + '</td>';
+        html += '<td class="success">' + t.success + '</td>';
+        html += '<td class="error">' + t.failures + '</td>';
+        html += '<td>' + t.successRate.toFixed(1) + '%</td>';
+        html += '<td>' + t.avgLatencyMs.toFixed(1) + 'ms</td>';
+        html += '<td>' + (t.remaining || '-') + '</td>';
+        html += '</tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
 }
 
 // ===============================

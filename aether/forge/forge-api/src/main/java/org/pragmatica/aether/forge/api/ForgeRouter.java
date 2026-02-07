@@ -50,7 +50,7 @@ public final class ForgeRouter {
                                             long startTime,
                                             Consumer<EventLogEntry> eventLogger,
                                             Option<Path> loadConfigPath) {
-        return RequestRouter.with(StatusRoutes.statusRoutes(cluster, loadGenerator, metrics, events, startTime),
+        return RequestRouter.with(StatusRoutes.statusRoutes(cluster, loadGenerator, metrics, events, startTime, loadRunner),
                                   ChaosRoutes.chaosRoutes(cluster, chaosController, events, inventoryState, eventLogger),
                                   LoadRoutes.loadRoutes(loadGenerator, loadRunner),
                                   SimulatorRoutes.simulatorRoutes(loadGenerator,
@@ -61,6 +61,6 @@ public final class ForgeRouter {
                                   PanelRoutes.panelRoutes(),
                                   AlertProxyRoutes.alertProxyRoutes(cluster),
                                   ClusterSizeRoutes.clusterSizeRoutes(cluster),
-                                  ViewRoutes.viewRoutes(cluster, metrics, loadRunner, events, startTime, loadConfigPath));
+                                  ViewRoutes.viewRoutes(cluster, loadConfigPath));
     }
 }
