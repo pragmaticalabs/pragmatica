@@ -14,6 +14,7 @@ import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
 import org.pragmatica.consensus.topology.TopologyConfig;
+import org.pragmatica.consensus.topology.TopologyManagementMessage;
 import org.pragmatica.aether.config.AppHttpConfig;
 import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.dht.DHTConfig;
@@ -80,6 +81,7 @@ public final class ForgeCluster {
     private final Random random = new Random();
 
     private final int targetClusterSize;
+    private final AtomicInteger effectiveSize;
 
     // Configuration provider for nodes
     private final Option<ConfigurationProvider> configProvider;
@@ -109,6 +111,7 @@ public final class ForgeCluster {
         this.baseAppHttpPort = baseAppHttpPort;
         this.nodeIdPrefix = nodeIdPrefix;
         this.targetClusterSize = initialClusterSize;
+        this.effectiveSize = new AtomicInteger(initialClusterSize);
         this.configProvider = configProvider;
         this.forgeNodeProvider = new ForgeNodeProvider();
     }
@@ -409,6 +412,24 @@ public final class ForgeCluster {
      */
     public int targetClusterSize() {
         return targetClusterSize;
+    }
+
+    /**
+     * Route SetClusterSize to all nodes in the cluster.
+     * Each node's topology manager validates and applies the new size.
+     */
+    public void setClusterSize(int newSize) {
+        effectiveSize.set(newSize);
+        var message = new TopologyManagementMessage.SetClusterSize(newSize);
+        nodes.values().forEach(node -> node.route(message));
+        log.info("SetClusterSize({}) routed to {} nodes", newSize, nodes.size());
+    }
+
+    /**
+     * Get the effective cluster size (last value set via setClusterSize, or the initial target).
+     */
+    public int effectiveClusterSize() {
+        return effectiveSize.get();
     }
 
     /**

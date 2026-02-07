@@ -6,330 +6,48 @@
     <title>Aether Forge</title>
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
 </head>
 <body>
     <div class="container">
         <!-- Header -->
         <header class="header">
             <h1>AETHER FORGE</h1>
-            <div class="header-stats">
-                <span class="stat"><span class="stat-label">Uptime:</span><span id="uptime" class="stat-value">0:00</span></span>
-                <span class="stat"><span class="stat-label">Nodes:</span><span id="node-count" class="stat-value">0</span></span>
-                <span class="stat"><span class="stat-label">Slices:</span><span id="slice-count" class="stat-value">0</span></span>
+            <div class="header-stats"
+                 hx-get="/api/view/header"
+                 hx-trigger="load, every 2s"
+                 hx-swap="innerHTML">
+                <span class="stat"><span class="stat-label">Uptime:</span><span class="stat-value">0:00</span></span>
+                <span class="stat"><span class="stat-label">Nodes:</span><span class="stat-value">0</span></span>
+                <span class="stat"><span class="stat-label">Slices:</span><span class="stat-value">0</span></span>
             </div>
         </header>
 
         <!-- Navigation Tabs -->
         <nav class="nav-tabs">
-            <button class="nav-tab active" data-page="overview">Overview</button>
-            <button class="nav-tab" data-page="load-testing">Load Testing</button>
-            <button class="nav-tab" data-page="config">Configuration</button>
-            <button class="nav-tab" data-page="alerts">Alerts</button>
-            <button class="nav-tab" data-page="cluster">Cluster</button>
+            <button class="nav-tab active" data-tab="overview"
+                    hx-get="/api/view/overview"
+                    hx-target="#tab-content"
+                    hx-swap="innerHTML"
+                    onclick="switchTab(this)">Overview</button>
+            <button class="nav-tab" data-tab="load-testing"
+                    hx-get="/api/view/load"
+                    hx-target="#tab-content"
+                    hx-swap="innerHTML"
+                    onclick="switchTab(this)">Load Testing</button>
+            <button class="nav-tab" data-tab="alerts"
+                    hx-get="/api/view/alerts"
+                    hx-target="#tab-content"
+                    hx-swap="innerHTML"
+                    onclick="switchTab(this)">Alerts</button>
         </nav>
 
-        <!-- Page: Overview (existing main content) -->
-        <div id="page-overview" class="page active">
-            <!-- Main Grid -->
-            <div class="main-grid">
-                <!-- Left Column -->
-                <div class="left-column">
-                    <!-- Nodes Panel -->
-                    <div class="panel">
-                        <h2>Cluster Nodes</h2>
-                        <div id="nodes-list" class="nodes-list">
-                            <div class="node-item placeholder">Waiting for cluster...</div>
-                        </div>
-                    </div>
-
-                    <!-- Metrics Panel -->
-                    <div class="panel">
-                        <h2>Metrics</h2>
-                        <div class="metrics-row">
-                            <div class="metric-card">
-                                <div class="metric-value" id="requests-per-sec">0</div>
-                                <div class="metric-label">req/s</div>
-                            </div>
-                            <div class="metric-card success">
-                                <div class="metric-value" id="success-rate">100%</div>
-                                <div class="metric-label">success</div>
-                            </div>
-                            <div class="metric-card">
-                                <div class="metric-value" id="avg-latency">0ms</div>
-                                <div class="metric-label">latency</div>
-                            </div>
-                        </div>
-                        <div class="chart-row">
-                            <div class="chart-container"><canvas id="success-chart"></canvas></div>
-                            <div class="chart-container"><canvas id="throughput-chart"></canvas></div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Right Column -->
-                <div class="right-column">
-                    <!-- Entry Points Panel -->
-                    <div class="panel">
-                        <h2>Entry Points</h2>
-                        <div class="entrypoints-table">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>Entry Point</th>
-                                        <th>Rate</th>
-                                        <th>Total</th>
-                                        <th>Success</th>
-                                        <th>Avg</th>
-                                        <th>P99</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="entrypoints-body">
-                                    <tr><td colspan="6" class="placeholder">Loading...</td></tr>
-                                </tbody>
-                            </table>
-                        </div>
-                    </div>
-
-                    <!-- Timeline Panel -->
-                    <div class="panel">
-                        <h2>Events</h2>
-                        <div id="timeline" class="timeline">
-                            <div class="timeline-event">
-                                <span class="event-time">--:--</span>
-                                <span class="event-type">READY</span>
-                                <span class="event-message">Waiting...</span>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Control Panel -->
-            <div class="control-panel">
-                <div class="control-group">
-                    <h3>Chaos</h3>
-                    <div class="button-row">
-                        <button id="btn-kill-node" class="btn btn-danger">Kill Node</button>
-                        <button id="btn-kill-leader" class="btn btn-danger">Kill Leader</button>
-                        <button id="btn-rolling-restart" class="btn btn-warning">Rolling Restart</button>
-                        <button id="btn-add-node" class="btn btn-success">+ Node</button>
-                    </div>
-                </div>
-
-                <div class="control-group">
-                    <h3>Config</h3>
-                    <div class="config-row">
-                        <label class="toggle-label">
-                            <input type="checkbox" id="load-generator-toggle" checked>
-                            <span class="toggle-slider"></span>
-                            Generator
-                        </label>
-                        <div class="multiplier-control">
-                            <span>x</span>
-                            <input type="number" id="rate-multiplier" min="0.1" max="10" step="0.1" value="1.0">
-                            <button id="btn-apply-multiplier" class="btn btn-small btn-secondary">Apply</button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Page: Load Testing -->
-        <div id="page-load-testing" class="page">
-            <div class="load-testing-grid">
-                <!-- Configuration Upload -->
-                <div class="panel panel-wide">
-                    <h2>Configuration</h2>
-                    <div class="load-config-section">
-                        <textarea id="load-config-text" placeholder="Paste TOML configuration here...&#10;&#10;Example:&#10;[[load]]&#10;target = &quot;InventoryService.checkStock&quot;&#10;rate = &quot;100/s&quot;&#10;duration = &quot;5m&quot;&#10;&#10;[load.path]&#10;sku = &quot;${random:SKU-#####}&quot;" rows="10"></textarea>
-                        <div class="load-config-actions">
-                            <button id="btn-upload-config" class="btn btn-primary">Upload Config</button>
-                            <span id="load-config-status"></span>
-                        </div>
-                    </div>
-                    <div class="load-config-info" id="load-config-info">
-                        <span>No configuration loaded</span>
-                    </div>
-                </div>
-
-                <!-- Controls -->
-                <div class="panel">
-                    <h2>Controls</h2>
-                    <div class="load-controls-section">
-                        <div class="load-state-display">
-                            <span class="state-label">State:</span>
-                            <span id="load-runner-state" class="state-value">IDLE</span>
-                        </div>
-                        <div class="load-control-buttons">
-                            <button id="btn-load-start" class="btn btn-success">Start</button>
-                            <button id="btn-load-pause" class="btn btn-warning">Pause</button>
-                            <button id="btn-load-resume" class="btn btn-info">Resume</button>
-                            <button id="btn-load-stop" class="btn btn-danger">Stop</button>
-                        </div>
-                        <div class="rate-buttons">
-                            <span class="rate-label">Rate:</span>
-                            <button class="btn btn-primary btn-small" data-rate="100">100</button>
-                            <button class="btn btn-primary btn-small" data-rate="200">200</button>
-                            <button class="btn btn-primary btn-small" data-rate="500">500</button>
-                            <button class="btn btn-primary btn-small" data-rate="1000">1K</button>
-                            <button class="btn btn-primary btn-small" data-rate="2000">2K</button>
-                            <button class="btn btn-primary btn-small" data-rate="5000">5K</button>
-                            <button class="btn btn-primary btn-small" data-rate="10000">10K</button>
-                        </div>
-                        <div class="config-row">
-                            <button id="btn-reset" class="btn btn-secondary btn-small">Reset Metrics</button>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Per-Target Metrics -->
-                <div class="panel panel-wide">
-                    <h2>Per-Target Metrics</h2>
-                    <div class="load-metrics-table">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>Target</th>
-                                    <th>Rate (actual/target)</th>
-                                    <th>Requests</th>
-                                    <th>Success</th>
-                                    <th>Failures</th>
-                                    <th>Success %</th>
-                                    <th>Avg Latency</th>
-                                    <th>Remaining</th>
-                                </tr>
-                            </thead>
-                            <tbody id="load-targets-body">
-                                <tr><td colspan="8" class="placeholder">No targets running</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <!-- Pattern Help -->
-                <div class="panel">
-                    <h2>Pattern Reference</h2>
-                    <div class="pattern-help">
-                        <div class="pattern-item"><code>${uuid}</code> - Random UUID</div>
-                        <div class="pattern-item"><code>${random:SKU-#####}</code> - # = digit, ? = letter, * = alphanumeric</div>
-                        <div class="pattern-item"><code>${range:1-100}</code> - Random integer in range</div>
-                        <div class="pattern-item"><code>${choice:NYC,LAX,CHI}</code> - Random pick from list</div>
-                        <div class="pattern-item"><code>${seq:1000}</code> - Sequential counter</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Page: Configuration -->
-        <div id="page-config" class="page">
-            <div class="config-grid">
-                <!-- Controller Config -->
-                <div class="panel">
-                    <h2>Controller Configuration</h2>
-                    <div id="controller-config" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-controller" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
-                </div>
-
-                <!-- TTM Status -->
-                <div class="panel">
-                    <h2>TTM (Predictive Scaling)</h2>
-                    <div id="ttm-status" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-ttm" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
-                </div>
-
-                <!-- Thresholds -->
-                <div class="panel">
-                    <h2>Alert Thresholds</h2>
-                    <div id="thresholds-config" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-thresholds" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
-                </div>
-
-                <!-- Controller Status -->
-                <div class="panel">
-                    <h2>Controller Status</h2>
-                    <div id="controller-status" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-controller-status" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Page: Alerts -->
-        <div id="page-alerts" class="page">
-            <div class="alerts-grid">
-                <!-- Active Alerts -->
-                <div class="panel panel-wide">
-                    <h2>Active Alerts</h2>
-                    <div id="active-alerts" class="alerts-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-clear-alerts" class="btn btn-warning btn-small">Clear All</button>
-                        <button id="btn-refresh-alerts" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
-                </div>
-
-                <!-- Alert History -->
-                <div class="panel panel-wide">
-                    <h2>Alert History</h2>
-                    <div id="alert-history" class="alerts-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Page: Cluster -->
-        <div id="page-cluster" class="page">
-            <div class="cluster-grid">
-                <!-- Health -->
-                <div class="panel">
-                    <h2>Cluster Health</h2>
-                    <div id="cluster-health" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-health" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
-                </div>
-
-                <!-- Comprehensive Metrics -->
-                <div class="panel">
-                    <h2>Comprehensive Metrics</h2>
-                    <div id="comprehensive-metrics" class="config-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-metrics" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
-                </div>
-
-                <!-- Slices Status -->
-                <div class="panel panel-wide">
-                    <h2>Slices Status</h2>
-                    <div id="slices-status" class="slices-content">
-                        <div class="placeholder">Loading...</div>
-                    </div>
-                    <div class="panel-actions">
-                        <button id="btn-refresh-slices" class="btn btn-secondary btn-small">Refresh</button>
-                    </div>
-                </div>
-            </div>
+        <!-- Tab Content (loaded lazily via HTMX) -->
+        <div id="tab-content"
+             hx-get="/api/view/overview"
+             hx-trigger="load"
+             hx-swap="innerHTML">
+            <div class="placeholder">Loading...</div>
         </div>
     </div>
 
@@ -338,7 +56,7 @@
         <div class="modal-content">
             <h3>Select Node</h3>
             <div id="node-list" class="node-list"></div>
-            <button id="modal-cancel" class="btn btn-secondary">Cancel</button>
+            <button onclick="hideNodeModal()" class="btn btn-secondary">Cancel</button>
         </div>
     </div>
 

@@ -13,6 +13,8 @@ import org.pragmatica.http.CommonContentType;
 import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Option;
 import org.pragmatica.http.routing.JsonCodec;
+
+import java.nio.file.Path;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestContext.RequestContextImpl;
 import org.pragmatica.http.routing.RequestRouter;
@@ -62,7 +64,8 @@ public final class ForgeApiHandler {
                             ChaosController chaosController,
                             InventoryState inventoryState,
                             Deque<ForgeEvent> events,
-                            long startTime) {
+                            long startTime,
+                            Option<Path> loadConfigPath) {
         this.loadGenerator = loadGenerator;
         this.chaosController = chaosController;
         this.inventoryState = inventoryState;
@@ -79,13 +82,15 @@ public final class ForgeApiHandler {
                                               metrics,
                                               events,
                                               startTime,
-                                              this::logEvent);
+                                              this::logEvent,
+                                              loadConfigPath);
     }
 
     public static ForgeApiHandler forgeApiHandler(ForgeCluster cluster,
                                                   LoadGenerator loadGenerator,
                                                   ForgeMetrics metrics,
-                                                  ConfigurableLoadRunner configurableLoadRunner) {
+                                                  ConfigurableLoadRunner configurableLoadRunner,
+                                                  Option<Path> loadConfigPath) {
         var chaosController = ChaosController.chaosController(event -> executeChaosEvent(cluster, event));
         var inventoryState = InventoryState.inventoryState();
         var events = new ConcurrentLinkedDeque<ForgeEvent>();
@@ -97,7 +102,8 @@ public final class ForgeApiHandler {
                                    chaosController,
                                    inventoryState,
                                    events,
-                                   startTime);
+                                   startTime,
+                                   loadConfigPath);
     }
 
     private static void executeChaosEvent(ForgeCluster cluster, ChaosEvent event) {

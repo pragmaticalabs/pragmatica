@@ -47,7 +47,8 @@ public final class PanelRoutes {
                             <button id="btn-kill-node" class="btn btn-danger btn-small">Kill Node</button>
                             <button id="btn-kill-leader" class="btn btn-warning btn-small">Kill Leader</button>
                             <button id="btn-rolling-restart" class="btn btn-secondary btn-small">Rolling Restart</button>
-                            <button id="btn-add-node" class="btn btn-primary btn-small">Add Node</button>
+                            <button class="btn btn-success btn-small" hx-post="/api/cluster/resize/up" hx-swap="none">+ Node</button>
+                            <button class="btn btn-danger btn-small" hx-post="/api/cluster/resize/down" hx-swap="none">- Node</button>
                         </div>
                     </div>
                     <div class="control-group">
@@ -67,17 +68,6 @@ public final class PanelRoutes {
                         <div class="slider-container">
                             <input type="range" id="load-slider" min="0" max="100000" value="0" step="1000">
                             <span id="load-value" class="slider-value">0</span>
-                        </div>
-                    </div>
-                    <div class="control-group">
-                        <span class="control-label">Load Generator</span>
-                        <div class="control-buttons">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="load-generator-toggle" checked>
-                                <span>Enabled</span>
-                            </label>
-                            <input type="number" id="rate-multiplier" value="1.0" min="0.1" max="10" step="0.1" class="multiplier-input">
-                            <button id="btn-apply-multiplier" class="btn btn-secondary btn-small">Apply</button>
                         </div>
                     </div>
                     <div class="control-group">

@@ -179,7 +179,8 @@ public final class ForgeServer {
         var apiHandlerInstance = ForgeApiHandler.forgeApiHandler(clusterInstance,
                                                                  loadGeneratorInstance,
                                                                  metricsInstance,
-                                                                 configurableLoadRunnerInstance);
+                                                                 configurableLoadRunnerInstance,
+                                                                 startupConfig.loadConfig());
         metrics = Option.some(metricsInstance);
         cluster = Option.some(clusterInstance);
         loadGenerator = Option.some(loadGeneratorInstance);

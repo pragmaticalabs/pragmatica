@@ -10,7 +10,9 @@ import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.simulator.ChaosController;
 import org.pragmatica.aether.forge.simulator.SimulatorConfig;
 import org.pragmatica.http.routing.RequestRouter;
+import org.pragmatica.lang.Option;
 
+import java.nio.file.Path;
 import java.util.Deque;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -34,6 +36,7 @@ public final class ForgeRouter {
      * @param events          the event log deque
      * @param startTime       server start time in milliseconds
      * @param eventLogger     callback to log events for the dashboard
+     * @param loadConfigPath  optional path to the load config TOML file
      * @return RequestRouter containing all Forge API routes
      */
     public static RequestRouter forgeRouter(ForgeCluster cluster,
@@ -45,7 +48,8 @@ public final class ForgeRouter {
                                             ForgeMetrics metrics,
                                             Deque<ForgeEvent> events,
                                             long startTime,
-                                            Consumer<EventLogEntry> eventLogger) {
+                                            Consumer<EventLogEntry> eventLogger,
+                                            Option<Path> loadConfigPath) {
         return RequestRouter.with(StatusRoutes.statusRoutes(cluster, loadGenerator, metrics, events, startTime),
                                   ChaosRoutes.chaosRoutes(cluster, chaosController, events, inventoryState, eventLogger),
                                   LoadRoutes.loadRoutes(loadGenerator, loadRunner),
@@ -54,6 +58,9 @@ public final class ForgeRouter {
                                                                   inventoryState,
                                                                   eventLogger),
                                   DeploymentRoutes.deploymentRoutes(cluster, eventLogger),
-                                  PanelRoutes.panelRoutes());
+                                  PanelRoutes.panelRoutes(),
+                                  AlertProxyRoutes.alertProxyRoutes(cluster),
+                                  ClusterSizeRoutes.clusterSizeRoutes(cluster),
+                                  ViewRoutes.viewRoutes(cluster, metrics, loadRunner, events, startTime, loadConfigPath));
     }
 }
