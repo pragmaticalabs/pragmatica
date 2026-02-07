@@ -2,7 +2,7 @@
 
 ## Current Status (v0.15.0)
 
-Release 0.15.0 focuses on **monorepo consolidation** and **production readiness** with improved logging, blueprint CLI, and startup diagnostics.
+Release 0.15.0 focuses on **monorepo consolidation** and **production readiness** with real-time dashboard, cluster-wide observability, and HTTP performance.
 
 ## Completed ✅
 
@@ -18,15 +18,26 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 - **Management API** - Complete cluster control endpoints (30+ endpoints)
 - **CLI** - REPL and batch modes with full command coverage
 - **Automatic Route Cleanup** - Routes removed on last slice instance deactivation
+- **HTTP Keep-Alive** - Connection reuse in Netty server; load generators pinned to HTTP/1.1
 
 ### Observability & Control
 - **Metrics Collection** - Per-node CPU/JVM metrics at 1-second intervals
+- **Cluster-Wide Metrics Broadcast** - MetricsPing carries full cluster snapshot; every node has complete picture
 - **Invocation Metrics** - Per-method call tracking with percentiles
 - **Prometheus Endpoint** - Standard metrics export format
 - **Alert Thresholds** - Persistent threshold configuration via consensus
 - **Controller Configuration** - Runtime-configurable scaling thresholds
 - **Decision Tree Controller** - Programmatic scaling rules
 - **TTM Predictive Scaling** - ONNX-based traffic prediction and scaling recommendations
+- **DeploymentMap** - Event-driven slice-to-node index with cluster-wide deployment visibility
+- **EMA Latency Smoothing** - 5-second effective window for stable dashboard metrics
+
+### Dashboard & Real-Time
+- **WebSocket Push** - Zero-polling dashboard via `/ws/status` with polling fallback
+- **Dashboard Deployments** - Cluster-wide deployment data (artifact, state, per-instance status)
+- **Forge WebSocket** - StatusWebSocketHandler/Publisher for Forge dashboard
+- **Node WebSocket** - DashboardWebSocketHandler/Publisher for management dashboard
+- **Production Logging** - H2 SQL suppression, debug overrides removed from fat jars
 
 ### Deployment Features
 - **Rolling Updates** - Two-stage deploy/route model
@@ -69,26 +80,41 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 
 ---
 
-## Future Work
+## Next Up
 
 ### HIGH PRIORITY - Cluster Operations
 
-1. **DB Connector Infrastructure**
-   - Database connectivity layer for slices
-   - Connection pooling and transaction management
-   - Support for common databases (PostgreSQL, MySQL, etc.)
+1. **Dynamic Aspect** ← recommended next
+   - Implement `DynamicAspect`, the aspect that can be dynamically switched between different modes - None, Log, Metrics, Log+Metrics.
+   - Implement `DynamicAspectManager`, which keeps registry of all instances of DynamicAspect active at node keyed by the class name+method name to which they are applied.
+   - Provide API to manage these instances across the cluster
+   - Wire to dashboard with convenient UI
+   - **Why next:** Builds on WebSocket dashboard, invocation metrics, and KV-store consensus patterns already in place. Same pattern as AlertManager. Immediate operational value for production debugging.
 
 2. **Dynamic Configuration via KV Store**
    - Expose most configuration in consensus KV store
    - Nodes automatically pick up configuration changes
    - No restart required for config updates
+   - **Why second:** Generalizes the proven AlertManager/threshold KV pattern to all configuration. Prerequisite for many other features.
 
-3. **External Secrets Management Integration**
+3. **Dependency Lifecycle Management**
+   - Block manual unload while dependents are ACTIVE
+   - Graceful degradation on dependency failure (calls fail, slice handles it)
+   - Dependency graph tracking in KV store
+   - Clear error reporting with dependency chain visualization
+   - **Why third:** Correctness gap — currently possible to break running slices by unloading dependencies.
+
+4. **DB Connector Infrastructure**
+   - Database connectivity layer for slices
+   - Connection pooling and transaction management
+   - Support for common databases (PostgreSQL, MySQL, etc.)
+
+5. **External Secrets Management Integration**
    - HashiCorp Vault integration
    - AWS Secrets Manager / Azure Key Vault support
    - Current: in-memory `infra-secrets` implementation exists
 
-4. **Cloud Provider Adapters (NodeLifecycleManager)**
+6. **Cloud Provider Adapters (NodeLifecycleManager)**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
    - Cloud provider adapters: AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
@@ -96,18 +122,6 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
    - Node pool support: core (on-demand) vs elastic (spot) pools
    - Instance type parameter for spot/on-demand selection
    - **Enables:** Spot Instance Support (#17), Expense Tracking (#18)
-
-5. **Dynamic Aspect** 
-   - Implement `DynamicAspect`, the aspect that can be dynamically switched between different modes - None, Log, Metrics, Log+Metrics.
-   - Implement `DynamicAspectManager`, which keeps registry of all instances of DynamicAspect active at node keyed by the class name+method name to which they are applied.
-   - Provide API to manage these instances across the cluster
-   - Wire to dashboard with convenient UI 
-
-6. **Dependency Lifecycle Management**
-   - Block manual unload while dependents are ACTIVE
-   - Graceful degradation on dependency failure (calls fail, slice handles it)
-   - Dependency graph tracking in KV store
-   - Clear error reporting with dependency chain visualization
 
 ### MEDIUM PRIORITY - Infrastructure Services
 
@@ -131,10 +145,10 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
    - Note: Paid tier feature
 
 10. **Placement Hints**
-   - Affinity/anti-affinity rules for slice placement
-   - Spread: distribute instances across nodes/zones
-   - Co-locate: place related slices on same node
-   - Zone-aware scheduling for high availability
+    - Affinity/anti-affinity rules for slice placement
+    - Spread: distribute instances across nodes/zones
+    - Co-locate: place related slices on same node
+    - Zone-aware scheduling for high availability
 
 ### LOWER PRIORITY - Security & Operations
 
@@ -251,7 +265,7 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
     - Upcoming known events (prefer on-demand for releases/campaigns)
 
     **Complexity:** Low - just configuration and cloud API flag
-    **Prerequisite:** Cloud Provider Adapters (#4)
+    **Prerequisite:** Cloud Provider Adapters (#6)
 
 19. **Cluster Expense Tracking**
     - Real-time cost visibility for cluster operations
@@ -283,7 +297,7 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
     - TTM/LLM: cost optimization recommendations
 
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
-    **Prerequisite:** Cloud Provider Adapters (#4)
+    **Prerequisite:** Cloud Provider Adapters (#6)
 
 ---
 
@@ -299,11 +313,11 @@ Infrastructure slices requiring distributed implementations:
 | infra-statemachine | ✅ | ❌ | Consensus state transitions |
 | infra-lock | ✅ | ❌ | Consensus-backed locking |
 | infra-ratelimit | ✅ | ❌ | Shared counters across nodes |
-| infra-secrets | ✅ | ❌ | → External Secrets (#3) |
+| infra-secrets | ✅ | ❌ | → External Secrets (#5) |
 | infra-config | ✅ | ❌ | → Dynamic Config (#2) |
-| infra-database | ✅ | N/A | → DB Connector (#1) |
+| infra-database | ✅ | N/A | → DB Connector (#4) |
 | infra-http | ✅ | N/A | HTTP client, no distributed needed |
-| infra-aspect | ✅ | N/A | Decorators, no distributed needed |
+| infra-aspect | ✅ | N/A | → Dynamic Aspect (#1) |
 
 **Dropped:** infra-server, infra-streaming, infra-outbox, infra-blob, infra-feature
 
