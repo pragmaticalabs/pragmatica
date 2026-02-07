@@ -68,7 +68,7 @@ public final class StatusRoutes {
     }
 
     // ==================== Handler Methods ====================
-    private static FullStatusResponse buildFullStatus(ForgeCluster cluster,
+    public static FullStatusResponse buildFullStatus(ForgeCluster cluster,
                                                       LoadGenerator loadGenerator,
                                                       ForgeMetrics metrics,
                                                       long startTime,

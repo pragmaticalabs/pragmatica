@@ -201,12 +201,13 @@ class MetricsCollectorImpl implements MetricsCollector {
 
     @Override
     public void onMetricsPing(MetricsPing ping) {
-        // Store sender's metrics (but don't overwrite our own)
-        if (!ping.sender()
-                 .equals(self)) {
-            remoteMetrics.put(ping.sender(), ping.metrics());
-            addToHistory(ping.sender(), ping.metrics());
-        }
+        // Store all cluster metrics from leader's aggregated snapshot
+        ping.allMetrics().forEach((nodeId, metrics) -> {
+            if (!nodeId.equals(self)) {
+                remoteMetrics.put(nodeId, metrics);
+                addToHistory(nodeId, metrics);
+            }
+        });
         // Respond with our metrics
         network.send(ping.sender(), new MetricsPong(self, collectLocal()));
     }

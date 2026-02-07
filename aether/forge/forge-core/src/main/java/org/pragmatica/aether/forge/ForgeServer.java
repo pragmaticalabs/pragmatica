@@ -5,8 +5,10 @@ import org.pragmatica.aether.config.source.MapConfigSource;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.aether.forge.load.LoadConfigLoader;
 import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
+import org.pragmatica.aether.forge.api.StatusRoutes;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
+import org.pragmatica.http.websocket.WebSocketEndpoint;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.io.TimeSpan;
 
@@ -70,6 +72,8 @@ public final class ForgeServer {
     private volatile Option<ForgeH2Server> h2Server = Option.empty();
     private volatile Option<HttpServer> httpServer = Option.empty();
     private volatile Option<ScheduledExecutorService> metricsScheduler = Option.empty();
+    private volatile Option<ForgeWebSocketPublisher> wsPublisher = Option.empty();
+    private final long startTime = System.currentTimeMillis();
 
     private ForgeServer(StartupConfig startupConfig, ForgeConfig forgeConfig) {
         this.startupConfig = startupConfig;
@@ -187,6 +191,10 @@ public final class ForgeServer {
         configurableLoadRunner = Option.some(configurableLoadRunnerInstance);
         apiHandler = Option.some(apiHandlerInstance);
         staticHandler = Option.some(StaticFileHandler.staticFileHandler());
+        var wsPublisherInstance = ForgeWebSocketPublisher.forgeWebSocketPublisher(
+            () -> StatusRoutes.buildFullStatus(clusterInstance, loadGeneratorInstance,
+                                               metricsInstance, startTime, configurableLoadRunnerInstance));
+        wsPublisher = Option.some(wsPublisherInstance);
     }
 
     private void startCluster() {
@@ -203,6 +211,7 @@ public final class ForgeServer {
         var scheduler = Executors.newSingleThreadScheduledExecutor();
         metrics.onPresent(m -> scheduler.scheduleAtFixedRate(m::snapshot, 500, 500, TimeUnit.MILLISECONDS));
         metricsScheduler = Option.some(scheduler);
+        wsPublisher.onPresent(ForgeWebSocketPublisher::start);
     }
 
     private void deployAndStartLoad() {
@@ -273,6 +282,7 @@ public final class ForgeServer {
     public void stop() {
         log.info("Stopping Forge server...");
         loadGenerator.onPresent(LoadGenerator::stop);
+        wsPublisher.onPresent(ForgeWebSocketPublisher::stop);
         metricsScheduler.onPresent(ScheduledExecutorService::shutdownNow);
         httpServer.onPresent(server -> server.stop()
                                              .await(TimeSpan.timeSpan(10).seconds())
@@ -376,10 +386,13 @@ public final class ForgeServer {
     }
 
     private void launchHttpServer(ForgeRequestHandler requestHandler) {
+        var wsHandler = new ForgeWebSocketHandler();
+        var wsEndpoint = WebSocketEndpoint.webSocketEndpoint("/ws/status", wsHandler);
         var config = HttpServerConfig.httpServerConfig("forge-dashboard",
                                                        forgeConfig.dashboardPort())
                                      .withMaxContentLength(MAX_CONTENT_LENGTH)
-                                     .withChunkedWrite();
+                                     .withChunkedWrite()
+                                     .withWebSocket(wsEndpoint);
         HttpServer.httpServer(config, requestHandler::handle)
                   .await(TimeSpan.timeSpan(10).seconds())
                   .onSuccess(server -> {

@@ -145,8 +145,7 @@ class MetricsSchedulerImpl implements MetricsScheduler {
             if (currentTopology.isEmpty()) {
                 return;
             }
-            var localMetrics = metricsCollector.collectLocal();
-            var ping = new MetricsPing(self, localMetrics);
+            var ping = new MetricsPing(self, metricsCollector.allMetrics());
             for (var nodeId : currentTopology) {
                 if (!nodeId.equals(self)) {
                     network.send(nodeId, ping);

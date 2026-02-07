@@ -10,6 +10,8 @@ var throughputHistory = [];
 var MAX_HISTORY = 60;
 var rollingRestartActive = false;
 var pollInterval = null;
+var ws = null;
+var wsRetryMs = 1000;
 
 // ===============================
 // Tab Management
@@ -27,6 +29,7 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
             initCharts();
         }
         startPolling();
+        connectWebSocket();
     }
 });
 
@@ -37,6 +40,39 @@ function startPolling() {
     if (pollInterval) clearInterval(pollInterval);
     pollInterval = setInterval(poll, 500);
     poll();
+}
+
+function connectWebSocket() {
+    try {
+        var protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(protocol + '//' + location.host + '/ws/status');
+        ws.onopen = function() {
+            wsRetryMs = 1000;
+            if (pollInterval) { clearInterval(pollInterval); pollInterval = null; }
+        };
+        ws.onmessage = function(event) {
+            try {
+                var s = JSON.parse(event.data);
+                updateUptime(s.uptimeSeconds);
+                updatePerformance(s.metrics);
+                updateCharts(s.metrics);
+                updateNodes(s.cluster, s.nodeMetrics, s.slices, s.targetClusterSize);
+                updateSlices(s.slices);
+                updateMetrics(s.metrics, s.nodeMetrics);
+                updateLoadTargets(s.loadTargets);
+            } catch (e) { /* ignore parse errors */ }
+        };
+        ws.onclose = function() {
+            ws = null;
+            if (!pollInterval) startPolling();
+            setTimeout(connectWebSocket, Math.min(wsRetryMs *= 2, 10000));
+        };
+        ws.onerror = function() {
+            // onclose will fire after onerror
+        };
+    } catch (e) {
+        // WebSocket not supported — polling continues
+    }
 }
 
 async function poll() {
@@ -430,3 +466,8 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+
+// ===============================
+// Initialize
+// ===============================
+connectWebSocket();
