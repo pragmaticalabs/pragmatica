@@ -83,6 +83,7 @@ public final class ConfigurableLoadRunner {
         this.metrics = metrics;
         this.entryPointMetrics = entryPointMetrics;
         this.httpClient = HttpClient.newBuilder()
+                                    .version(HttpClient.Version.HTTP_1_1)
                                     .connectTimeout(REQUEST_TIMEOUT)
                                     .executor(Executors.newVirtualThreadPerTaskExecutor())
                                     .build();

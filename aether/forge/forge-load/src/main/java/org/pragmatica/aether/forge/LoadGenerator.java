@@ -51,6 +51,7 @@ public final class LoadGenerator {
         this.entryPointMetrics = entryPointMetrics;
         this.config = new AtomicReference<>(config);
         this.httpClient = HttpClient.newBuilder()
+                                    .version(HttpClient.Version.HTTP_1_1)
                                     .connectTimeout(REQUEST_TIMEOUT)
                                     .executor(Executors.newVirtualThreadPerTaskExecutor())
                                     .build();
