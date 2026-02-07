@@ -23,6 +23,9 @@ public final class ForgeMetrics {
     private volatile long lastFailureSnapshot = 0;
     private volatile long lastSnapshotTime = System.currentTimeMillis();
 
+    // EMA smoothing factor: 0.3 gives ~1.5s effective window at 500ms snapshots
+    private static final double EMA_ALPHA = 0.3;
+
     // Current rates (updated by snapshot)
     private volatile double requestsPerSecond = 0;
     private volatile double successRate = 100.0;
@@ -74,11 +77,14 @@ public final class ForgeMetrics {
         } else {
             successRate = 100.0;
         }
-        // Calculate average latency from recent requests
+        // Calculate average latency with EMA smoothing
         var count = requestCount.sumThenReset();
         var latency = totalLatencyNanos.sumThenReset();
         if (count > 0) {
-            avgLatencyMs = (latency / count) / 1_000_000.0;
+            var instantLatencyMs = (latency / count) / 1_000_000.0;
+            avgLatencyMs = avgLatencyMs == 0
+                ? instantLatencyMs
+                : EMA_ALPHA * instantLatencyMs + (1 - EMA_ALPHA) * avgLatencyMs;
         }
         // Reset window counters
         successCount.reset();
