@@ -27,6 +27,7 @@ import org.pragmatica.messaging.MessageRouter;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -340,6 +341,47 @@ class ClusterDeploymentManagerTest {
         // Next reconciliation would add 1 more
     }
 
+    // === Auto-Heal Tests ===
+
+    @Test
+    void leader_activation_triggers_auto_heal_when_cluster_below_target() {
+        var provisionCount = new AtomicInteger(0);
+        var testTopologyManager = new TestTopologyManager(3);
+        var testNodeProvider = new TestNodeProvider(provisionCount);
+
+        // Create manager with NodeProvider and TopologyManager that expects 3 nodes
+        var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
+            self, clusterNode, kvStore, router, List.of(self, node2),
+            testTopologyManager, Option.option(testNodeProvider), AutoHealConfig.DEFAULT);
+
+        clusterNode.appliedCommands.clear();
+
+        // Become leader with only 2 of 3 expected nodes — should trigger auto-heal
+        healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+
+        // NodeProvider.provision() should have been called once (deficit = 1)
+        assertThat(provisionCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void leader_activation_skips_auto_heal_when_cluster_at_target() {
+        var provisionCount = new AtomicInteger(0);
+        var testTopologyManager = new TestTopologyManager(3);
+        var testNodeProvider = new TestNodeProvider(provisionCount);
+
+        // Create manager with 3 nodes already present (matches target)
+        var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
+            self, clusterNode, kvStore, router, List.of(self, node2, node3),
+            testTopologyManager, Option.option(testNodeProvider), AutoHealConfig.DEFAULT);
+
+        clusterNode.appliedCommands.clear();
+
+        // Become leader with full topology — no auto-heal needed
+        healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+
+        assertThat(provisionCount.get()).isZero();
+    }
+
     // === Helper Methods ===
 
     private Artifact createTestArtifact() {
@@ -460,6 +502,78 @@ class ClusterDeploymentManagerTest {
         @Override
         public java.util.Map<AetherKey, AetherValue> snapshot() {
             return new java.util.HashMap<>();
+        }
+    }
+
+    static class TestTopologyManager implements TopologyManager {
+        private final int clusterSize;
+
+        TestTopologyManager(int clusterSize) {
+            this.clusterSize = clusterSize;
+        }
+
+        @Override
+        public org.pragmatica.consensus.net.NodeInfo self() {
+            return null;
+        }
+
+        @Override
+        public Option<org.pragmatica.consensus.net.NodeInfo> get(NodeId id) {
+            return Option.empty();
+        }
+
+        @Override
+        public int clusterSize() {
+            return clusterSize;
+        }
+
+        @Override
+        public Option<NodeId> reverseLookup(java.net.SocketAddress socketAddress) {
+            return Option.empty();
+        }
+
+        @Override
+        public Promise<Unit> start() {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public org.pragmatica.lang.io.TimeSpan pingInterval() {
+            return org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds();
+        }
+
+        @Override
+        public org.pragmatica.lang.io.TimeSpan helloTimeout() {
+            return org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds();
+        }
+
+        @Override
+        public Option<org.pragmatica.consensus.topology.NodeState> getState(NodeId id) {
+            return Option.empty();
+        }
+
+        @Override
+        public List<NodeId> topology() {
+            return List.of();
+        }
+    }
+
+    static class TestNodeProvider implements org.pragmatica.aether.provider.NodeProvider {
+        private final AtomicInteger provisionCount;
+
+        TestNodeProvider(AtomicInteger provisionCount) {
+            this.provisionCount = provisionCount;
+        }
+
+        @Override
+        public Promise<Unit> provision(org.pragmatica.aether.provider.InstanceType instanceType) {
+            provisionCount.incrementAndGet();
+            return Promise.success(Unit.unit());
         }
     }
 

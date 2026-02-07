@@ -1026,6 +1026,7 @@ public interface ClusterDeploymentManager {
                     // Rebuild state from KVStore and reconcile
                     activeState.rebuildStateFromKVStore();
                     activeState.reconcile();
+                    activeState.checkAndScheduleAutoHeal();
                 } else {
                     log.info("Node {} is not leader, deactivating cluster deployment manager", self);
                     // Deactivate old Active state to suppress stale scheduled callbacks
