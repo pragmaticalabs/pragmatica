@@ -157,9 +157,8 @@ body {
     margin-top: 12px;
 }
 
-.panel-performance {
-    position: sticky;
-    bottom: 0;
+.panel-chaos {
+    margin-top: 0;
 }
 
 /* Nodes List */
@@ -590,7 +589,7 @@ body {
 
 .metrics-grid {
     display: grid;
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 6px;
 }
 
@@ -613,22 +612,40 @@ body {
     font-size: 10px;
 }
 
-.metrics-raw {
-    font-size: 10px;
+/* Mini Metrics Grid (Comprehensive Metrics panel) */
+.mini-metric {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 6px 4px;
+    background: var(--bg-secondary);
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    text-align: center;
+    gap: 2px;
 }
 
-.metrics-pre {
-    background: var(--bg-secondary);
-    padding: 8px;
-    border-radius: 4px;
+.mini-metric-value {
     font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--text-secondary);
-    white-space: pre-wrap;
-    word-break: break-all;
-    max-height: 200px;
-    overflow-y: auto;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent-cyan);
 }
+
+.mini-metric-label {
+    font-size: 8px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.mini-metric.cpu .mini-metric-value,
+.mini-metric.heap .mini-metric-value { color: var(--accent-blue); }
+.mini-metric.error .mini-metric-value { color: var(--accent-red); }
+.mini-metric.gc .mini-metric-value { color: var(--accent-yellow); }
+.mini-metric.latency .mini-metric-value { color: var(--accent-cyan); }
+.mini-metric.invocations .mini-metric-value { color: var(--accent-green); }
 
 /* Load Testing */
 .load-testing-grid {

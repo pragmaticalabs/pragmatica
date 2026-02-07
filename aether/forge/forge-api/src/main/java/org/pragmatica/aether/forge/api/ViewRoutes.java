@@ -113,18 +113,6 @@ public sealed interface ViewRoutes {
                     </div>
                 </div>
             </div>
-            <div class="panel panel-full-width">
-                <h2>Chaos Controls</h2>
-                <div class="control-section">
-                    <div class="control-buttons">
-                        <button id="btn-kill-node" class="btn btn-danger btn-small" onclick="showNodeModal(false)">Kill Node</button>
-                        <button id="btn-kill-leader" class="btn btn-warning btn-small" onclick="killLeader()">Kill Leader</button>
-                        <button id="btn-rolling-restart" class="btn btn-secondary btn-small" onclick="toggleRollingRestart()">Rolling Restart</button>
-                        <button class="btn btn-success btn-small" hx-post="/api/cluster/resize/up" hx-swap="none">+ Node</button>
-                        <button class="btn btn-danger btn-small" hx-post="/api/cluster/resize/down" hx-swap="none">- Node</button>
-                    </div>
-                </div>
-            </div>
             <div class="panel panel-full-width panel-performance">
                 <h2>Performance</h2>
                 <div class="metrics-row">
@@ -145,6 +133,11 @@ public sealed interface ViewRoutes {
                     <div class="chart-container"><canvas id="success-chart"></canvas></div>
                     <div class="chart-container"><canvas id="throughput-chart"></canvas></div>
                 </div>
+            </div>
+            <div id="chaos-panel"
+                 hx-get="/api/panel/chaos"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
             </div>
             """;
     }
@@ -260,9 +253,87 @@ public sealed interface ViewRoutes {
     }
 
     private static String formatMetricsHtml(String jsonBody) {
-        // Render a simple key-value display from the JSON response
-        // Parse manually to avoid Jackson dependency in this module
-        return "<div class=\"metrics-raw\"><pre class=\"metrics-pre\">" + escapeHtml(jsonBody) + "</pre></div>";
+        var sb = new StringBuilder();
+        sb.append("<div class=\"metrics-grid\">");
+        appendMetricCard(sb, "CPU", formatPercent(extractDouble(jsonBody, "avgCpuUsage")), "cpu");
+        appendMetricCard(sb, "Heap", formatPercent(extractDouble(jsonBody, "avgHeapUsage")), "heap");
+        appendMetricCard(sb, "Avg Latency", formatMs(extractDouble(jsonBody, "avgLatencyMs")), "latency");
+        appendMetricCard(sb, "P50", formatMs(extractDouble(jsonBody, "latencyP50")), "latency");
+        appendMetricCard(sb, "P95", formatMs(extractDouble(jsonBody, "latencyP95")), "latency");
+        appendMetricCard(sb, "P99", formatMs(extractDouble(jsonBody, "latencyP99")), "latency");
+        appendMetricCard(sb, "Invocations", formatLong(extractLong(jsonBody, "totalInvocations")), "invocations");
+        appendMetricCard(sb, "Error Rate", formatPercent(extractDouble(jsonBody, "errorRate")), "error");
+        appendMetricCard(sb, "GC Pause", extractLong(jsonBody, "totalGcPauseMs") + "ms", "gc");
+        appendMetricCard(sb, "Event Loop Lag", formatMs(extractDouble(jsonBody, "avgEventLoopLagMs")), "lag");
+        appendMetricCard(sb, "Events", String.valueOf(extractLong(jsonBody, "eventCount")), "events");
+        appendMetricCard(sb, "Samples", String.valueOf(extractLong(jsonBody, "sampleCount")), "samples");
+        sb.append("</div>");
+        return sb.toString();
+    }
+
+    private static void appendMetricCard(StringBuilder sb, String label, String value, String cssClass) {
+        sb.append("<div class=\"mini-metric ").append(cssClass).append("\">");
+        sb.append("<span class=\"mini-metric-value\">").append(value).append("</span>");
+        sb.append("<span class=\"mini-metric-label\">").append(label).append("</span>");
+        sb.append("</div>");
+    }
+
+    private static double extractDouble(String json, String key) {
+        var search = "\"" + key + "\":";
+        var idx = json.indexOf(search);
+        if (idx < 0) {
+            return 0.0;
+        }
+        var start = idx + search.length();
+        var end = start;
+        while (end < json.length() && (Character.isDigit(json.charAt(end))
+                                        || json.charAt(end) == '.'
+                                        || json.charAt(end) == '-'
+                                        || json.charAt(end) == 'E'
+                                        || json.charAt(end) == 'e')) {
+            end++;
+        }
+        try {
+            return Double.parseDouble(json.substring(start, end));
+        } catch (NumberFormatException _) {
+            return 0.0;
+        }
+    }
+
+    private static long extractLong(String json, String key) {
+        var search = "\"" + key + "\":";
+        var idx = json.indexOf(search);
+        if (idx < 0) {
+            return 0;
+        }
+        var start = idx + search.length();
+        var end = start;
+        while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-')) {
+            end++;
+        }
+        try {
+            return Long.parseLong(json.substring(start, end));
+        } catch (NumberFormatException _) {
+            return 0;
+        }
+    }
+
+    private static String formatPercent(double ratio) {
+        return String.format("%.1f%%", ratio * 100);
+    }
+
+    private static String formatMs(double ms) {
+        return String.format("%.1fms", ms);
+    }
+
+    private static String formatLong(long value) {
+        if (value >= 1_000_000) {
+            return String.format("%.1fM", value / 1_000_000.0);
+        }
+        if (value >= 1_000) {
+            return String.format("%.1fK", value / 1_000.0);
+        }
+        return String.valueOf(value);
     }
 
     // ========== Load Testing Tab ==========

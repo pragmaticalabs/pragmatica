@@ -37,41 +37,16 @@ public final class PanelRoutes {
 
     private static String chaosPanelHtml() {
         return """
-            <!-- Chaos Control Panel -->
-            <div class="panel control-panel">
+            <div class="panel panel-full-width panel-chaos">
                 <h2>Chaos Controls</h2>
                 <div class="control-section">
-                    <div class="control-group">
-                        <span class="control-label">Node Chaos</span>
-                        <div class="control-buttons">
-                            <button id="btn-kill-node" class="btn btn-danger btn-small">Kill Node</button>
-                            <button id="btn-kill-leader" class="btn btn-warning btn-small">Kill Leader</button>
-                            <button id="btn-rolling-restart" class="btn btn-secondary btn-small">Rolling Restart</button>
-                            <button class="btn btn-success btn-small" hx-post="/api/cluster/resize/up" hx-swap="none">+ Node</button>
-                            <button class="btn btn-danger btn-small" hx-post="/api/cluster/resize/down" hx-swap="none">- Node</button>
-                        </div>
-                    </div>
-                    <div class="control-group">
-                        <span class="control-label">Load Control</span>
-                        <div class="control-buttons">
-                            <button id="btn-load-1k" class="btn btn-secondary btn-small">1K</button>
-                            <button id="btn-load-5k" class="btn btn-secondary btn-small">5K</button>
-                            <button id="btn-load-10k" class="btn btn-secondary btn-small">10K</button>
-                            <button id="btn-load-25k" class="btn btn-secondary btn-small">25K</button>
-                            <button id="btn-load-50k" class="btn btn-secondary btn-small">50K</button>
-                            <button id="btn-load-100k" class="btn btn-secondary btn-small">100K</button>
-                            <button id="btn-ramp" class="btn btn-primary btn-small">Ramp</button>
-                        </div>
-                    </div>
-                    <div class="control-group">
-                        <span class="control-label">Rate Slider</span>
-                        <div class="slider-container">
-                            <input type="range" id="load-slider" min="0" max="100000" value="0" step="1000">
-                            <span id="load-value" class="slider-value">0</span>
-                        </div>
-                    </div>
-                    <div class="control-group">
-                        <button id="btn-reset" class="btn btn-secondary btn-small">Reset Metrics</button>
+                    <div class="control-buttons">
+                        <button id="btn-kill-node" class="btn btn-danger btn-small" onclick="showNodeModal(false)">Kill Node</button>
+                        <button id="btn-kill-leader" class="btn btn-warning btn-small" onclick="killLeader()">Kill Leader</button>
+                        <button id="btn-rolling-restart" class="btn btn-secondary btn-small" onclick="toggleRollingRestart()">Rolling Restart</button>
+                        <button class="btn btn-success btn-small" hx-post="/api/cluster/resize/up" hx-swap="none">+ Node</button>
+                        <button class="btn btn-danger btn-small" hx-post="/api/cluster/resize/down" hx-swap="none">- Node</button>
+                        <button id="btn-reset" class="btn btn-secondary btn-small" onclick="resetMetrics()">Reset Metrics</button>
                     </div>
                 </div>
             </div>
