@@ -97,7 +97,13 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
    - Instance type parameter for spot/on-demand selection
    - **Enables:** Spot Instance Support (#17), Expense Tracking (#18)
 
-5. **Dependency Lifecycle Management**
+5. **Dynamic Aspect** 
+   - Implement `DynamicAspect`, the aspect that can be dynamically switched between different modes - None, Log, Metrics, Log+Metrics.
+   - Implement `DynamicAspectManager`, which keeps registry of all instances of DynamicAspect active at node keyed by the class name+method name to which they are applied.
+   - Provide API to manage these instances across the cluster
+   - Wire to dashboard with convenient UI 
+
+6. **Dependency Lifecycle Management**
    - Block manual unload while dependents are ACTIVE
    - Graceful degradation on dependency failure (calls fail, slice handles it)
    - Dependency graph tracking in KV store
@@ -105,26 +111,26 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 
 ### MEDIUM PRIORITY - Infrastructure Services
 
-6. **Distributed Saga Orchestration**
+7. **Distributed Saga Orchestration**
    - Long-running transaction orchestration (saga pattern)
    - Durable state transitions with compensation on failure
    - Differs from local state machine - coordinates across multiple slices
    - Automatic retry, timeout, and dead-letter handling
    - Visualization of in-flight sagas and their states
 
-7. **Disruption Budget**
+8. **Disruption Budget**
    - Minimum healthy instances during rolling updates and node failures
    - Configurable per slice or blueprint
    - Controller respects budget before scaling down or migrating
    - Prevents cascading failures during maintenance
 
-8. **Forge Script - Scenario Language**
+9. **Forge Script - Scenario Language**
    - DSL for defining load/chaos test scenarios
    - Reusable scenario libraries
    - CI/CD integration for automated testing
    - Note: Paid tier feature
 
-9. **Placement Hints**
+10. **Placement Hints**
    - Affinity/anti-affinity rules for slice placement
    - Spread: distribute instances across nodes/zones
    - Co-locate: place related slices on same node
@@ -132,23 +138,23 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 
 ### LOWER PRIORITY - Security & Operations
 
-10. **TLS Certificate Management**
+11. **TLS Certificate Management**
     - Certificate provisioning and rotation
     - Mutual TLS between nodes
     - Integration with external CA or self-signed
 
-11. **Canary & Blue-Green Deployment Strategies**
+12. **Canary & Blue-Green Deployment Strategies**
     - Current: Rolling updates with weighted routing exist
     - Add explicit canary deployment with automatic rollback on error threshold
     - Add blue-green deployment with instant switchover
     - A/B testing support with traffic splitting by criteria
 
-12. **Topology in KV Store**
+13. **Topology in KV Store**
     - Leader maintains cluster topology in consensus KV store
     - Best-effort updates on membership changes
     - Enables external observability without direct node queries
 
-13. **RBAC for Management API**
+14. **RBAC for Management API**
     - Role-based access control for operations
     - Predefined roles: admin, operator, viewer
     - Per-endpoint authorization rules
@@ -156,18 +162,18 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 
 ### FUTURE
 
-14. **LLM Integration (Layer 3)**
+15. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-15. **Mini-Kafka (Message Streaming)**
+16. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-16. **Cross-Slice Transaction Support (2PC)**
+17. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -194,7 +200,7 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-17. **Spot Instance Support for Elastic Scaling**
+18. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -247,7 +253,7 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
     **Complexity:** Low - just configuration and cloud API flag
     **Prerequisite:** Cloud Provider Adapters (#4)
 
-18. **Cluster Expense Tracking**
+19. **Cluster Expense Tracking**
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
 

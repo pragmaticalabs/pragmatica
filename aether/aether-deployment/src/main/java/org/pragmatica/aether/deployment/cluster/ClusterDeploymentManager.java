@@ -130,7 +130,8 @@ public interface ClusterDeploymentManager {
                       AtomicReference<List<NodeId>> activeNodes,
                       AtomicInteger allocationIndex,
                       AtomicBoolean deactivated,
-                      AtomicReference<ScheduledFuture<?>> autoHealFuture) implements ClusterDeploymentState {
+                      AtomicReference<ScheduledFuture<?>> autoHealFuture,
+                      AtomicBoolean cooldownActive) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
             /**
@@ -139,8 +140,27 @@ public interface ClusterDeploymentManager {
              */
             void deactivate() {
                 deactivated.set(true);
+                cooldownActive.set(false);
                 cancelAutoHeal();
                 log.debug("Active state deactivated, stale callbacks will be suppressed");
+            }
+
+            /**
+             * Start auto-heal cooldown for initial cluster formation.
+             * During cooldown, provisioning is suppressed to allow all nodes time to join.
+             */
+            void startAutoHealCooldown() {
+                cooldownActive.set(true);
+                log.info("AUTO-HEAL: Starting {}ms cooldown for initial cluster formation",
+                         autoHealConfig.startupCooldown().millis());
+                SharedScheduler.schedule(() -> {
+                    if (deactivated.get()) {
+                        return;
+                    }
+                    cooldownActive.set(false);
+                    log.info("AUTO-HEAL: Cooldown expired, checking cluster health");
+                    checkAndScheduleAutoHeal();
+                }, autoHealConfig.startupCooldown());
             }
 
             /**
@@ -276,20 +296,17 @@ public interface ClusterDeploymentManager {
                     case NodeAdded(_, List<NodeId> topology) -> {
                         updateTopology(topology);
                         reconcile();
-                        checkAndScheduleAutoHeal();
                     }
                     case NodeRemoved(NodeId removedNode, List<NodeId> topology) -> {
                         updateTopology(topology);
                         handleNodeRemoval(removedNode);
                         reconcile();
-                        checkAndScheduleAutoHeal();
                     }
                     case NodeDown(NodeId downNode, List<NodeId> topology) -> {
                         log.warn("Node {} is down, triggering immediate reconciliation", downNode);
                         updateTopology(topology);
                         handleNodeRemoval(downNode);
                         reconcile();
-                        checkAndScheduleAutoHeal();
                     }
                     default -> {}
                 }
@@ -334,13 +351,18 @@ public interface ClusterDeploymentManager {
              * Check if cluster is below target size and schedule auto-healing if a NodeProvider is present.
              * Cancels periodic recheck when cluster reaches target size.
              */
-            private void checkAndScheduleAutoHeal() {
+            void checkAndScheduleAutoHeal() {
                 if (nodeProvider.isEmpty()) {
                     return;
                 }
                 var deficit = computeAutoHealDeficit();
                 if (deficit <= 0) {
                     cancelAutoHeal();
+                    return;
+                }
+                // During startup cooldown, suppress provisioning — nodes may still be joining
+                if (cooldownActive.get()) {
+                    log.debug("AUTO-HEAL: Cooldown active, deferring provisioning ({} node deficit)", deficit);
                     return;
                 }
                 var currentSize = activeNodes.get().size();
@@ -1021,12 +1043,19 @@ public interface ClusterDeploymentManager {
                                                                         activeNodes,
                                                                         new AtomicInteger(0),
                                                                         new AtomicBoolean(false),
-                                                                        new AtomicReference<>());
+                                                                        new AtomicReference<>(),
+                                                                        new AtomicBoolean(false));
                     state.set(activeState);
                     // Rebuild state from KVStore and reconcile
                     activeState.rebuildStateFromKVStore();
                     activeState.reconcile();
-                    activeState.checkAndScheduleAutoHeal();
+                    // Use startup cooldown for initial formation (no blueprints yet),
+                    // immediate auto-heal for leader failover (blueprints restored from KVStore)
+                    if (activeState.blueprints().isEmpty()) {
+                        activeState.startAutoHealCooldown();
+                    } else {
+                        activeState.checkAndScheduleAutoHeal();
+                    }
                 } else {
                     log.info("Node {} is not leader, deactivating cluster deployment manager", self);
                     // Deactivate old Active state to suppress stale scheduled callbacks
@@ -1065,6 +1094,10 @@ public interface ClusterDeploymentManager {
                 }
                 state.get()
                      .onTopologyChange(topologyChange);
+                // Check auto-heal unconditionally after any topology change
+                if (state.get() instanceof ClusterDeploymentState.Active activeState) {
+                    activeState.checkAndScheduleAutoHeal();
+                }
             }
         }
         return new clusterDeploymentManager(self,
