@@ -1,4 +1,4 @@
-package org.pragmatica.aether.forge;
+package org.pragmatica.aether.api;
 
 import org.pragmatica.http.websocket.WebSocketHandler;
 import org.pragmatica.http.websocket.WebSocketMessage;
@@ -10,12 +10,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * WebSocket handler for Forge dashboard real-time status updates.
- * Manages connected clients and broadcasts full status JSON.
+ * Reusable WebSocket handler for broadcasting status updates.
+ * Instance-based (not static) to support independent session pools
+ * across management server and Forge dashboard.
  */
-public class ForgeWebSocketHandler implements WebSocketHandler {
-    private static final Logger log = LoggerFactory.getLogger(ForgeWebSocketHandler.class);
-    private static final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
+public class StatusWebSocketHandler implements WebSocketHandler {
+    private static final Logger log = LoggerFactory.getLogger(StatusWebSocketHandler.class);
+    private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
 
     @Override
     public void handle(WebSocketSession session, WebSocketMessage message) {
@@ -29,18 +30,18 @@ public class ForgeWebSocketHandler implements WebSocketHandler {
 
     private void onOpen(WebSocketSession session) {
         sessions.put(session.id(), session);
-        log.info("Forge dashboard client connected: {}", session.id());
+        log.info("Status client connected: {}", session.id());
     }
 
     private void onClose(WebSocketSession session) {
         sessions.remove(session.id());
-        log.info("Forge dashboard client disconnected: {}", session.id());
+        log.info("Status client disconnected: {}", session.id());
     }
 
     /**
-     * Broadcast a message to all connected Forge dashboard clients.
+     * Broadcast a message to all connected clients.
      */
-    public static void broadcast(String message) {
+    public void broadcast(String message) {
         sessions.values()
                 .forEach(session -> {
                     if (session.isOpen()) {
@@ -50,9 +51,9 @@ public class ForgeWebSocketHandler implements WebSocketHandler {
     }
 
     /**
-     * Get the number of connected Forge dashboard clients.
+     * Get the number of connected clients.
      */
-    public static int connectedClients() {
+    public int connectedClients() {
         return (int) sessions.values()
                             .stream()
                             .filter(WebSocketSession::isOpen)
