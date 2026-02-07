@@ -8,6 +8,7 @@ import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
 import org.pragmatica.aether.controller.DecisionTreeController;
 import org.pragmatica.aether.controller.RollbackManager;
+import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
@@ -169,6 +170,11 @@ public interface AetherNode {
      * Get the artifact metrics collector for storage and deployment metrics.
      */
     ArtifactMetricsCollector artifactMetricsCollector();
+
+    /**
+     * Get the deployment map for event-driven slice-node indexing.
+     */
+    DeploymentMap deploymentMap();
 
     /**
      * Get the number of currently connected peer nodes in the cluster.
@@ -336,6 +342,7 @@ public interface AetherNode {
                           RollbackManager rollbackManager,
                           ComprehensiveSnapshotCollector snapshotCollector,
                           ArtifactMetricsCollector artifactMetricsCollector,
+                          DeploymentMap deploymentMap,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           Option<ManagementServer> managementServer,
                           long startTimeMs) implements AetherNode {
@@ -590,6 +597,8 @@ public interface AetherNode {
                                                                                               minuteAggregator);
         // Create artifact metrics collector for storage and deployment tracking
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
+        // Create deployment map for event-driven slice-node indexing
+        var deploymentMap = DeploymentMap.deploymentMap();
         // Create TTM manager (returns no-op if disabled in config)
         var ttmManager = TTMManager.ttmManager(config.ttm(),
                                                minuteAggregator,
@@ -662,6 +671,7 @@ public interface AetherNode {
                                                 rollingUpdateManager,
                                                 rollbackManager,
                                                 artifactMetricsCollector,
+                                                deploymentMap,
                                                 clusterNode.leaderManager(),
                                                 appHttpServer);
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
@@ -697,6 +707,7 @@ public interface AetherNode {
                                   rollbackManager,
                                   snapshotCollector,
                                   artifactMetricsCollector,
+                                  deploymentMap,
                                   eventLoopMetricsCollector,
                                   Option.empty(),
                                   startTimeMs);
@@ -738,6 +749,7 @@ public interface AetherNode {
                                                            rollbackManager,
                                                            snapshotCollector,
                                                            artifactMetricsCollector,
+                                                           deploymentMap,
                                                            eventLoopMetricsCollector,
                                                            Option.some(managementServer),
                                                            startTimeMs);
@@ -764,6 +776,7 @@ public interface AetherNode {
                                                                     RollingUpdateManager rollingUpdateManager,
                                                                     RollbackManager rollbackManager,
                                                                     ArtifactMetricsCollector artifactMetricsCollector,
+                                                                    DeploymentMap deploymentMap,
                                                                     LeaderManager leaderManager,
                                                                     AppHttpServer appHttpServer) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
@@ -795,6 +808,11 @@ public interface AetherNode {
                                               filterPut(AetherKey.class, artifactMetricsCollector::onValuePut)));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
                                               filterRemove(AetherKey.class, artifactMetricsCollector::onValueRemove)));
+        // DeploymentMap: event-driven slice-node index
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                              filterPut(AetherKey.class, deploymentMap::onValuePut)));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                              filterRemove(AetherKey.class, deploymentMap::onValueRemove)));
         // ControlLoop blueprint sync via KV-Store
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               filterPut(AetherKey.class, controlLoop::onValuePut)));

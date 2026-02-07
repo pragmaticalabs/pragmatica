@@ -8,8 +8,6 @@ import org.pragmatica.aether.provider.AutoHealConfig;
 import org.pragmatica.aether.provider.InstanceType;
 import org.pragmatica.aether.provider.NodeProvider;
 import org.pragmatica.aether.slice.SliceState;
-import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
-import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.rabia.ProtocolConfig;
@@ -24,10 +22,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.SharedScheduler;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
@@ -543,25 +539,38 @@ public final class ForgeCluster {
 
     /**
      * Get per-node metrics for all nodes.
+     * Uses the leader's cached allMetrics() (populated via MetricsPing/MetricsPong)
+     * instead of calling collectLocal() per node — zero MXBean calls, zero HashMap allocations.
      */
     public List<NodeMetrics> nodeMetrics() {
-        return nodes.entrySet()
-                    .stream()
-                    .map(this::toNodeMetrics)
-                    .toList();
+        var leaderId = currentLeader().or("");
+        // Find leader node — it has cached metrics from all nodes via MetricsPong
+        var leaderNode = nodes.get(leaderId);
+        if (leaderNode == null) {
+            // No leader yet — fall back to first available node
+            if (nodes.isEmpty()) {
+                return List.of();
+            }
+            leaderNode = nodes.values()
+                              .iterator()
+                              .next();
+        }
+        var allMetrics = leaderNode.metricsCollector()
+                                   .allMetrics();
+        return allMetrics.entrySet()
+                         .stream()
+                         .map(entry -> toNodeMetrics(entry.getKey().id(),
+                                                     entry.getValue(),
+                                                     leaderId))
+                         .toList();
     }
 
-    private NodeMetrics toNodeMetrics(Map.Entry<String, AetherNode> entry) {
-        var nodeId = entry.getKey();
-        var metrics = entry.getValue()
-                           .metricsCollector()
-                           .collectLocal();
+    private NodeMetrics toNodeMetrics(String nodeId, Map<String, Double> metrics, String leaderId) {
         var cpuUsage = metrics.getOrDefault("cpu.usage", 0.0);
         var heapUsed = metrics.getOrDefault("heap.used", 0.0);
         var heapMax = metrics.getOrDefault("heap.max", 1.0);
         return new NodeMetrics(nodeId,
-                               currentLeader().map(l -> l.equals(nodeId))
-                                            .or(false),
+                               leaderId.equals(nodeId),
                                cpuUsage,
                                (long) (heapUsed / 1024 / 1024),
                                (long) (heapMax / 1024 / 1024));
@@ -618,53 +627,32 @@ public final class ForgeCluster {
     public record RollingRestartStatusResponse(boolean active) {}
 
     /**
-     * Get slice status from the KV store.
-     * Returns status for all slices across all nodes.
+     * Get slice status from the DeploymentMap.
+     * Uses event-driven index instead of KV store scan — zero allocations per poll.
      */
     public List<SliceStatus> slicesStatus() {
-        // Get any node to query KV store (all nodes have consistent view)
         if (nodes.isEmpty()) {
             return List.of();
         }
         var node = nodes.values()
                         .iterator()
                         .next();
-        // Use type-safe forEach to filter by key/value type
-        var slicesByArtifact = new HashMap<String, List<SliceInstanceStatus>>();
-        var stateByArtifact = new HashMap<String, SliceState>();
-        node.kvStore()
-            .forEach(SliceNodeKey.class, SliceNodeValue.class,
-                     (sliceKey, sliceValue) -> collectSliceStatus(slicesByArtifact, stateByArtifact, sliceKey, sliceValue));
-        // Build result
-        return slicesByArtifact.entrySet()
-                               .stream()
-                               .map(entry -> new SliceStatus(entry.getKey(),
-                                                             stateByArtifact.getOrDefault(entry.getKey(), SliceState.FAILED)
-                                                                            .name(),
-                                                             entry.getValue()))
-                               .toList();
-    }
-
-    private void collectSliceStatus(Map<String, List<SliceInstanceStatus>> slicesByArtifact,
-                                    Map<String, SliceState> stateByArtifact,
-                                    SliceNodeKey sliceKey,
-                                    SliceNodeValue sliceValue) {
-        var artifactStr = sliceKey.artifact()
-                                  .asString();
-        var instanceState = sliceValue.state();
-        var health = instanceState == SliceState.ACTIVE
-                     ? "HEALTHY"
-                     : "UNHEALTHY";
-        slicesByArtifact.computeIfAbsent(artifactStr, _ -> new ArrayList<>())
-                        .add(new SliceInstanceStatus(sliceKey.nodeId().id(),
-                                                     instanceState.name(),
-                                                     health));
-        // Track highest state for aggregate
-        stateByArtifact.merge(artifactStr, instanceState, this::higherState);
-    }
-
-    private SliceState higherState(SliceState old, SliceState curr) {
-        return curr == SliceState.ACTIVE ? curr : old;
+        return node.deploymentMap()
+                   .allDeployments()
+                   .stream()
+                   .map(info -> new SliceStatus(info.artifact(),
+                                                info.aggregateState()
+                                                    .name(),
+                                                info.instances()
+                                                    .stream()
+                                                    .map(i -> new SliceInstanceStatus(i.nodeId(),
+                                                                                      i.state()
+                                                                                       .name(),
+                                                                                      i.state() == SliceState.ACTIVE
+                                                                                      ? "HEALTHY"
+                                                                                      : "UNHEALTHY"))
+                                                    .toList()))
+                   .toList();
     }
 
     /**
