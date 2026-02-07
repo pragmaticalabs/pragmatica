@@ -23,8 +23,8 @@ public final class ForgeMetrics {
     private volatile long lastFailureSnapshot = 0;
     private volatile long lastSnapshotTime = System.currentTimeMillis();
 
-    // EMA smoothing factor: 0.3 gives ~1.5s effective window at 500ms snapshots
-    private static final double EMA_ALPHA = 0.3;
+    // EMA smoothing factor: 0.1 gives ~5s effective window at 500ms snapshots
+    private static final double EMA_ALPHA = 0.1;
 
     // Current rates (updated by snapshot)
     private volatile double requestsPerSecond = 0;
