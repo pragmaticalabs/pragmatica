@@ -8,6 +8,7 @@ import org.pragmatica.aether.forge.simulator.EntryPointMetrics;
 import org.pragmatica.aether.api.StatusWebSocketHandler;
 import org.pragmatica.aether.api.StatusWebSocketPublisher;
 import org.pragmatica.aether.forge.api.StatusRoutes;
+import org.pragmatica.http.routing.JsonCodec;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
@@ -58,6 +59,7 @@ public final class ForgeServer {
     private static final Logger log = LoggerFactory.getLogger(ForgeServer.class);
 
     private static final int MAX_CONTENT_LENGTH = 65536;
+    private static final JsonCodec CODEC = JsonCodecAdapter.defaultCodec();
 
     // Forge-only dev tooling credentials for embedded H2 database
     private static final String FORGE_H2_USERNAME = "sa";
@@ -208,13 +210,15 @@ public final class ForgeServer {
                                            long startTime,
                                            ConfigurableLoadRunner loadRunner) {
         var status = StatusRoutes.buildFullStatus(cluster, loadGenerator, metrics, startTime, loadRunner);
-        var codec = JsonCodecAdapter.defaultCodec();
-        return codec.serialize(status)
+        return CODEC.serialize(status)
                     .map(byteBuf -> {
-                        var bytes = new byte[byteBuf.readableBytes()];
-                        byteBuf.readBytes(bytes);
-                        byteBuf.release();
-                        return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                        try {
+                            var bytes = new byte[byteBuf.readableBytes()];
+                            byteBuf.readBytes(bytes);
+                            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                        } finally {
+                            byteBuf.release();
+                        }
                     })
                     .or("{}");
     }

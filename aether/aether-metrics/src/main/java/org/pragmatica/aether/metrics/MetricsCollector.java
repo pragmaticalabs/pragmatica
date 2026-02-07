@@ -172,8 +172,10 @@ class MetricsCollectorImpl implements MetricsCollector {
 
     @Override
     public Map<NodeId, Map<String, Double>> allMetrics() {
+        var local = collectLocal();
+        addToHistory(self, local);
         var result = new ConcurrentHashMap<>(remoteMetrics);
-        result.put(self, collectLocal());
+        result.put(self, local);
         return result;
     }
 

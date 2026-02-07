@@ -102,7 +102,8 @@ final class DeploymentMapImpl implements DeploymentMap {
                         var aggregateState = group.getValue()
                                                   .stream()
                                                   .map(Map.Entry::getValue)
-                                                  .reduce(SliceState.FAILED, DeploymentMapImpl::higherState);
+                                                  .reduce(DeploymentMapImpl::higherState)
+                                                  .orElse(SliceState.FAILED);
                         return new SliceDeploymentInfo(group.getKey(), aggregateState, instances);
                     })
                     .toList();
@@ -118,6 +119,15 @@ final class DeploymentMapImpl implements DeploymentMap {
     }
 
     private static SliceState higherState(SliceState a, SliceState b) {
-        return b == SliceState.ACTIVE ? b : a;
+        if (a == SliceState.ACTIVE || b == SliceState.ACTIVE) {
+            return SliceState.ACTIVE;
+        }
+        if (a == SliceState.FAILED) {
+            return b;
+        }
+        if (b == SliceState.FAILED) {
+            return a;
+        }
+        return a.ordinal() >= b.ordinal() ? a : b;
     }
 }

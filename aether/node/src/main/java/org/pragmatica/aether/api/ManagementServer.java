@@ -151,8 +151,13 @@ class ManagementServerImpl implements ManagementServer {
         log.info("{} management server started on port {} (dashboard at /dashboard)", protocol, port);
     }
 
+    private static String escapeJson(String value) {
+        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+    }
+
     private static String buildStatusJson(Supplier<AetherNode> nodeSupplier) {
         var node = nodeSupplier.get();
+        var leaderId = node.leader().map(leader -> leader.id()).or("");
         var sb = new StringBuilder(4096);
         sb.append("{");
         // Uptime
@@ -169,8 +174,8 @@ class ManagementServerImpl implements ManagementServer {
             var cpuUsage = metrics.getOrDefault("cpu.usage", 0.0);
             var heapUsed = metrics.getOrDefault("heap.used", 0.0);
             var heapMax = metrics.getOrDefault("heap.max", 1.0);
-            sb.append("{\"nodeId\":\"").append(nodeId).append("\"");
-            sb.append(",\"isLeader\":").append(node.isLeader() && node.self().id().equals(nodeId));
+            sb.append("{\"nodeId\":\"").append(escapeJson(nodeId)).append("\"");
+            sb.append(",\"isLeader\":").append(leaderId.equals(nodeId));
             sb.append(",\"cpuUsage\":").append(cpuUsage);
             sb.append(",\"heapUsedMb\":").append((long) (heapUsed / 1024 / 1024));
             sb.append(",\"heapMaxMb\":").append((long) (heapMax / 1024 / 1024));
@@ -184,13 +189,13 @@ class ManagementServerImpl implements ManagementServer {
         boolean firstSlice = true;
         for (var info : deployments) {
             if (!firstSlice) sb.append(",");
-            sb.append("{\"artifact\":\"").append(info.artifact()).append("\"");
+            sb.append("{\"artifact\":\"").append(escapeJson(info.artifact())).append("\"");
             sb.append(",\"state\":\"").append(info.aggregateState().name()).append("\"");
             sb.append(",\"instances\":[");
             boolean firstInst = true;
             for (var inst : info.instances()) {
                 if (!firstInst) sb.append(",");
-                sb.append("{\"nodeId\":\"").append(inst.nodeId()).append("\"");
+                sb.append("{\"nodeId\":\"").append(escapeJson(inst.nodeId())).append("\"");
                 sb.append(",\"state\":\"").append(inst.state().name()).append("\"}");
                 firstInst = false;
             }
@@ -204,15 +209,13 @@ class ManagementServerImpl implements ManagementServer {
         for (var entry : allMetrics.entrySet()) {
             if (!firstClusterNode) sb.append(",");
             var nodeId = entry.getKey().id();
-            sb.append("{\"id\":\"").append(nodeId).append("\"");
-            sb.append(",\"isLeader\":").append(node.isLeader() && node.self().id().equals(nodeId));
+            sb.append("{\"id\":\"").append(escapeJson(nodeId)).append("\"");
+            sb.append(",\"isLeader\":").append(leaderId.equals(nodeId));
             sb.append("}");
             firstClusterNode = false;
         }
         sb.append("],\"leaderId\":\"");
-        node.leader()
-            .onPresent(leader -> sb.append(leader.id()))
-            .onEmpty(() -> sb.append("unknown"));
+        sb.append(escapeJson(leaderId));
         sb.append("\",\"nodeCount\":").append(allMetrics.size());
         sb.append("}");
         sb.append("}");

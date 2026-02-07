@@ -43,20 +43,16 @@ public class StatusWebSocketHandler implements WebSocketHandler {
      */
     public void broadcast(String message) {
         sessions.values()
-                .forEach(session -> {
-                    if (session.isOpen()) {
-                        session.send(message);
-                    }
-                });
+                .removeIf(session -> !session.isOpen());
+        sessions.values()
+                .forEach(session -> session.send(message));
     }
 
     /**
      * Get the number of connected clients.
      */
     public int connectedClients() {
-        return (int) sessions.values()
-                            .stream()
-                            .filter(WebSocketSession::isOpen)
-                            .count();
+        sessions.values().removeIf(session -> !session.isOpen());
+        return sessions.size();
     }
 }

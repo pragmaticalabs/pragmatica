@@ -4,6 +4,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import org.slf4j.Logger;
@@ -19,7 +20,7 @@ public class StatusWebSocketPublisher {
     private final StatusWebSocketHandler handler;
     private final Supplier<String> jsonSupplier;
     private final long intervalMs;
-    private final ScheduledExecutorService scheduler;
+    private final AtomicReference<ScheduledExecutorService> schedulerRef = new AtomicReference<>();
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     private StatusWebSocketPublisher(StatusWebSocketHandler handler,
@@ -28,11 +29,6 @@ public class StatusWebSocketPublisher {
         this.handler = handler;
         this.jsonSupplier = jsonSupplier;
         this.intervalMs = intervalMs;
-        this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            var thread = new Thread(r, "status-ws-publisher");
-            thread.setDaemon(true);
-            return thread;
-        });
     }
 
     public static StatusWebSocketPublisher statusWebSocketPublisher(StatusWebSocketHandler handler,
@@ -50,6 +46,12 @@ public class StatusWebSocketPublisher {
         if (!running.compareAndSet(false, true)) {
             return;
         }
+        var scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+            var thread = new Thread(r, "status-ws-publisher");
+            thread.setDaemon(true);
+            return thread;
+        });
+        schedulerRef.set(scheduler);
         scheduler.scheduleAtFixedRate(this::publish,
                                       intervalMs,
                                       intervalMs,
@@ -61,7 +63,10 @@ public class StatusWebSocketPublisher {
         if (!running.compareAndSet(true, false)) {
             return;
         }
-        scheduler.shutdown();
+        var scheduler = schedulerRef.getAndSet(null);
+        if (scheduler != null) {
+            scheduler.shutdown();
+        }
         log.info("Status WebSocket publisher stopped");
     }
 
