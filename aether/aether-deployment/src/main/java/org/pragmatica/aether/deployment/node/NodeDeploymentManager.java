@@ -485,6 +485,8 @@ public interface NodeDeploymentManager {
 
             private void handleUnloadFailure(SliceNodeKey sliceKey, Cause cause) {
                 log.error("Failed to unload {}: {}", sliceKey.artifact(), cause.message());
+                // Delete KV key even on failure to prevent stuck UNLOADING state
+                deleteSliceNodeKey(sliceKey);
                 removeFromDeployments(sliceKey);
             }
 

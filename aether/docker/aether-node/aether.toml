@@ -1,5 +1,7 @@
 # Aether Node Configuration for Containerized Deployment
-# Artifacts are fetched from DHT (builtin repository), not local Maven repo
+# Artifacts resolved from DHT first, falling back to local Maven repo.
+# The DHT (builtin) is local-only per node, so local fallback is required
+# when the LOAD command targets a node that didn't receive the upload.
 
 [slice]
-repositories = ["builtin"]
+repositories = ["builtin", "local"]

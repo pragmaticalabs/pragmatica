@@ -268,10 +268,16 @@ public interface ClusterDeploymentManager {
                 switch (key) {
                     case SliceTargetKey sliceTargetKey -> handleSliceTargetRemoval(sliceTargetKey);
                     case AppBlueprintKey appKey -> handleAppBlueprintRemoval(appKey);
-                    case SliceNodeKey sliceNodeKey -> sliceStates.remove(sliceNodeKey);
+                    case SliceNodeKey sliceNodeKey -> handleSliceNodeRemoval(sliceNodeKey);
                     case AetherKey.VersionRoutingKey routingKey -> handleRoutingRemoval(routingKey);
                     default -> {}
                 }
+            }
+
+            private void handleSliceNodeRemoval(SliceNodeKey sliceNodeKey) {
+                sliceStates.remove(sliceNodeKey);
+                // Trigger reconciliation to replace the removed instance
+                SharedScheduler.schedule(this::reconcile, timeSpan(1).seconds());
             }
 
             private void handleAppBlueprintRemoval(AppBlueprintKey key) {
@@ -898,12 +904,22 @@ public interface ClusterDeploymentManager {
 
             private List<SliceNodeKey> getCurrentInstances(Artifact artifact) {
                 var currentNodes = activeNodes.get();
-                return sliceStates.keySet()
+                return sliceStates.entrySet()
                                   .stream()
-                                  .filter(key -> key.artifact()
-                                                    .equals(artifact))
-                                  .filter(key -> currentNodes.contains(key.nodeId()))
+                                  .filter(entry -> entry.getKey()
+                                                        .artifact()
+                                                        .equals(artifact))
+                                  .filter(entry -> currentNodes.contains(entry.getKey()
+                                                                              .nodeId()))
+                                  .filter(entry -> isLiveState(entry.getValue()))
+                                  .map(Map.Entry::getKey)
                                   .toList();
+            }
+
+            private boolean isLiveState(SliceState state) {
+                return state != SliceState.FAILED
+                    && state != SliceState.UNLOAD
+                    && state != SliceState.UNLOADING;
             }
 
             private void issueLoadCommand(SliceNodeKey sliceKey) {

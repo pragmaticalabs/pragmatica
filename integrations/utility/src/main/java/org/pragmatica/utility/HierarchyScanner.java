@@ -17,8 +17,10 @@
 package org.pragmatica.utility;
 
 import java.util.Collection;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.stream.Stream;
 
@@ -27,7 +29,7 @@ public sealed interface HierarchyScanner {
     /// Find all concrete subtypes of a sealed interface or class.
     @SuppressWarnings("unchecked")
     static <T> Set<Class<? extends T>> concreteSubtypes(Class<T> type) {
-        var result = new HashSet<Class<? extends T>>();
+        var result = new TreeSet<Class<? extends T>>(Comparator.comparing(Class::getName));
         if (!type.isInterface()) {
             result.add(type);
             return result;

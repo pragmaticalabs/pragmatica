@@ -266,16 +266,19 @@ public interface LeaderManager {
                                              .orElse(self);
                 var isInitialElection = !hasEverHadLeader.get();
                 // Fallback: after multiple failed attempts during initial election,
-                // any active node can propose itself to break deadlock.
-                // This handles the case where the designated min node is permanently inactive.
-                if (!self.equals(candidate) && isInitialElection
+                // any active node can take over submission for the designated candidate.
+                // CRITICAL: The candidate stays the SAME (min node) — only the submitter changes.
+                // If each node proposed itself, different BatchIds would cause infinite V0 decisions
+                // because no single proposal gets quorum agreement.
+                var shouldSubmit = self.equals(candidate);
+                if (!shouldSubmit && isInitialElection
                     && electionRetryCount.get() >= ELECTION_FALLBACK_RETRIES) {
-                    LOG.info("Election fallback after {} retries: self={} proposing itself "
-                             + "(designated min={} unavailable)",
+                    LOG.info("Election fallback after {} retries: self={} taking over submission "
+                             + "for candidate={} (designated min node may be slow)",
                              electionRetryCount.get(), self, candidate);
-                    candidate = self;
+                    shouldSubmit = true;
                 }
-                if (!self.equals(candidate)) {
+                if (!shouldSubmit) {
                     LOG.debug("Skipping election trigger: self={} is not min node {} in candidatePool {} (initial={})",
                               self,
                               candidate,
@@ -283,7 +286,8 @@ public interface LeaderManager {
                               isInitialElection);
                     return;
                 }
-                LOG.debug("Submitting leader proposal: self={} (min node in {}, initial={})",
+                LOG.debug("Submitting leader proposal: candidate={}, submitter={} (min node in {}, initial={})",
+                          candidate,
                           self,
                           expectedCluster.isEmpty()
                           ? "topology"

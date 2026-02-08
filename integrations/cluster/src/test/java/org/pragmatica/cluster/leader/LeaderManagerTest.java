@@ -247,9 +247,9 @@ class LeaderManagerTest {
                 localManager.triggerElection();
             }
 
-            // Non-min node should have proposed itself via fallback
+            // Non-min node should have taken over submission for the designated min candidate
             assertThat(localProposals).isNotEmpty();
-            assertThat(localProposals.getLast().candidate()).isEqualTo(self);
+            assertThat(localProposals.getLast().candidate()).isEqualTo(nodes.getFirst());
         }
 
         @Test
