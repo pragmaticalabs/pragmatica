@@ -61,12 +61,8 @@ public class AetherCluster implements AutoCloseable {
     private final Path projectRoot;
     private final Map<String, AetherNodeContainer> nodeMap;
 
-    // Use predictable IPs for container-to-container communication
-    // Podman's DNS doesn't reliably resolve network aliases, so we use explicit IPs
-    // Use PID + counter for deterministic, collision-free subnets
+    // Use PID + counter for deterministic, collision-free subnets to avoid IP conflicts between test runs
     private static final java.util.concurrent.atomic.AtomicInteger SUBNET_COUNTER = new java.util.concurrent.atomic.AtomicInteger(0);
-    private static final int IP_START = 2; // Gateway is .1, containers start at .2
-
     private final String subnetPrefix;
 
     private String generateSubnet() {
@@ -84,7 +80,7 @@ public class AetherCluster implements AutoCloseable {
         this.subnetPrefix = generateSubnet();
         System.out.println("[DEBUG] Using subnet: " + subnetPrefix + ".0/24");
 
-        // Create network with unique subnet for predictable IPs
+        // Create network with unique subnet to isolate test clusters
         this.network = Network.builder()
                               .createNetworkCmdModifier(cmd -> {
                                   cmd.withIpam(new com.github.dockerjava.api.model.Network.Ipam()
@@ -96,35 +92,21 @@ public class AetherCluster implements AutoCloseable {
         this.nodes = new ArrayList<>(size);
         this.nodeMap = new LinkedHashMap<>();
 
-        // Build IP-based peer list
-        var peerList = buildIpPeerList(size);
-        System.out.println("[DEBUG] Using IP-based peer list: " + peerList);
+        // Build hostname-based peer list — Docker DNS resolves network aliases to actual IPs.
+        // Previous IP-based approach was broken: parallelStream() startup caused Docker IPAM
+        // to assign IPs in non-deterministic order, creating identity mismatches in consensus.
+        var peerList = buildPeerList(size);
+        System.out.println("[DEBUG] Using hostname-based peer list: " + peerList);
 
-        // Create nodes with predictable IPs and extra host entries
+        // Create nodes — Docker network aliases provide DNS resolution between containers
         for (int i = 1; i <= size; i++) {
             var nodeId = "node-" + i;
-            var nodeIp = subnetPrefix + "." + (IP_START + i - 1);
             var node = AetherNodeContainer.aetherNode(nodeId, projectRoot, peerList)
                                           .withClusterNetwork(network);
-
-            // Add extra host entries for all OTHER nodes
-            for (int j = 1; j <= size; j++) {
-                if (j != i) {
-                    var otherNodeId = "node-" + j;
-                    var otherIp = subnetPrefix + "." + (IP_START + j - 1);
-                    node.withExtraHost(otherNodeId, otherIp);
-                }
-            }
 
             nodes.add(node);
             nodeMap.put(nodeId, node);
         }
-    }
-
-    private String buildIpPeerList(int size) {
-        return IntStream.rangeClosed(1, size)
-                        .mapToObj(i -> "node-" + i + ":" + subnetPrefix + "." + (IP_START + i - 1) + ":8090")
-                        .collect(Collectors.joining(","));
     }
 
     /**
