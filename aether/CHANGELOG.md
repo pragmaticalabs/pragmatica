@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Artifact Repository E2E tests** - 6 tests covering distributed artifact operations
+  - Metadata availability after upload, cross-node resolution, download content integrity
+  - Artifact survival after single node failure and leader failover
+  - Maven metadata listing uploaded versions
+  - `AetherNodeContainer`: `getBinary()`, `getArtifactInfo()`, `downloadArtifact()` helpers
+
 ### Fixed
 - **Distributed DHT wiring** - Replaced `LocalDHTClient` with `DistributedDHTClient` in `AetherNode`
   - Artifacts uploaded to one node are now visible to all nodes via quorum-based reads/writes (W=2, R=2, N=3)
@@ -14,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Registered `DHTTopologyListener` for consistent hash ring updates on node add/remove
   - Added migration/digest message routes (no-op placeholders for sealed interface completeness)
   - Deferred `ArtifactStore`/`SliceStore` creation to `assembleNode()` where `ClusterNetwork` is available
+- **Stale KV entry cleanup** - `ClusterDeploymentManager` now removes stale slice and endpoint entries on leader state rebuild for nodes no longer in topology
+
+### Removed
+- **`LoadGenerator`** - Replaced by `ConfigurableLoadRunner`; deleted `LoadGenerator.java` and `ForgeResponses.java`
+  - Removed all `LoadGenerator` references from `ForgeApiHandler`, `ForgeRouter`, `ForgeServer`, `LoadRoutes`, `SimulatorRoutes`, `StatusRoutes`
+  - `LoadInfo` now derives state from `ConfigurableLoadRunner`
 
 ## [0.8.2] - 2026-01-27
 
