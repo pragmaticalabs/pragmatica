@@ -175,8 +175,10 @@ public interface ClusterDeploymentManager {
                          sliceStates.size());
                 // Trigger activation for any slices stuck in LOADED state
                 triggerLoadedSliceActivation();
-                // Clean up stale HTTP routes (routes pointing to nodes not in topology)
+                // Clean up stale entries pointing to nodes not in topology
                 cleanupStaleHttpRoutes();
+                cleanupStaleSliceEntries();
+                cleanupStaleEndpointEntries();
             }
 
             /**
@@ -725,6 +727,59 @@ public interface ClusterDeploymentManager {
                     commands.add(new KVCommand.Put<>(routeKey, updatedValue));
                     log.debug("Cleaning up HTTP route {} - removed {} stale nodes",
                               routeKey, staleNodes.size());
+                }
+            }
+
+            /**
+             * Remove slice state entries for nodes not in the current topology.
+             * This handles cases where nodes died before the leader could clean up their slice entries.
+             */
+            private void cleanupStaleSliceEntries() {
+                var currentNodes = new HashSet<>(activeNodes.get());
+                var staleKeys = sliceStates.keySet()
+                                           .stream()
+                                           .filter(key -> !currentNodes.contains(key.nodeId()))
+                                           .toList();
+                if (staleKeys.isEmpty()) {
+                    return;
+                }
+                staleKeys.forEach(sliceStates::remove);
+                List<KVCommand<AetherKey>> commands = staleKeys.stream()
+                                                               .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                                                               .toList();
+                log.info("Cleaning up {} stale slice entries", staleKeys.size());
+                cluster.apply(commands)
+                       .onFailure(cause -> log.error("Failed to clean up stale slice entries: {}",
+                                                      cause.message()));
+            }
+
+            /**
+             * Remove endpoint entries for nodes not in the current topology.
+             * This handles cases where nodes died before the leader could clean up their endpoint entries.
+             */
+            private void cleanupStaleEndpointEntries() {
+                var currentNodes = new HashSet<>(activeNodes.get());
+                var staleKeys = new ArrayList<EndpointKey>();
+                kvStore.forEach(EndpointKey.class, EndpointValue.class,
+                                (key, value) -> collectStaleEndpointKey(staleKeys, key, value, currentNodes));
+                if (staleKeys.isEmpty()) {
+                    return;
+                }
+                List<KVCommand<AetherKey>> commands = staleKeys.stream()
+                                                               .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                                                               .toList();
+                log.info("Cleaning up {} stale endpoint entries", staleKeys.size());
+                cluster.apply(commands)
+                       .onFailure(cause -> log.error("Failed to clean up stale endpoint entries: {}",
+                                                      cause.message()));
+            }
+
+            private void collectStaleEndpointKey(List<EndpointKey> result,
+                                                  EndpointKey endpointKey,
+                                                  EndpointValue endpointValue,
+                                                  Set<NodeId> currentNodes) {
+                if (!currentNodes.contains(endpointValue.nodeId())) {
+                    result.add(endpointKey);
                 }
             }
 
