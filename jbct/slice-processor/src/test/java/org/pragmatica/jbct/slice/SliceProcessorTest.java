@@ -31,36 +31,6 @@ class SliceProcessorTest {
             public @interface Slice {}
             """);
 
-    private static final JavaFileObject PROMISE = JavaFileObjects.forSourceString(
-            "org.pragmatica.lang.Promise",
-            """
-            package org.pragmatica.lang;
-
-            public interface Promise<T> {
-                <R> Promise<R> map(java.util.function.Function<T, R> fn);
-                <R> Promise<R> flatMap(java.util.function.Function<T, Promise<R>> fn);
-                static <T> Promise<T> success(T value) { return null; }
-            }
-            """);
-
-    private static final JavaFileObject UNIT = JavaFileObjects.forSourceString(
-            "org.pragmatica.lang.Unit",
-            """
-            package org.pragmatica.lang;
-
-            public interface Unit {
-                static Unit unit() { return null; }
-            }
-            """);
-
-    private static final JavaFileObject TYPE_TOKEN = JavaFileObjects.forSourceString(
-            "org.pragmatica.lang.type.TypeToken",
-            """
-            package org.pragmatica.lang.type;
-
-            public abstract class TypeToken<T> {}
-            """);
-
     private static final JavaFileObject ASPECT = JavaFileObjects.forSourceString(
             "org.pragmatica.aether.slice.Aspect",
             """
@@ -205,40 +175,6 @@ class SliceProcessorTest {
             public @interface Key {}
             """);
 
-    private static final JavaFileObject FN1 = JavaFileObjects.forSourceString(
-            "org.pragmatica.lang.Functions",
-            """
-            package org.pragmatica.lang;
-
-            public final class Functions {
-                public interface Fn1<R, T> {
-                    R apply(T input);
-                }
-            }
-            """);
-
-    private static final JavaFileObject RESULT = JavaFileObjects.forSourceString(
-            "org.pragmatica.lang.Result",
-            """
-            package org.pragmatica.lang;
-
-            public interface Result<T> {
-                Promise<T> async();
-                static <T> Result<T> success(T value) { return null; }
-            }
-            """);
-
-    private static final JavaFileObject OPTION = JavaFileObjects.forSourceString(
-            "org.pragmatica.lang.Option",
-            """
-            package org.pragmatica.lang;
-
-            public interface Option<T> {
-                static <T> Option<T> option(T value) { return null; }
-                Result<T> toResult(Object cause);
-            }
-            """);
-
     private static final JavaFileObject SLICE_RUNTIME = JavaFileObjects.forSourceString(
             "org.pragmatica.aether.slice.SliceRuntime",
             """
@@ -314,7 +250,7 @@ class SliceProcessorTest {
 
     private List<JavaFileObject> commonSources() {
         return new ArrayList<>(List.of(
-                SLICE_ANNOTATION, PROMISE, UNIT, TYPE_TOKEN, RESULT,
+                SLICE_ANNOTATION,
                 ASPECT, SLICE, SLICE_METHOD, METHOD_NAME, METHOD_HANDLE, INVOKER_FACADE,
                 RESOURCE_PROVIDER_FACADE, SLICE_CREATION_CONTEXT, RESOURCE_QUALIFIER
         ));
@@ -324,7 +260,6 @@ class SliceProcessorTest {
         var sources = commonSources();
         sources.addAll(List.of(
                 ASPECT_KIND, ASPECT_ANNOTATION, KEY_ANNOTATION,
-                FN1, OPTION,
                 SLICE_RUNTIME, ASPECT_FACTORY, CACHE, CACHE_CONFIG, ASPECTS
         ));
         return sources;
