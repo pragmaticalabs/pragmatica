@@ -246,7 +246,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      InvocationHandler invocationHandler,
                                      Serializer serializer,
                                      Deserializer deserializer,
-                                     RollingUpdateManager rollingUpdateManager) {
+                                     RollingUpdateManager rollingUpdateManager,
+                                     DynamicAspectInterceptor aspectInterceptor) {
         return new SliceInvokerImpl(self,
                                     network,
                                     endpointRegistry,
@@ -254,7 +255,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     serializer,
                                     deserializer,
                                     DEFAULT_TIMEOUT_MS,
-                                    rollingUpdateManager);
+                                    rollingUpdateManager,
+                                    aspectInterceptor);
     }
 
     /**
@@ -267,7 +269,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                      Serializer serializer,
                                      Deserializer deserializer,
                                      long timeoutMs,
-                                     RollingUpdateManager rollingUpdateManager) {
+                                     RollingUpdateManager rollingUpdateManager,
+                                     DynamicAspectInterceptor aspectInterceptor) {
         return new SliceInvokerImpl(self,
                                     network,
                                     endpointRegistry,
@@ -275,7 +278,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     serializer,
                                     deserializer,
                                     timeoutMs,
-                                    rollingUpdateManager);
+                                    rollingUpdateManager,
+                                    aspectInterceptor);
     }
 }
 
@@ -296,6 +300,7 @@ class SliceInvokerImpl implements SliceInvoker {
     private final long timeoutMs;
     private final ScheduledExecutorService scheduler;
     private final RollingUpdateManager rollingUpdateManager;
+    private final DynamicAspectInterceptor aspectInterceptor;
 
     // Pending request-response invocations awaiting responses
     // Maps correlationId -> (promise, createdAtMs)
@@ -316,7 +321,8 @@ class SliceInvokerImpl implements SliceInvoker {
                      Serializer serializer,
                      Deserializer deserializer,
                      long timeoutMs,
-                     RollingUpdateManager rollingUpdateManager) {
+                     RollingUpdateManager rollingUpdateManager,
+                     DynamicAspectInterceptor aspectInterceptor) {
         this.self = self;
         this.network = network;
         this.endpointRegistry = endpointRegistry;
@@ -325,6 +331,7 @@ class SliceInvokerImpl implements SliceInvoker {
         this.deserializer = deserializer;
         this.timeoutMs = timeoutMs;
         this.rollingUpdateManager = rollingUpdateManager;
+        this.aspectInterceptor = aspectInterceptor;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(this::createSchedulerThread);
         // Schedule periodic cleanup of stale pending invocations
         scheduler.scheduleAtFixedRate(this::cleanupStaleInvocations,
@@ -396,7 +403,20 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @Override
     public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
-        return selectEndpoint(slice, method).flatMap(endpoint -> sendFireAndForget(endpoint, slice, method, request));
+        return selectEndpoint(slice, method)
+            .flatMap(endpoint -> endpoint.nodeId().equals(self)
+                ? invokeLocalFireAndForget(slice, method, request)
+                : sendFireAndForget(endpoint, slice, method, request));
+    }
+
+    private Promise<Unit> invokeLocalFireAndForget(Artifact slice, MethodName method, Object request) {
+        return invocationHandler.localSlice(slice)
+                                .async(SLICE_NOT_FOUND)
+                                .flatMap(bridge -> aspectInterceptor.intercept(
+                                    slice, method,
+                                    InvocationContext.getOrGenerateRequestId(),
+                                    () -> invokeViaBridge(bridge, method, request)))
+                                .mapToUnit();
     }
 
     private Promise<Unit> sendFireAndForget(Endpoint endpoint, Artifact slice, MethodName method, Object request) {
@@ -422,7 +442,10 @@ class SliceInvokerImpl implements SliceInvoker {
         if (stopped) {
             return INVOKER_STOPPED.promise();
         }
-        return selectEndpoint(slice, method).flatMap(endpoint -> sendRequestResponse(endpoint, slice, method, request));
+        return selectEndpoint(slice, method)
+            .flatMap(endpoint -> endpoint.nodeId().equals(self)
+                ? invokeLocal(slice, method, request, responseType)
+                : sendRequestResponse(endpoint, slice, method, request));
     }
 
     @SuppressWarnings("unchecked")
@@ -551,10 +574,32 @@ class SliceInvokerImpl implements SliceInvoker {
 
     @SuppressWarnings("unchecked")
     private <R> void invokeEndpointWithFailover(Promise<R> promise, FailoverContext<R> ctx, Endpoint endpoint) {
+        var targetNode = endpoint.nodeId();
+
+        if (targetNode.equals(self)) {
+            invokeLocalForFailover(promise, ctx);
+            return;
+        }
+
+        invokeRemoteForFailover(promise, ctx, targetNode);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <R> void invokeLocalForFailover(Promise<R> promise, FailoverContext<R> ctx) {
+        invocationHandler.localSlice(ctx.slice)
+                         .async(SLICE_NOT_FOUND)
+                         .flatMap(bridge -> aspectInterceptor.intercept(
+                             ctx.slice, ctx.method, ctx.requestId,
+                             () -> invokeViaBridge(bridge, ctx.method, ctx.request)))
+                         .onSuccess(result -> promise.succeed((R) result))
+                         .onFailure(cause -> handleFailoverFailure(promise, ctx, self, cause));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <R> void invokeRemoteForFailover(Promise<R> promise, FailoverContext<R> ctx, NodeId targetNode) {
         var payload = serializeRequest(ctx.request);
         var correlationId = KSUID.ksuid()
                                  .toString();
-        var targetNode = endpoint.nodeId();
         var pendingPromise = Promise.<Object>promise();
         var pending = new PendingInvocation(pendingPromise, System.currentTimeMillis(), ctx.requestId, targetNode);
         pendingInvocations.put(correlationId, pending);
@@ -672,7 +717,10 @@ class SliceInvokerImpl implements SliceInvoker {
     public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
         return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> invokeViaBridge(bridge, method, request));
+                                .flatMap(bridge -> aspectInterceptor.intercept(
+                                    slice, method,
+                                    InvocationContext.getOrGenerateRequestId(),
+                                    () -> invokeViaBridge(bridge, method, request)));
     }
 
     @SuppressWarnings("unchecked")

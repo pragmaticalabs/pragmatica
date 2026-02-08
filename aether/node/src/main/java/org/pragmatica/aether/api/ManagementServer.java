@@ -56,7 +56,7 @@ public interface ManagementServer {
     static ManagementServer managementServer(int port,
                                              Supplier<AetherNode> nodeSupplier,
                                              AlertManager alertManager,
-                                             DynamicAspectManager aspectManager,
+                                             DynamicAspectRegistry aspectManager,
                                              Option<TlsConfig> tls) {
         return new ManagementServerImpl(port, nodeSupplier, alertManager, aspectManager, tls);
     }
@@ -70,7 +70,7 @@ class ManagementServerImpl implements ManagementServer {
     private final int port;
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
-    private final DynamicAspectManager aspectManager;
+    private final DynamicAspectRegistry aspectManager;
     private final DashboardMetricsPublisher metricsPublisher;
     private final StatusWebSocketHandler statusWsHandler;
     private final StatusWebSocketPublisher statusWsPublisher;
@@ -87,7 +87,7 @@ class ManagementServerImpl implements ManagementServer {
     ManagementServerImpl(int port,
                          Supplier<AetherNode> nodeSupplier,
                          AlertManager alertManager,
-                         DynamicAspectManager aspectManager,
+                         DynamicAspectRegistry aspectManager,
                          Option<TlsConfig> tls) {
         this.port = port;
         this.nodeSupplier = nodeSupplier;

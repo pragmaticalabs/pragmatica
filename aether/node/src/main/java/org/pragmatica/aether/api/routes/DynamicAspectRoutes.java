@@ -1,6 +1,6 @@
 package org.pragmatica.aether.api.routes;
 
-import org.pragmatica.aether.api.DynamicAspectManager;
+import org.pragmatica.aether.api.DynamicAspectRegistry;
 import org.pragmatica.aether.api.ManagementApiResponses.AspectModeSetResponse;
 import org.pragmatica.aether.api.ManagementApiResponses.AspectRemovedResponse;
 import org.pragmatica.aether.slice.DynamicAspectMode;
@@ -16,13 +16,13 @@ import static org.pragmatica.http.routing.PathParameter.aString;
 
 /// Routes for dynamic aspect management: set, remove, list aspect modes.
 public final class DynamicAspectRoutes implements RouteSource {
-    private final DynamicAspectManager aspectManager;
+    private final DynamicAspectRegistry aspectManager;
 
-    private DynamicAspectRoutes(DynamicAspectManager aspectManager) {
+    private DynamicAspectRoutes(DynamicAspectRegistry aspectManager) {
         this.aspectManager = aspectManager;
     }
 
-    public static DynamicAspectRoutes dynamicAspectRoutes(DynamicAspectManager aspectManager) {
+    public static DynamicAspectRoutes dynamicAspectRoutes(DynamicAspectRegistry aspectManager) {
         return new DynamicAspectRoutes(aspectManager);
     }
 

@@ -18,13 +18,13 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/// Manages runtime-togglable logging and metrics aspects per slice method.
+/// Registry for runtime-togglable logging and metrics aspects per slice method.
 ///
 /// <p>Aspect modes are persisted to consensus KV-Store for cluster-wide consistency
 /// and survival across node restarts. The local registry provides fast lock-free
 /// lookups on the hot path.
-public class DynamicAspectManager {
-    private static final Logger log = LoggerFactory.getLogger(DynamicAspectManager.class);
+public class DynamicAspectRegistry {
+    private static final Logger log = LoggerFactory.getLogger(DynamicAspectRegistry.class);
     private static final Logger aspectLog = LoggerFactory.getLogger("org.pragmatica.aether.aspect");
 
     private final RabiaNode<KVCommand<AetherKey>> clusterNode;
@@ -32,18 +32,18 @@ public class DynamicAspectManager {
 
     private final Map<String, DynamicAspectMode> registry = new ConcurrentHashMap<>();
 
-    private DynamicAspectManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                 KVStore<AetherKey, AetherValue> kvStore) {
+    private DynamicAspectRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                  KVStore<AetherKey, AetherValue> kvStore) {
         this.clusterNode = clusterNode;
         this.kvStore = kvStore;
     }
 
     /// Factory method following JBCT naming convention.
-    public static DynamicAspectManager dynamicAspectManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
-                                                            KVStore<AetherKey, AetherValue> kvStore) {
-        var manager = new DynamicAspectManager(clusterNode, kvStore);
-        manager.loadFromKvStore();
-        return manager;
+    public static DynamicAspectRegistry dynamicAspectRegistry(RabiaNode<KVCommand<AetherKey>> clusterNode,
+                                                              KVStore<AetherKey, AetherValue> kvStore) {
+        var registry = new DynamicAspectRegistry(clusterNode, kvStore);
+        registry.loadFromKvStore();
+        return registry;
     }
 
     /// Load aspect configurations from KV-Store on startup.

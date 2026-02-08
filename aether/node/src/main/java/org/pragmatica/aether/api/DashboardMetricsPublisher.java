@@ -29,13 +29,13 @@ public class DashboardMetricsPublisher {
 
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
-    private final DynamicAspectManager aspectManager;
+    private final DynamicAspectRegistry aspectManager;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
     public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
                                      AlertManager alertManager,
-                                     DynamicAspectManager aspectManager) {
+                                     DynamicAspectRegistry aspectManager) {
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
         this.aspectManager = aspectManager;

@@ -96,7 +96,7 @@ public interface InvocationHandler {
                                          Option.none(),
                                          Option.none(),
                                          Option.none(),
-                                         Option.none());
+                                         DynamicAspectInterceptor.noOp());
     }
 
     /**
@@ -114,7 +114,7 @@ public interface InvocationHandler {
                                          Option.none(),
                                          Option.none(),
                                          Option.none(),
-                                         Option.none());
+                                         DynamicAspectInterceptor.noOp());
     }
 
     /**
@@ -138,7 +138,7 @@ public interface InvocationHandler {
                                          Option.option(serializer),
                                          Option.option(deserializer),
                                          Option.option(httpRoutePublisher),
-                                         Option.none());
+                                         DynamicAspectInterceptor.noOp());
     }
 
     /**
@@ -158,7 +158,7 @@ public interface InvocationHandler {
                                          Option.none(),
                                          Option.none(),
                                          Option.none(),
-                                         Option.none());
+                                         DynamicAspectInterceptor.noOp());
     }
 
     /**
@@ -178,7 +178,28 @@ public interface InvocationHandler {
                                          Option.option(serializer),
                                          Option.option(deserializer),
                                          Option.option(httpRoutePublisher),
-                                         Option.option(aspectLookup));
+                                         DynamicAspectInterceptor.dynamicAspectInterceptor(aspectLookup));
+    }
+
+    /**
+     * Create a new InvocationHandler with metrics, serialization, HTTP routing, and a pre-built interceptor.
+     * Use this when the same interceptor should be shared with SliceInvoker.
+     */
+    static InvocationHandler invocationHandler(NodeId self,
+                                               ClusterNetwork network,
+                                               InvocationMetricsCollector metricsCollector,
+                                               Serializer serializer,
+                                               Deserializer deserializer,
+                                               HttpRoutePublisher httpRoutePublisher,
+                                               DynamicAspectInterceptor aspectInterceptor) {
+        return new InvocationHandlerImpl(self,
+                                         network,
+                                         Option.option(metricsCollector),
+                                         DEFAULT_INVOCATION_TIMEOUT,
+                                         Option.option(serializer),
+                                         Option.option(deserializer),
+                                         Option.option(httpRoutePublisher),
+                                         aspectInterceptor);
     }
 }
 
@@ -192,7 +213,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final Option<Serializer> serializer;
     private final Option<Deserializer> deserializer;
     private final Option<HttpRoutePublisher> httpRoutePublisher;
-    private final Option<Fn2<DynamicAspectMode, String, String>> aspectLookup;
+    private final DynamicAspectInterceptor aspectInterceptor;
 
     // Local slice bridges available for invocation
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
@@ -204,7 +225,7 @@ class InvocationHandlerImpl implements InvocationHandler {
                           Option<Serializer> serializer,
                           Option<Deserializer> deserializer,
                           Option<HttpRoutePublisher> httpRoutePublisher,
-                          Option<Fn2<DynamicAspectMode, String, String>> aspectLookup) {
+                          DynamicAspectInterceptor aspectInterceptor) {
         this.self = self;
         this.network = network;
         this.metricsCollector = metricsCollector;
@@ -212,7 +233,7 @@ class InvocationHandlerImpl implements InvocationHandler {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.httpRoutePublisher = httpRoutePublisher;
-        this.aspectLookup = aspectLookup;
+        this.aspectInterceptor = aspectInterceptor;
     }
 
     @Override
@@ -239,8 +260,11 @@ class InvocationHandlerImpl implements InvocationHandler {
 
     @Override
     public DynamicAspectMode getAspectMode(String artifactBase, String methodName) {
-        return aspectLookup.map(lookup -> lookup.apply(artifactBase, methodName))
-                           .or(DynamicAspectMode.NONE);
+        return DynamicAspectMode.NONE;
+    }
+
+    DynamicAspectInterceptor aspectInterceptor() {
+        return aspectInterceptor;
     }
 
     @Override
@@ -272,31 +296,15 @@ class InvocationHandlerImpl implements InvocationHandler {
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
-        var aspectMode = getAspectMode(request.targetSlice().base().asString(), request.method().name());
         // Record invocation start for active invocation tracking
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
-        // Log entry if aspect logging is enabled
-        if (aspectMode.isLoggingEnabled()) {
-            log.info("[aspect] [requestId={}] ENTER {}.{}", request.requestId(), request.targetSlice(), request.method());
-        }
-        // Check if this is an HTTP request that should be routed through SliceRouter
-        invokeWithHttpRouting(request, bridge).timeout(invocationTimeout)
-                             .onSuccess(responseData -> {
-                                 handleInvocationSuccess(request, responseData, startTime, requestBytes);
-                                 if (aspectMode.isLoggingEnabled()) {
-                                     var durationMs = (System.nanoTime() - startTime) / 1_000_000;
-                                     log.info("[aspect] [requestId={}] EXIT {}.{} duration={}ms success=true",
-                                              request.requestId(), request.targetSlice(), request.method(), durationMs);
-                                 }
-                             })
-                             .onFailure(cause -> {
-                                 handleInvocationFailure(request, cause, startTime, requestBytes);
-                                 if (aspectMode.isLoggingEnabled()) {
-                                     var durationMs = (System.nanoTime() - startTime) / 1_000_000;
-                                     log.info("[aspect] [requestId={}] EXIT {}.{} duration={}ms success=false error={}",
-                                              request.requestId(), request.targetSlice(), request.method(), durationMs, cause.message());
-                                 }
-                             });
+        // Delegate aspect logging to interceptor, then handle response/metrics
+        aspectInterceptor.intercept(
+            request.targetSlice(), request.method(), request.requestId(),
+            () -> invokeWithHttpRouting(request, bridge)
+        ).timeout(invocationTimeout)
+         .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
+         .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
     }
 
     /**

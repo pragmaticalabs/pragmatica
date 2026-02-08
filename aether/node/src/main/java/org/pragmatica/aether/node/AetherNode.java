@@ -1,7 +1,7 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.api.AlertManager;
-import org.pragmatica.aether.api.DynamicAspectManager;
+import org.pragmatica.aether.api.DynamicAspectRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.config.ConfigService;
 import org.pragmatica.aether.config.ProviderBasedConfigService;
@@ -21,6 +21,7 @@ import org.pragmatica.aether.infra.ResourceProvider;
 import org.pragmatica.aether.infra.SpiResourceProvider;
 import org.pragmatica.aether.infra.artifact.ArtifactStore;
 import org.pragmatica.aether.infra.artifact.MavenProtocolHandler;
+import org.pragmatica.aether.invoke.DynamicAspectInterceptor;
 import org.pragmatica.aether.invoke.InvocationHandler;
 import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.aether.invoke.SliceFailureEvent;
@@ -144,9 +145,9 @@ public interface AetherNode {
     AlertManager alertManager();
 
     /**
-     * Get the dynamic aspect manager for runtime-togglable logging/metrics.
+     * Get the dynamic aspect registry for runtime-togglable logging/metrics.
      */
-    DynamicAspectManager dynamicAspectManager();
+    DynamicAspectRegistry dynamicAspectRegistry();
 
     /**
      * Get the application HTTP server for slice routes.
@@ -344,7 +345,7 @@ public interface AetherNode {
                           DecisionTreeController controller,
                           RollingUpdateManager rollingUpdateManager,
                           AlertManager alertManager,
-                          DynamicAspectManager dynamicAspectManager,
+                          DynamicAspectRegistry dynamicAspectRegistry,
                           AppHttpServer appHttpServer,
                           TTMManager ttmManager,
                           RollbackManager rollbackManager,
@@ -545,17 +546,19 @@ public interface AetherNode {
         var httpRoutePublisher = HttpRoutePublisher.httpRoutePublisher(config.self(), clusterNode, kvStore);
         // Create invocation metrics collector
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
-        // Create dynamic aspect manager with KV-Store persistence (needed by InvocationHandler)
-        var aspectManager = DynamicAspectManager.dynamicAspectManager(clusterNode, kvStore);
+        // Create dynamic aspect registry with KV-Store persistence (needed by InvocationHandler + SliceInvoker)
+        var aspectRegistry = DynamicAspectRegistry.dynamicAspectRegistry(clusterNode, kvStore);
+        // Create shared interceptor for both InvocationHandler and SliceInvoker
+        var aspectInterceptor = DynamicAspectInterceptor.dynamicAspectInterceptor(aspectRegistry::getAspectMode);
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
-        // Pass serializer/deserializer, httpRoutePublisher, and aspect mode lookup for HTTP request routing
+        // Pass serializer/deserializer, httpRoutePublisher, and shared aspect interceptor for HTTP request routing
         var invocationHandler = InvocationHandler.invocationHandler(config.self(),
                                                                     clusterNode.network(),
                                                                     invocationMetrics,
                                                                     serializer,
                                                                     deserializer,
                                                                     httpRoutePublisher,
-                                                                    aspectManager::getAspectMode);
+                                                                    aspectInterceptor);
         // Create deployment metrics components
         var deploymentMetricsCollector = DeploymentMetricsCollector.deploymentMetricsCollector(config.self(),
                                                                                                clusterNode.network());
@@ -641,7 +644,8 @@ public interface AetherNode {
                                                      invocationHandler,
                                                      serializer,
                                                      deserializer,
-                                                     rollingUpdateManager);
+                                                     rollingUpdateManager,
+                                                     aspectInterceptor);
         // Wire the deferred invoker facade to the actual SliceInvoker
         deferredInvoker.setDelegate(sliceInvoker);
         // Create node deployment manager (now created after sliceInvoker for HTTP route publishing)
@@ -677,7 +681,7 @@ public interface AetherNode {
                                                 sliceInvoker,
                                                 invocationHandler,
                                                 alertManager,
-                                                aspectManager,
+                                                aspectRegistry,
                                                 ttmManager,
                                                 rabiaMetricsCollector,
                                                 rollingUpdateManager,
@@ -714,7 +718,7 @@ public interface AetherNode {
                                   controller,
                                   rollingUpdateManager,
                                   alertManager,
-                                  aspectManager,
+                                  aspectRegistry,
                                   appHttpServer,
                                   ttmManager,
                                   rollbackManager,
@@ -732,7 +736,7 @@ public interface AetherNode {
                                      var managementServer = ManagementServer.managementServer(config.managementPort(),
                                                                                               () -> node,
                                                                                               alertManager,
-                                                                                              aspectManager,
+                                                                                              aspectRegistry,
                                                                                               config.tls());
                                      return new aetherNode(config,
                                                            delegateRouter,
@@ -758,7 +762,7 @@ public interface AetherNode {
                                                            controller,
                                                            rollingUpdateManager,
                                                            alertManager,
-                                                           aspectManager,
+                                                           aspectRegistry,
                                                            appHttpServer,
                                                            ttmManager,
                                                            rollbackManager,
@@ -786,7 +790,7 @@ public interface AetherNode {
                                                                     SliceInvoker sliceInvoker,
                                                                     InvocationHandler invocationHandler,
                                                                     AlertManager alertManager,
-                                                                    DynamicAspectManager aspectManager,
+                                                                    DynamicAspectRegistry aspectRegistry,
                                                                     TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
                                                                     RollingUpdateManager rollingUpdateManager,
@@ -848,13 +852,13 @@ public interface AetherNode {
         // Dynamic aspect sync via KV-Store
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               filterPut(AetherKey.class,
-                                                        (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> aspectManager.onKvStoreUpdate(notification.cause()
+                                                        (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> aspectRegistry.onKvStoreUpdate(notification.cause()
                                                                                                                                                                           .key(),
                                                                                                                                                               notification.cause()
                                                                                                                                                                           .value()))));
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
                                               filterRemove(AetherKey.class,
-                                                           notification -> aspectManager.onKvStoreRemove(notification.cause()
+                                                           notification -> aspectRegistry.onKvStoreRemove(notification.cause()
                                                                                                                      .key()))));
         // Quorum state notifications - these handlers activate/deactivate components.
         // NOTE: RabiaNode's handlers run first (consensus activates before LeaderManager emits LeaderChange).
