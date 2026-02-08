@@ -62,7 +62,8 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.dht.ConsistentHashRing;
 import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNode;
-import org.pragmatica.dht.LocalDHTClient;
+import org.pragmatica.dht.DHTTopologyListener;
+import org.pragmatica.dht.DistributedDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -254,7 +255,8 @@ public interface AetherNode {
                                                  Deserializer deserializer) {
         // Create KVStore (state machine for consensus)
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
-        // Create DHT and artifact store (needed for BuiltinRepository)
+        // Create DHT node (local storage engine + hash ring)
+        // Note: DistributedDHTClient is created in assembleNode() where ClusterNetwork is available
         var dhtStorage = MemoryStorageEngine.memoryStorageEngine();
         var dhtRing = ConsistentHashRing.<NodeId>consistentHashRing();
         dhtRing.addNode(config.self());
@@ -262,22 +264,9 @@ public interface AetherNode {
                                       dhtStorage,
                                       dhtRing,
                                       config.artifactRepo());
-        var dhtClient = LocalDHTClient.localDHTClient(dhtNode);
-        var artifactStore = ArtifactStore.artifactStore(dhtClient);
-        // Create repositories from SliceConfig using RepositoryFactory
-        var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
-        var repositories = repositoryFactory.createAll(config.sliceConfig());
-        // Create slice management components
+        // Create slice management components (deferred — artifact store needs ClusterNetwork)
         var sliceRegistry = SliceRegistry.sliceRegistry();
-        var sharedLibraryLoader = createSharedLibraryLoader(config);
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
-        var resourceFacade = createResourceProviderFacade(config);
-        var sliceStore = SliceStore.sliceStore(sliceRegistry,
-                                               repositories,
-                                               sharedLibraryLoader,
-                                               deferredInvoker,
-                                               resourceFacade,
-                                               config.sliceAction());
         // Create Rabia cluster node with metrics
         var nodeConfig = NodeConfig.nodeConfig(config.protocol(), config.topology());
         var rabiaMetricsCollector = RabiaMetricsCollector.rabiaMetricsCollector();
@@ -296,15 +285,12 @@ public interface AetherNode {
                                                              delegateRouter,
                                                              kvStore,
                                                              sliceRegistry,
-                                                             sliceStore,
                                                              deferredInvoker,
                                                              clusterNode,
                                                              rabiaMetricsCollector,
                                                              networkMetricsHandler,
                                                              serializer,
                                                              deserializer,
-                                                             artifactStore,
-                                                             repositories,
                                                              dhtNode));
     }
 
@@ -312,16 +298,31 @@ public interface AetherNode {
                                                    MessageRouter.DelegateRouter delegateRouter,
                                                    KVStore<AetherKey, AetherValue> kvStore,
                                                    SliceRegistry sliceRegistry,
-                                                   SliceStore sliceStore,
                                                    DeferredSliceInvokerFacade deferredInvoker,
                                                    RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                    RabiaMetricsCollector rabiaMetricsCollector,
                                                    NetworkMetricsHandler networkMetricsHandler,
                                                    Serializer serializer,
                                                    Deserializer deserializer,
-                                                   ArtifactStore artifactStore,
-                                                   List<Repository> repositories,
                                                    DHTNode dhtNode) {
+        // Create distributed DHT client with quorum-based reads/writes via ClusterNetwork
+        var dhtClient = DistributedDHTClient.distributedDHTClient(
+            dhtNode, clusterNode.network(), config.artifactRepo());
+        var artifactStore = ArtifactStore.artifactStore(dhtClient);
+        // Create repositories from SliceConfig using RepositoryFactory
+        var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
+        var repositories = repositoryFactory.createAll(config.sliceConfig());
+        // Create remaining slice management components
+        var sharedLibraryLoader = createSharedLibraryLoader(config);
+        var resourceFacade = createResourceProviderFacade(config);
+        var sliceStore = SliceStore.sliceStore(sliceRegistry,
+                                               repositories,
+                                               sharedLibraryLoader,
+                                               deferredInvoker,
+                                               resourceFacade,
+                                               config.sliceAction());
+        // Create DHTTopologyListener for ring updates on topology changes
+        var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode);
         record aetherNode(AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
@@ -712,6 +713,25 @@ public interface AetherNode {
                                                                                              response -> clusterNode.network()
                                                                                                                      .send(request.sender(),
                                                                                                                            response))));
+        // DHT response routes — complete the request/response cycle for DistributedDHTClient
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetResponse.class,
+                                                     dhtClient::onGetResponse));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutResponse.class,
+                                                     dhtClient::onPutResponse));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveResponse.class,
+                                                     dhtClient::onRemoveResponse));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsResponse.class,
+                                                     dhtClient::onExistsResponse));
+        // DHT migration/digest routes (no-op — migration not yet implemented)
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataRequest.class, _ -> {}));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class, _ -> {}));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestRequest.class, _ -> {}));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestResponse.class, _ -> {}));
+        // DHT topology listener — update consistent hash ring on node add/remove
+        aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
+                                                     dhtTopologyListener::onNodeAdded));
+        aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                                     dhtTopologyListener::onNodeRemoved));
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
         // Create the node first (without management server reference)
