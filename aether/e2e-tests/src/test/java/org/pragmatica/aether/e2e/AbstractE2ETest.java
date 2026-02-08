@@ -4,6 +4,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.pragmatica.aether.e2e.containers.AetherCluster;
 import org.pragmatica.lang.io.TimeSpan;
+import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Path;
 import java.time.Duration;
@@ -31,7 +32,8 @@ public abstract class AbstractE2ETest {
 
     // Common artifact for slice deployment tests - pure function echo slice
     // Note: Uses slice artifact ID (echo-slice-echo-service), not module artifact ID (echo-slice)
-    protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    protected static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    protected static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     protected AetherCluster cluster;
 
@@ -100,7 +102,8 @@ public abstract class AbstractE2ETest {
      * @return deploy response
      */
     protected String deployAndAssert(String artifact, int instances) {
-        var response = cluster.anyNode().deploy(artifact, instances);
+        var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var response = leader.deploy(artifact, instances);
         assertThat(response)
             .describedAs("Deployment of %s should succeed", artifact)
             .doesNotContain("\"error\"");

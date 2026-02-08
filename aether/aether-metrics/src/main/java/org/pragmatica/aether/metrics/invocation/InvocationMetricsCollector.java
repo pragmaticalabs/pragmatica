@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
@@ -44,6 +45,10 @@ public final class InvocationMetricsCollector {
 
     // Per-method metrics: Map<sliceArtifact, Map<methodName, metrics>>
     private final Map<Artifact, Map<MethodName, MethodMetricsWithSlowCalls>> metricsMap = new ConcurrentHashMap<>();
+
+    // Serialization time tracking (global, not per-method)
+    private final AtomicLong totalSerializationNs = new AtomicLong();
+    private final AtomicLong serializationCount = new AtomicLong();
 
     private InvocationMetricsCollector(ThresholdStrategy thresholdStrategy) {
         this.thresholdStrategy = thresholdStrategy;
@@ -132,6 +137,28 @@ public final class InvocationMetricsCollector {
      */
     public void recordComplete(Artifact artifact, MethodName method) {
         getOrCreateMetrics(artifact, method).metrics.recordComplete();
+    }
+
+    /**
+     * Record a serialization operation duration.
+     *
+     * @param durationNs Duration of serialization in nanoseconds
+     */
+    public void recordSerialization(long durationNs) {
+        totalSerializationNs.addAndGet(durationNs);
+        serializationCount.incrementAndGet();
+    }
+
+    /**
+     * Get the average serialization time in nanoseconds.
+     *
+     * @return Average serialization duration, or 0 if no serializations recorded
+     */
+    public long averageSerializationNs() {
+        long count = serializationCount.get();
+        return count > 0
+               ? totalSerializationNs.get() / count
+               : 0;
     }
 
     /**

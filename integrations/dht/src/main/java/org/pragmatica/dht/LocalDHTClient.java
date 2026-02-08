@@ -22,18 +22,16 @@ import org.pragmatica.lang.Unit;
 
 /// Local DHT client implementation that operates on a single node.
 /// Suitable for testing and single-node deployments.
-///
-/// @param <N> Node identifier type
-public final class LocalDHTClient<N extends Comparable<N>> implements DHTClient {
-    private final DHTNode<N> node;
+public final class LocalDHTClient implements DHTClient {
+    private final DHTNode node;
 
-    private LocalDHTClient(DHTNode<N> node) {
+    private LocalDHTClient(DHTNode node) {
         this.node = node;
     }
 
     /// Create a local DHT client backed by the given node.
-    public static <N extends Comparable<N>> LocalDHTClient<N> localDHTClient(DHTNode<N> node) {
-        return new LocalDHTClient<>(node);
+    public static LocalDHTClient localDHTClient(DHTNode node) {
+        return new LocalDHTClient(node);
     }
 
     @Override
@@ -62,7 +60,7 @@ public final class LocalDHTClient<N extends Comparable<N>> implements DHTClient 
     }
 
     /// Get the underlying node.
-    public DHTNode<N> node() {
+    public DHTNode node() {
         return node;
     }
 }

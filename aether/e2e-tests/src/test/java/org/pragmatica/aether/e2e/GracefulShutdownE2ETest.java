@@ -1,10 +1,18 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.e2e.containers.AetherCluster;
 import org.pragmatica.lang.utils.Causes;
+
+import java.nio.file.Path;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
  * E2E tests for graceful shutdown scenarios.
@@ -16,15 +24,65 @@ import static org.awaitility.Awaitility.await;
  *   <li>Slices are handled appropriately during shutdown</li>
  *   <li>Shutdown during ongoing operations</li>
  * </ul>
+ *
+ * <p>This test class uses a shared cluster with node restoration between tests.
+ * Tests run in order to ensure deterministic behavior.
  */
-class GracefulShutdownE2ETest extends AbstractE2ETest {
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@Execution(ExecutionMode.SAME_THREAD)
+class GracefulShutdownE2ETest {
+    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
+    private static final String TEST_ARTIFACT = AbstractE2ETest.TEST_ARTIFACT;
 
-    @Override
-    protected int clusterSize() {
-        return 3;
+    private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());
+    private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
+    private static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
+
+    private static AetherCluster cluster;
+
+    @BeforeAll
+    static void createCluster() {
+        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster.start();
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
+        cluster.awaitLeader();
+        cluster.uploadTestArtifacts();
+    }
+
+    @AfterAll
+    static void destroyCluster() {
+        if (cluster != null) {
+            cluster.close();
+        }
+    }
+
+    @BeforeEach
+    void restoreAllNodes() {
+        // Restart any stopped nodes
+        for (var node : cluster.nodes()) {
+            if (!node.isRunning()) {
+                try {
+                    cluster.node(node.nodeId()).start();
+                } catch (Exception e) {
+                    System.out.println("[DEBUG] Error restarting " + node.nodeId() + ": " + e.getMessage());
+                }
+            }
+        }
+
+        // Wait for all nodes to be running
+        await().atMost(RECOVERY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .ignoreExceptions()
+               .until(() -> cluster.runningNodeCount() == 3);
+
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
     }
 
     @Test
+    @Order(1)
     void nodeShutdown_peersDetectDisconnection() {
         cluster.awaitLeader();
 
@@ -48,12 +106,21 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
     }
 
     @Test
+    @Order(2)
     void nodeShutdown_clusterRemainsFunctional() {
         cluster.awaitLeader();
 
-        // Deploy a slice
-        deployAndAssert(TEST_ARTIFACT, 2);
-        awaitSliceVisible("echo-slice");
+        // Deploy a slice via leader
+        var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var deployResponse = leader.deploy(TEST_ARTIFACT, 2);
+        assertThat(deployResponse).doesNotContain("\"error\"");
+
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .until(() -> {
+                   var state = cluster.anyNode().getSliceState(TEST_ARTIFACT);
+                   return "ACTIVE".equals(state);
+               });
 
         // Shutdown one node
         cluster.killNode("node-2");
@@ -69,14 +136,28 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
         // Slice should still be accessible
         var slices = cluster.anyNode().getSlices();
         assertThat(slices).contains("echo-slice");
+
+        // Cleanup: undeploy slice
+        try {
+            cluster.leader().toResult(Causes.cause("No leader")).unwrap().undeploy(TEST_ARTIFACT);
+            await().atMost(DEFAULT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .ignoreExceptions()
+                   .until(() -> !cluster.anyNode().getSlices().contains(TEST_ARTIFACT));
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Cleanup undeploy error: " + e.getMessage());
+        }
     }
 
     @Test
+    @Order(3)
     void shutdownDuringDeployment_handledGracefully() {
         cluster.awaitLeader();
 
-        // Start a deployment
-        deployAndAssert(TEST_ARTIFACT, 3);
+        // Start a deployment via leader
+        var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var deployResponse = leader.deploy(TEST_ARTIFACT, 3);
+        assertThat(deployResponse).doesNotContain("\"error\"");
 
         // Immediately shutdown a node (deployment may still be in progress)
         cluster.killNode("node-3");
@@ -99,9 +180,21 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
         // Verify cluster is healthy
         var health = cluster.anyNode().getHealth();
         assertThat(health).doesNotContain("\"error\"");
+
+        // Cleanup: undeploy slice
+        try {
+            cluster.leader().toResult(Causes.cause("No leader")).unwrap().undeploy(TEST_ARTIFACT);
+            await().atMost(DEFAULT_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
+                   .ignoreExceptions()
+                   .until(() -> !cluster.anyNode().getSlices().contains(TEST_ARTIFACT));
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Cleanup undeploy error: " + e.getMessage());
+        }
     }
 
     @Test
+    @Order(4)
     void leaderShutdown_newLeaderElected() {
         cluster.awaitLeader();
         var originalLeader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();

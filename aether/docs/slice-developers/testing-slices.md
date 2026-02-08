@@ -197,12 +197,11 @@ The E2E test suite contains **80 tests** across **12 test classes**:
 | SliceDeploymentE2ETest | 6 | Deploy, scale, undeploy, blueprints |
 | RollingUpdateE2ETest | 6 | Two-stage updates, traffic shifting |
 | NodeFailureE2ETest | 6 | Failure modes, recovery |
-| ChaosE2ETest | 5 | Resilience under adverse conditions |
 | ManagementApiE2ETest | 19 | Status, metrics, thresholds, alerts, controller |
 | SliceInvocationE2ETest | 9 | Route handling, error cases, distribution |
 | MetricsE2ETest | 6 | Collection, Prometheus, distribution |
 | ControllerE2ETest | 7 | Configuration, status, leader behavior |
-| BootstrapE2ETest | 4 | Node restart, state recovery |
+| TtmE2ETest | 8 | TTM status, cluster behavior, leader failover |
 | GracefulShutdownE2ETest | 4 | Peer detection, leader failover |
 | NetworkPartitionE2ETest | 4 | Quorum behavior, partition healing |
 

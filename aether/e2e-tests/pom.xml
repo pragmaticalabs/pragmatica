@@ -236,6 +236,7 @@ Slice-Class: org.pragmatica.aether.example.inventory.InventoryServiceFactory
                     <reuseForks>false</reuseForks>
                     <systemPropertyVariables>
                         <project.basedir>${maven.multiModuleProjectDirectory}</project.basedir>
+                        <project.version>${project.version}</project.version>
                     </systemPropertyVariables>
                 </configuration>
                 <executions>

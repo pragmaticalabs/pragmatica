@@ -2,6 +2,7 @@ package org.pragmatica.aether.metrics.invocation;
 
 import org.pragmatica.aether.slice.MethodName;
 
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -28,6 +29,7 @@ public final class MethodMetrics {
     private static final long BUCKET_1S = 1_000_000_000L;
 
     private static final int HISTOGRAM_SIZE = 5;
+    private static final int LATENCY_BUFFER_SIZE = 1024;
 
     private final MethodName methodName;
     private final AtomicLong count = new AtomicLong();
@@ -35,6 +37,10 @@ public final class MethodMetrics {
     private final AtomicLong failureCount = new AtomicLong();
     private final AtomicLong totalDurationNs = new AtomicLong();
     private final AtomicInteger[] histogram;
+
+    // Circular buffer for latency samples (reservoir sampling)
+    private final long[] latencySamples = new long[LATENCY_BUFFER_SIZE];
+    private final AtomicInteger sampleIndex = new AtomicInteger();
 
     // Two-counter tracking for active invocations
     private final AtomicLong invocationsStarted = new AtomicLong();
@@ -63,6 +69,9 @@ public final class MethodMetrics {
         }
         totalDurationNs.addAndGet(durationNs);
         histogram[bucketFor(durationNs)].incrementAndGet();
+        // Store sample in circular buffer for percentile calculation
+        int idx = sampleIndex.getAndIncrement() & (LATENCY_BUFFER_SIZE - 1);
+        latencySamples[idx] = durationNs;
     }
 
     /**
@@ -79,12 +88,14 @@ public final class MethodMetrics {
         for (int i = 0; i < HISTOGRAM_SIZE; i++) {
             snapshotHistogram[i] = histogram[i].getAndSet(0);
         }
+        var snapshotSamples = captureAndResetSamples(snapshotCount);
         return Snapshot.snapshot(methodName,
                                  snapshotCount,
                                  snapshotSuccess,
                                  snapshotFailure,
                                  snapshotDuration,
-                                 snapshotHistogram);
+                                 snapshotHistogram,
+                                 snapshotSamples);
     }
 
     /**
@@ -96,16 +107,19 @@ public final class MethodMetrics {
      * performance. For monitoring purposes, eventual consistency is acceptable.
      */
     public Snapshot snapshot() {
+        var currentCount = count.get();
         var snapshotHistogram = new int[HISTOGRAM_SIZE];
         for (int i = 0; i < HISTOGRAM_SIZE; i++) {
             snapshotHistogram[i] = histogram[i].get();
         }
+        var snapshotSamples = captureSamples(currentCount);
         return Snapshot.snapshot(methodName,
-                                 count.get(),
+                                 currentCount,
                                  successCount.get(),
                                  failureCount.get(),
                                  totalDurationNs.get(),
-                                 snapshotHistogram);
+                                 snapshotHistogram,
+                                 snapshotSamples);
     }
 
     public MethodName methodName() {
@@ -156,6 +170,20 @@ public final class MethodMetrics {
                         invocationsStarted.get() - invocationsCompleted.get());
     }
 
+    private long[] captureSamples(long totalCount) {
+        int sampleCount = (int) Math.min(totalCount, LATENCY_BUFFER_SIZE);
+        var samples = new long[sampleCount];
+        System.arraycopy(latencySamples, 0, samples, 0, sampleCount);
+        return samples;
+    }
+
+    private long[] captureAndResetSamples(long totalCount) {
+        var samples = captureSamples(totalCount);
+        sampleIndex.set(0);
+        Arrays.fill(latencySamples, 0L);
+        return samples;
+    }
+
     private static int bucketFor(long durationNs) {
         if (durationNs < BUCKET_1MS) return 0;
         if (durationNs < BUCKET_10MS) return 1;
@@ -172,14 +200,18 @@ public final class MethodMetrics {
                            long successCount,
                            long failureCount,
                            long totalDurationNs,
-                           int[] histogram) {
+                           int[] histogram,
+                           long[] latencySamples) {
         /**
-         * Compact constructor with defensive copy of histogram array.
+         * Compact constructor with defensive copy of arrays.
          */
         public Snapshot {
             histogram = histogram == null
                         ? new int[HISTOGRAM_SIZE]
                         : histogram.clone();
+            latencySamples = latencySamples == null
+                             ? new long[0]
+                             : latencySamples.clone();
         }
 
         /**
@@ -190,8 +222,10 @@ public final class MethodMetrics {
                                         long successCount,
                                         long failureCount,
                                         long totalDurationNs,
-                                        int[] histogram) {
-            return new Snapshot(methodName, count, successCount, failureCount, totalDurationNs, histogram);
+                                        int[] histogram,
+                                        long[] latencySamples) {
+            return new Snapshot(methodName, count, successCount, failureCount,
+                               totalDurationNs, histogram, latencySamples);
         }
 
         /**
@@ -213,8 +247,45 @@ public final class MethodMetrics {
         }
 
         /**
-         * Estimate percentile from histogram.
-         * This is an approximation based on bucket boundaries.
+         * Calculate precise percentile from latency samples.
+         *
+         * @param p Percentile as fraction (0.0 to 1.0), e.g. 0.95 for p95
+         * @return Latency in nanoseconds at the given percentile, or 0 if no samples
+         */
+        public long percentile(double p) {
+            if (latencySamples.length == 0) {
+                return 0;
+            }
+            var sorted = latencySamples.clone();
+            Arrays.sort(sorted);
+            int index = Math.min((int) (p * sorted.length), sorted.length - 1);
+            return sorted[index];
+        }
+
+        /**
+         * P50 latency in nanoseconds.
+         */
+        public long p50() {
+            return percentile(0.50);
+        }
+
+        /**
+         * P95 latency in nanoseconds.
+         */
+        public long p95() {
+            return percentile(0.95);
+        }
+
+        /**
+         * P99 latency in nanoseconds.
+         */
+        public long p99() {
+            return percentile(0.99);
+        }
+
+        /**
+         * Estimate percentile from histogram buckets.
+         * This is a coarser approximation than the sample-based percentile.
          *
          * @param percentile Value between 0 and 100 (e.g., 95 for p95)
          * @return Estimated latency in nanoseconds

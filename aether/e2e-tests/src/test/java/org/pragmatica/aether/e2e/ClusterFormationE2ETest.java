@@ -1,8 +1,13 @@
 package org.pragmatica.aether.e2e;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.e2e.containers.AetherCluster;
 import org.pragmatica.aether.e2e.containers.AetherNodeContainer;
 import org.pragmatica.lang.utils.Causes;
+
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -16,12 +21,27 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>Leader election</li>
  *   <li>Node visibility across cluster</li>
  * </ul>
+ *
+ * <p>This test class uses a shared cluster (read-only tests).
  */
-class ClusterFormationE2ETest extends AbstractE2ETest {
+class ClusterFormationE2ETest {
+    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
+    private static AetherCluster cluster;
 
-    @Override
-    protected int clusterSize() {
-        return 3;
+    @BeforeAll
+    static void createCluster() {
+        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster.start();
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
+        cluster.uploadTestArtifacts();
+    }
+
+    @AfterAll
+    static void destroyCluster() {
+        if (cluster != null) {
+            cluster.close();
+        }
     }
 
     @Test

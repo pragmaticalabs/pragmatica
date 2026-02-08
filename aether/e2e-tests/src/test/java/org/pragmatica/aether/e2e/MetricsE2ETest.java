@@ -1,12 +1,18 @@
 package org.pragmatica.aether.e2e;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.e2e.containers.AetherCluster;
 
+import java.nio.file.Path;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
  * E2E tests for metrics collection and distribution.
@@ -19,15 +25,32 @@ import static org.awaitility.Awaitility.await;
  *   <li>Prometheus endpoint format</li>
  *   <li>Metrics snapshot distribution to all nodes</li>
  * </ul>
+ *
+ * <p>This test class uses a shared cluster (read-only tests).
  */
-class MetricsE2ETest extends AbstractE2ETest {
+class MetricsE2ETest {
+    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
+    private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());
+    private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
+    private static final Duration METRICS_INTERVAL = Duration.ofSeconds(2);
 
-    @Override
-    protected int clusterSize() {
-        return 3;
+    private static AetherCluster cluster;
+
+    @BeforeAll
+    static void createCluster() {
+        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster.start();
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
+        cluster.uploadTestArtifacts();
     }
 
-    private static final Duration METRICS_INTERVAL = Duration.ofSeconds(2);
+    @AfterAll
+    static void destroyCluster() {
+        if (cluster != null) {
+            cluster.close();
+        }
+    }
 
     @Nested
     class MetricsCollection {

@@ -28,7 +28,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  * </ul>
  *
  * <p>Note: These tests require Docker and the echo-slice test artifact.
- * Uses echo-slice v1 (0.15.0) and v2 (0.16.0) for version transition testing.
+ * Uses echo-slice v1 (current version) and v2 (0.16.0) for version transition testing.
  * Run with: mvn test -pl e2e-tests -Dtest=RollingUpdateE2ETest
  *
  * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
@@ -38,7 +38,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class RollingUpdateE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
     private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.16.0";
     private static final Duration UPDATE_TIMEOUT = adapt(Duration.ofSeconds(120));
 
@@ -71,7 +72,6 @@ class RollingUpdateE2ETest {
         // Wait for cluster stability
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
-        sleep(timeSpan(2).seconds());
 
         // Cancel any active rolling updates
         cancelActiveRollingUpdates();

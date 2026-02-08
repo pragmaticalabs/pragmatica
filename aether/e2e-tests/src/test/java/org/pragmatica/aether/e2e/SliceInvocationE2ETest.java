@@ -37,7 +37,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceInvocationE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());
@@ -69,7 +70,6 @@ class SliceInvocationE2ETest {
         // Wait for cluster stability
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
-        sleep(timeSpan(2).seconds());
 
         // Undeploy all slices
         undeployAllSlices();
@@ -172,8 +172,9 @@ class SliceInvocationE2ETest {
         @Test
         @Order(4)
         void afterSliceDeployment_routesAreAvailable() {
-            // Deploy a slice
-            cluster.anyNode().deploy(TEST_ARTIFACT, 1);
+            // Deploy a slice via leader
+            var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+            leader.deploy(TEST_ARTIFACT, 1);
 
             await().atMost(DEPLOY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
@@ -216,8 +217,9 @@ class SliceInvocationE2ETest {
         @Test
         @Order(3)
         void invokeAfterSliceUndeploy_returnsNotFound() {
-            // Deploy
-            cluster.anyNode().deploy(TEST_ARTIFACT, 1);
+            // Deploy via leader
+            var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+            leader.deploy(TEST_ARTIFACT, 1);
             await().atMost(DEPLOY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .failFast(() -> {
@@ -227,8 +229,8 @@ class SliceInvocationE2ETest {
                    })
                    .until(() -> sliceIsActive(TEST_ARTIFACT));
 
-            // Undeploy
-            cluster.anyNode().undeploy(TEST_ARTIFACT);
+            // Undeploy via leader
+            cluster.leader().toResult(Causes.cause("No leader")).unwrap().undeploy(TEST_ARTIFACT);
             await().atMost(CLEANUP_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)
                    .until(() -> {
@@ -250,8 +252,9 @@ class SliceInvocationE2ETest {
         @Test
         @Order(1)
         void multipleNodes_allCanHandleRequests() {
-            // Deploy slice across all nodes
-            cluster.anyNode().deploy(TEST_ARTIFACT, 3);
+            // Deploy slice across all nodes via leader
+            var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+            leader.deploy(TEST_ARTIFACT, 3);
 
             await().atMost(DEPLOY_TIMEOUT)
                    .pollInterval(POLL_INTERVAL)

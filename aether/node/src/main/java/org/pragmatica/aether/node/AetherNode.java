@@ -60,6 +60,7 @@ import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.dht.ConsistentHashRing;
+import org.pragmatica.dht.DHTMessage;
 import org.pragmatica.dht.DHTNode;
 import org.pragmatica.dht.LocalDHTClient;
 import org.pragmatica.dht.storage.MemoryStorageEngine;
@@ -89,7 +90,7 @@ import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
  * Assembles all components: consensus, KV-store, slice management, deployment managers.
  */
 public interface AetherNode {
-    String VERSION = "0.15.0";
+    String VERSION = "0.15.1";
     NodeId self();
 
     Promise<Unit> start();
@@ -255,11 +256,9 @@ public interface AetherNode {
         var kvStore = new KVStore<AetherKey, AetherValue>(delegateRouter, serializer, deserializer);
         // Create DHT and artifact store (needed for BuiltinRepository)
         var dhtStorage = MemoryStorageEngine.memoryStorageEngine();
-        var dhtRing = ConsistentHashRing.<String>consistentHashRing();
-        dhtRing.addNode(config.self()
-                              .id());
-        var dhtNode = DHTNode.dhtNode(config.self()
-                                            .id(),
+        var dhtRing = ConsistentHashRing.<NodeId>consistentHashRing();
+        dhtRing.addNode(config.self());
+        var dhtNode = DHTNode.dhtNode(config.self(),
                                       dhtStorage,
                                       dhtRing,
                                       config.artifactRepo());
@@ -305,7 +304,8 @@ public interface AetherNode {
                                                              serializer,
                                                              deserializer,
                                                              artifactStore,
-                                                             repositories));
+                                                             repositories,
+                                                             dhtNode));
     }
 
     private static Result<AetherNode> assembleNode(AetherNodeConfig config,
@@ -320,7 +320,8 @@ public interface AetherNode {
                                                    Serializer serializer,
                                                    Deserializer deserializer,
                                                    ArtifactStore artifactStore,
-                                                   List<Repository> repositories) {
+                                                   List<Repository> repositories,
+                                                   DHTNode dhtNode) {
         record aetherNode(AetherNodeConfig config,
                           MessageRouter.DelegateRouter router,
                           KVStore<AetherKey, AetherValue> kvStore,
@@ -690,6 +691,27 @@ public interface AetherNode {
                                                 deploymentMap,
                                                 clusterNode.leaderManager(),
                                                 appHttpServer);
+        // DHT message routes for distributed operations
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
+                                                     request -> dhtNode.handleGetRequest(request,
+                                                                                          response -> clusterNode.network()
+                                                                                                                  .send(request.sender(),
+                                                                                                                        response))));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutRequest.class,
+                                                     request -> dhtNode.handlePutRequest(request,
+                                                                                          response -> clusterNode.network()
+                                                                                                                  .send(request.sender(),
+                                                                                                                        response))));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveRequest.class,
+                                                     request -> dhtNode.handleRemoveRequest(request,
+                                                                                             response -> clusterNode.network()
+                                                                                                                     .send(request.sender(),
+                                                                                                                           response))));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsRequest.class,
+                                                     request -> dhtNode.handleExistsRequest(request,
+                                                                                             response -> clusterNode.network()
+                                                                                                                     .send(request.sender(),
+                                                                                                                           response))));
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
         // Create the node first (without management server reference)

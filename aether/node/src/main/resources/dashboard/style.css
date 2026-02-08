@@ -478,6 +478,154 @@ body {
     border-radius: 0.5rem;
 }
 
+/* Aggregates Bar */
+.aggregates-bar {
+    display: flex;
+    gap: 1.5rem;
+    margin-bottom: 1.5rem;
+    padding: 1rem 1.5rem;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 0.5rem;
+}
+
+.aggregate-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.aggregate-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.aggregate-value {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--accent);
+}
+
+/* Aspects Tab */
+.aspect-controls {
+    display: flex;
+    gap: 0.75rem;
+    margin: 1rem 0 1.5rem;
+    align-items: center;
+}
+
+.aspect-input {
+    padding: 0.5rem 0.75rem;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    flex: 1;
+}
+
+.aspect-select {
+    padding: 0.5rem 0.75rem;
+    background-color: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 0.375rem;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+}
+
+.aspect-set-btn {
+    padding: 0.5rem 1.25rem;
+    background-color: var(--accent);
+    border: none;
+    border-radius: 0.375rem;
+    color: white;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 0.15s;
+}
+
+.aspect-set-btn:hover {
+    background-color: var(--accent-hover);
+}
+
+.aspect-table {
+    width: 100%;
+    border-collapse: collapse;
+    background-color: var(--bg-secondary);
+    border-radius: 0.5rem;
+    overflow: hidden;
+}
+
+.aspect-table th,
+.aspect-table td {
+    padding: 0.75rem 1rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+}
+
+.aspect-table th {
+    background-color: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.aspect-table td {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 0.875rem;
+}
+
+.aspect-mode-badge {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+}
+
+.aspect-mode-badge.log {
+    background-color: rgba(59, 130, 246, 0.2);
+    color: #60a5fa;
+}
+
+.aspect-mode-badge.metrics {
+    background-color: rgba(34, 197, 94, 0.2);
+    color: var(--success);
+}
+
+.aspect-mode-badge.trace {
+    background-color: rgba(167, 139, 250, 0.2);
+    color: #a78bfa;
+}
+
+.aspect-mode-badge.disabled {
+    background-color: rgba(100, 116, 139, 0.2);
+    color: var(--text-muted);
+}
+
+.aspect-remove-btn {
+    padding: 0.25rem 0.75rem;
+    background-color: transparent;
+    border: 1px solid var(--critical);
+    border-radius: 0.25rem;
+    color: var(--critical);
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.aspect-remove-btn:hover {
+    background-color: var(--critical);
+    color: white;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .header {

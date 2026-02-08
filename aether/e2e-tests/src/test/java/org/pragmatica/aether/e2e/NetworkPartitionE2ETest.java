@@ -4,7 +4,6 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.e2e.containers.AetherCluster;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Path;
@@ -37,7 +36,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class NetworkPartitionE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(2).minutes().duration());
@@ -71,7 +71,6 @@ class NetworkPartitionE2ETest {
         // Wait for cluster stability
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
-        sleep(timeSpan(2).seconds());
 
         // Undeploy all slices
         undeployAllSlices();
@@ -291,13 +290,4 @@ class NetworkPartitionE2ETest {
         }
     }
 
-    // ===== Utility Helpers =====
-
-    private void sleep(TimeSpan duration) {
-        try {
-            Thread.sleep(duration.duration().toMillis());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
 }

@@ -34,7 +34,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceDeploymentE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
@@ -72,8 +73,8 @@ class SliceDeploymentE2ETest {
         // Wait for cluster stability
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
-        System.out.println("[DEBUG] BeforeEach: sleeping 2s for stability...");
-        sleep(timeSpan(2).seconds());
+        // Await leader for stability instead of sleep
+        cluster.awaitLeader();
 
         // Undeploy all slices
         System.out.println("[DEBUG] BeforeEach: undeploying all slices...");
@@ -135,8 +136,9 @@ class SliceDeploymentE2ETest {
         deployAndAssert(TEST_ARTIFACT, 1);
         awaitSliceActive(TEST_ARTIFACT);
 
-        // Scale to 3 instances
-        var scaleResponse = cluster.anyNode().scale(TEST_ARTIFACT, 3);
+        // Scale to 3 instances via leader
+        var scaleLeader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var scaleResponse = scaleLeader.scale(TEST_ARTIFACT, 3);
         assertThat(scaleResponse).doesNotContain("\"error\"");
 
         // Wait for scale operation to complete
@@ -160,8 +162,9 @@ class SliceDeploymentE2ETest {
         deployAndAssert(TEST_ARTIFACT, 1);
         awaitSliceActive(TEST_ARTIFACT);
 
-        // Undeploy
-        var undeployResponse = cluster.anyNode().undeploy(TEST_ARTIFACT);
+        // Undeploy via leader
+        var undeployLeader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var undeployResponse = undeployLeader.undeploy(TEST_ARTIFACT);
         assertThat(undeployResponse).doesNotContain("\"error\"");
 
         // Wait for slice to be removed
@@ -195,11 +198,12 @@ class SliceDeploymentE2ETest {
             id = "org.test:e2e-blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0"
+            artifact = "%s"
             instances = 1
-            """;
+            """.formatted(TEST_ARTIFACT);
 
-        var response = cluster.anyNode().applyBlueprint(blueprint);
+        var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var response = leader.applyBlueprint(blueprint);
         assertThat(response).doesNotContain("\"error\"");
 
         awaitSliceActive(TEST_ARTIFACT);
@@ -241,7 +245,8 @@ class SliceDeploymentE2ETest {
     // ===== Test Helpers =====
 
     private String deployAndAssert(String artifact, int instances) {
-        var response = cluster.anyNode().deploy(artifact, instances);
+        var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var response = leader.deploy(artifact, instances);
         assertThat(response)
             .describedAs("Deployment of %s should succeed", artifact)
             .doesNotContain("\"error\"");

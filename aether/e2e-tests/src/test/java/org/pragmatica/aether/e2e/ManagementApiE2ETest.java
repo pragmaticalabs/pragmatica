@@ -4,7 +4,6 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.e2e.containers.AetherCluster;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Path;
@@ -35,7 +34,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class ManagementApiE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());
@@ -66,7 +66,6 @@ class ManagementApiE2ETest {
     void cleanupAndPrepare() {
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
-        sleep(timeSpan(1).seconds());
 
         // Undeploy all slices to ensure clean state
         undeployAllSlices();
@@ -339,7 +338,8 @@ class ManagementApiE2ETest {
     }
 
     private String deployAndAssert(String artifact, int instances) {
-        var response = cluster.anyNode().deploy(artifact, instances);
+        var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var response = leader.deploy(artifact, instances);
         assertThat(response)
             .describedAs("Deployment of %s should succeed", artifact)
             .doesNotContain("\"error\"");
@@ -362,11 +362,4 @@ class ManagementApiE2ETest {
                });
     }
 
-    private void sleep(TimeSpan duration) {
-        try {
-            Thread.sleep(duration.duration().toMillis());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
 }

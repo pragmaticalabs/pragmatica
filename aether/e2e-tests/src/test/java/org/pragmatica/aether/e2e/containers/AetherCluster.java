@@ -51,8 +51,9 @@ public class AetherCluster implements AutoCloseable {
     private static final Path M2_REPO_PATH = Path.of(System.getProperty("user.home"), ".m2", "repository");
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
     // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
     private static final String[][] TEST_ARTIFACTS = {
-        {"echo-slice-echo-service", "0.15.0"},
+        {"echo-slice-echo-service", TEST_ARTIFACT_VERSION},
         {"echo-slice-echo-service", "0.16.0"}
     };
 

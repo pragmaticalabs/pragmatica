@@ -16,6 +16,7 @@
 
 package org.pragmatica.dht;
 
+import org.pragmatica.consensus.NodeId;
 import org.pragmatica.dht.storage.StorageEngine;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
@@ -26,15 +27,13 @@ import java.util.function.Consumer;
 /// Local DHT node that handles storage operations.
 /// Provides local data access and can be integrated with MessageRouter
 /// for handling remote requests.
-///
-/// @param <N> Node identifier type
-public final class DHTNode<N extends Comparable<N>> {
-    private final N nodeId;
+public final class DHTNode {
+    private final NodeId nodeId;
     private final StorageEngine storage;
-    private final ConsistentHashRing<N> ring;
+    private final ConsistentHashRing<NodeId> ring;
     private final DHTConfig config;
 
-    private DHTNode(N nodeId, StorageEngine storage, ConsistentHashRing<N> ring, DHTConfig config) {
+    private DHTNode(NodeId nodeId, StorageEngine storage, ConsistentHashRing<NodeId> ring, DHTConfig config) {
         this.nodeId = nodeId;
         this.storage = storage;
         this.ring = ring;
@@ -47,16 +46,21 @@ public final class DHTNode<N extends Comparable<N>> {
     /// @param storage storage engine for local data
     /// @param ring    consistent hash ring for routing
     /// @param config  DHT configuration
-    public static <N extends Comparable<N>> DHTNode<N> dhtNode(N nodeId,
-                                                               StorageEngine storage,
-                                                               ConsistentHashRing<N> ring,
-                                                               DHTConfig config) {
-        return new DHTNode<>(nodeId, storage, ring, config);
+    public static DHTNode dhtNode(NodeId nodeId,
+                                  StorageEngine storage,
+                                  ConsistentHashRing<NodeId> ring,
+                                  DHTConfig config) {
+        return new DHTNode(nodeId, storage, ring, config);
     }
 
     /// Get the node's identifier.
-    public N nodeId() {
+    public NodeId nodeId() {
         return nodeId;
+    }
+
+    /// Get the storage engine (for migration and anti-entropy operations).
+    public StorageEngine storage() {
+        return storage;
     }
 
     /// Get the configuration.
@@ -65,7 +69,7 @@ public final class DHTNode<N extends Comparable<N>> {
     }
 
     /// Get the consistent hash ring.
-    public ConsistentHashRing<N> ring() {
+    public ConsistentHashRing<NodeId> ring() {
         return ring;
     }
 
@@ -128,8 +132,10 @@ public final class DHTNode<N extends Comparable<N>> {
                                  Consumer<DHTMessage.GetResponse> responseHandler) {
         storage.get(request.key())
                .onSuccess(value -> responseHandler.accept(new DHTMessage.GetResponse(request.requestId(),
+                                                                                     nodeId,
                                                                                      value)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.GetResponse(request.requestId(),
+                                                                                 nodeId,
                                                                                  Option.none())));
     }
 
@@ -139,8 +145,10 @@ public final class DHTNode<N extends Comparable<N>> {
         storage.put(request.key(),
                     request.value())
                .onSuccess(_ -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                                                 nodeId,
                                                                                  true)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.PutResponse(request.requestId(),
+                                                                                 nodeId,
                                                                                  false)));
     }
 
@@ -149,8 +157,10 @@ public final class DHTNode<N extends Comparable<N>> {
                                     Consumer<DHTMessage.RemoveResponse> responseHandler) {
         storage.remove(request.key())
                .onSuccess(found -> responseHandler.accept(new DHTMessage.RemoveResponse(request.requestId(),
+                                                                                        nodeId,
                                                                                         found)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.RemoveResponse(request.requestId(),
+                                                                                    nodeId,
                                                                                     false)));
     }
 
@@ -159,8 +169,10 @@ public final class DHTNode<N extends Comparable<N>> {
                                     Consumer<DHTMessage.ExistsResponse> responseHandler) {
         storage.exists(request.key())
                .onSuccess(exists -> responseHandler.accept(new DHTMessage.ExistsResponse(request.requestId(),
+                                                                                         nodeId,
                                                                                          exists)))
                .onFailure(_ -> responseHandler.accept(new DHTMessage.ExistsResponse(request.requestId(),
+                                                                                    nodeId,
                                                                                     false)));
     }
 }

@@ -1,11 +1,18 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.e2e.containers.AetherCluster;
 import org.pragmatica.lang.utils.Causes;
+
+import java.nio.file.Path;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
  * E2E tests for the cluster controller (DecisionTreeController).
@@ -22,18 +29,67 @@ import static org.awaitility.Awaitility.await;
  * <p>Note: Auto-scaling based on CPU metrics requires controlled load
  * generation which is complex in E2E tests. These tests focus on
  * controller infrastructure rather than scaling decisions.
+ *
+ * <p>This test class uses a shared cluster with node restoration between tests.
+ * Tests run in order to ensure deterministic behavior.
  */
-class ControllerE2ETest extends AbstractE2ETest {
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@Execution(ExecutionMode.SAME_THREAD)
+class ControllerE2ETest {
+    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
 
-    @Override
-    protected int clusterSize() {
-        return 3;
+    private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());
+    private static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
+
+    private static AetherCluster cluster;
+
+    @BeforeAll
+    static void createCluster() {
+        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster.start();
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
+        cluster.awaitLeader();
+        cluster.uploadTestArtifacts();
+    }
+
+    @AfterAll
+    static void destroyCluster() {
+        if (cluster != null) {
+            cluster.close();
+        }
+    }
+
+    @BeforeEach
+    void restoreAllNodes() {
+        // Restart any stopped nodes
+        for (var node : cluster.nodes()) {
+            if (!node.isRunning()) {
+                try {
+                    cluster.node(node.nodeId()).start();
+                } catch (Exception e) {
+                    System.out.println("[DEBUG] Error restarting " + node.nodeId() + ": " + e.getMessage());
+                }
+            }
+        }
+
+        // Wait for all nodes to be running
+        await().atMost(RECOVERY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .ignoreExceptions()
+               .until(() -> cluster.runningNodeCount() == 3);
+
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
     }
 
     @Nested
+    @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
     class ControllerConfiguration {
 
         @Test
+        @Order(1)
         void controllerConfig_getReturnsCurrentSettings() {
             cluster.awaitLeader();
 
@@ -43,6 +99,7 @@ class ControllerE2ETest extends AbstractE2ETest {
         }
 
         @Test
+        @Order(2)
         void controllerConfig_updateSucceeds() {
             cluster.awaitLeader();
 
@@ -53,6 +110,7 @@ class ControllerE2ETest extends AbstractE2ETest {
         }
 
         @Test
+        @Order(3)
         void controllerConfig_persistsAcrossRequests() {
             cluster.awaitLeader();
 
@@ -69,9 +127,11 @@ class ControllerE2ETest extends AbstractE2ETest {
     }
 
     @Nested
+    @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
     class ControllerStatus {
 
         @Test
+        @Order(1)
         void controllerStatus_returnsRunningState() {
             cluster.awaitLeader();
 
@@ -83,6 +143,7 @@ class ControllerE2ETest extends AbstractE2ETest {
         }
 
         @Test
+        @Order(2)
         void controllerEvaluate_triggersImmediately() {
             cluster.awaitLeader();
 
@@ -93,9 +154,11 @@ class ControllerE2ETest extends AbstractE2ETest {
     }
 
     @Nested
+    @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
     class LeaderBehavior {
 
         @Test
+        @Order(1)
         void controller_runsOnlyOnLeader() {
             cluster.awaitLeader();
 
@@ -108,6 +171,7 @@ class ControllerE2ETest extends AbstractE2ETest {
         }
 
         @Test
+        @Order(2)
         void controller_survivesLeaderFailure() {
             cluster.awaitLeader();
 

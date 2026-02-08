@@ -31,9 +31,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Disabled (Infrastructure Limitation)
 - Tests requiring node restart to rejoin cluster (restarted containers get new identities):
-  - `BootstrapE2ETest`: `rollingRestart_maintainsAvailability`, `multipleNodeRestarts_clusterRemainsFunctional`
   - `NodeFailureE2ETest`: `nodeRecovery_rejoinsCluster`, `rollingRestart_maintainsQuorum`, `minorityPartition_quorumLost_thenRecovered`
-  - `ChaosE2ETest`: entire class (5 tests)
+  - `BootstrapE2ETest` and `ChaosE2ETest` classes have been removed
 
 ## [0.8.0] - 2026-01-15
 
@@ -160,12 +159,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `SliceDeploymentE2ETest` (6 tests) - Deploy, scale, undeploy, blueprints
   - `RollingUpdateE2ETest` (6 tests) - Two-stage updates, traffic shifting
   - `NodeFailureE2ETest` (6 tests) - Failure modes, recovery
-  - `ChaosE2ETest` (5 tests) - Resilience under adverse conditions
   - `ManagementApiE2ETest` (19 tests) - Status, metrics, thresholds, alerts, controller endpoints
   - `SliceInvocationE2ETest` (9 tests) - Route handling, error cases, request distribution
   - `MetricsE2ETest` (6 tests) - Metrics collection, Prometheus format, distribution
   - `ControllerE2ETest` (7 tests) - Configuration, status, leader behavior
-  - `BootstrapE2ETest` (4 tests) - Node restart, state recovery, rolling restart
   - `GracefulShutdownE2ETest` (4 tests) - Peer detection, slice handling, leader failover
   - `NetworkPartitionE2ETest` (4 tests) - Quorum behavior, partition healing, consistency
 - **Enhanced AetherNodeContainer** - 20+ new API methods for E2E testing
