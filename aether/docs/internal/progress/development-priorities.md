@@ -9,6 +9,7 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 ### Core Infrastructure
 - **Request ID Propagation** - ScopedValue-based context with ServiceLoader propagation hook in Promise
 - **SliceInvoker Immediate Retry** - Event-driven retry on node departure (matches AppHttpServer pattern)
+- **Local-First Invocation Routing** - SliceInvoker bypasses network for slices co-located on the same node
 - **Structured Keys** - KV schema foundation
 - **Consensus Integration** - Distributed operations working
 - **ClusterDeploymentManager** - Cluster orchestration
@@ -31,6 +32,7 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 - **TTM Predictive Scaling** - ONNX-based traffic prediction and scaling recommendations
 - **DeploymentMap** - Event-driven slice-to-node index with cluster-wide deployment visibility
 - **EMA Latency Smoothing** - 5-second effective window for stable dashboard metrics
+- **Dynamic Aspects** - Runtime-togglable per-method LOG/METRICS/LOG_AND_METRICS modes via `DynamicAspectRegistry`, REST API (`/api/aspects`), KV-store consensus sync, and `DynamicAspectInterceptor` wired into both local and remote invocation paths. Dashboard UI pending.
 
 ### Dashboard & Real-Time
 - **WebSocket Push** - Zero-polling dashboard via `/ws/status` with polling fallback
@@ -70,6 +72,7 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 - **URL Shortener Demo** - E2E slice invocation with HTTP, inter-slice calls, and CacheService
 - **Aether Forge** - Local development environment with dashboard
 - **Comprehensive Forge Test Suite** - Tests use InventoryService (no slice dependencies)
+- **Docker E2E Infrastructure** - Hostname-based peer resolution, local Maven repo fallback for artifact resolution, CI timeout adaptation, leader election stabilization in containers
 
 ### Documentation
 - **CLI Reference** - Complete command documentation
@@ -84,12 +87,10 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 
 ### HIGH PRIORITY - Cluster Operations
 
-1. **Dynamic Aspect** ← recommended next
-   - Implement `DynamicAspect`, the aspect that can be dynamically switched between different modes - None, Log, Metrics, Log+Metrics.
-   - Implement `DynamicAspectManager`, which keeps registry of all instances of DynamicAspect active at node keyed by the class name+method name to which they are applied.
-   - Provide API to manage these instances across the cluster
-   - Wire to dashboard with convenient UI
-   - **Why next:** Builds on WebSocket dashboard, invocation metrics, and KV-store consensus patterns already in place. Same pattern as AlertManager. Immediate operational value for production debugging.
+1. **Dynamic Aspect Dashboard UI** ← recommended next
+   - Wire `DynamicAspectRegistry` data to dashboard with convenient UI for toggling per-method aspect modes
+   - Backend REST API (`/api/aspects`) and KV-store sync already implemented
+   - **Why next:** Small remaining work to complete the Dynamic Aspect feature. All backend infrastructure is in place.
 
 2. **Dynamic Configuration via KV Store**
    - Expose most configuration in consensus KV store
@@ -317,7 +318,7 @@ Infrastructure slices requiring distributed implementations:
 | infra-config | ✅ | ❌ | → Dynamic Config (#2) |
 | infra-database | ✅ | N/A | → DB Connector (#4) |
 | infra-http | ✅ | N/A | HTTP client, no distributed needed |
-| infra-aspect | ✅ | N/A | → Dynamic Aspect (#1) |
+| infra-aspect | ✅ | N/A | Dynamic Aspect backend complete, dashboard UI pending (#1) |
 
 **Dropped:** infra-server, infra-streaming, infra-outbox, infra-blob, infra-feature
 
