@@ -428,6 +428,55 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         }
     }
 
+    /**
+     * Performs a GET request returning binary content.
+     *
+     * @param path API path
+     * @return response bytes, or empty array on error
+     */
+    public byte[] getBinary(String path) {
+        try {
+            var request = HttpRequest.newBuilder()
+                                     .uri(URI.create(managementUrl() + path))
+                                     .GET()
+                                     .timeout(Duration.ofSeconds(60))
+                                     .build();
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() >= 400) {
+                return new byte[0];
+            }
+            return response.body();
+        } catch (Exception e) {
+            return new byte[0];
+        }
+    }
+
+    /**
+     * Fetches artifact metadata from the repository.
+     *
+     * @param groupPath group path with slashes
+     * @param artifactId artifact ID
+     * @param version version string
+     * @return artifact info JSON
+     */
+    public String getArtifactInfo(String groupPath, String artifactId, String version) {
+        return get("/repository/info/" + groupPath + "/" + artifactId + "/" + version);
+    }
+
+    /**
+     * Downloads an artifact JAR via Maven protocol.
+     *
+     * @param groupPath group path with slashes
+     * @param artifactId artifact ID
+     * @param version version string
+     * @return JAR bytes, or empty array on error
+     */
+    public byte[] downloadArtifact(String groupPath, String artifactId, String version) {
+        var path = "/repository/" + groupPath + "/" + artifactId + "/" + version +
+                   "/" + artifactId + "-" + version + ".jar";
+        return getBinary(path);
+    }
+
     // ===== HTTP Helpers =====
 
     /**
