@@ -25,6 +25,11 @@ import static org.awaitility.Awaitility.await;
  */
 class ControllerE2ETest extends AbstractE2ETest {
 
+    @Override
+    protected int clusterSize() {
+        return 3;
+    }
+
     @Nested
     class ControllerConfiguration {
 

@@ -21,6 +21,12 @@ import static org.awaitility.Awaitility.await;
  * </ul>
  */
 class MetricsE2ETest extends AbstractE2ETest {
+
+    @Override
+    protected int clusterSize() {
+        return 3;
+    }
+
     private static final Duration METRICS_INTERVAL = Duration.ofSeconds(2);
 
     @Nested

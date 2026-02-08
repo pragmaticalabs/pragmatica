@@ -8,9 +8,11 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Path;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
@@ -37,20 +39,21 @@ class NetworkPartitionE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
 
-    // Common timeouts
-    private static final TimeSpan DEFAULT_TIMEOUT = timeSpan(2).minutes();
-    private static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
-    private static final TimeSpan CLEANUP_TIMEOUT = timeSpan(60).seconds();
+    // Common timeouts (CI gets 2x via adapt())
+    private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(2).minutes().duration());
+    private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
+    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(60).seconds().duration());
 
     private static AetherCluster cluster;
 
     @BeforeAll
     static void createCluster() {
-        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
+        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
         cluster.awaitLeader();
+        cluster.uploadTestArtifacts();
     }
 
     @AfterAll
@@ -87,8 +90,8 @@ class NetworkPartitionE2ETest {
         cluster.killNode("node-3");
 
         // Wait for cluster to detect partition
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var health = cluster.anyNode().getHealth();
                    return health.contains("\"connectedPeers\":1");
@@ -113,8 +116,8 @@ class NetworkPartitionE2ETest {
         cluster.killNode("node-3");
 
         // Wait for partition detection
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var health = cluster.nodes().get(0).getHealth();
                    // Single node should report 0 connected peers
@@ -136,8 +139,8 @@ class NetworkPartitionE2ETest {
         cluster.killNode("node-2");
         cluster.killNode("node-3");
 
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.runningNodeCount() == 1);
 
         // Heal partition - restart nodes
@@ -145,8 +148,8 @@ class NetworkPartitionE2ETest {
         cluster.node("node-3").start();
 
         // Cluster should reconverge
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.runningNodeCount() == 3);
         cluster.awaitQuorum();
         cluster.awaitLeader();
@@ -178,8 +181,8 @@ class NetworkPartitionE2ETest {
 
         // Restore full cluster
         cluster.node("node-3").start();
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> cluster.runningNodeCount() == 3);
         cluster.awaitQuorum();
 
@@ -191,21 +194,21 @@ class NetworkPartitionE2ETest {
     // ===== Cleanup Helpers =====
 
     private void restoreAllNodes() {
-        for (int i = 1; i <= 3; i++) {
-            var nodeName = "node-" + i;
-            try {
-                cluster.node(nodeName).start();
-            } catch (Exception e) {
-                // Node may already be running
-                System.out.println("[DEBUG] Could not restart " + nodeName + ": " + e.getMessage());
+        for (var node : cluster.nodes()) {
+            if (!node.isRunning()) {
+                try {
+                    node.start();
+                } catch (Exception e) {
+                    System.out.println("[DEBUG] Could not restart " + node.nodeId() + ": " + e.getMessage());
+                }
             }
         }
 
         // Wait for all nodes to be running
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
-               .until(() -> cluster.runningNodeCount() == 3);
+               .until(() -> cluster.runningNodeCount() == cluster.size());
     }
 
     private void undeployAllSlices() {
@@ -229,8 +232,8 @@ class NetworkPartitionE2ETest {
     }
 
     private void awaitNoSlices() {
-        await().atMost(CLEANUP_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(CLEANUP_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
                .until(() -> {
                    var slices = cluster.anyNode().getSlices();
@@ -249,8 +252,8 @@ class NetworkPartitionE2ETest {
         assertThat(response).doesNotContain("\"error\"");
 
         // Wait for slice to be active
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    if (sliceHasFailed(artifact)) {
                        throw new AssertionError("Slice deployment failed: " + artifact);
@@ -260,8 +263,8 @@ class NetworkPartitionE2ETest {
     }
 
     private void awaitSliceVisible(String sliceName) {
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var slices = cluster.anyNode().getSlices();
                    return slices.contains(sliceName);

@@ -3,6 +3,7 @@ package org.pragmatica.aether.e2e;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.e2e.containers.AetherNodeContainer;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -22,6 +23,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * suited for unit tests with mocked predictors.
  */
 class TtmE2ETest extends AbstractE2ETest {
+
+    @Override
+    protected int clusterSize() {
+        return 3;
+    }
 
     @Nested
     class TtmStatusEndpoint {
@@ -98,8 +104,11 @@ class TtmE2ETest extends AbstractE2ETest {
             var initialStatus = cluster.anyNode().getTtmStatus();
             assertThat(initialStatus).doesNotContain("\"error\"");
 
-            // Kill the leader
-            cluster.killNode("node-1");
+            // Kill the actual leader
+            var leader = cluster.leader()
+                                .toResult(Causes.cause("No leader"))
+                                .unwrap();
+            cluster.killNode(leader.nodeId());
 
             // Wait for new quorum
             cluster.awaitQuorum();

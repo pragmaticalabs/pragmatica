@@ -4,7 +4,6 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.e2e.containers.AetherCluster;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Path;
@@ -12,6 +11,7 @@ import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
@@ -35,9 +35,9 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class NodeFailureE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
 
-    // Common timeouts
-    private static final TimeSpan RECOVERY_TIMEOUT = timeSpan(90).seconds();
-    private static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
+    // Common timeouts (CI gets 2x via adapt())
+    private static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(90).seconds().duration());
+    private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
 
     private static AetherCluster cluster;
 
@@ -72,8 +72,8 @@ class NodeFailureE2ETest {
         }
 
         // Wait for all nodes with extended timeout (containers may take longer after chaos)
-        await().atMost(Duration.ofSeconds(120))
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(adapt(Duration.ofSeconds(120)))
+               .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
                .until(() -> cluster.runningNodeCount() == 5);
 
@@ -124,8 +124,8 @@ class NodeFailureE2ETest {
         cluster.killNode(originalLeaderId);
 
         // Wait for new leader election
-        await().atMost(RECOVERY_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(RECOVERY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var newLeader = cluster.leader();
                    return newLeader.isPresent() &&

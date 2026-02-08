@@ -8,9 +8,11 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Path;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
@@ -37,11 +39,11 @@ class SliceInvocationE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
 
-    // Common timeouts
-    private static final TimeSpan DEFAULT_TIMEOUT = timeSpan(30).seconds();
-    private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(3).minutes();
-    private static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
-    private static final TimeSpan CLEANUP_TIMEOUT = timeSpan(60).seconds();
+    // Common timeouts (CI gets 2x via adapt())
+    private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());
+    private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
+    private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
+    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(60).seconds().duration());
 
     private static AetherCluster cluster;
 
@@ -52,6 +54,7 @@ class SliceInvocationE2ETest {
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
         cluster.awaitLeader();
+        cluster.uploadTestArtifacts();
     }
 
     @AfterAll
@@ -96,8 +99,8 @@ class SliceInvocationE2ETest {
     }
 
     private void awaitNoSlices() {
-        await().atMost(CLEANUP_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(CLEANUP_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
                .until(() -> {
                    var slices = cluster.anyNode().getSlices();
@@ -172,8 +175,8 @@ class SliceInvocationE2ETest {
             // Deploy a slice
             cluster.anyNode().deploy(TEST_ARTIFACT, 1);
 
-            await().atMost(DEPLOY_TIMEOUT.duration())
-                   .pollInterval(POLL_INTERVAL.duration())
+            await().atMost(DEPLOY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
                    .failFast(() -> {
                        if (sliceHasFailed(TEST_ARTIFACT)) {
                            throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
@@ -215,8 +218,8 @@ class SliceInvocationE2ETest {
         void invokeAfterSliceUndeploy_returnsNotFound() {
             // Deploy
             cluster.anyNode().deploy(TEST_ARTIFACT, 1);
-            await().atMost(DEPLOY_TIMEOUT.duration())
-                   .pollInterval(POLL_INTERVAL.duration())
+            await().atMost(DEPLOY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
                    .failFast(() -> {
                        if (sliceHasFailed(TEST_ARTIFACT)) {
                            throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);
@@ -226,8 +229,8 @@ class SliceInvocationE2ETest {
 
             // Undeploy
             cluster.anyNode().undeploy(TEST_ARTIFACT);
-            await().atMost(CLEANUP_TIMEOUT.duration())
-                   .pollInterval(POLL_INTERVAL.duration())
+            await().atMost(CLEANUP_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
                    .until(() -> {
                        var slices = cluster.anyNode().getSlices();
                        return !slices.contains("echo-slice");
@@ -250,8 +253,8 @@ class SliceInvocationE2ETest {
             // Deploy slice across all nodes
             cluster.anyNode().deploy(TEST_ARTIFACT, 3);
 
-            await().atMost(DEPLOY_TIMEOUT.duration())
-                   .pollInterval(POLL_INTERVAL.duration())
+            await().atMost(DEPLOY_TIMEOUT)
+                   .pollInterval(POLL_INTERVAL)
                    .failFast(() -> {
                        if (sliceHasFailed(TEST_ARTIFACT)) {
                            throw new AssertionError("Slice deployment failed: " + TEST_ARTIFACT);

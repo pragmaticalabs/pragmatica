@@ -19,6 +19,11 @@ import static org.awaitility.Awaitility.await;
  */
 class GracefulShutdownE2ETest extends AbstractE2ETest {
 
+    @Override
+    protected int clusterSize() {
+        return 3;
+    }
+
     @Test
     void nodeShutdown_peersDetectDisconnection() {
         cluster.awaitLeader();
