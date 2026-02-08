@@ -1,8 +1,8 @@
 # Development Priorities
 
-## Current Status (v0.15.0)
+## Current Status (v0.15.1)
 
-Release 0.15.0 focuses on **monorepo consolidation** and **production readiness** with real-time dashboard, cluster-wide observability, and HTTP performance.
+Release 0.15.1 continues production hardening with bug fixes and documentation updates.
 
 ## Completed ✅
 

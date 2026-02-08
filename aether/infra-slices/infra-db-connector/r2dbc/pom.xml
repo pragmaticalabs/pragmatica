@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>infra-db-connector</artifactId>
-        <version>0.15.0</version>
+        <version>0.15.1</version>
     </parent>
 
     <artifactId>infra-db-connector-r2dbc</artifactId>
