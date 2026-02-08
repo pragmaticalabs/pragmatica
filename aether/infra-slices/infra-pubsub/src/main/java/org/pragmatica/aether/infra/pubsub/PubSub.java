@@ -67,8 +67,16 @@ public interface PubSub extends Slice {
      *
      * @return PubSub instance
      */
-    static PubSub inMemory() {
+    static PubSub pubSub() {
         return new InMemoryPubSub();
+    }
+
+    /**
+     * @deprecated Use {@link #pubSub()} instead.
+     */
+    @Deprecated
+    static PubSub inMemory() {
+        return pubSub();
     }
 
     @Override

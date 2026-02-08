@@ -45,7 +45,7 @@
         <!-- Infrastructure Slices -->
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>infra-cache</artifactId>
+            <artifactId>infra-db-connector-api</artifactId>
             <version>${pragmatica.version}</version>
             <scope>provided</scope>
         </dependency>

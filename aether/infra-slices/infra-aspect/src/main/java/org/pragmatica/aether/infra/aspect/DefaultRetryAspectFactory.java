@@ -68,15 +68,15 @@ final class DefaultRetryAspectFactory implements RetryAspectFactory {
 
         @SuppressWarnings("unchecked")
         private Object invokeWithRetry(Method method, Object[] args) {
-            var retry = Retry.create()
+            var retry = Retry.retry()
                              .attempts(config.maxAttempts())
                              .strategy(config.backoffStrategy());
             return retry.execute(() -> {
                                      try{
                                          return (Promise<?>) method.invoke(delegate, args);
                                      } catch (Exception e) {
-                                         return Promise.failure(InfraSliceError.RetryError.retryError("Failed to invoke method: " + method.getName(),
-                                                                                                      e));
+                                         return InfraSliceError.RetryFailed.retryFailed("Failed to invoke method: " + method.getName(),
+                                                                                                      e).promise();
                                      }
                                  });
         }

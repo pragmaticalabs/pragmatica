@@ -49,7 +49,8 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
     @Override
     public Promise<TransactionContext> begin(TransactionConfig config) {
         return currentTransaction()
-        .fold(() -> beginNewTransaction(config), existing -> handleExistingTransaction(config, existing));
+               .map(existing -> handleExistingTransaction(config, existing))
+               .or(() -> beginNewTransaction(config));
     }
 
     private Promise<TransactionContext> beginNewTransaction(TransactionConfig config) {
@@ -95,8 +96,9 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
     @Override
     public Promise<Unit> commit() {
         return currentTransaction()
-        .fold(() -> TransactionError.noActiveTransaction("commit")
-                                    .<Unit> promise(), this::commitTransaction);
+               .toResult(TransactionError.noActiveTransaction("commit"))
+               .async()
+               .flatMap(this::commitTransaction);
     }
 
     private Promise<Unit> commitTransaction(TransactionContext context) {
@@ -108,8 +110,9 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
     @Override
     public Promise<Unit> rollback() {
         return currentTransaction()
-        .fold(() -> TransactionError.noActiveTransaction("rollback")
-                                    .<Unit> promise(), this::rollbackTransaction);
+               .toResult(TransactionError.noActiveTransaction("rollback"))
+               .async()
+               .flatMap(this::rollbackTransaction);
     }
 
     private Promise<Unit> rollbackTransaction(TransactionContext context) {
@@ -121,14 +124,8 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
     private void restoreParentOrClear(TransactionContext context) {
         context.parentContext()
                .filter(TransactionContext::isActive)
-               .fold(() -> {
-                         currentContext.remove();
-                         return unit();
-                     },
-                     parent -> {
-                         currentContext.set(parent.resume());
-                         return unit();
-                     });
+               .onPresent(parent -> currentContext.set(parent.resume()))
+               .onEmpty(currentContext::remove);
     }
 
     @Override
@@ -159,8 +156,9 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
         @SuppressWarnings("unchecked")
         private Object invokeWithTransaction(Method method, Object[] args) throws Throwable {
             var existingTx = factory.currentTransaction();
-            return existingTx.fold(() -> executeInNewTransaction(method, args),
-                                   existing -> executeInExistingTransaction(method, args, existing));
+            return existingTx.isPresent()
+                   ? executeInExistingTransaction(method, args, existingTx.unwrap())
+                   : executeInNewTransaction(method, args);
         }
 
         private Promise<?> executeInNewTransaction(Method method, Object[] args) {

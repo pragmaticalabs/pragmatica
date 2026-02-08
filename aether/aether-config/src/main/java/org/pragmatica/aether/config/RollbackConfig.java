@@ -25,7 +25,7 @@ public record RollbackConfig(boolean enabled,
     /**
      * Default configuration with automatic rollback enabled.
      */
-    public static RollbackConfig defaults() {
+    public static RollbackConfig defaultConfig() {
         return DEFAULT;
     }
 

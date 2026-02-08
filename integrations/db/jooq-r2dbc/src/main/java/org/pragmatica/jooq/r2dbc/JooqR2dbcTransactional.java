@@ -20,7 +20,7 @@ package org.pragmatica.jooq.r2dbc;
 import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 import org.pragmatica.r2dbc.R2dbcError;
 import org.pragmatica.r2dbc.ReactiveOperations;
 
@@ -62,35 +62,55 @@ public interface JooqR2dbcTransactional {
                                           SQLDialect dialect,
                                           Fn1<R2dbcError, Throwable> errorMapper,
                                           Fn2<Promise<R>, DSLContext, Connection> operation) {
-        return ReactiveOperations.<Connection> fromPublisher(connectionFactory.create(),
-                                                             errorMapper)
-                                 .flatMap(conn -> beginTransaction(conn, errorMapper).flatMap(_ -> {
-                                                                                                  var dsl = DSL.using(conn,
-                                                                                                                      dialect);
-                                                                                                  return operation.apply(dsl,
-                                                                                                                         conn);
-                                                                                              })
-                                                                  .flatMap(result -> commitTransaction(conn, errorMapper)
-        .map(_ -> result))
-                                                                  .onFailure(_ -> rollbackTransaction(conn))
-                                                                  .onResult(_ -> closeConnection(conn)));
+        return acquireConnection(connectionFactory, errorMapper)
+               .flatMap(conn -> executeWithConnection(conn, dialect, errorMapper, operation));
     }
 
-    private static Promise<Void> beginTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
-        return ReactiveOperations.fromPublisher(conn.beginTransaction(), errorMapper);
+    private static Promise<Connection> acquireConnection(ConnectionFactory factory,
+                                                         Fn1<R2dbcError, Throwable> errorMapper) {
+        return ReactiveOperations.fromPublisher(factory.create(), errorMapper);
     }
 
-    private static Promise<Void> commitTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
-        return ReactiveOperations.fromPublisher(conn.commitTransaction(), errorMapper);
+    private static <R> Promise<R> executeWithConnection(Connection conn,
+                                                        SQLDialect dialect,
+                                                        Fn1<R2dbcError, Throwable> errorMapper,
+                                                        Fn2<Promise<R>, DSLContext, Connection> operation) {
+        return beginTransaction(conn, errorMapper)
+               .flatMap(_ -> executeOperation(conn, dialect, operation))
+               .flatMap(result -> commitAndReturn(conn, errorMapper, result))
+               .onFailure(_ -> rollbackTransaction(conn))
+               .onResult(_ -> closeConnection(conn));
+    }
+
+    private static <R> Promise<R> executeOperation(Connection conn,
+                                                   SQLDialect dialect,
+                                                   Fn2<Promise<R>, DSLContext, Connection> operation) {
+        var dsl = DSL.using(conn, dialect);
+        return operation.apply(dsl, conn);
+    }
+
+    private static <R> Promise<R> commitAndReturn(Connection conn,
+                                                  Fn1<R2dbcError, Throwable> errorMapper,
+                                                  R result) {
+        return commitTransaction(conn, errorMapper)
+               .map(_ -> result);
+    }
+
+    private static Promise<Unit> beginTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
+        return ReactiveOperations.fromVoidPublisher(conn.beginTransaction(), errorMapper);
+    }
+
+    private static Promise<Unit> commitTransaction(Connection conn, Fn1<R2dbcError, Throwable> errorMapper) {
+        return ReactiveOperations.fromVoidPublisher(conn.commitTransaction(), errorMapper);
     }
 
     private static void rollbackTransaction(Connection conn) {
-        ReactiveOperations.fromPublisher(conn.rollbackTransaction())
+        ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction())
                           .await();
     }
 
     private static void closeConnection(Connection conn) {
-        ReactiveOperations.fromPublisher(conn.close())
+        ReactiveOperations.fromVoidPublisher(conn.close())
                           .await();
     }
 }

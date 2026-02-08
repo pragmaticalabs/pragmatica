@@ -47,8 +47,8 @@ class AetherConfigTest {
     }
 
     @Test
-    void defaults_createsDockerConfig() {
-        var config = AetherConfig.defaults();
+    void defaultConfig_createsDockerConfig() {
+        var config = AetherConfig.defaultConfig();
 
         assertThat(config.environment()).isEqualTo(Environment.DOCKER);
     }
@@ -93,7 +93,7 @@ class AetherConfigTest {
     void builder_overridesPorts() {
         var config = AetherConfig.builder()
             .environment(Environment.DOCKER)
-            .ports(new PortsConfig(9000, 9100))
+            .ports(PortsConfig.portsConfig(9000, 9100))
             .build();
 
         assertThat(config.cluster().ports().management()).isEqualTo(9000);
@@ -112,7 +112,7 @@ class AetherConfigTest {
 
     @Test
     void builder_overridesDockerConfig() {
-        var customDocker = new DockerConfig("my-network", "my-image:v1");
+        var customDocker = DockerConfig.dockerConfig("my-network", "my-image:v1");
         var config = AetherConfig.builder()
             .environment(Environment.DOCKER)
             .dockerConfig(customDocker)
@@ -124,7 +124,7 @@ class AetherConfigTest {
 
     @Test
     void builder_overridesKubernetesConfig() {
-        var customK8s = new KubernetesConfig("prod", "LoadBalancer", "fast-ssd");
+        var customK8s = KubernetesConfig.kubernetesConfig("prod", "LoadBalancer", "fast-ssd");
         var config = AetherConfig.builder()
             .environment(Environment.KUBERNETES)
             .kubernetesConfig(customK8s)
@@ -143,7 +143,7 @@ class AetherConfigTest {
             .heap("2g")
             .gc("g1")
             .tls(true)
-            .ports(new PortsConfig(9000, 9100))
+            .ports(PortsConfig.portsConfig(9000, 9100))
             .build();
 
         assertThat(config.cluster().nodes()).isEqualTo(7);

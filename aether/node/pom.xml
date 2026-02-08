@@ -66,6 +66,10 @@
             <artifactId>infra-api</artifactId>
             <version>${project.version}</version>
         </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>node-provider</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
@@ -92,6 +96,28 @@
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
             <artifactId>dashboard</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+
+        <!-- Split node modules -->
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-invoke</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-metrics</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-deployment</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite.aether</groupId>
+            <artifactId>aether-control</artifactId>
             <version>${project.version}</version>
         </dependency>
 
@@ -170,6 +196,7 @@
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>org.pragmatica.aether.Main</mainClass>
                                 </transformer>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                             </transformers>
                             <filters>
                                 <filter>
@@ -178,6 +205,12 @@
                                         <exclude>META-INF/*.SF</exclude>
                                         <exclude>META-INF/*.DSA</exclude>
                                         <exclude>META-INF/*.RSA</exclude>
+                                    </excludes>
+                                </filter>
+                                <filter>
+                                    <artifact>com.microsoft.onnxruntime:onnxruntime</artifact>
+                                    <excludes>
+                                        <exclude>ai/onnxruntime/native/osx-*/**/*.dSYM/**</exclude>
                                     </excludes>
                                 </filter>
                             </filters>
@@ -189,4 +222,17 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>with-ttm</id>
+            <dependencies>
+                <dependency>
+                    <groupId>org.pragmatica-lite.aether</groupId>
+                    <artifactId>aether-ttm-onnx</artifactId>
+                    <version>${project.version}</version>
+                </dependency>
+            </dependencies>
+        </profile>
+    </profiles>
 </project>

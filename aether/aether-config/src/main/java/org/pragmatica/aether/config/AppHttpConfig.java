@@ -1,6 +1,5 @@
 package org.pragmatica.aether.config;
 
-import java.util.Objects;
 import java.util.Set;
 
 /**
@@ -28,7 +27,7 @@ public record AppHttpConfig(boolean enabled,
      * Canonical constructor with validation.
      */
     public AppHttpConfig {
-        Objects.requireNonNull(apiKeys, "apiKeys");
+        apiKeys = Set.copyOf(apiKeys);
         if (forwardTimeoutMs <= 0) {
             forwardTimeoutMs = DEFAULT_FORWARD_TIMEOUT_MS;
         }
@@ -37,39 +36,46 @@ public record AppHttpConfig(boolean enabled,
         }
     }
 
-    public static AppHttpConfig defaults() {
-        return new AppHttpConfig(false,
-                                 DEFAULT_APP_HTTP_PORT,
-                                 Set.of(),
-                                 DEFAULT_FORWARD_TIMEOUT_MS,
-                                 DEFAULT_FORWARD_MAX_RETRIES);
+    /**
+     * Factory method following JBCT naming convention.
+     */
+    public static AppHttpConfig appHttpConfig(boolean enabled, int port, Set<String> apiKeys, long forwardTimeoutMs, int forwardMaxRetries) {
+        return new AppHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
+    }
+
+    public static AppHttpConfig defaultConfig() {
+        return appHttpConfig(false,
+                             DEFAULT_APP_HTTP_PORT,
+                             Set.of(),
+                             DEFAULT_FORWARD_TIMEOUT_MS,
+                             DEFAULT_FORWARD_MAX_RETRIES);
     }
 
     public static AppHttpConfig enabledOnDefaultPort() {
-        return new AppHttpConfig(true,
-                                 DEFAULT_APP_HTTP_PORT,
-                                 Set.of(),
-                                 DEFAULT_FORWARD_TIMEOUT_MS,
-                                 DEFAULT_FORWARD_MAX_RETRIES);
+        return appHttpConfig(true,
+                             DEFAULT_APP_HTTP_PORT,
+                             Set.of(),
+                             DEFAULT_FORWARD_TIMEOUT_MS,
+                             DEFAULT_FORWARD_MAX_RETRIES);
     }
 
     public static AppHttpConfig enabledOnPort(int port) {
-        return new AppHttpConfig(true, port, Set.of(), DEFAULT_FORWARD_TIMEOUT_MS, DEFAULT_FORWARD_MAX_RETRIES);
+        return appHttpConfig(true, port, Set.of(), DEFAULT_FORWARD_TIMEOUT_MS, DEFAULT_FORWARD_MAX_RETRIES);
     }
 
     public static AppHttpConfig disabled() {
-        return new AppHttpConfig(false,
-                                 DEFAULT_APP_HTTP_PORT,
-                                 Set.of(),
-                                 DEFAULT_FORWARD_TIMEOUT_MS,
-                                 DEFAULT_FORWARD_MAX_RETRIES);
+        return appHttpConfig(false,
+                             DEFAULT_APP_HTTP_PORT,
+                             Set.of(),
+                             DEFAULT_FORWARD_TIMEOUT_MS,
+                             DEFAULT_FORWARD_MAX_RETRIES);
     }
 
     /**
      * Create enabled config with API keys for security.
      */
     public static AppHttpConfig enabledWithSecurity(int port, Set<String> apiKeys) {
-        return new AppHttpConfig(true, port, apiKeys, DEFAULT_FORWARD_TIMEOUT_MS, DEFAULT_FORWARD_MAX_RETRIES);
+        return appHttpConfig(true, port, apiKeys, DEFAULT_FORWARD_TIMEOUT_MS, DEFAULT_FORWARD_MAX_RETRIES);
     }
 
     /**
@@ -87,22 +93,22 @@ public record AppHttpConfig(boolean enabled,
     }
 
     public AppHttpConfig withEnabled(boolean enabled) {
-        return new AppHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
     }
 
     public AppHttpConfig withPort(int port) {
-        return new AppHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
     }
 
     public AppHttpConfig withApiKeys(Set<String> apiKeys) {
-        return new AppHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
     }
 
     public AppHttpConfig withForwardTimeoutMs(long forwardTimeoutMs) {
-        return new AppHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
     }
 
     public AppHttpConfig withForwardMaxRetries(int forwardMaxRetries) {
-        return new AppHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
+        return appHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
     }
 }

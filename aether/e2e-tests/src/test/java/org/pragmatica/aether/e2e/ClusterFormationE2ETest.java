@@ -19,6 +19,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class ClusterFormationE2ETest extends AbstractE2ETest {
 
+    @Override
+    protected int clusterSize() {
+        return 3;
+    }
+
     @Test
     void threeNodeCluster_formsQuorum_andElectsLeader() {
         // All nodes should be healthy

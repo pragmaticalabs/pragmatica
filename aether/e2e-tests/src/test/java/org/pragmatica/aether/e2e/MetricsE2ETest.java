@@ -21,6 +21,12 @@ import static org.awaitility.Awaitility.await;
  * </ul>
  */
 class MetricsE2ETest extends AbstractE2ETest {
+
+    @Override
+    protected int clusterSize() {
+        return 3;
+    }
+
     private static final Duration METRICS_INTERVAL = Duration.ofSeconds(2);
 
     @Nested
@@ -38,7 +44,7 @@ class MetricsE2ETest extends AbstractE2ETest {
         @Test
         void metricsCollected_everySecond() {
             // Wait for a few collection cycles
-            await().atMost(DEFAULT_TIMEOUT.duration())
+            await().atMost(DEFAULT_TIMEOUT)
                    .pollInterval(METRICS_INTERVAL)
                    .until(() -> {
                        var metrics = cluster.anyNode().getMetrics();
@@ -52,7 +58,7 @@ class MetricsE2ETest extends AbstractE2ETest {
         @Test
         void cpuMetrics_reportedPerNode() {
             // Wait for metrics to be collected
-            await().atMost(DEFAULT_TIMEOUT.duration()).until(() -> {
+            await().atMost(DEFAULT_TIMEOUT).until(() -> {
                 var metrics = cluster.anyNode().getMetrics();
                 return metrics != null && !metrics.isBlank();
             });
@@ -96,7 +102,7 @@ class MetricsE2ETest extends AbstractE2ETest {
             cluster.awaitLeader();
 
             // Wait for a few metrics cycles to ensure distribution
-            await().atMost(DEFAULT_TIMEOUT.duration())
+            await().atMost(DEFAULT_TIMEOUT)
                    .pollInterval(METRICS_INTERVAL)
                    .pollDelay(Duration.ofSeconds(3))
                    .until(() -> {

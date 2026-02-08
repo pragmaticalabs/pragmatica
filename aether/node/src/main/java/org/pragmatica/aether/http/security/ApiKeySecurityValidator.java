@@ -38,7 +38,7 @@ class ApiKeySecurityValidator implements SecurityValidator {
 
     private Result<SecurityContext> checkApiKey(String apiKey) {
         return validKeys.contains(apiKey)
-               ? Result.success(SecurityContext.forApiKey(apiKey))
+               ? SecurityContext.forApiKey(apiKey)
                : SecurityError.INVALID_API_KEY.result();
     }
 

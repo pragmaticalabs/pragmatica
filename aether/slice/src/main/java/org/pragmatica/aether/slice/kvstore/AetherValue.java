@@ -236,4 +236,21 @@ public sealed interface AetherValue {
             return new AlertThresholdValue(metricName, warning, critical, System.currentTimeMillis());
         }
     }
+
+    /// Dynamic aspect configuration stored in consensus.
+    /// Stores per-method aspect mode (logging/metrics) for runtime toggling.
+    ///
+    /// @param artifactBase the artifact this aspect applies to (groupId:artifactId, version-agnostic)
+    /// @param methodName the method this aspect applies to
+    /// @param mode the aspect mode (NONE, LOG, METRICS, LOG_AND_METRICS)
+    /// @param updatedAt timestamp of last update
+    record DynamicAspectValue(String artifactBase,
+                              String methodName,
+                              String mode,
+                              long updatedAt) implements AetherValue {
+        /// Creates a new dynamic aspect value with current timestamp.
+        public static DynamicAspectValue dynamicAspectValue(String artifactBase, String methodName, String mode) {
+            return new DynamicAspectValue(artifactBase, methodName, mode, System.currentTimeMillis());
+        }
+    }
 }

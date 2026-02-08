@@ -31,11 +31,9 @@ final class InMemoryStateMachine<S, E, C> implements StateMachine<S, E, C> {
     @Override
     public Promise<StateInfo<S>> create(String machineId, C context) {
         return option(instances.get(machineId))
-        .fold(() -> createNewInstance(machineId, context),
-              existing -> StateMachineError.alreadyStarted(machineId,
-                                                           existing.stateInfo.currentState()
-                                                                   .toString())
-                                           .promise());
+               .map(existing -> StateMachineError.alreadyStarted(machineId,
+                   existing.stateInfo.currentState().toString()).<StateInfo<S>>promise())
+               .or(() -> createNewInstance(machineId, context));
     }
 
     private Promise<StateInfo<S>> createNewInstance(String machineId, C context) {
@@ -53,10 +51,9 @@ final class InMemoryStateMachine<S, E, C> implements StateMachine<S, E, C> {
     private Promise<StateInfo<S>> processEvent(MachineInstance<S, C> instance, E event) {
         var currentState = instance.stateInfo.currentState();
         return definition.findTransition(currentState, event)
-                         .fold(() -> StateMachineError.eventNotHandled(currentState.toString(),
-                                                                       event.toString())
-                                                      .<StateInfo<S>> promise(),
-                               transition -> executeTransition(instance, transition));
+                         .toResult(StateMachineError.eventNotHandled(currentState.toString(), event.toString()))
+                         .async()
+                         .flatMap(transition -> executeTransition(instance, transition));
     }
 
     private Promise<StateInfo<S>> executeTransition(MachineInstance<S, C> instance, Transition<S, E, C> transition) {
@@ -98,14 +95,13 @@ final class InMemoryStateMachine<S, E, C> implements StateMachine<S, E, C> {
     @Override
     public Promise<Boolean> isComplete(String machineId) {
         return getState(machineId)
-        .map(opt -> opt.fold(() -> false,
-                             info -> definition.isFinalState(info.currentState())));
+               .map(opt -> opt.map(info -> definition.isFinalState(info.currentState())).or(false));
     }
 
     @Override
     public Promise<Set<E>> getAvailableEvents(String machineId) {
-        return getState(machineId).map(opt -> opt.fold(Set::of,
-                                                       info -> definition.getEventsFrom(info.currentState())));
+        return getState(machineId)
+               .map(opt -> opt.map(info -> definition.getEventsFrom(info.currentState())).or(Set.of()));
     }
 
     @Override
@@ -142,8 +138,8 @@ final class InMemoryStateMachine<S, E, C> implements StateMachine<S, E, C> {
 
     private Promise<MachineInstance<S, C>> getInstanceOrFail(String machineId) {
         return option(instances.get(machineId))
-        .fold(() -> StateMachineError.notStarted(machineId)
-                                     .<MachineInstance<S, C>> promise(), Promise::success);
+               .toResult(StateMachineError.notStarted(machineId))
+               .async();
     }
 
     private record MachineInstance<S, C>(StateInfo<S> stateInfo, C userContext) {}

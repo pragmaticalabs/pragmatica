@@ -3,6 +3,7 @@ package org.pragmatica.aether.slice;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
@@ -94,16 +95,16 @@ public interface SliceManifest {
 
     private static Result<SliceManifestInfo> parseManifest(Manifest manifest) {
         var mainAttrs = manifest.getMainAttributes();
-        var artifactStr = mainAttrs.getValue(SLICE_ARTIFACT_ATTR);
-        if (artifactStr == null || artifactStr.isBlank()) {
-            return MISSING_ARTIFACT_ATTR.result();
-        }
-        var sliceClass = mainAttrs.getValue(SLICE_CLASS_ATTR);
-        if (sliceClass == null || sliceClass.isBlank()) {
-            return MISSING_CLASS_ATTR.result();
-        }
-        return Artifact.artifact(artifactStr)
-                       .map(artifact -> new SliceManifestInfo(artifact, sliceClass));
+        return Option.option(mainAttrs.getValue(SLICE_ARTIFACT_ATTR))
+                     .filter(s -> !s.isBlank())
+                     .toResult(MISSING_ARTIFACT_ATTR)
+                     .flatMap(artifactStr ->
+                         Option.option(mainAttrs.getValue(SLICE_CLASS_ATTR))
+                               .filter(s -> !s.isBlank())
+                               .toResult(MISSING_CLASS_ATTR)
+                               .flatMap(sliceClass ->
+                                   Artifact.artifact(artifactStr)
+                                           .map(artifact -> new SliceManifestInfo(artifact, sliceClass))));
     }
 
     /**

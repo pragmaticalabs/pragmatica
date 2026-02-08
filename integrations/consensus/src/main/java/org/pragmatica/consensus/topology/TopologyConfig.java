@@ -9,6 +9,8 @@ import org.pragmatica.net.tcp.TlsConfig;
 import java.util.List;
 
 /// Configuration for cluster topology management.
+/// Note: The constructor validation throw is intentional - cluster size < 1
+/// represents a programming error, not a business validation failure.
 ///
 /// @param self                   This node's ID
 /// @param clusterSize            Fixed cluster size for quorum calculations (prevents split-brain resurrection)

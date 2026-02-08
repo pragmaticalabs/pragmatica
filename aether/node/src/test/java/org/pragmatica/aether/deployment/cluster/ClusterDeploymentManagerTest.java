@@ -7,11 +7,13 @@ import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
+import org.pragmatica.aether.provider.AutoHealConfig;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.consensus.leader.LeaderNotification;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -25,6 +27,7 @@ import org.pragmatica.messaging.MessageRouter;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -46,7 +49,8 @@ class ClusterDeploymentManagerTest {
         clusterNode = new TestClusterNode(self);
         kvStore = new TestKVStore();
         router = MessageRouter.mutable();
-        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3));
+        manager = ClusterDeploymentManager.clusterDeploymentManager(self, clusterNode, kvStore, router, List.of(self, node2, node3),
+                                                                      clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT);
     }
 
     // === Leader State Tests ===
@@ -173,7 +177,8 @@ class ClusterDeploymentManagerTest {
     void no_allocation_when_no_nodes_available() {
         // Create manager with empty initial topology
         var emptyTopologyManager = ClusterDeploymentManager.clusterDeploymentManager(
-            self, clusterNode, kvStore, router, List.of());
+            self, clusterNode, kvStore, router, List.of(),
+            clusterNode.topologyManager(), Option.empty(), AutoHealConfig.DEFAULT);
         emptyTopologyManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
         clusterNode.appliedCommands.clear();
 
@@ -336,6 +341,104 @@ class ClusterDeploymentManagerTest {
         // Next reconciliation would add 1 more
     }
 
+    // === Auto-Heal Tests ===
+
+    @Test
+    void leader_failover_triggers_immediate_auto_heal_when_cluster_below_target() {
+        var provisionCount = new AtomicInteger(0);
+        var testTopologyManager = new TestTopologyManager(3);
+        var testNodeProvider = new TestNodeProvider(provisionCount);
+        var prePopulatedKvStore = new TestKVStore();
+
+        // Pre-populate KVStore with a blueprint to simulate leader failover (not initial startup)
+        var artifact = createTestArtifact();
+        var targetKey = SliceTargetKey.sliceTargetKey(artifact.base());
+        var targetValue = SliceTargetValue.sliceTargetValue(artifact.version(), 2);
+        prePopulatedKvStore.put(targetKey, targetValue);
+
+        // Create manager with NodeProvider and TopologyManager that expects 3 nodes
+        var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
+            self, clusterNode, prePopulatedKvStore, router, List.of(self, node2),
+            testTopologyManager, Option.option(testNodeProvider), AutoHealConfig.DEFAULT);
+
+        clusterNode.appliedCommands.clear();
+
+        // Become leader with only 2 of 3 expected nodes — failover triggers immediate auto-heal
+        healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+
+        // NodeProvider.provision() should have been called once (deficit = 1)
+        assertThat(provisionCount.get()).isEqualTo(1);
+    }
+
+    @Test
+    void initial_startup_defers_auto_heal_during_cooldown() {
+        var provisionCount = new AtomicInteger(0);
+        var testTopologyManager = new TestTopologyManager(3);
+        var testNodeProvider = new TestNodeProvider(provisionCount);
+
+        // Create manager with NodeProvider, no pre-populated blueprints (initial startup)
+        var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
+            self, clusterNode, kvStore, router, List.of(self, node2),
+            testTopologyManager, Option.option(testNodeProvider), AutoHealConfig.DEFAULT);
+
+        clusterNode.appliedCommands.clear();
+
+        // Become leader with only 2 of 3 expected nodes — initial startup uses cooldown
+        healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+
+        // No immediate provisioning during cooldown
+        assertThat(provisionCount.get()).isZero();
+    }
+
+    @Test
+    void leader_activation_skips_auto_heal_when_cluster_at_target() {
+        var provisionCount = new AtomicInteger(0);
+        var testTopologyManager = new TestTopologyManager(3);
+        var testNodeProvider = new TestNodeProvider(provisionCount);
+
+        // Create manager with 3 nodes already present (matches target)
+        var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
+            self, clusterNode, kvStore, router, List.of(self, node2, node3),
+            testTopologyManager, Option.option(testNodeProvider), AutoHealConfig.DEFAULT);
+
+        clusterNode.appliedCommands.clear();
+
+        // Become leader with full topology — no auto-heal needed
+        healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+
+        assertThat(provisionCount.get()).isZero();
+    }
+
+    @Test
+    void topology_change_triggers_auto_heal_from_outer_cdm() {
+        var provisionCount = new AtomicInteger(0);
+        var testTopologyManager = new TestTopologyManager(3);
+        var testNodeProvider = new TestNodeProvider(provisionCount);
+        var prePopulatedKvStore = new TestKVStore();
+
+        // Pre-populate to simulate failover (immediate auto-heal, no cooldown)
+        var artifact = createTestArtifact();
+        var targetKey = SliceTargetKey.sliceTargetKey(artifact.base());
+        var targetValue = SliceTargetValue.sliceTargetValue(artifact.version(), 2);
+        prePopulatedKvStore.put(targetKey, targetValue);
+
+        var healingManager = ClusterDeploymentManager.clusterDeploymentManager(
+            self, clusterNode, prePopulatedKvStore, router, List.of(self, node2, node3),
+            testTopologyManager, Option.option(testNodeProvider), AutoHealConfig.DEFAULT);
+
+        // Become leader with full topology (no deficit)
+        healingManager.onLeaderChange(LeaderNotification.leaderChange(Option.option(self), true));
+        assertThat(provisionCount.get()).isZero();
+
+        clusterNode.appliedCommands.clear();
+
+        // Node removed — topology change triggers auto-heal from outer CDM
+        healingManager.onTopologyChange(TopologyChangeNotification.nodeRemoved(node3, List.of(self, node2)));
+
+        // Should provision 1 node (deficit = 1)
+        assertThat(provisionCount.get()).isEqualTo(1);
+    }
+
     // === Helper Methods ===
 
     private Artifact createTestArtifact() {
@@ -426,6 +529,11 @@ class ClusterDeploymentManagerTest {
         }
 
         @Override
+        public TopologyManager topologyManager() {
+            return null;
+        }
+
+        @Override
         public Promise<Unit> start() {
             return Promise.success(Unit.unit());
         }
@@ -444,13 +552,101 @@ class ClusterDeploymentManagerTest {
     }
 
     static class TestKVStore extends KVStore<AetherKey, AetherValue> {
+        private final java.util.Map<AetherKey, AetherValue> entries = new java.util.concurrent.ConcurrentHashMap<>();
+
         public TestKVStore() {
             super(null, null, null);
         }
 
+        void put(AetherKey key, AetherValue value) {
+            entries.put(key, value);
+        }
+
         @Override
         public java.util.Map<AetherKey, AetherValue> snapshot() {
-            return new java.util.HashMap<>();
+            return new java.util.HashMap<>(entries);
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, java.util.function.BiConsumer<KK, VV> consumer) {
+            entries.forEach((key, value) -> {
+                if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
+                    consumer.accept((KK) key, (VV) value);
+                }
+            });
+        }
+    }
+
+    static class TestTopologyManager implements TopologyManager {
+        private final int clusterSize;
+
+        TestTopologyManager(int clusterSize) {
+            this.clusterSize = clusterSize;
+        }
+
+        @Override
+        public org.pragmatica.consensus.net.NodeInfo self() {
+            return null;
+        }
+
+        @Override
+        public Option<org.pragmatica.consensus.net.NodeInfo> get(NodeId id) {
+            return Option.empty();
+        }
+
+        @Override
+        public int clusterSize() {
+            return clusterSize;
+        }
+
+        @Override
+        public Option<NodeId> reverseLookup(java.net.SocketAddress socketAddress) {
+            return Option.empty();
+        }
+
+        @Override
+        public Promise<Unit> start() {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Unit> stop() {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public org.pragmatica.lang.io.TimeSpan pingInterval() {
+            return org.pragmatica.lang.io.TimeSpan.timeSpan(1).seconds();
+        }
+
+        @Override
+        public org.pragmatica.lang.io.TimeSpan helloTimeout() {
+            return org.pragmatica.lang.io.TimeSpan.timeSpan(5).seconds();
+        }
+
+        @Override
+        public Option<org.pragmatica.consensus.topology.NodeState> getState(NodeId id) {
+            return Option.empty();
+        }
+
+        @Override
+        public List<NodeId> topology() {
+            return List.of();
+        }
+    }
+
+    static class TestNodeProvider implements org.pragmatica.aether.provider.NodeProvider {
+        private final AtomicInteger provisionCount;
+
+        TestNodeProvider(AtomicInteger provisionCount) {
+            this.provisionCount = provisionCount;
+        }
+
+        @Override
+        public Promise<Unit> provision(org.pragmatica.aether.provider.InstanceType instanceType) {
+            provisionCount.incrementAndGet();
+            return Promise.success(Unit.unit());
         }
     }
 

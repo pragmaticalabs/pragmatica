@@ -2,7 +2,7 @@ package org.pragmatica.aether.slice.dependency;
 
 import org.pragmatica.aether.slice.Aspect;
 import org.pragmatica.aether.slice.Slice;
-import org.pragmatica.aether.slice.SliceInvokerFacade;
+import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -25,7 +25,7 @@ import org.slf4j.LoggerFactory;
  * - Name: lowercase-first version of class name (e.g., UserService.userService(...))
  * - Returns: Promise<SliceType>
  * - First parameter: Aspect<SliceType>
- * - Second parameter: SliceInvokerFacade
+ * - Second parameter: SliceCreationContext
  * - Remaining parameters: resolved dependency slices in declaration order
  */
 public interface SliceFactory {
@@ -34,19 +34,19 @@ public interface SliceFactory {
     /**
      * Create slice instance using static factory method.
      *
-     * @param sliceClass    The slice class to instantiate
-     * @param invokerFacade The slice invoker facade for inter-slice calls
-     * @param dependencies  Resolved dependency instances in declaration order
-     * @param descriptors   Dependency descriptors from META-INF/dependencies (for verification)
+     * @param sliceClass      The slice class to instantiate
+     * @param creationContext The slice creation context for resource and slice dependencies
+     * @param dependencies    Resolved dependency instances in declaration order
+     * @param descriptors     Dependency descriptors from META-INF/dependencies (for verification)
      * @return Promise of created slice instance
      */
     static Promise<Slice> createSlice(Class<?> sliceClass,
-                                      SliceInvokerFacade invokerFacade,
+                                      SliceCreationContext creationContext,
                                       List<Slice> dependencies,
                                       List<DependencyDescriptor> descriptors) {
         log.info("Creating slice from class {} with {} dependencies", sliceClass.getName(), dependencies.size());
         Result<Method> factoryMethodResult;
-        try{
+        try {
             log.info("About to call findFactoryMethod for {}", sliceClass.getName());
             factoryMethodResult = findFactoryMethod(sliceClass);
             log.info("findFactoryMethod for {} returned: {}",
@@ -70,9 +70,9 @@ public interface SliceFactory {
                                                                                      sliceClass,
                                                                                      dependencies,
                                                                                      descriptors)
-        .onFailure(cause -> log.error("Failed to verify parameters for {}: {}",
-                                      method.getName(),
-                                      cause.message()));
+                                                                 .onFailure(cause -> log.error("Failed to verify parameters for {}: {}",
+                                                                                               method.getName(),
+                                                                                               cause.message()));
                                                          });
         log.info("verifyParameters for {} result: {}, failure message: {}",
                  sliceClass.getName(),
@@ -84,7 +84,7 @@ public interface SliceFactory {
                              .flatMap(method -> {
                                           log.info("About to invoke factory method {}",
                                                    method.getName());
-                                          return invokeFactory(method, invokerFacade, dependencies);
+                                          return invokeFactory(method, creationContext, dependencies);
                                       });
     }
 
@@ -143,40 +143,40 @@ public interface SliceFactory {
                                                    List<Slice> dependencies,
                                                    List<DependencyDescriptor> descriptors) {
         var parameters = method.getParameters();
-        // New-style factories have exactly 2 parameters: (Aspect, SliceInvokerFacade)
-        // Dependencies are resolved dynamically via SliceInvokerFacade at runtime
+        // New-style factories have exactly 2 parameters: (Aspect, SliceCreationContext)
+        // Dependencies are resolved dynamically via SliceCreationContext at runtime
         if (parameters.length != 2) {
             return parameterCountMismatch(method.getName(), 2, parameters.length).result();
         }
         // Verify first parameter is Aspect
         if (!parameters[0].getType()
-                       .equals(Aspect.class)) {
+                          .equals(Aspect.class)) {
             return firstParameterMustBeAspect(method.getName(),
                                               parameters[0].getType()
-                                                        .getName()).result();
+                                                           .getName()).result();
         }
-        // Verify second parameter is SliceInvokerFacade
+        // Verify second parameter is SliceCreationContext
         if (!parameters[1].getType()
-                       .equals(SliceInvokerFacade.class)) {
-            return secondParameterMustBeInvoker(method.getName(),
-                                                parameters[1].getType()
-                                                          .getName()).result();
+                          .equals(SliceCreationContext.class)) {
+            return secondParameterMustBeCreationContext(method.getName(),
+                                                        parameters[1].getType()
+                                                                     .getName()).result();
         }
         return Result.success(method);
     }
 
     @SuppressWarnings("unchecked")
     private static Promise<Slice> invokeFactory(Method method,
-                                                SliceInvokerFacade invokerFacade,
+                                                SliceCreationContext creationContext,
                                                 List<Slice> dependencies) {
         log.info("Invoking factory method {}", method.getName());
         return Promise.lift(Causes::fromThrowable,
                             () -> {
                                 method.setAccessible(true);
-                                // New-style factories take only (Aspect, SliceInvokerFacade)
-        // Dependencies are resolved dynamically via SliceInvokerFacade
-        var args = new Object[]{Aspect.identity(), invokerFacade};
-                                log.debug("Calling factory method {} with args: Aspect, SliceInvokerFacade",
+                                // New-style factories take only (Aspect, SliceCreationContext)
+                                // Dependencies are resolved dynamically via SliceCreationContext
+                                var args = new Object[]{Aspect.identity(), creationContext};
+                                log.debug("Calling factory method {} with args: Aspect, SliceCreationContext",
                                           method.getName());
                                 return (Promise<Slice>) method.invoke(null, args);
                             })
@@ -206,15 +206,15 @@ public interface SliceFactory {
 
     private static Cause parameterCountMismatch(String methodName, int expected, int actual) {
         return Causes.cause("Parameter count mismatch in " + methodName + ": expected " + expected
-                            + " (Aspect, SliceInvokerFacade, + dependencies), got " + actual);
+                            + " (Aspect, SliceCreationContext), got " + actual);
     }
 
     private static Cause firstParameterMustBeAspect(String methodName, String actual) {
         return Causes.cause("First parameter of " + methodName + " must be Aspect, got " + actual);
     }
 
-    private static Cause secondParameterMustBeInvoker(String methodName, String actual) {
-        return Causes.cause("Second parameter of " + methodName + " must be SliceInvokerFacade, got " + actual);
+    private static Cause secondParameterMustBeCreationContext(String methodName, String actual) {
+        return Causes.cause("Second parameter of " + methodName + " must be SliceCreationContext, got " + actual);
     }
 
     private static Cause parameterTypeMismatch(int index, String expected, String actual) {

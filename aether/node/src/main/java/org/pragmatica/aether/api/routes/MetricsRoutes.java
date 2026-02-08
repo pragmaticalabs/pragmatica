@@ -272,8 +272,7 @@ public final class MetricsRoutes implements RouteSource {
                                   slow.durationMs(),
                                   slow.timestampNs(),
                                   slow.success(),
-                                  slow.errorType()
-                                      .or((String) null));
+                                  slow.errorType());
     }
 
     private StrategyResponse buildStrategyResponse() {

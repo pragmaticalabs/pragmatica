@@ -38,12 +38,44 @@ public interface SliceStore {
                                  SharedLibraryClassLoader sharedLibraryLoader,
                                  SliceInvokerFacade invokerFacade,
                                  SliceActionConfig config) {
+        return sliceStore(registry, repositories, sharedLibraryLoader, invokerFacade, noOpResourceProvider(), config);
+    }
+
+    /**
+     * Create a new SliceStore instance with shared library classloader and resource provider.
+     *
+     * @param registry            Registry for tracking loaded slices
+     * @param repositories        Repositories to search for slice JARs
+     * @param sharedLibraryLoader ClassLoader for shared dependencies across slices
+     * @param invokerFacade       Facade for inter-slice invocation (used by generated factories)
+     * @param resourceFacade      Facade for resource provisioning (used by generated factories)
+     * @param config              Configuration for slice lifecycle timeouts
+     *
+     * @return SliceStore implementation
+     */
+    static SliceStore sliceStore(SliceRegistry registry,
+                                 List<Repository> repositories,
+                                 SharedLibraryClassLoader sharedLibraryLoader,
+                                 SliceInvokerFacade invokerFacade,
+                                 ResourceProviderFacade resourceFacade,
+                                 SliceActionConfig config) {
         return new sliceStore(registry,
                               repositories,
                               sharedLibraryLoader,
                               invokerFacade,
+                              resourceFacade,
                               config,
                               new ConcurrentHashMap<>());
+    }
+
+    private static ResourceProviderFacade noOpResourceProvider() {
+        return new ResourceProviderFacade() {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+                return Causes.cause("Resource provisioning not configured. " +
+                    "Use AetherNodeConfig.withConfigProvider() to enable resource provisioning.").promise();
+            }
+        };
     }
 
     interface LoadedSlice {
@@ -112,6 +144,7 @@ public interface SliceStore {
                       List<Repository> repositories,
                       SharedLibraryClassLoader sharedLibraryLoader,
                       SliceInvokerFacade invokerFacade,
+                      ResourceProviderFacade resourceFacade,
                       SliceActionConfig config,
                       ConcurrentHashMap<Artifact, Promise<LoadedSliceEntry>> entries) implements SliceStore {
         private static final Logger log = LoggerFactory.getLogger(sliceStore.class);
@@ -123,7 +156,7 @@ public interface SliceStore {
         }
 
         private Promise<LoadedSliceEntry> startLoading(Artifact artifact) {
-            log.info("Loading slice {}", artifact);
+            log.debug("Loading slice {}", artifact);
             return locateInRepositories(artifact).flatMap(_ -> loadFromLocation(artifact))
                                        .onFailure(_ -> CompletableFuture.runAsync(() -> entries.remove(artifact)));
         }
@@ -133,7 +166,8 @@ public interface SliceStore {
                                                          compositeRepository(),
                                                          registry,
                                                          sharedLibraryLoader,
-                                                         invokerFacade)
+                                                         invokerFacade,
+                                                         resourceFacade)
                                      .map(resolved -> {
                                               // Extract the classloader from the slice's class
             var sliceClassLoader = resolved.slice()
@@ -165,7 +199,7 @@ public interface SliceStore {
                                              SliceClassLoader classLoader,
                                              SliceLoadingContext loadingContext) {
             var entry = new LoadedSliceEntry(artifact, slice, classLoader, loadingContext, EntryState.LOADED);
-            log.info("Slice {} loaded successfully", artifact);
+            log.debug("Slice {} loaded successfully", artifact);
             return entry;
         }
 
@@ -186,7 +220,7 @@ public interface SliceStore {
                 return INVALID_STATE_TRANSITION.apply(entry.state() + " → ACTIVE")
                                                .promise();
             }
-            log.info("Activating slice {}", artifact);
+            log.debug("Activating slice {}", artifact);
             // Eager dependency validation: materialize all method handles before start()
             // This ensures no technical failures occur after the slice reaches ACTIVE state
             return materializeHandles(artifact, entry).flatMap(_ -> entry.sliceInstance()
@@ -213,7 +247,7 @@ public interface SliceStore {
         private LoadedSlice transitionToActive(Artifact artifact, LoadedSliceEntry entry) {
             var activeEntry = entry.withState(EntryState.ACTIVE);
             entries.put(artifact, Promise.success(activeEntry));
-            log.info("Slice {} activated successfully", artifact);
+            log.debug("Slice {} activated successfully", artifact);
             return activeEntry;
         }
 
@@ -234,7 +268,7 @@ public interface SliceStore {
                 return INVALID_STATE_TRANSITION.apply(entry.state() + " → LOADED")
                                                .promise();
             }
-            log.info("Deactivating slice {}", artifact);
+            log.debug("Deactivating slice {}", artifact);
             return entry.sliceInstance()
                         .stop()
                         .timeout(config.startStopTimeout())
@@ -247,7 +281,7 @@ public interface SliceStore {
         private LoadedSlice transitionToLoaded(Artifact artifact, LoadedSliceEntry entry) {
             var loadedEntry = entry.withState(EntryState.LOADED);
             entries.put(artifact, Promise.success(loadedEntry));
-            log.info("Slice {} deactivated successfully", artifact);
+            log.debug("Slice {} deactivated successfully", artifact);
             return loadedEntry;
         }
 
@@ -262,7 +296,7 @@ public interface SliceStore {
         }
 
         private Promise<Unit> unloadEntry(Artifact artifact, LoadedSliceEntry entry) {
-            log.info("Unloading slice {}", artifact);
+            log.debug("Unloading slice {}", artifact);
             Promise<Unit> deactivatePromise = entry.state() == EntryState.ACTIVE
                                               ? entry.sliceInstance()
                                                      .stop()
@@ -278,7 +312,7 @@ public interface SliceStore {
             registry.unregister(artifact);
             closeClassLoader(entry.classLoader());
             entries.remove(artifact);
-            log.info("Slice {} unloaded successfully", artifact);
+            log.debug("Slice {} unloaded successfully", artifact);
             return Unit.unit();
         }
 

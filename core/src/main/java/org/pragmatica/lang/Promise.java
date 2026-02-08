@@ -2176,15 +2176,21 @@ enum AsyncExecutor {
     INSTANCE;
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
     void runAsync(Runnable runnable) {
-        executor.submit(runnable);
+        var snapshot = ContextPropagation.INSTANCE.capture();
+        executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot, runnable));
     }
     void runAsync(TimeSpan delay, Runnable runnable) {
-        runAsync(() -> {
-            try{
-                Thread.sleep(delay.duration());
-            } catch (InterruptedException e) {}
-            runnable.run();
-        });
+        var snapshot = ContextPropagation.INSTANCE.capture();
+        executor.submit(() -> ContextPropagation.INSTANCE.runWith(snapshot,
+                                                                  () -> {
+                                                                      try{
+                                                                          Thread.sleep(delay.duration());
+                                                                      } catch (InterruptedException e) {
+                                                                          Thread.currentThread()
+                                                                                .interrupt();
+                                                                      }
+                                                                      runnable.run();
+                                                                  }));
     }
 }
 

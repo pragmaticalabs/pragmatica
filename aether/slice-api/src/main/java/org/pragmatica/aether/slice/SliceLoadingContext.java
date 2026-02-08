@@ -1,10 +1,9 @@
 package org.pragmatica.aether.slice;
 
-import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
-import org.pragmatica.lang.utils.Causes;
 
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -13,8 +12,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * Context for loading a slice that buffers method handles for eager materialization.
  * <p>
- * During slice loading, this context wraps the SliceInvokerFacade and buffers all
- * MethodHandle instances created via {@link #methodHandle}. When activation begins,
+ * During slice loading, this context wraps the SliceCreationContext and buffers all
+ * MethodHandle instances created via {@link #invoker()}. When activation begins,
  * {@link #materializeAll()} is called to verify all dependencies exist before
  * the slice's start() method is called.
  * <p>
@@ -23,38 +22,66 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>
  * Thread-safe: Uses CopyOnWriteArrayList for handle buffering and AtomicBoolean for state.
  */
-public final class SliceLoadingContext implements SliceInvokerFacade {
-    private final SliceInvokerFacade delegate;
-    private final List<MethodHandle<?, ?>> bufferedHandles = new CopyOnWriteArrayList<>();
+public final class SliceLoadingContext implements SliceCreationContext {
+    private final SliceCreationContext delegate;
+    private final BufferingInvokerFacade bufferingInvoker;
     private final AtomicBoolean materialized = new AtomicBoolean(false);
 
-    private SliceLoadingContext(SliceInvokerFacade delegate) {
+    private SliceLoadingContext(SliceCreationContext delegate) {
         this.delegate = delegate;
+        this.bufferingInvoker = new BufferingInvokerFacade(delegate.invoker());
     }
 
     /**
      * Create a new SliceLoadingContext wrapping the given delegate.
      *
-     * @param delegate The underlying SliceInvokerFacade to delegate handle creation to
+     * @param delegate The underlying SliceCreationContext to delegate to
      * @return A new SliceLoadingContext
      */
-    public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade delegate) {
+    public static SliceLoadingContext sliceLoadingContext(SliceCreationContext delegate) {
         return new SliceLoadingContext(delegate);
     }
 
-    @Override
-    public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
-                                                          String methodName,
-                                                          TypeToken<T> requestType,
-                                                          TypeToken<R> responseType) {
-        return delegate.methodHandle(sliceArtifact, methodName, requestType, responseType)
-                       .onSuccess(this::bufferHandleIfNotMaterialized);
+    /**
+     * Create a new SliceLoadingContext from an invoker facade and resource provider.
+     *
+     * @param invokerFacade   The slice invoker facade for cross-slice calls
+     * @param resourceFacade  The resource provider facade for resource provisioning
+     * @return A new SliceLoadingContext
+     */
+    public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade invokerFacade,
+                                                          ResourceProviderFacade resourceFacade) {
+        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, resourceFacade));
     }
 
-    private <R, T> void bufferHandleIfNotMaterialized(MethodHandle<R, T> handle) {
-        if (!materialized.get()) {
-            bufferedHandles.add(handle);
-        }
+    /**
+     * Create a new SliceLoadingContext from an invoker facade only (backward compatibility).
+     * Uses a no-op resource provider that fails for any resource request.
+     *
+     * @param invokerFacade The slice invoker facade for cross-slice calls
+     * @return A new SliceLoadingContext
+     */
+    public static SliceLoadingContext sliceLoadingContext(SliceInvokerFacade invokerFacade) {
+        return new SliceLoadingContext(SliceCreationContext.sliceCreationContext(invokerFacade, noOpResourceProvider()));
+    }
+
+    private static ResourceProviderFacade noOpResourceProvider() {
+        return new ResourceProviderFacade() {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+                return org.pragmatica.lang.utils.Causes.cause("Resource provisioning not configured").promise();
+            }
+        };
+    }
+
+    @Override
+    public SliceInvokerFacade invoker() {
+        return bufferingInvoker;
+    }
+
+    @Override
+    public ResourceProviderFacade resources() {
+        return delegate.resources();
     }
 
     /**
@@ -66,7 +93,7 @@ public final class SliceLoadingContext implements SliceInvokerFacade {
      * @return Success if all handles materialized, or the first failure cause
      */
     public Result<Unit> materializeAll() {
-        for (var handle : bufferedHandles) {
+        for (var handle : bufferingInvoker.bufferedHandles()) {
             var result = handle.materialize();
             if (result.isFailure()) {
                 return result;
@@ -78,11 +105,12 @@ public final class SliceLoadingContext implements SliceInvokerFacade {
     /**
      * Mark this context as materialized, stopping further handle buffering.
      * <p>
-     * After this is called, new handles created via {@link #methodHandle} will
+     * After this is called, new handles created via {@link #invoker()} will
      * not be buffered. This is called after successful materialization.
      */
     public void markMaterialized() {
         materialized.set(true);
+        bufferingInvoker.stopBuffering();
     }
 
     /**
@@ -100,15 +128,51 @@ public final class SliceLoadingContext implements SliceInvokerFacade {
      * @return Number of buffered handles
      */
     public int bufferedHandleCount() {
-        return bufferedHandles.size();
+        return bufferingInvoker.bufferedHandles().size();
     }
 
     /**
      * Get the underlying delegate (for testing/debugging).
      *
-     * @return The delegate SliceInvokerFacade
+     * @return The delegate SliceCreationContext
      */
-    public SliceInvokerFacade delegate() {
+    public SliceCreationContext delegate() {
         return delegate;
+    }
+
+    /**
+     * Internal invoker facade that buffers method handles for later materialization.
+     */
+    private static final class BufferingInvokerFacade implements SliceInvokerFacade {
+        private final SliceInvokerFacade delegate;
+        private final List<MethodHandle<?, ?>> bufferedHandles = new CopyOnWriteArrayList<>();
+        private final AtomicBoolean buffering = new AtomicBoolean(true);
+
+        BufferingInvokerFacade(SliceInvokerFacade delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
+                                                              String methodName,
+                                                              TypeToken<T> requestType,
+                                                              TypeToken<R> responseType) {
+            return delegate.methodHandle(sliceArtifact, methodName, requestType, responseType)
+                           .onSuccess(this::bufferHandleIfActive);
+        }
+
+        private <R, T> void bufferHandleIfActive(MethodHandle<R, T> handle) {
+            if (buffering.get()) {
+                bufferedHandles.add(handle);
+            }
+        }
+
+        List<MethodHandle<?, ?>> bufferedHandles() {
+            return bufferedHandles;
+        }
+
+        void stopBuffering() {
+            buffering.set(false);
+        }
     }
 }

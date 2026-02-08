@@ -14,6 +14,7 @@ import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.type.TypeToken;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 import static org.pragmatica.lang.Unit.unit;
 
 class MethodHandleTest {
@@ -31,9 +32,9 @@ class MethodHandleTest {
         void methodHandle_succeeds_withValidArtifactAndMethod() {
             stubInvoker.methodHandle("org.example:test-slice:1.0.0",
                                      "processRequest",
-                                     TypeToken.of(String.class),
-                                     TypeToken.of(String.class))
-                       .onFailureRun(Assertions::fail)
+                                     TypeToken.typeToken(String.class),
+                                     TypeToken.typeToken(String.class))
+                       .onFailureRun(() -> fail("Expected success"))
                        .onSuccess(handle -> {
                            assertThat(handle.artifactCoordinate()).isEqualTo("org.example:test-slice:1.0.0");
                            assertThat(handle.methodName().name()).isEqualTo("processRequest");
@@ -44,9 +45,9 @@ class MethodHandleTest {
         void methodHandle_fails_withInvalidArtifact() {
             stubInvoker.methodHandle("invalid-artifact",
                                      "processRequest",
-                                     TypeToken.of(String.class),
-                                     TypeToken.of(String.class))
-                       .onSuccessRun(Assertions::fail)
+                                     TypeToken.typeToken(String.class),
+                                     TypeToken.typeToken(String.class))
+                       .onSuccessRun(() -> fail("Expected failure"))
                        .onFailure(cause -> assertThat(cause.message()).contains("Invalid"));
         }
 
@@ -54,18 +55,18 @@ class MethodHandleTest {
         void methodHandle_fails_withInvalidMethodName() {
             stubInvoker.methodHandle("org.example:test-slice:1.0.0",
                                      "InvalidMethod",  // Uppercase first letter
-                                     TypeToken.of(String.class),
-                                     TypeToken.of(String.class))
-                       .onSuccessRun(Assertions::fail);
+                                     TypeToken.typeToken(String.class),
+                                     TypeToken.typeToken(String.class))
+                       .onSuccessRun(() -> fail("Expected failure"));
         }
 
         @Test
         void methodHandle_fails_withEmptyMethodName() {
             stubInvoker.methodHandle("org.example:test-slice:1.0.0",
                                      "",
-                                     TypeToken.of(String.class),
-                                     TypeToken.of(String.class))
-                       .onSuccessRun(Assertions::fail);
+                                     TypeToken.typeToken(String.class),
+                                     TypeToken.typeToken(String.class))
+                       .onSuccessRun(() -> fail("Expected failure"));
         }
     }
 
@@ -75,13 +76,13 @@ class MethodHandleTest {
         void invoke_delegatesToTypedMethod() {
             var handle = stubInvoker.methodHandle("org.example:test-slice:1.0.0",
                                                   "processRequest",
-                                                  TypeToken.of(String.class),
-                                                  TypeToken.of(String.class))
+                                                  TypeToken.typeToken(String.class),
+                                                  TypeToken.typeToken(String.class))
                                     .unwrap();
 
             handle.invoke("test-input")
                   .await()
-                  .onFailureRun(Assertions::fail)
+                  .onFailureRun(() -> fail("Expected success"))
                   .onSuccess(response -> assertThat(response).isEqualTo("response:test-input"));
 
             // Verify the typed invoke method was called
@@ -95,13 +96,13 @@ class MethodHandleTest {
         void fireAndForget_delegatesToTypedMethod() {
             var handle = stubInvoker.methodHandle("org.example:test-slice:1.0.0",
                                                   "processRequest",
-                                                  TypeToken.of(String.class),
-                                                  TypeToken.of(String.class))
+                                                  TypeToken.typeToken(String.class),
+                                                  TypeToken.typeToken(String.class))
                                     .unwrap();
 
             handle.fireAndForget("test-input")
                   .await()
-                  .onFailureRun(Assertions::fail);
+                  .onFailureRun(() -> fail("Expected success"));
 
             // Verify the fire-and-forget method was called
             assertThat(stubInvoker.lastArtifact).isNotNull();
@@ -112,8 +113,8 @@ class MethodHandleTest {
         void multipleInvocations_reusesSameParsedValues() {
             var handle = stubInvoker.methodHandle("org.example:test-slice:1.0.0",
                                                   "processRequest",
-                                                  TypeToken.of(String.class),
-                                                  TypeToken.of(String.class))
+                                                  TypeToken.typeToken(String.class),
+                                                  TypeToken.typeToken(String.class))
                                     .unwrap();
 
             // First invocation
@@ -138,8 +139,8 @@ class MethodHandleTest {
 
             var handle = new SliceInvoker.MethodHandleImpl<>(artifact,
                                                               methodName,
-                                                              TypeToken.of(String.class),
-                                                              TypeToken.of(String.class),
+                                                              TypeToken.typeToken(String.class),
+                                                              TypeToken.typeToken(String.class),
                                                               stubInvoker);
 
             assertThat(handle.artifactCoordinate()).isEqualTo("org.example:test-slice:1.0.0");
@@ -152,8 +153,8 @@ class MethodHandleTest {
 
             var handle = new SliceInvoker.MethodHandleImpl<>(artifact,
                                                               methodName,
-                                                              TypeToken.of(String.class),
-                                                              TypeToken.of(String.class),
+                                                              TypeToken.typeToken(String.class),
+                                                              TypeToken.typeToken(String.class),
                                                               stubInvoker);
 
             assertThat(handle.methodName()).isEqualTo(methodName);
@@ -203,6 +204,12 @@ class MethodHandleTest {
 
         @Override
         public void onInvokeResponse(InvocationMessage.InvokeResponse response) {}
+
+        @Override
+        public void onNodeRemoved(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved event) {}
+
+        @Override
+        public void onNodeDown(org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown event) {}
 
         @Override
         public Promise<Unit> stop() {

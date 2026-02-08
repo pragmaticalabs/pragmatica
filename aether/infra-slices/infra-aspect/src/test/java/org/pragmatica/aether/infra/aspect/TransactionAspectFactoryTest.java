@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Promise;
+import org.pragmatica.lang.Unit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -273,7 +274,7 @@ class TransactionAspectFactoryTest {
 
     interface TestService {
         Promise<String> doWork(String input);
-        Promise<Void> doFail();
+        Promise<Unit> doFail();
     }
 
     static class TestServiceImpl implements TestService {
@@ -283,7 +284,7 @@ class TransactionAspectFactoryTest {
         }
 
         @Override
-        public Promise<Void> doFail() {
+        public Promise<Unit> doFail() {
             return TransactionError.operationFailed("test").promise();
         }
     }

@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.pragmatica-lite</groupId>
+        <artifactId>jbct-parent</artifactId>
+        <version>0.15.0</version>
+    </parent>
+
+    <artifactId>jbct-format</artifactId>
+    <packaging>jar</packaging>
+
+    <name>JBCT Formatter</name>
+    <description>JBCT code formatter with CST-based formatting</description>
+
+    <dependencies>
+        <!-- Internal modules -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-parser</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-core</artifactId>
+        </dependency>
+
+        <!-- Testing -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.assertj</groupId>
+            <artifactId>assertj-core</artifactId>
+        </dependency>
+
+        <!-- Logging (SLF4J provider for tests) -->
+        <dependency>
+            <groupId>org.tinylog</groupId>
+            <artifactId>tinylog-impl</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.tinylog</groupId>
+            <artifactId>slf4j-tinylog</artifactId>
+        </dependency>
+    </dependencies>
+</project>

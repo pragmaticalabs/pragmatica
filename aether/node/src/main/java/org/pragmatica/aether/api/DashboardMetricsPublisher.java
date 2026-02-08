@@ -1,8 +1,12 @@
 package org.pragmatica.aether.api;
 
+import org.pragmatica.aether.deployment.DeploymentMap;
+import org.pragmatica.aether.deployment.DeploymentMap.SliceDeploymentInfo;
+import org.pragmatica.aether.deployment.DeploymentMap.SliceInstanceInfo;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.consensus.NodeId;
 
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -25,12 +29,16 @@ public class DashboardMetricsPublisher {
 
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
+    private final DynamicAspectRegistry aspectManager;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier, AlertManager alertManager) {
+    public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
+                                     AlertManager alertManager,
+                                     DynamicAspectRegistry aspectManager) {
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
+        this.aspectManager = aspectManager;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
                                                                         var thread = new Thread(r, "dashboard-publisher");
                                                                         thread.setDaemon(true);
@@ -122,20 +130,22 @@ public class DashboardMetricsPublisher {
             firstNode = false;
         }
         sb.append("],");
-        // Slices
+        // Slices (backward compatibility - artifact names only)
+        var deployments = node.deploymentMap()
+                              .allDeployments();
         sb.append("\"slices\":[");
-        var slices = node.sliceStore()
-                         .loaded();
         boolean firstSlice = true;
-        for (var slice : slices) {
+        for (var deployment : deployments) {
             if (!firstSlice) sb.append(",");
             sb.append("\"")
-              .append(slice.artifact()
-                           .asString())
+              .append(deployment.artifact())
               .append("\"");
             firstSlice = false;
         }
         sb.append("],");
+        // Deployments (cluster-wide with state and instances)
+        appendDeployments(sb, deployments);
+        sb.append(",");
         // Thresholds
         sb.append("\"thresholds\":")
           .append(alertManager.thresholdsAsJson())
@@ -191,7 +201,15 @@ public class DashboardMetricsPublisher {
         sb.append("},");
         // Invocation metrics (if available)
         sb.append("\"invocations\":")
-          .append(buildInvocationMetrics());
+          .append(buildInvocationMetrics())
+          .append(",");
+        // Deployments (cluster-wide)
+        appendDeployments(sb, node.deploymentMap()
+                                  .allDeployments());
+        sb.append(",");
+        // Dynamic aspects
+        sb.append("\"aspects\":")
+          .append(aspectManager.aspectsAsJson());
         sb.append("}");
         return sb.toString();
     }
@@ -235,6 +253,34 @@ public class DashboardMetricsPublisher {
         }
         sb.append("]");
         return sb.toString();
+    }
+
+    private static void appendDeployments(StringBuilder sb, List<SliceDeploymentInfo> deployments) {
+        sb.append("\"deployments\":[");
+        boolean firstDeployment = true;
+        for (var deployment : deployments) {
+            if (!firstDeployment) sb.append(",");
+            sb.append("{\"artifact\":\"")
+              .append(deployment.artifact())
+              .append("\",\"state\":\"")
+              .append(deployment.aggregateState()
+                                .name())
+              .append("\",\"instances\":[");
+            boolean firstInstance = true;
+            for (var instance : deployment.instances()) {
+                if (!firstInstance) sb.append(",");
+                sb.append("{\"nodeId\":\"")
+                  .append(instance.nodeId())
+                  .append("\",\"state\":\"")
+                  .append(instance.state()
+                                  .name())
+                  .append("\"}");
+                firstInstance = false;
+            }
+            sb.append("]}");
+            firstDeployment = false;
+        }
+        sb.append("]");
     }
 
     /**

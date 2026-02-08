@@ -19,17 +19,17 @@ import java.util.Map;
  * category_score = 100 × (1 - weighted_violations / checkpoints)
  * overall_score = Σ(category_score[i] × weight[i])
  */
-public final class ScoreCalculator {
-    private static final double ERROR_MULTIPLIER = 2.5;
-    private static final double WARNING_MULTIPLIER = 1.0;
-    private static final double INFO_MULTIPLIER = 0.3;
+public sealed interface ScoreCalculator permits ScoreCalculator.unused {
+    record unused() implements ScoreCalculator {}
 
-    private ScoreCalculator() {}
+    double ERROR_MULTIPLIER = 2.5;
+    double WARNING_MULTIPLIER = 1.0;
+    double INFO_MULTIPLIER = 0.3;
 
     /**
      * Calculate JBCT score from lint diagnostics.
      */
-    public static ScoreResult calculate(List<Diagnostic> diagnostics, int filesAnalyzed) {
+    static ScoreResult calculate(List<Diagnostic> diagnostics, int filesAnalyzed) {
         var categoryViolations = groupByCategory(diagnostics);
         var categoryCheckpoints = countCheckpoints(diagnostics);
         var breakdown = new EnumMap<ScoreCategory, ScoreResult.CategoryScore>(ScoreCategory.class);
@@ -40,10 +40,13 @@ public final class ScoreCalculator {
             var weightedViolations = calculateWeightedViolations(violations);
             var score = calculateCategoryScore(weightedViolations, checkpoints);
             breakdown.put(category,
-                          new ScoreResult.CategoryScore(score, checkpoints, violations.size(), weightedViolations));
+                          ScoreResult.CategoryScore.categoryScore(score,
+                                                                  checkpoints,
+                                                                  violations.size(),
+                                                                  weightedViolations));
         }
         var overall = calculateOverallScore(breakdown);
-        return new ScoreResult(overall, breakdown, filesAnalyzed);
+        return ScoreResult.scoreResult(overall, breakdown, filesAnalyzed);
     }
 
     private static Map<ScoreCategory, List<Diagnostic>> groupByCategory(List<Diagnostic> diagnostics) {

@@ -133,7 +133,7 @@ class ConfigValidatorTest {
     void validate_fails_whenPortsConflict() {
         var config = AetherConfig.builder()
             .environment(Environment.DOCKER)
-            .ports(new PortsConfig(8080, 8080))
+            .ports(PortsConfig.portsConfig(8080, 8080))
             .build();
 
         ConfigValidator.validate(config)
@@ -146,7 +146,7 @@ class ConfigValidatorTest {
     void validate_fails_whenPortOutOfRange() {
         var config = AetherConfig.builder()
             .environment(Environment.DOCKER)
-            .ports(new PortsConfig(0, 8090))
+            .ports(PortsConfig.portsConfig(0, 8090))
             .build();
 
         ConfigValidator.validate(config)
@@ -161,7 +161,7 @@ class ConfigValidatorTest {
         var config = AetherConfig.builder()
             .environment(Environment.DOCKER)
             .nodes(5)
-            .ports(new PortsConfig(8080, 8083))
+            .ports(PortsConfig.portsConfig(8080, 8083))
             .build();
 
         ConfigValidator.validate(config)
@@ -194,7 +194,7 @@ class ConfigValidatorTest {
         var config = AetherConfig.builder()
             .environment(Environment.DOCKER)
             .tls(true)
-            .tlsConfig(new TlsConfig(false, "", "", ""))
+            .tlsConfig(TlsConfig.tlsConfig(false, "", "", ""))
             .build();
 
         ConfigValidator.validate(config)

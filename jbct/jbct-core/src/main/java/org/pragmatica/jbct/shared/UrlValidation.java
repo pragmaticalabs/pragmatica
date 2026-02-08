@@ -32,7 +32,7 @@ public sealed interface UrlValidation permits UrlValidation.unused {
             uri = URI.create(url);
         } catch (IllegalArgumentException e) {
             return SecurityError.UrlRejected.urlRejected(url,
-                                                       "malformed URL: " + e.getMessage())
+                                                         "malformed URL: " + e.getMessage())
                                 .result();
         }
         // Require HTTPS

@@ -4,8 +4,8 @@
 [[load]]
 name = "shorten-urls"
 target = "POST /api/v1/urls/"
-rate = "100/s"
-duration = "5m"
+rate = "5000/s"
+duration = "2h"
 
 [load.body]
 url = "https://example.com/page/${random:######}"

@@ -3,10 +3,15 @@ package org.pragmatica.aether.api.routes;
 import org.pragmatica.aether.artifact.Artifact;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.slice.SliceState;
+import org.pragmatica.aether.slice.blueprint.BlueprintId;
+import org.pragmatica.aether.slice.blueprint.ExpandedBlueprint;
+import org.pragmatica.aether.slice.blueprint.ResolvedSlice;
 import org.pragmatica.aether.slice.kvstore.AetherKey;
 import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
+import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
+import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.http.routing.Route;
@@ -21,6 +26,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -32,6 +38,7 @@ import static org.pragmatica.aether.api.ManagementApiResponses.*;
 public final class SliceRoutes implements RouteSource {
     private static final Cause MISSING_ARTIFACT = Causes.cause("Missing 'artifact' field");
     private static final Cause MISSING_ARTIFACT_OR_INSTANCES = Causes.cause("Missing 'artifact' or 'instances' field");
+    private static final Cause BLUEPRINT_NOT_FOUND = Causes.cause("Blueprint not found");
 
     private final Supplier<AetherNode> nodeSupplier;
 
@@ -69,6 +76,27 @@ public final class SliceRoutes implements RouteSource {
                               .toJson(this::handleUndeploy),
                          Route.<BlueprintResponse> post("/api/blueprint")
                               .to(ctx -> handleBlueprint(ctx.bodyAsString()))
+                              .asJson(),
+                         // Blueprint management routes
+        Route.<BlueprintListResponse> get("/api/blueprints")
+             .toJson(this::buildBlueprintListResponse),
+                         Route.<BlueprintDetailResponse> get("/api/blueprint/{id}")
+                              .to(ctx -> ctx.pathParam(0)
+                                            .async()
+                                            .flatMap(this::handleGetBlueprint))
+                              .asJson(),
+                         Route.<BlueprintStatusResponse> get("/api/blueprint/{id}/status")
+                              .to(ctx -> ctx.pathParam(0)
+                                            .async()
+                                            .flatMap(this::handleGetBlueprintStatus))
+                              .asJson(),
+                         Route.<BlueprintDeleteResponse> delete("/api/blueprint/{id}")
+                              .to(ctx -> ctx.pathParam(0)
+                                            .async()
+                                            .flatMap(this::handleDeleteBlueprint))
+                              .asJson(),
+                         Route.<BlueprintValidationResponse> post("/api/blueprint/validate")
+                              .to(ctx -> handleValidateBlueprint(ctx.bodyAsString()))
                               .asJson());
     }
 
@@ -142,6 +170,165 @@ public final class SliceRoutes implements RouteSource {
                                                                           .size()));
     }
 
+    private BlueprintListResponse buildBlueprintListResponse() {
+        var blueprints = nodeSupplier.get()
+                                     .blueprintService()
+                                     .list()
+                                     .stream()
+                                     .map(this::toBlueprintSummary)
+                                     .toList();
+        return new BlueprintListResponse(blueprints);
+    }
+
+    private BlueprintSummary toBlueprintSummary(ExpandedBlueprint blueprint) {
+        return new BlueprintSummary(blueprint.id()
+                                             .asString(),
+                                    blueprint.loadOrder()
+                                             .size());
+    }
+
+    private Promise<BlueprintDetailResponse> handleGetBlueprint(String id) {
+        return BlueprintId.blueprintId(id)
+                          .async()
+                          .flatMap(blueprintId -> nodeSupplier.get()
+                                                              .blueprintService()
+                                                              .get(blueprintId)
+                                                              .async(BLUEPRINT_NOT_FOUND))
+                          .map(this::toBlueprintDetailResponse);
+    }
+
+    private BlueprintDetailResponse toBlueprintDetailResponse(ExpandedBlueprint blueprint) {
+        var slices = blueprint.loadOrder()
+                              .stream()
+                              .map(this::toBlueprintSliceInfo)
+                              .toList();
+        var dependencies = blueprint.loadOrder()
+                                    .stream()
+                                    .filter(ResolvedSlice::isDependency)
+                                    .map(s -> s.artifact()
+                                               .asString())
+                                    .toList();
+        return new BlueprintDetailResponse(blueprint.id()
+                                                    .asString(),
+                                           slices,
+                                           dependencies);
+    }
+
+    private BlueprintSliceInfo toBlueprintSliceInfo(ResolvedSlice slice) {
+        var deps = slice.dependencies()
+                        .stream()
+                        .map(Artifact::asString)
+                        .toList();
+        return new BlueprintSliceInfo(slice.artifact()
+                                           .asString(),
+                                      slice.instances(),
+                                      slice.isDependency(),
+                                      deps);
+    }
+
+    private Promise<BlueprintStatusResponse> handleGetBlueprintStatus(String id) {
+        return BlueprintId.blueprintId(id)
+                          .async()
+                          .flatMap(blueprintId -> nodeSupplier.get()
+                                                              .blueprintService()
+                                                              .get(blueprintId)
+                                                              .async(BLUEPRINT_NOT_FOUND))
+                          .map(this::toBlueprintStatusResponse);
+    }
+
+    private BlueprintStatusResponse toBlueprintStatusResponse(ExpandedBlueprint blueprint) {
+        var node = nodeSupplier.get();
+        var sliceStatuses = blueprint.loadOrder()
+                                     .stream()
+                                     .map(slice -> computeSliceStatus(node, slice))
+                                     .toList();
+        var overallStatus = computeOverallStatus(sliceStatuses);
+        return new BlueprintStatusResponse(blueprint.id()
+                                                    .asString(),
+                                           overallStatus,
+                                           sliceStatuses);
+    }
+
+    private BlueprintSliceStatus computeSliceStatus(AetherNode node, ResolvedSlice slice) {
+        var artifact = slice.artifact();
+        var targetInstances = slice.instances();
+        var activeInstances = countActiveInstances(node, artifact);
+        var status = determineSliceDeploymentStatus(targetInstances, activeInstances);
+        return new BlueprintSliceStatus(artifact.asString(), targetInstances, activeInstances, status);
+    }
+
+    private int countActiveInstances(AetherNode node, Artifact artifact) {
+        var count = new AtomicInteger(0);
+        node.kvStore()
+            .forEach(SliceNodeKey.class, SliceNodeValue.class,
+                     (key, value) -> countIfActive(count, key, value, artifact));
+        return count.get();
+    }
+
+    private void countIfActive(AtomicInteger count, SliceNodeKey key, SliceNodeValue value, Artifact artifact) {
+        if (key.artifact().equals(artifact) && value.state() == SliceState.ACTIVE) {
+            count.incrementAndGet();
+        }
+    }
+
+    private String determineSliceDeploymentStatus(int target, int active) {
+        if (active == 0) {
+            return "PENDING";
+        } else if (active < target) {
+            return "DEPLOYING";
+        } else if (active == target) {
+            return "DEPLOYED";
+        } else {
+            return "SCALING_DOWN";
+        }
+    }
+
+    private String computeOverallStatus(List<BlueprintSliceStatus> sliceStatuses) {
+        var hasPending = sliceStatuses.stream()
+                                      .anyMatch(s -> "PENDING".equals(s.status()));
+        var hasDeploying = sliceStatuses.stream()
+                                        .anyMatch(s -> "DEPLOYING".equals(s.status()));
+        var hasScalingDown = sliceStatuses.stream()
+                                          .anyMatch(s -> "SCALING_DOWN".equals(s.status()));
+        var allDeployed = sliceStatuses.stream()
+                                       .allMatch(s -> "DEPLOYED".equals(s.status()));
+        if (allDeployed) {
+            return "DEPLOYED";
+        } else if (hasPending) {
+            return "PENDING";
+        } else if (hasDeploying || hasScalingDown) {
+            return "IN_PROGRESS";
+        } else {
+            return "PARTIAL";
+        }
+    }
+
+    private Promise<BlueprintDeleteResponse> handleDeleteBlueprint(String id) {
+        return BlueprintId.blueprintId(id)
+                          .async()
+                          .flatMap(blueprintId -> nodeSupplier.get()
+                                                              .blueprintService()
+                                                              .delete(blueprintId)
+                                                              .map(_ -> new BlueprintDeleteResponse("deleted",
+                                                                                                    blueprintId.asString())));
+    }
+
+    private Promise<BlueprintValidationResponse> handleValidateBlueprint(String body) {
+        return Promise.success(nodeSupplier.get()
+                                           .blueprintService()
+                                           .validate(body)
+                                           .fold(cause -> new BlueprintValidationResponse(false,
+                                                                                          "",
+                                                                                          0,
+                                                                                          List.of(cause.message())),
+                                                 blueprint -> new BlueprintValidationResponse(true,
+                                                                                              blueprint.id()
+                                                                                                       .asString(),
+                                                                                              blueprint.slices()
+                                                                                                       .size(),
+                                                                                              List.of())));
+    }
+
     private Promise<List<Long>> applyDeployCommand(Artifact artifact, int instances) {
         var node = nodeSupplier.get();
         AetherKey key = AetherKey.SliceTargetKey.sliceTargetKey(artifact.base());
@@ -190,8 +377,8 @@ public final class SliceRoutes implements RouteSource {
         var node = nodeSupplier.get();
         Map<Artifact, List<SliceInstance>> slicesByArtifact = new HashMap<>();
         node.kvStore()
-            .snapshot()
-            .forEach((key, value) -> collectSliceInstance(slicesByArtifact, key, value));
+            .forEach(SliceNodeKey.class, SliceNodeValue.class,
+                     (key, value) -> collectSliceInstance(slicesByArtifact, key, value));
         var slices = slicesByArtifact.entrySet()
                                      .stream()
                                      .map(this::toSliceStatus)
@@ -231,13 +418,11 @@ public final class SliceRoutes implements RouteSource {
                                      health);
     }
 
-    private void collectSliceInstance(Map<Artifact, List<SliceInstance>> map, AetherKey key, AetherValue value) {
-        if (key instanceof SliceNodeKey sliceKey && value instanceof SliceNodeValue sliceValue) {
-            map.computeIfAbsent(sliceKey.artifact(),
-                                _ -> new ArrayList<>())
-               .add(new SliceInstance(sliceKey.nodeId(),
-                                      sliceValue.state()));
-        }
+    private void collectSliceInstance(Map<Artifact, List<SliceInstance>> map,
+                                       SliceNodeKey sliceKey,
+                                       SliceNodeValue sliceValue) {
+        map.computeIfAbsent(sliceKey.artifact(), _ -> new ArrayList<>())
+           .add(new SliceInstance(sliceKey.nodeId(), sliceValue.state()));
     }
 
     private record SliceInstance(NodeId nodeId, SliceState state) {}

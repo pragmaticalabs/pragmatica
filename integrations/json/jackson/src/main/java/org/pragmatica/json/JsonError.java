@@ -143,15 +143,15 @@ public sealed interface JsonError extends Cause {
     }
 
     private static Option<String> extractValueFromMessage(String msg) {
-        var fromIdx = msg.indexOf("from ");
-        if (fromIdx <= 0) {
-            return Option.none();
-        }
-        var endIdx = msg.indexOf(" ", fromIdx + 5);
-        if (endIdx <= fromIdx) {
-            return Option.none();
-        }
-        return Option.some(msg.substring(fromIdx + 5, endIdx));
+        return Option.option(msg.indexOf("from "))
+                     .filter(fromIdx -> fromIdx > 0)
+                     .flatMap(fromIdx -> extractSubstring(msg, fromIdx + 5));
+    }
+
+    private static Option<String> extractSubstring(String msg, int startIdx) {
+        return Option.option(msg.indexOf(" ", startIdx))
+                     .filter(endIdx -> endIdx > startIdx)
+                     .map(endIdx -> msg.substring(startIdx, endIdx));
     }
 
     private static Option<String> extractLocation(StreamReadException e) {

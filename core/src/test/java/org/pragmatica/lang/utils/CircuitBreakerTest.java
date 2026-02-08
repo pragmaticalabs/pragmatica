@@ -7,14 +7,14 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn2;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.io.TimeSpan;
-import org.pragmatica.lang.utils.CircuitBreaker.CircuitBreakerErrors.CircuitBreakerOpenError;
+import org.pragmatica.lang.utils.CircuitBreaker.CircuitBreakerError.CircuitBreakerOpenError;
 import org.pragmatica.lang.utils.CircuitBreaker.State;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 class CircuitBreakerTest {
@@ -50,47 +50,47 @@ class CircuitBreakerTest {
     }
 
     @Test
-    void shouldExecuteSuccessfulOperation() {
+    void execute_successfulOperation_remainsClosedWithZeroFailures() {
         circuitBreaker.execute(() -> Promise.success("Success"))
                       .await()
                       .onFailureRun(Assertions::fail)
-                      .onSuccess(value -> assertEquals("Success", value));
+                      .onSuccess(value -> assertThat(value).isEqualTo("Success"));
 
-        assertEquals(State.CLOSED, circuitBreaker.state());
-        assertEquals(0, circuitBreaker.failureCount());
+        assertThat(circuitBreaker.state()).isEqualTo(State.CLOSED);
+        assertThat(circuitBreaker.failureCount()).isEqualTo(0);
     }
 
     @Test
-    void shouldRecordFailures() {
+    void execute_twoFailures_recordsFailureCount() {
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
 
-        assertEquals(State.CLOSED, circuitBreaker.state());
-        assertEquals(2, circuitBreaker.failureCount());
+        assertThat(circuitBreaker.state()).isEqualTo(State.CLOSED);
+        assertThat(circuitBreaker.failureCount()).isEqualTo(2);
     }
 
     @Test
-    void shouldIgnoreNonTrippingFailures() {
+    void execute_nonTrippingFailures_doesNotCountFailures() {
         circuitBreaker.execute(IGNORED_ERROR::promise).await();
         circuitBreaker.execute(IGNORED_ERROR::promise).await();
         circuitBreaker.execute(IGNORED_ERROR::promise).await();
         circuitBreaker.execute(IGNORED_ERROR::promise).await();
 
-        assertEquals(State.CLOSED, circuitBreaker.state());
-        assertEquals(0, circuitBreaker.failureCount());
+        assertThat(circuitBreaker.state()).isEqualTo(State.CLOSED);
+        assertThat(circuitBreaker.failureCount()).isEqualTo(0);
     }
 
     @Test
-    void shouldOpenCircuitAfterThresholdExceeded() {
+    void execute_thresholdExceeded_opensCircuit() {
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
 
-        assertEquals(State.OPEN, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.OPEN);
     }
 
     @Test
-    void shouldRejectOperationsWhenOpen() {
+    void execute_circuitOpen_rejectsOperations() {
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
@@ -102,17 +102,18 @@ class CircuitBreakerTest {
                       })
                       .await()
                       .onSuccessRun(Assertions::fail)
-                      .onFailure(cause -> assertInstanceOf(CircuitBreakerOpenError.class,
-                                                           cause));
-        assertEquals(0, callCount.get(), "Operation should not be executed when circuit is open");
+                      .onFailure(cause -> assertThat(cause).isInstanceOf(CircuitBreakerOpenError.class));
+        assertThat(callCount.get())
+            .as("Operation should not be executed when circuit is open")
+            .isEqualTo(0);
     }
 
     @Test
-    void shouldTransitionToHalfOpenAfterTimeout() {
+    void execute_afterResetTimeout_transitionsToHalfOpen() {
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
-        assertEquals(State.OPEN, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.OPEN);
 
         timeSource.advanceTime(150); // longer than reset timeout
 
@@ -120,16 +121,16 @@ class CircuitBreakerTest {
                       .await()
                       .onFailureRun(Assertions::fail);
 
-        assertEquals(State.HALF_OPEN, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.HALF_OPEN);
     }
 
     @Test
-    void shouldTransitionToClosedAfterSuccessfulTests() {
+    void execute_successfulTestsInHalfOpen_transitionsToClosed() {
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
 
-        assertEquals(State.OPEN, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.OPEN);
 
         // Move to HALF_OPEN state by advancing time
         timeSource.advanceTime(150);
@@ -137,45 +138,45 @@ class CircuitBreakerTest {
         circuitBreaker.execute(() -> Promise.success("Test 1")).await();
         var result = circuitBreaker.execute(() -> Promise.success("Test 2")).await();
 
-        assertTrue(result.isSuccess());
-        assertEquals(State.CLOSED, circuitBreaker.state());
-        assertEquals(0, circuitBreaker.failureCount());
+        assertThat(result.isSuccess()).isTrue();
+        assertThat(circuitBreaker.state()).isEqualTo(State.CLOSED);
+        assertThat(circuitBreaker.failureCount()).isEqualTo(0);
     }
 
     @Test
-    void shouldTransitionBackToOpenOnFailureDuringHalfOpen() {
+    void execute_failureDuringHalfOpen_transitionsBackToOpen() {
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
-        assertEquals(State.OPEN, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.OPEN);
 
         // Move to HALF_OPEN state by advancing time
         timeSource.advanceTime(150);
 
         // Verify we're in HALF_OPEN state
         circuitBreaker.execute(() -> Promise.success("First operation")).await();
-        assertEquals(State.HALF_OPEN, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.HALF_OPEN);
 
         circuitBreaker.execute(TEST_ERROR::<String>promise)
                       .await()
                       .onSuccessRun(Assertions::fail);
 
-        assertEquals(State.OPEN, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.OPEN);
     }
 
     @Test
-    void shouldProvideCorrectTimeSinceLastStateChange() {
+    void timeSinceLastStateChange_afterStateChange_returnsCorrectDuration() {
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
 
         timeSource.advanceTime(50);
 
-        assertEquals(50, circuitBreaker.timeSinceLastStateChange().millis());
+        assertThat(circuitBreaker.timeSinceLastStateChange().millis()).isEqualTo(50);
     }
 
     @Test
-    void shouldProvideCorrectRetryTimeInOpenError() {
+    void execute_circuitOpenWithElapsedTime_returnsCorrectRetryTime() {
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
@@ -186,16 +187,14 @@ class CircuitBreakerTest {
                       .await()
                       .onSuccessRun(Assertions::fail)
                       .onFailure(cause -> {
-                          if (cause instanceof CircuitBreakerOpenError error) {
-                              assertEquals(60, error.retryTime().millis());
-                          } else {
-                              Assertions.fail("Unexpected cause type: " + cause.getClass().getName());
-                          }
+                          assertThat(cause).isInstanceOf(CircuitBreakerOpenError.class);
+                          var error = (CircuitBreakerOpenError) cause;
+                          assertThat(error.retryTime().millis()).isEqualTo(60);
                       });
     }
 
     @Test
-    void shouldRequireMultipleSuccessfulTestsToClose() {
+    void execute_inHalfOpen_requiresMultipleSuccessfulTestsToClose() {
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
         circuitBreaker.execute(TEST_ERROR::promise).await();
@@ -204,26 +203,26 @@ class CircuitBreakerTest {
 
         circuitBreaker.execute(() -> Promise.success("First test")).await();
 
-        assertEquals(State.HALF_OPEN, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.HALF_OPEN);
 
         circuitBreaker.execute(() -> Promise.success("Second test"))
                       .await()
                       .onFailureRun(Assertions::fail);
 
-        assertEquals(State.CLOSED, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.CLOSED);
     }
 
     @Test
-    void shouldHandleConcurrentExecutions() {
+    void execute_concurrentOperations_handlesCorrectly() {
         final int threads = 10;
 
         // Create a special circuit breaker with real time source for this test
-var breaker = CircuitBreaker.builder()
-                            .failureThreshold(3)
-                            .resetTimeout(timeSpan(100).millis())
-                            .testAttempts(2)
-                            .shouldTrip(cause -> cause == TEST_ERROR)
-                            .withDefaultTimeSource();
+        var breaker = CircuitBreaker.builder()
+                                    .failureThreshold(3)
+                                    .resetTimeout(timeSpan(100).millis())
+                                    .testAttempts(2)
+                                    .shouldTrip(cause -> cause == TEST_ERROR)
+                                    .withDefaultTimeSource();
 
         Fn2<Promise<String>, Integer, Promise<String>> halfFail = (index, promise) ->
                 (index < 5)
@@ -238,34 +237,34 @@ var breaker = CircuitBreaker.builder()
         Promise.allOf(promises)
                .await(timeSpan(2).seconds())
                .onFailureRun(Assertions::fail)
-               .onSuccess(values -> assertEquals(threads, values.size()));
+               .onSuccess(values -> assertThat(values).hasSize(threads));
     }
 
     @Test
-    void shouldAllowMultipleOperationsWhenClosed() {
+    void execute_multipleOperationsWhileClosed_allSucceed() {
         for (int i = 0; i < 10; i++) {
             final var index = i;
 
             circuitBreaker.execute(() -> Promise.success(index))
                           .await()
                           .onFailureRun(Assertions::fail)
-                          .onSuccess(value -> assertEquals(index, value));
+                          .onSuccess(value -> assertThat(value).isEqualTo(index));
         }
 
-        assertEquals(State.CLOSED, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.CLOSED);
     }
 
     @Test
-    void shouldCountOnlyConfiguredFailures() {
+    void execute_mixedTrippingAndNonTripping_countsOnlyConfiguredFailures() {
         circuitBreaker.execute(TEST_ERROR::promise).await();   // Counts toward threshold
         circuitBreaker.execute(IGNORED_ERROR::promise).await(); // Doesn't count
         circuitBreaker.execute(TEST_ERROR::promise).await();   // Counts toward threshold
 
-        assertEquals(State.CLOSED, circuitBreaker.state());
-        assertEquals(2, circuitBreaker.failureCount());
+        assertThat(circuitBreaker.state()).isEqualTo(State.CLOSED);
+        assertThat(circuitBreaker.failureCount()).isEqualTo(2);
 
         circuitBreaker.execute(TEST_ERROR::promise).await();
 
-        assertEquals(State.OPEN, circuitBreaker.state());
+        assertThat(circuitBreaker.state()).isEqualTo(State.OPEN);
     }
 }

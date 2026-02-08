@@ -17,6 +17,7 @@
 
 package org.pragmatica.json;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import tools.jackson.core.JacksonException;
@@ -30,14 +31,14 @@ import tools.jackson.databind.jsontype.TypeSerializer;
 /// Jackson serializer for Result<T> types.
 /// Serializes Result as: {"success": true, "value": <T>} or {"success": false, "error": {"message": "...", "type": "..."}}
 public class ResultSerializer extends ValueSerializer<Result<?>> {
-    private final JavaType valueType;
-    private final ValueSerializer<Object> valueSerializer;
+    private final Option<JavaType> valueType;
+    private final Option<ValueSerializer<Object>> valueSerializer;
 
     public ResultSerializer() {
-        this(null, null);
+        this(Option.none(), Option.none());
     }
 
-    private ResultSerializer(JavaType valueType, ValueSerializer<Object> valueSerializer) {
+    private ResultSerializer(Option<JavaType> valueType, Option<ValueSerializer<Object>> valueSerializer) {
         this.valueType = valueType;
         this.valueSerializer = valueSerializer;
     }
@@ -49,11 +50,10 @@ public class ResultSerializer extends ValueSerializer<Result<?>> {
             case Result.Success<?> success -> {
                 gen.writeBooleanProperty("success", true);
                 gen.writeName("value");
-                if (valueSerializer != null) {
-                    valueSerializer.serialize(success.value(), gen, provider);
-                } else {
-                    gen.writePOJO(success.value());
-                }
+                valueSerializer.onPresent(ser -> ser.serialize(success.value(),
+                                                               gen,
+                                                               provider))
+                               .onEmpty(() -> gen.writePOJO(success.value()));
             }
             case Result.Failure<?> failure -> {
                 gen.writeBooleanProperty("success", false);
@@ -74,16 +74,17 @@ public class ResultSerializer extends ValueSerializer<Result<?>> {
 
     @Override
     public ValueSerializer<?> createContextual(SerializationContext prov, BeanProperty property) {
-        if (property == null) {
-            return this;
-        }
-        JavaType type = property.getType();
-        if (type.hasContentType()) {
-            JavaType contentType = type.getContentType();
-            ValueSerializer<Object> ser = prov.findValueSerializer(contentType);
-            return new ResultSerializer(contentType, ser);
-        }
-        return this;
+        return Option.option(property)
+                     .map(BeanProperty::getType)
+                     .filter(JavaType::hasContentType)
+                     .map(type -> createContextualSerializer(prov, type))
+                     .or(this);
+    }
+
+    private ResultSerializer createContextualSerializer(SerializationContext prov, JavaType type) {
+        var contentType = type.getContentType();
+        var ser = prov.findValueSerializer(contentType);
+        return new ResultSerializer(Option.option(contentType), Option.option(ser));
     }
 
     @Override

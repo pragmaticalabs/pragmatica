@@ -8,9 +8,11 @@ import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Path;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
@@ -32,21 +34,29 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceDeploymentE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
 
-    // Common timeouts
-    private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(3).minutes();
-    private static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
-    private static final TimeSpan CLEANUP_TIMEOUT = timeSpan(60).seconds();
+    // Common timeouts (CI gets 2x via adapt())
+    private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
+    private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
+    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(60).seconds().duration());
 
     private static AetherCluster cluster;
 
     @BeforeAll
     static void createCluster() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        System.out.println("[DEBUG] Creating cluster...");
+        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
         cluster.start();
+        System.out.println("[DEBUG] Awaiting quorum...");
         cluster.awaitQuorum();
+        System.out.println("[DEBUG] Awaiting all healthy...");
         cluster.awaitAllHealthy();
+        System.out.println("[DEBUG] Awaiting leader election...");
+        cluster.awaitLeader();
+        System.out.println("[DEBUG] Uploading test artifacts to DHT...");
+        cluster.uploadTestArtifacts();
+        System.out.println("[DEBUG] Cluster ready for tests");
     }
 
     @AfterAll
@@ -58,16 +68,21 @@ class SliceDeploymentE2ETest {
 
     @BeforeEach
     void cleanupSlices() {
+        System.out.println("[DEBUG] BeforeEach: starting cleanup...");
         // Wait for cluster stability
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
+        System.out.println("[DEBUG] BeforeEach: sleeping 2s for stability...");
         sleep(timeSpan(2).seconds());
 
         // Undeploy all slices
+        System.out.println("[DEBUG] BeforeEach: undeploying all slices...");
         undeployAllSlices();
 
         // Wait for clean state
+        System.out.println("[DEBUG] BeforeEach: awaiting no slices...");
         awaitNoSlices();
+        System.out.println("[DEBUG] BeforeEach: cleanup complete");
     }
 
     @Test
@@ -104,7 +119,7 @@ class SliceDeploymentE2ETest {
         var response = deployAndAssert(TEST_ARTIFACT, 3);
 
         // Wait for slice to become ACTIVE on ALL nodes (multi-instance distribution)
-        cluster.awaitSliceActiveOnAllNodes(TEST_ARTIFACT, DEPLOY_TIMEOUT.duration());
+        cluster.awaitSliceActiveOnAllNodes(TEST_ARTIFACT, DEPLOY_TIMEOUT);
 
         // Each node should report the slice
         for (var node : cluster.nodes()) {
@@ -125,8 +140,8 @@ class SliceDeploymentE2ETest {
         assertThat(scaleResponse).doesNotContain("\"error\"");
 
         // Wait for scale operation to complete
-        await().atMost(DEPLOY_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    if (sliceHasFailed(TEST_ARTIFACT)) {
                        throw new AssertionError("Slice scaling failed: " + TEST_ARTIFACT);
@@ -169,7 +184,7 @@ class SliceDeploymentE2ETest {
         assertThat(slices).contains(TEST_ARTIFACT);
 
         // Restore node for subsequent tests
-        cluster.restartNode("node-3");
+        cluster.node("node-3").start();
         cluster.awaitQuorum();
     }
 
@@ -180,7 +195,7 @@ class SliceDeploymentE2ETest {
             id = "org.test:e2e-blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.example:inventory:0.0.1-test"
+            artifact = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0"
             instances = 1
             """;
 
@@ -213,8 +228,8 @@ class SliceDeploymentE2ETest {
     }
 
     private void awaitNoSlices() {
-        await().atMost(CLEANUP_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(CLEANUP_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
                .until(() -> {
                    var slices = cluster.anyNode().getSlices();
@@ -234,8 +249,8 @@ class SliceDeploymentE2ETest {
     }
 
     private void awaitSliceActive(String artifact) {
-        await().atMost(DEPLOY_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    if (sliceHasFailed(artifact)) {
                        throw new AssertionError("Slice deployment failed: " + artifact);
@@ -245,8 +260,8 @@ class SliceDeploymentE2ETest {
     }
 
     private void awaitSliceRemoved(String artifact) {
-        await().atMost(CLEANUP_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(CLEANUP_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var status = cluster.anyNode().getSlicesStatus();
                    return !status.contains(artifact);

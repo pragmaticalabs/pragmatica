@@ -34,7 +34,7 @@ public enum HttpMethod {
     ///
     /// @param method HTTP method string
     /// @return Result containing the HttpMethod or an error for unknown methods
-    public static Result<HttpMethod> from(String method) {
+    public static Result<HttpMethod> httpMethod(String method) {
         return switch (method.toUpperCase()) {
             case "GET" -> Result.success(GET);
             case "POST" -> Result.success(POST);
@@ -47,6 +47,10 @@ public enum HttpMethod {
             case "CONNECT" -> Result.success(CONNECT);
             default -> new UnknownMethod(method).result();
         };
+    }
+    @Deprecated(forRemoval = true)
+    public static Result<HttpMethod> from(String method) {
+        return httpMethod(method);
     }
     /// Error for unknown HTTP method.
     public record UnknownMethod(String method) implements Cause {

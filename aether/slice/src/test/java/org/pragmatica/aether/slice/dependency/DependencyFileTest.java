@@ -17,7 +17,7 @@ class DependencyFileTest {
                 org.example:order-domain:^1.0.0
 
                 [infra]
-                org.pragmatica-lite.aether:infra-cache:^0.7.0
+                org.pragmatica-lite.aether:infra-db-connector:^0.7.0
 
                 [slices]
                 org.example:notification-service:^1.0.0
@@ -211,7 +211,7 @@ class DependencyFileTest {
     void parse_infra_section() {
         var content = """
                 [infra]
-                org.pragmatica-lite.aether:infra-cache:^0.7.0
+                org.pragmatica-lite.aether:infra-db-connector:^0.7.0
                 org.pragmatica-lite.aether:infra-database:^0.7.0
                 """;
 
@@ -224,7 +224,7 @@ class DependencyFileTest {
                           assertThat(file.hasInfraDependencies()).isTrue();
 
                           assertThat(file.infra().get(0).groupId()).isEqualTo("org.pragmatica-lite.aether");
-                          assertThat(file.infra().get(0).artifactId()).isEqualTo("infra-cache");
+                          assertThat(file.infra().get(0).artifactId()).isEqualTo("infra-db-connector");
                           assertThat(file.infra().get(1).artifactId()).isEqualTo("infra-database");
                       });
     }
@@ -236,7 +236,7 @@ class DependencyFileTest {
                 org.pragmatica-lite:core:^0.8.0
 
                 [infra]
-                org.pragmatica-lite.aether:infra-cache:^0.7.0
+                org.pragmatica-lite.aether:infra-db-connector:^0.7.0
 
                 [slices]
                 org.example:notification-service:^1.0.0
@@ -344,7 +344,7 @@ class DependencyFileTest {
     void parse_allows_other_aether_dependencies() {
         var content = """
                 [infra]
-                org.pragmatica-lite.aether:infra-cache:^0.7.0
+                org.pragmatica-lite.aether:infra-db-connector:^0.7.0
                 org.pragmatica-lite.aether:infra-database:^0.7.0
                 """;
 

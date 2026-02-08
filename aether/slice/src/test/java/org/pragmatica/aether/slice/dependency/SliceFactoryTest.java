@@ -4,7 +4,9 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.aether.slice.Aspect;
 import org.pragmatica.aether.slice.MethodHandle;
+import org.pragmatica.aether.slice.ResourceProviderFacade;
 import org.pragmatica.aether.slice.Slice;
+import org.pragmatica.aether.slice.SliceCreationContext;
 import org.pragmatica.aether.slice.SliceInvokerFacade;
 import org.pragmatica.aether.slice.SliceMethod;
 import org.pragmatica.lang.Promise;
@@ -19,8 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests for SliceFactory with new-style 2-parameter factories.
  * <p>
- * New-style factories take only (Aspect, SliceInvokerFacade) and resolve
- * dependencies dynamically via SliceInvokerFacade at runtime.
+ * New-style factories take only (Aspect, SliceCreationContext) and resolve
+ * dependencies dynamically via SliceCreationContext at runtime.
  */
 class SliceFactoryTest {
 
@@ -31,14 +33,24 @@ class SliceFactoryTest {
         }
     };
 
+    private static final ResourceProviderFacade STUB_RESOURCES = new ResourceProviderFacade() {
+        @Override
+        public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+            return Causes.cause("Stub resource provider").promise();
+        }
+    };
+
+    private static final SliceCreationContext STUB_CONTEXT =
+        SliceCreationContext.sliceCreationContext(STUB_INVOKER, STUB_RESOURCES);
+
     // Test factory with no dependencies (matches generated factory pattern)
     public static class SimpleSliceFactory {
-        public static Promise<SimpleSlice> simpleSlice(Aspect<SimpleSlice> aspect, SliceInvokerFacade invoker) {
+        public static Promise<SimpleSlice> simpleSlice(Aspect<SimpleSlice> aspect, SliceCreationContext ctx) {
             return Promise.success(aspect.apply(new SimpleSlice()));
         }
 
-        public static Promise<Slice> simpleSliceSlice(Aspect<SimpleSlice> aspect, SliceInvokerFacade invoker) {
-            return simpleSlice(aspect, invoker).map(s -> s);
+        public static Promise<Slice> simpleSliceSlice(Aspect<SimpleSlice> aspect, SliceCreationContext ctx) {
+            return simpleSlice(aspect, ctx).map(s -> s);
         }
     }
 
@@ -49,17 +61,17 @@ class SliceFactoryTest {
         }
     }
 
-    // Test factory that simulates dependency resolution via SliceInvokerFacade
+    // Test factory that simulates dependency resolution via SliceCreationContext
     public static class OrderServiceFactory {
         public static Promise<OrderService> orderService(Aspect<OrderService> aspect,
-                                                         SliceInvokerFacade invoker) {
-            // In real generated code, dependencies are resolved via invoker.methodHandle()
+                                                         SliceCreationContext ctx) {
+            // In real generated code, dependencies are resolved via ctx.invoker().methodHandle()
             return Promise.success(aspect.apply(new OrderService()));
         }
 
         public static Promise<Slice> orderServiceSlice(Aspect<OrderService> aspect,
-                                                       SliceInvokerFacade invoker) {
-            return orderService(aspect, invoker).map(s -> s);
+                                                       SliceCreationContext ctx) {
+            return orderService(aspect, ctx).map(s -> s);
         }
     }
 
@@ -72,7 +84,7 @@ class SliceFactoryTest {
 
     @Test
     void creates_slice_with_no_dependencies() {
-        SliceFactory.createSlice(SimpleSliceFactory.class, STUB_INVOKER, List.of(), List.of())
+        SliceFactory.createSlice(SimpleSliceFactory.class, STUB_CONTEXT, List.of(), List.of())
                     .await()
                     .onFailureRun(Assertions::fail)
                     .onSuccess(slice -> {
@@ -83,8 +95,8 @@ class SliceFactoryTest {
     @Test
     void creates_slice_with_dynamic_dependencies() {
         // Dependencies are passed but not used in factory call
-        // (they're resolved via SliceInvokerFacade at runtime)
-        SliceFactory.createSlice(OrderServiceFactory.class, STUB_INVOKER, List.of(), List.of())
+        // (they're resolved via SliceCreationContext at runtime)
+        SliceFactory.createSlice(OrderServiceFactory.class, STUB_CONTEXT, List.of(), List.of())
                     .await()
                     .onFailureRun(Assertions::fail)
                     .onSuccess(slice -> {
@@ -98,7 +110,7 @@ class SliceFactoryTest {
         class NoMethodFactory {
         }
 
-        SliceFactory.createSlice(NoMethodFactory.class, STUB_INVOKER, List.of(), List.of())
+        SliceFactory.createSlice(NoMethodFactory.class, STUB_CONTEXT, List.of(), List.of())
                     .await()
                     .onSuccessRun(Assertions::fail)
                     .onFailure(cause -> {
@@ -116,7 +128,7 @@ class SliceFactoryTest {
             }
         }
 
-        SliceFactory.createSlice(WrongParamCountFactory.class, STUB_INVOKER, List.of(), List.of())
+        SliceFactory.createSlice(WrongParamCountFactory.class, STUB_CONTEXT, List.of(), List.of())
                     .await()
                     .onSuccessRun(Assertions::fail)
                     .onFailure(cause -> {
@@ -128,12 +140,12 @@ class SliceFactoryTest {
     void fails_when_first_parameter_is_not_aspect() {
         // Factory with wrong first parameter type
         class WrongFirstParamFactory {
-            public static Promise<Slice> wrongFirstParamSlice(String notAspect, SliceInvokerFacade invoker) {
+            public static Promise<Slice> wrongFirstParamSlice(String notAspect, SliceCreationContext ctx) {
                 return Promise.success(new SimpleSlice());
             }
         }
 
-        SliceFactory.createSlice(WrongFirstParamFactory.class, STUB_INVOKER, List.of(), List.of())
+        SliceFactory.createSlice(WrongFirstParamFactory.class, STUB_CONTEXT, List.of(), List.of())
                     .await()
                     .onSuccessRun(Assertions::fail)
                     .onFailure(cause -> {

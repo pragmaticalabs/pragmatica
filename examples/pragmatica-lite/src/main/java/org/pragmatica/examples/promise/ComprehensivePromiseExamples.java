@@ -100,23 +100,22 @@ public class ComprehensivePromiseExamples {
 
     /// Example 4: Integration with Result and Option
     public void monadIntegration() {
-        // Promise<Result<T>> pattern for operations that can fail
-        Promise<Result<String>> resultPromise = Promise.promise(() -> {
-                                                                    try{
-                                                                        // Some operation that might fail
-        return Result.success(Result.success("Operation completed"));
-                                                                    } catch (Exception e) {
-                                                                        return Result.success(Result.failure(CoreError.exception(e)));
-                                                                    }
-                                                                });
+        // Promise<T> pattern for operations that can fail - use Promise directly, NOT Promise<Result<T>>
+        Promise<String> resultPromise = Promise.promise(() -> {
+                                                            try{
+                                                                // Some operation that might fail
+        return Result.success("Operation completed");
+                                                            } catch (Exception e) {
+                                                                return Result.failure(CoreError.exception(e));
+                                                            }
+                                                        });
         // Promise<Option<T>> pattern for optional values
         Promise<Option<String>> optionPromise = Promise.promise(() -> {
                                                                     String value = findValueSomewhere();
                                                                     return Result.success(Option.option(value));
                                                                 });
-        // Flatten nested structures
-        Promise<String> flattened = resultPromise.flatMap(result -> result.fold(error -> Promise.failure(error),
-                                                                                success -> Promise.resolved(Result.success(success))));
+        // No flattening needed when using Promise<T> directly
+        Promise<String> processed = resultPromise.map(String::toUpperCase);
     }
 
     // ========================================

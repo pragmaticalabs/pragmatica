@@ -31,11 +31,11 @@ public record ServerConfig(String name,
                            Option<TlsConfig> clientTls,
                            SocketOptions socketOptions) {
     public static ServerConfig serverConfig(String name, int port) {
-        return new ServerConfig(name, port, Option.empty(), Option.empty(), SocketOptions.defaults());
+        return new ServerConfig(name, port, Option.empty(), Option.empty(), SocketOptions.defaultConfig());
     }
 
     public static ServerConfig serverConfig(String name, int port, TlsConfig tls) {
-        return new ServerConfig(name, port, Option.some(tls), Option.empty(), SocketOptions.defaults());
+        return new ServerConfig(name, port, Option.some(tls), Option.empty(), SocketOptions.defaultConfig());
     }
 
     public ServerConfig withTls(TlsConfig tls) {

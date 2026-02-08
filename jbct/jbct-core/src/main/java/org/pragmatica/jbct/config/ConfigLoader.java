@@ -72,16 +72,16 @@ public sealed interface ConfigLoader permits ConfigLoader.unused {
      */
     static Option<Path> findProjectConfig(Path startDir) {
         return findProjectConfigRecursive(Option.some(startDir.toAbsolutePath()
-                                                               .normalize()));
+                                                              .normalize()));
     }
 
     private static Option<Path> findProjectConfigRecursive(Option<Path> dirOpt) {
         return dirOpt.flatMap(dir -> {
-                         var configPath = dir.resolve(PROJECT_CONFIG_NAME);
-                         return Files.exists(configPath) && Files.isRegularFile(configPath)
-                                ? Option.some(configPath)
-                                : findProjectConfigRecursive(Option.option(dir.getParent()));
-                     });
+                                  var configPath = dir.resolve(PROJECT_CONFIG_NAME);
+                                  return Files.exists(configPath) && Files.isRegularFile(configPath)
+                                         ? Option.some(configPath)
+                                         : findProjectConfigRecursive(Option.option(dir.getParent()));
+                              });
     }
 
     /**

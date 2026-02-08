@@ -21,6 +21,7 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.Unit;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -174,6 +175,41 @@ public interface ReactiveOperations {
     /// Convenience method with default error mapping.
     static <T> Promise<T> fromPublisher(Publisher<? extends T> publisher) {
         return fromPublisher(publisher, R2dbcError::fromException);
+    }
+
+    /// Converts a Publisher<Void> to Promise<Unit>.
+    /// Used for operations that complete without returning a value (e.g., beginTransaction, commitTransaction).
+    ///
+    /// @param publisher Publisher<Void> to convert
+    /// @param errorMapper Function to map exceptions to errors
+    ///
+    /// @return Promise<Unit> that completes when the publisher completes
+    static Promise<Unit> fromVoidPublisher(Publisher<Void> publisher, Fn1<R2dbcError, Throwable> errorMapper) {
+        return Promise.promise(promise -> publisher.subscribe(new Subscriber<Void>() {
+            @Override
+            public void onSubscribe(Subscription s) {
+                                                                  s.request(Long.MAX_VALUE);
+                                                              }
+
+            @Override
+            public void onNext(Void item) {}
+
+            @Override
+            public void onError(Throwable t) {
+                                                                  promise.resolve(errorMapper.apply(t)
+                                                                                             .result());
+                                                              }
+
+            @Override
+            public void onComplete() {
+                                                                  promise.resolve(Result.success(Unit.unit()));
+                                                              }
+        }));
+    }
+
+    /// Convenience method with default error mapping for Void publishers.
+    static Promise<Unit> fromVoidPublisher(Publisher<Void> publisher) {
+        return fromVoidPublisher(publisher, R2dbcError::fromException);
     }
 
     /// Convenience method with default error mapping.

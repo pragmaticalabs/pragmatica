@@ -42,18 +42,15 @@ public interface QueryParams {
         record queryParams(Map<String, List<String>> params) implements QueryParams {
             @Override
             public Option<String> get(String name) {
-                var values = params.get(name);
-                return values == null || values.isEmpty()
-                       ? Option.empty()
-                       : Option.some(values.getFirst());
+                return Option.option(params.get(name))
+                             .filter(values -> !values.isEmpty())
+                             .map(List::getFirst);
             }
 
             @Override
             public List<String> getAll(String name) {
-                var values = params.get(name);
-                return values == null
-                       ? List.of()
-                       : values;
+                return Option.option(params.get(name))
+                             .or(List::of);
             }
 
             @Override

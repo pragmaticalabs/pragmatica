@@ -1,0 +1,16 @@
+# Aether runtime configuration
+
+[database]
+type = "H2"
+name = "url-shortener"
+host = "localhost"
+port = 0
+database = "urlshortener"
+
+[database.pool_config]
+min_connections = 2
+max_connections = 10
+idle_timeout = "10m"
+connection_timeout = "30s"
+max_lifetime = "30m"
+leak_detection_timeout = "0s"

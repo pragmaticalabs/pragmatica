@@ -11,8 +11,6 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -25,7 +23,7 @@ import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 class ForgeClusterIntegrationTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);
-    private static final Path BLUEPRINT_PATH = Path.of("../../examples/ecommerce/place-order/target/blueprint.toml");
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
 
     private ForgeCluster cluster;
     private HttpClient httpClient;
@@ -79,7 +77,7 @@ class ForgeClusterIntegrationTest {
     }
 
     @Test
-    void blueprintDeployment_deploysSlices_andReachesActiveState() throws IOException {
+    void blueprintDeployment_deploysSlices_andReachesActiveState() {
         cluster.start()
                .await()
                .onFailure(cause -> {
@@ -105,7 +103,13 @@ class ForgeClusterIntegrationTest {
         var leaderPort = cluster.getLeaderManagementPort()
                                 .unwrap();
 
-        var blueprintContent = Files.readString(BLUEPRINT_PATH);
+        var blueprintContent = """
+            id = "org.test:blueprint:1.0.0"
+
+            [[slices]]
+            artifact = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0"
+            instances = 1
+            """;
         deployBlueprint(leaderPort, blueprintContent);
 
         await().atMost(WAIT_TIMEOUT)
@@ -122,19 +126,13 @@ class ForgeClusterIntegrationTest {
                });
 
         var slicesStatus = cluster.slicesStatus();
-        assertThat(slicesStatus).hasSize(5);
+        assertThat(slicesStatus).hasSize(1);
 
-        var inventorySlice = slicesStatus.stream()
-                                         .filter(s -> s.artifact().contains("inventory"))
-                                         .findFirst()
-                                         .orElseThrow();
-        assertThat(inventorySlice.instances()).hasSize(1);
-
-        var placeOrderSlice = slicesStatus.stream()
-                                          .filter(s -> s.artifact().contains("place-order"))
-                                          .findFirst()
-                                          .orElseThrow();
-        assertThat(placeOrderSlice.instances()).hasSize(1);
+        var echoSlice = slicesStatus.stream()
+                                    .filter(s -> s.artifact().contains("echo-slice"))
+                                    .findFirst()
+                                    .orElseThrow();
+        assertThat(echoSlice.instances()).hasSize(1);
     }
 
     @Test

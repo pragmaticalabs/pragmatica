@@ -1,9 +1,9 @@
 package org.pragmatica.aether.api;
 
+import org.pragmatica.lang.Option;
+
 import java.util.List;
 import java.util.Map;
-
-import org.jspecify.annotations.Nullable;
 
 /**
  * Typed response records for all Management API endpoints.
@@ -76,6 +76,38 @@ public sealed interface ManagementApiResponses {
     record BlueprintResponse(String status,
                              String blueprint,
                              int slices) {}
+
+    // ===== Blueprint Management Routes =====
+    record BlueprintListResponse(List<BlueprintSummary> blueprints) {}
+
+    record BlueprintSummary(String id,
+                            int sliceCount) {}
+
+    record BlueprintDetailResponse(String id,
+                                   List<BlueprintSliceInfo> slices,
+                                   List<String> dependencies) {}
+
+    record BlueprintSliceInfo(String artifact,
+                              int instances,
+                              boolean isDependency,
+                              List<String> dependencies) {}
+
+    record BlueprintStatusResponse(String id,
+                                   String overallStatus,
+                                   List<BlueprintSliceStatus> slices) {}
+
+    record BlueprintSliceStatus(String artifact,
+                                int targetInstances,
+                                int activeInstances,
+                                String status) {}
+
+    record BlueprintDeleteResponse(String status,
+                                   String id) {}
+
+    record BlueprintValidationResponse(boolean valid,
+                                       String id,
+                                       int sliceCount,
+                                       List<String> errors) {}
 
     // ===== Metrics Routes =====
     record MetricsFullResponse(Map<String, Map<String, Double>> load,
@@ -153,7 +185,7 @@ public sealed interface ManagementApiResponses {
                           double durationMs,
                           long timestampNs,
                           boolean success,
-                          @Nullable String error) {}
+                          Option<String> error) {}
 
     sealed interface StrategyResponse {
         record Fixed(String type, long thresholdMs) implements StrategyResponse {}
@@ -179,6 +211,16 @@ public sealed interface ManagementApiResponses {
     record AlertsResponse(Object active,
                           Object history) {}
 
+    // ===== Dynamic Aspect Routes =====
+    record AspectModeSetResponse(String status,
+                                 String artifact,
+                                 String method,
+                                 String mode) {}
+
+    record AspectRemovedResponse(String status,
+                                 String artifact,
+                                 String method) {}
+
     // ===== Controller Routes =====
     record ControllerStatusResponse(boolean enabled,
                                     long evaluationIntervalMs,
@@ -192,7 +234,7 @@ public sealed interface ManagementApiResponses {
                              long evaluationIntervalMs,
                              double confidenceThreshold,
                              boolean hasForecast,
-                             @Nullable TtmForecast lastForecast) {}
+                             Option<TtmForecast> lastForecast) {}
 
     record TtmForecast(long timestamp,
                        double confidence,

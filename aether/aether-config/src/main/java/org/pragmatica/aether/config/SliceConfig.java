@@ -24,7 +24,7 @@ public record SliceConfig(List<RepositoryType> repositories) {
     /**
      * Default configuration with local repository only.
      */
-    public static SliceConfig defaults() {
+    public static SliceConfig defaultConfig() {
         return DEFAULT;
     }
 

@@ -16,6 +16,7 @@
 
 package org.pragmatica.net.dns;
 
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.AsyncCloseable;
@@ -92,7 +93,13 @@ class DnsChannelInitializer extends ChannelInitializer<DatagramChannel> {
     }
 }
 
-record Request(DomainName domainName, Promise<DomainAddress> promise, int requestId) {}
+record Request(DomainName domainName, Promise<DomainAddress> promise, int requestId) {
+    private static final ResolverError.RequestIdExhausted REQUEST_ID_EXHAUSTED = new ResolverError.RequestIdExhausted("Unable to generate request id (too many requests in progress)");
+
+    static ResolverError.RequestIdExhausted exhausted() {
+        return REQUEST_ID_EXHAUSTED;
+    }
+}
 
 record DnsClientImpl(Bootstrap bootstrap,
                      ConcurrentHashMap<Integer, Request> requestMap,
@@ -177,19 +184,19 @@ record DnsClientImpl(Bootstrap bootstrap,
     }
 
     private void fireRequest(Promise<DomainAddress> promise, DomainName domainName, InetSocketAddress serverAddress) {
-        bootstrap().bind(0)
-                 .syncUninterruptibly()
-                 .channel()
-                 .writeAndFlush(buildQuery(serverAddress, promise, domainName));
-        // Setup guard timeout
+        computeRequest(promise, domainName).onPresent(request -> {
+                                                          bootstrap().bind(0)
+                                                                   .syncUninterruptibly()
+                                                                   .channel()
+                                                                   .writeAndFlush(buildQuery(serverAddress, request));
+                                                          // Setup guard timeout
         promise.async(QUERY_TIMEOUT,
                       pending -> pending.fail(new RequestTimeout("No response from server in 10 seconds")));
+                                                      })
+                      .onEmpty(() -> promise.fail(Request.exhausted()));
     }
 
-    private DatagramDnsQuery buildQuery(InetSocketAddress serverAddress,
-                                        Promise<DomainAddress> promise,
-                                        DomainName domainName) {
-        var request = computeRequest(promise, domainName);
+    private DatagramDnsQuery buildQuery(InetSocketAddress serverAddress, Request request) {
         log.debug("Sending request {} to {}", request, serverAddress);
         return new DatagramDnsQuery(null, serverAddress, request.requestId()).setRecursionDesired(true)
                                                              .setRecord(DnsSection.QUESTION,
@@ -198,16 +205,16 @@ record DnsClientImpl(Bootstrap bootstrap,
                                                                                                DnsRecordType.A));
     }
 
-    private Request computeRequest(Promise<DomainAddress> promise, DomainName domainName) {
+    private Option<Request> computeRequest(Promise<DomainAddress> promise, DomainName domainName) {
         for (int attempt = 0; attempt < 0xFFFF; attempt++) {
             var requestId = idCounter().getAndIncrement() & 0xFFFF;
             var request = new Request(domainName, promise, requestId);
             if (option(requestMap().putIfAbsent(requestId, request)).isEmpty()) {
                 // Ensure slot for this ID is freed regardless of the outcome
                 promise.onResultRun(() -> requestMap().remove(requestId));
-                return request;
+                return option(request);
             }
         }
-        throw new IllegalStateException("Unable to generate request id (too many requests in progress)");
+        return Option.none();
     }
 }

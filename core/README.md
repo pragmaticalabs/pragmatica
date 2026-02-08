@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/license-Apache%202-blue.svg)
 ![Java](https://img.shields.io/badge/Java-25-orange.svg)
-![Maven Central](https://img.shields.io/badge/Maven-0.11.3-blue.svg)
+![Maven Central](https://img.shields.io/badge/Maven-0.15.0-blue.svg)
 
 ## Modern Functional Programming for Java 25
 
@@ -77,13 +77,13 @@ List<Result<User>> userResults = userIds.stream()
 Result<List<User>> allUsers = Result.allOf(userResults);
 ```
 
-## Modern Java 25 Features
+## Built for Java 25
 
-Pragmatica Lite leverages cutting-edge Java 25 features:
+Pragmatica Lite targets Java 25 and leverages modern language features:
 
-- **Sealed Interfaces**: Type-safe Result and Option hierarchies
-- **Pattern Matching**: Elegant switch expressions for monadic types
-- **Records**: Immutable data structures throughout
+- **Sealed Interfaces** (JDK 17): Type-safe Result and Option hierarchies
+- **Records** (JDK 16): Immutable data structures throughout
+- **Pattern Matching** (JDK 21): Elegant switch expressions for monadic types
 
 ### Maven Configuration
 
@@ -93,14 +93,14 @@ Pragmatica Lite is available on Maven Central. Simply add the dependency to your
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>core</artifactId>
-    <version>0.11.3</version>
+    <version>0.15.0</version>
 </dependency>
 ```
 
 For Gradle users:
 
 ```gradle
-implementation 'org.pragmatica-lite:core:0.11.3'
+implementation 'org.pragmatica-lite:core:0.15.0'
 ```
 
 ### Your First Pragmatica Application
@@ -213,7 +213,7 @@ Serialize and deserialize Result, Option, and Promise types:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jackson</artifactId>
-    <version>0.11.3</version>
+    <version>0.15.0</version>
 </dependency>
 ```
 
@@ -241,7 +241,7 @@ Promise-based JPA operations with typed errors:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jpa</artifactId>
-    <version>0.11.3</version>
+    <version>0.15.0</version>
 </dependency>
 ```
 
@@ -273,7 +273,7 @@ Monitor Result, Option, and Promise operations:
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>micrometer</artifactId>
-    <version>0.11.3</version>
+    <version>0.15.0</version>
 </dependency>
 ```
 

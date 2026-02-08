@@ -111,28 +111,15 @@ nodes = 5                    # Number of nodes to simulate
 management_port = 5150       # Base management port
 dashboard_port = 8888        # Dashboard port
 app_http_port = 8070         # Base app HTTP port (load target)
-auto_heal_enabled = false    # Auto-replace failed nodes (default: false)
 ```
 
 ### Auto-Healing
 
-When `auto_heal_enabled = true`, Forge automatically maintains cluster size:
+Forge automatically maintains cluster size via the NodeProvider SPI. When a node fails or is killed, the CDM (Cluster Deployment Manager) detects the deficit and provisions replacements through the NodeProvider interface.
 
-- **Reactive**: When a node fails or is killed, replacement starts immediately
-- **Retry**: Up to 3 attempts with 5-second delay between retries
-- **Logging**: All attempts logged with `AUTO-HEAL:` prefix
-
-```
-AUTO-HEAL: Cluster size 4 below target 5, starting 1 replacement node(s)
-AUTO-HEAL: Attempting to start replacement node (attempt 1/3)
-AUTO-HEAL: Successfully started replacement node node-6
-```
-
-Enable via TOML:
-```toml
-[cluster]
-auto_heal_enabled = true
-```
+- **Always active**: Auto-healing is enabled whenever a NodeProvider is present (Forge always provides one)
+- **Reactive**: CDM detects node deficit and provisions replacements automatically
+- **Periodic recheck**: Retries at configured intervals until cluster size is restored
 
 ### Blueprint (blueprint.toml)
 

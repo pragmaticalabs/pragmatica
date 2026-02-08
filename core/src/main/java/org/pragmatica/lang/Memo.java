@@ -98,139 +98,139 @@ public interface Memo<K, V> {
         }
         return Result.success(new LruMemo<>(computation, maxSize));
     }
-}
 
-/// Wrapper to distinguish null values from absent entries.
-record CacheEntry<V>(V value) {
-    static <V> CacheEntry<V> cacheEntry(V value) {
-        return new CacheEntry<>(value);
-    }
-}
-
-/// Unbounded memoization cache using ConcurrentHashMap.
-final class UnboundedMemo<K, V> implements Memo<K, V> {
-    private final Fn1<V, K> computation;
-    private final ConcurrentHashMap<K, CacheEntry<V>> cache = new ConcurrentHashMap<>();
-    private final AtomicLong hits = new AtomicLong();
-    private final AtomicLong misses = new AtomicLong();
-
-    UnboundedMemo(Fn1<V, K> computation) {
-        this.computation = computation;
-    }
-
-    @Override
-    public V get(K key) {
-        Objects.requireNonNull(key, "key must not be null");
-        var cached = cache.get(key);
-        if (cached != null) {
-            hits.incrementAndGet();
-            return cached.value();
+    /// Wrapper to distinguish null values from absent entries.
+    record CacheEntry<V>(V value) {
+        static <V> CacheEntry<V> cacheEntry(V value) {
+            return new CacheEntry<>(value);
         }
-        var entry = cache.compute(key,
-                                  (k, existing) -> {
-                                      if (existing != null) {
-                                          hits.incrementAndGet();
-                                          return existing;
-                                      }
-                                      misses.incrementAndGet();
-                                      return CacheEntry.cacheEntry(computation.apply(k));
-                                  });
-        return entry.value();
     }
 
-    @Override
-    public Unit invalidate(K key) {
-        cache.remove(key);
-        return Unit.unit();
-    }
+    /// Unbounded memoization cache using ConcurrentHashMap.
+    final class UnboundedMemo<K, V> implements Memo<K, V> {
+        private final Fn1<V, K> computation;
+        private final ConcurrentHashMap<K, CacheEntry<V>> cache = new ConcurrentHashMap<>();
+        private final AtomicLong hits = new AtomicLong();
+        private final AtomicLong misses = new AtomicLong();
 
-    @Override
-    public Unit invalidateAll() {
-        cache.clear();
-        return Unit.unit();
-    }
+        UnboundedMemo(Fn1<V, K> computation) {
+            this.computation = computation;
+        }
 
-    @Override
-    public long hitCount() {
-        return hits.get();
-    }
-
-    @Override
-    public long missCount() {
-        return misses.get();
-    }
-
-    @Override
-    public int size() {
-        return cache.size();
-    }
-}
-
-/// LRU memoization cache using synchronized LinkedHashMap.
-final class LruMemo<K, V> implements Memo<K, V> {
-    private final Fn1<V, K> computation;
-    private final int maxSize;
-    private final Map<K, CacheEntry<V>> cache;
-    private final AtomicLong hits = new AtomicLong();
-    private final AtomicLong misses = new AtomicLong();
-
-    LruMemo(Fn1<V, K> computation, int maxSize) {
-        this.computation = computation;
-        this.maxSize = maxSize;
-        this.cache = new LinkedHashMap<>(16, 0.75f, true) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<K, CacheEntry<V>> eldest) {
-                return size() > maxSize;
-            }
-        };
-    }
-
-    @Override
-    public V get(K key) {
-        Objects.requireNonNull(key, "key must not be null");
-        synchronized (cache) {
+        @Override
+        public V get(K key) {
+            Objects.requireNonNull(key, "key must not be null");
             var cached = cache.get(key);
             if (cached != null) {
                 hits.incrementAndGet();
                 return cached.value();
             }
-            misses.incrementAndGet();
-            var value = computation.apply(key);
-            cache.put(key, CacheEntry.cacheEntry(value));
-            return value;
+            var entry = cache.compute(key,
+                                      (k, existing) -> {
+                                          if (existing != null) {
+                                              hits.incrementAndGet();
+                                              return existing;
+                                          }
+                                          misses.incrementAndGet();
+                                          return CacheEntry.cacheEntry(computation.apply(k));
+                                      });
+            return entry.value();
         }
-    }
 
-    @Override
-    public Unit invalidate(K key) {
-        synchronized (cache) {
+        @Override
+        public Unit invalidate(K key) {
             cache.remove(key);
+            return Unit.unit();
         }
-        return Unit.unit();
-    }
 
-    @Override
-    public Unit invalidateAll() {
-        synchronized (cache) {
+        @Override
+        public Unit invalidateAll() {
             cache.clear();
+            return Unit.unit();
         }
-        return Unit.unit();
-    }
 
-    @Override
-    public long hitCount() {
-        return hits.get();
-    }
+        @Override
+        public long hitCount() {
+            return hits.get();
+        }
 
-    @Override
-    public long missCount() {
-        return misses.get();
-    }
+        @Override
+        public long missCount() {
+            return misses.get();
+        }
 
-    @Override
-    public int size() {
-        synchronized (cache) {
+        @Override
+        public int size() {
             return cache.size();
+        }
+    }
+
+    /// LRU memoization cache using synchronized LinkedHashMap.
+    final class LruMemo<K, V> implements Memo<K, V> {
+        private final Fn1<V, K> computation;
+        private final int maxSize;
+        private final Map<K, CacheEntry<V>> cache;
+        private final AtomicLong hits = new AtomicLong();
+        private final AtomicLong misses = new AtomicLong();
+
+        LruMemo(Fn1<V, K> computation, int maxSize) {
+            this.computation = computation;
+            this.maxSize = maxSize;
+            this.cache = new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<K, CacheEntry<V>> eldest) {
+                    return size() > maxSize;
+                }
+            };
+        }
+
+        @Override
+        public V get(K key) {
+            Objects.requireNonNull(key, "key must not be null");
+            synchronized (cache) {
+                var cached = cache.get(key);
+                if (cached != null) {
+                    hits.incrementAndGet();
+                    return cached.value();
+                }
+                misses.incrementAndGet();
+                var value = computation.apply(key);
+                cache.put(key, CacheEntry.cacheEntry(value));
+                return value;
+            }
+        }
+
+        @Override
+        public Unit invalidate(K key) {
+            synchronized (cache) {
+                cache.remove(key);
+            }
+            return Unit.unit();
+        }
+
+        @Override
+        public Unit invalidateAll() {
+            synchronized (cache) {
+                cache.clear();
+            }
+            return Unit.unit();
+        }
+
+        @Override
+        public long hitCount() {
+            return hits.get();
+        }
+
+        @Override
+        public long missCount() {
+            return misses.get();
+        }
+
+        @Override
+        public int size() {
+            synchronized (cache) {
+                return cache.size();
+            }
         }
     }
 }

@@ -19,6 +19,11 @@ import static org.awaitility.Awaitility.await;
  */
 class GracefulShutdownE2ETest extends AbstractE2ETest {
 
+    @Override
+    protected int clusterSize() {
+        return 3;
+    }
+
     @Test
     void nodeShutdown_peersDetectDisconnection() {
         cluster.awaitLeader();
@@ -31,8 +36,8 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
         cluster.killNode("node-3");
 
         // Remaining nodes should detect the disconnection
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var health = cluster.nodes().get(0).getHealth();
                    return health.contains("\"connectedPeers\":1");
@@ -48,7 +53,7 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
 
         // Deploy a slice
         deployAndAssert(TEST_ARTIFACT, 2);
-        awaitSliceVisible("inventory");
+        awaitSliceVisible("echo-slice");
 
         // Shutdown one node
         cluster.killNode("node-2");
@@ -63,7 +68,7 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
 
         // Slice should still be accessible
         var slices = cluster.anyNode().getSlices();
-        assertThat(slices).contains("inventory");
+        assertThat(slices).contains("echo-slice");
     }
 
     @Test
@@ -80,12 +85,12 @@ class GracefulShutdownE2ETest extends AbstractE2ETest {
         cluster.awaitQuorum();
 
         // Cluster should recover and deployment should eventually complete
-        await().atMost(DEFAULT_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEFAULT_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    try {
                        var slices = cluster.anyNode().getSlices();
-                       return slices.contains("inventory") || !slices.contains("\"error\"");
+                       return slices.contains("echo-slice") || !slices.contains("\"error\"");
                    } catch (Exception e) {
                        return false;
                    }

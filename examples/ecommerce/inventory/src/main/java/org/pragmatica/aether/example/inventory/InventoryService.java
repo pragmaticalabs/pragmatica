@@ -166,14 +166,16 @@ public interface InventoryService {
 
             private void decrementStock(LineItem item) {
                 stock.computeIfPresent(item.productId(),
-                                       (_, current) -> current.subtract(item.quantity()));
+                                       (_, current) -> current.subtract(item.quantity())
+                                                              .or(Quantity.ZERO));
             }
 
             private void incrementStock(LineItem item) {
                 stock.compute(item.productId(),
                               (_, current) -> current == null
                                               ? item.quantity()
-                                              : current.add(item.quantity()));
+                                              : current.add(item.quantity())
+                                                       .or(current));
             }
         }
         var stock = new ConcurrentHashMap<ProductId, Quantity>();

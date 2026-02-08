@@ -53,7 +53,7 @@ public record HttpServerConfig(String name,
                                     DEFAULT_MAX_CONTENT_LENGTH,
                                     List.of(),
                                     false,
-                                    SocketOptions.defaults());
+                                    SocketOptions.defaultConfig());
     }
 
     public HttpServerConfig withTls(TlsConfig tls) {

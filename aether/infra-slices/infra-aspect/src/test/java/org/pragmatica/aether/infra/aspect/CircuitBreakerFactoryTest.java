@@ -5,7 +5,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.utils.CircuitBreaker.CircuitBreakerErrors.CircuitBreakerOpenError;
+import org.pragmatica.lang.utils.CircuitBreaker.CircuitBreakerError.CircuitBreakerOpenError;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -26,7 +26,7 @@ class CircuitBreakerFactoryTest {
     }
 
     @Test
-    void successful_call_does_not_trip_circuit() {
+    void doWork_successfulCall_doesNotTripCircuit() {
         var counter = new AtomicInteger(0);
         Service service = createSuccessfulService(counter);
         var config = CircuitBreakerConfig.circuitBreakerConfig(3).unwrap();
@@ -41,7 +41,7 @@ class CircuitBreakerFactoryTest {
     }
 
     @Test
-    void circuit_opens_after_threshold_failures() {
+    void doWork_thresholdFailuresReached_opensCircuit() {
         var counter = new AtomicInteger(0);
         Service service = createFailingService(counter);
         var config = CircuitBreakerConfig.circuitBreakerConfig(3, timeSpan(10).seconds(), 1).unwrap();
@@ -64,7 +64,7 @@ class CircuitBreakerFactoryTest {
     }
 
     @Test
-    void sync_methods_are_not_protected_by_circuit_breaker() {
+    void syncWork_called_isNotProtectedByCircuitBreaker() {
         var counter = new AtomicInteger(0);
         Service service = new Service() {
             @Override
@@ -86,7 +86,7 @@ class CircuitBreakerFactoryTest {
     }
 
     @Test
-    void disabled_factory_returns_original_instance() {
+    void create_factoryDisabled_returnsOriginalInstance() {
         factory.setEnabled(false);
         Service service = new Service() {
             @Override
@@ -107,13 +107,13 @@ class CircuitBreakerFactoryTest {
     }
 
     @Test
-    void factory_method_creates_instance() {
+    void circuitBreakerFactory_created_isNotNullAndEnabled() {
         assertThat(factory).isNotNull();
         assertThat(factory.isEnabled()).isTrue();
     }
 
     @Test
-    void circuitBreakerConfig_rejects_non_positive_threshold() {
+    void circuitBreakerConfig_nonPositiveThreshold_fails() {
         CircuitBreakerConfig.circuitBreakerConfig(0)
                             .onSuccessRun(Assertions::fail);
 
@@ -122,7 +122,7 @@ class CircuitBreakerFactoryTest {
     }
 
     @Test
-    void circuitBreakerConfig_accepts_custom_parameters() {
+    void circuitBreakerConfig_customParameters_acceptsValues() {
         CircuitBreakerConfig.circuitBreakerConfig(10, timeSpan(60).seconds(), 5)
                             .onFailureRun(Assertions::fail)
                             .onSuccess(config -> {
@@ -133,7 +133,7 @@ class CircuitBreakerFactoryTest {
     }
 
     @Test
-    void default_config_has_sensible_defaults() {
+    void circuitBreakerConfig_defaultParameters_hasSensibleDefaults() {
         CircuitBreakerConfig.circuitBreakerConfig()
                             .onFailureRun(Assertions::fail)
                             .onSuccess(config -> {

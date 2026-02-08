@@ -87,7 +87,7 @@ public class ManifestGenerator {
             // Artifact coordinates
             props.setProperty("base.artifact", getArtifactFromEnv());
             props.setProperty("slice.artifactId", getArtifactIdFromEnv() + "-" + toKebabCase(sliceName));
-            // Dependencies for blueprint generation (exclude infrastructure - they're resolved via InfraStore)
+            // Dependencies for blueprint generation (exclude infrastructure dependencies)
             var dependencies = model.dependencies()
                                     .stream()
                                     .filter(dep -> !dep.isInfrastructure())

@@ -2,6 +2,7 @@ package org.pragmatica.aether.e2e;
 
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.lang.utils.Causes;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -23,6 +24,11 @@ import static org.awaitility.Awaitility.await;
  * controller infrastructure rather than scaling decisions.
  */
 class ControllerE2ETest extends AbstractE2ETest {
+
+    @Override
+    protected int clusterSize() {
+        return 3;
+    }
 
     @Nested
     class ControllerConfiguration {
@@ -55,7 +61,7 @@ class ControllerE2ETest extends AbstractE2ETest {
             cluster.anyNode().setControllerConfig(newConfig);
 
             // Verify it persists
-            await().atMost(DEFAULT_TIMEOUT.duration()).until(() -> {
+            await().atMost(DEFAULT_TIMEOUT).until(() -> {
                 var config = cluster.anyNode().getControllerConfig();
                 return !config.contains("\"error\"");
             });
@@ -105,8 +111,11 @@ class ControllerE2ETest extends AbstractE2ETest {
         void controller_survivesLeaderFailure() {
             cluster.awaitLeader();
 
-            // Kill the leader (node-1 is deterministic leader)
-            cluster.killNode("node-1");
+            // Kill the actual leader (determined by consensus)
+            var leader = cluster.leader()
+                                .toResult(Causes.cause("No leader"))
+                                .unwrap();
+            cluster.killNode(leader.nodeId());
 
             // Wait for new quorum and leader
             cluster.awaitQuorum();

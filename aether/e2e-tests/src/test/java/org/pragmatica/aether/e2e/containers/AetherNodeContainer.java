@@ -68,10 +68,11 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     private static final String CONTAINER_M2_PATH = "/home/aether/.m2/repository";
 
     // Test artifact paths relative to Maven repository
-    private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/example";
+    // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
+    private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
     private static final String[] TEST_ARTIFACTS = {
-        "inventory/0.0.1-test/inventory-0.0.1-test.jar",
-        "inventory/0.0.2-test/inventory-0.0.2-test.jar"
+        "echo-slice-echo-service/0.15.0/echo-slice-echo-service-0.15.0.jar",
+        "echo-slice-echo-service/0.16.0/echo-slice-echo-service-0.16.0.jar"
     };
 
     /**
@@ -144,23 +145,59 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         }
 
         // Build and cache the image
-        var jarPath = projectRoot.resolve("node/target/aether-node.jar");
-        var dockerfilePath = projectRoot.resolve("docker/aether-node/Dockerfile");
+        // Try multiple paths based on where projectRoot points:
+        // - CI: repo root → aether/node/target/
+        // - Local from e2e-tests: ../node/target/ (go up to aether/, then into node/)
+        var jarPath = resolveExistingPath(projectRoot,
+            "aether/node/target/aether-node.jar",   // CI: from repo root
+            "../node/target/aether-node.jar",        // Local: from aether/e2e-tests/
+            "node/target/aether-node.jar");          // Fallback
+        var dockerfilePath = resolveExistingPath(projectRoot,
+            "aether/docker/aether-node/Dockerfile",  // CI: from repo root
+            "../docker/aether-node/Dockerfile",      // Local: from aether/e2e-tests/
+            "docker/aether-node/Dockerfile");
+        var configPath = resolveExistingPath(projectRoot,
+            "aether/docker/aether-node/aether.toml",  // CI: from repo root
+            "../docker/aether-node/aether.toml",      // Local: from aether/e2e-tests/
+            "docker/aether-node/aether.toml");
 
-        if (!java.nio.file.Files.exists(jarPath)) {
+        if (jarPath == null) {
             throw new IllegalStateException(
-                "aether-node.jar not found at " + jarPath + ". Run 'mvn package' first.");
+                "aether-node.jar not found. Tried:\n  " +
+                projectRoot.resolve("aether/node/target/aether-node.jar") + "\n  " +
+                projectRoot.resolve("../node/target/aether-node.jar").normalize() + "\n  " +
+                projectRoot.resolve("node/target/aether-node.jar") +
+                "\nRun 'mvn package -pl aether/node' first.");
         }
 
         // Build image once with caching disabled (deleteOnExit=false keeps it cached)
         var image = new ImageFromDockerfile(IMAGE_NAME, false)
             .withFileFromPath("Dockerfile", dockerfilePath)
             .withFileFromPath("aether-node.jar", jarPath)
-            .withBuildArg("JAR_PATH", "aether-node.jar");
+            .withFileFromPath("aether.toml", configPath)
+            .withBuildArg("JAR_PATH", "aether-node.jar")
+            .withBuildArg("CONFIG_PATH", "aether.toml");
 
         cachedImage = image;
         cachedProjectRoot = projectRoot;
         return image;
+    }
+
+    /**
+     * Resolves the first existing path from the list of candidates.
+     *
+     * @param root base path to resolve against
+     * @param candidates paths to try in order
+     * @return first existing path or null if none exist
+     */
+    private static Path resolveExistingPath(Path root, String... candidates) {
+        for (var candidate : candidates) {
+            var path = root.resolve(candidate);
+            if (Files.exists(path)) {
+                return path;
+            }
+        }
+        return null;
     }
 
     /**
@@ -173,7 +210,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      */
     public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot, String peers) {
         var container = aetherNode(nodeId, projectRoot);
-        container.withEnv("PEERS", peers);
+        container.withEnv("CLUSTER_PEERS", peers);
         return container;
     }
 
@@ -334,6 +371,60 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
      */
     public String applyBlueprint(String blueprint) {
         return post("/api/blueprint", blueprint);
+    }
+
+    // ===== Artifact Upload (Maven Protocol) =====
+
+    /**
+     * Uploads an artifact to the DHT via Maven protocol.
+     * This is required for slice deployment to work - artifacts must be in DHT, not local filesystem.
+     *
+     * @param groupPath group path with slashes (e.g., "org/pragmatica-lite/aether/test")
+     * @param artifactId artifact ID
+     * @param version version
+     * @param jarPath path to local jar file
+     * @return true if upload succeeded
+     */
+    public boolean uploadArtifact(String groupPath, String artifactId, String version, Path jarPath) {
+        try {
+            var jarContent = Files.readAllBytes(jarPath);
+            var remotePath = "/repository/" + groupPath + "/" + artifactId + "/" + version +
+                             "/" + artifactId + "-" + version + ".jar";
+            System.out.println("[DEBUG] Uploading artifact to " + remotePath + " (" + jarContent.length + " bytes)");
+            var response = putBinary(remotePath, jarContent);
+            var success = !response.contains("\"error\"");
+            if (success) {
+                System.out.println("[DEBUG] Artifact upload succeeded: " + remotePath);
+            } else {
+                System.out.println("[DEBUG] Artifact upload failed: " + response);
+            }
+            return success;
+        } catch (Exception e) {
+            System.out.println("[DEBUG] Artifact upload error: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Performs a PUT request with binary body.
+     *
+     * @param path API path
+     * @param body binary content
+     * @return response body
+     */
+    public String putBinary(String path, byte[] body) {
+        try {
+            var request = HttpRequest.newBuilder()
+                                     .uri(URI.create(managementUrl() + path))
+                                     .header("Content-Type", "application/octet-stream")
+                                     .PUT(HttpRequest.BodyPublishers.ofByteArray(body))
+                                     .timeout(Duration.ofSeconds(60))
+                                     .build();
+            var response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            return response.body();
+        } catch (Exception e) {
+            return "{\"error\":\"" + e.getMessage() + "\"}";
+        }
     }
 
     // ===== HTTP Helpers =====

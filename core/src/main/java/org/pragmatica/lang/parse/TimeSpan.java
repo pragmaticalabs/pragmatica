@@ -17,6 +17,7 @@
 package org.pragmatica.lang.parse;
 
 import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
 import java.time.Duration;
@@ -47,14 +48,12 @@ public sealed interface TimeSpan {
     /// @param text the duration string to parse
     /// @return Result containing parsed TimeSpan or parsing error
     static Result<TimeSpan> timeSpan(String text) {
-        if (text == null) {
-            return TimeSpanError.NULL_INPUT.result();
-        }
-        var normalized = text.strip();
-        if (normalized.isEmpty()) {
-            return TimeSpanError.EMPTY_INPUT.result();
-        }
-        return parseComponents(normalized);
+        return Option.option(text)
+                     .toResult(TimeSpanError.NULL_INPUT)
+                     .map(String::strip)
+                     .flatMap(normalized -> normalized.isEmpty()
+                                            ? TimeSpanError.EMPTY_INPUT.result()
+                                            : parseComponents(normalized));
     }
 
     /// Get the underlying Duration value.

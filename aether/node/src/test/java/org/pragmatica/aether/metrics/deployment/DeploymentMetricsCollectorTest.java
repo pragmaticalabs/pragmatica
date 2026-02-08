@@ -46,8 +46,8 @@ class DeploymentMetricsCollectorTest {
     // === Deployment Started Tests ===
 
     @Test
-    void onDeploymentStarted_creates_in_progress_metrics() {
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
+    void onDeploymentStarted_newDeployment_createsInProgressMetrics() {
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
 
         var inProgress = collector.inProgressDeployments();
 
@@ -61,9 +61,9 @@ class DeploymentMetricsCollectorTest {
     // === State Transition Tests ===
 
     @Test
-    void onStateTransition_updates_load_time() {
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onStateTransition(new StateTransition(artifact, self, SliceState.LOAD, SliceState.LOAD, 1100L));
+    void onStateTransition_loadState_updatesLoadTime() {
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onStateTransition(StateTransition.stateTransition(artifact, self, SliceState.LOAD, SliceState.LOAD, 1100L));
 
         var key = new DeploymentMetricsCollector.DeploymentKey(artifact, self);
         var metrics = collector.inProgressDeployments().get(key);
@@ -72,9 +72,9 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void onStateTransition_updates_loaded_time() {
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onStateTransition(new StateTransition(artifact, self, SliceState.LOADING, SliceState.LOADED, 1500L));
+    void onStateTransition_loadedState_updatesLoadedTime() {
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onStateTransition(StateTransition.stateTransition(artifact, self, SliceState.LOADING, SliceState.LOADED, 1500L));
 
         var key = new DeploymentMetricsCollector.DeploymentKey(artifact, self);
         var metrics = collector.inProgressDeployments().get(key);
@@ -83,9 +83,9 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void onStateTransition_updates_activate_time() {
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onStateTransition(new StateTransition(artifact, self, SliceState.LOADED, SliceState.ACTIVATE, 1600L));
+    void onStateTransition_activateState_updatesActivateTime() {
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onStateTransition(StateTransition.stateTransition(artifact, self, SliceState.LOADED, SliceState.ACTIVATE, 1600L));
 
         var key = new DeploymentMetricsCollector.DeploymentKey(artifact, self);
         var metrics = collector.inProgressDeployments().get(key);
@@ -94,9 +94,9 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void onStateTransition_ignores_unknown_deployment() {
+    void onStateTransition_unknownDeployment_isIgnored() {
         // No deployment started, transition should be ignored
-        collector.onStateTransition(new StateTransition(artifact, self, SliceState.LOAD, SliceState.LOADED, 1500L));
+        collector.onStateTransition(StateTransition.stateTransition(artifact, self, SliceState.LOAD, SliceState.LOADED, 1500L));
 
         assertThat(collector.inProgressDeployments()).isEmpty();
     }
@@ -104,11 +104,11 @@ class DeploymentMetricsCollectorTest {
     // === Deployment Completed Tests ===
 
     @Test
-    void onDeploymentCompleted_moves_to_completed_metrics() {
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onStateTransition(new StateTransition(artifact, self, SliceState.LOAD, SliceState.LOAD, 1100L));
-        collector.onStateTransition(new StateTransition(artifact, self, SliceState.LOADING, SliceState.LOADED, 1500L));
-        collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, 2000L));
+    void onDeploymentCompleted_existingDeployment_movesToCompletedMetrics() {
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onStateTransition(StateTransition.stateTransition(artifact, self, SliceState.LOAD, SliceState.LOAD, 1100L));
+        collector.onStateTransition(StateTransition.stateTransition(artifact, self, SliceState.LOADING, SliceState.LOADED, 1500L));
+        collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 2000L));
 
         assertThat(collector.inProgressDeployments()).isEmpty();
 
@@ -119,8 +119,8 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void onDeploymentCompleted_ignores_unknown_deployment() {
-        collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, 2000L));
+    void onDeploymentCompleted_unknownDeployment_isIgnored() {
+        collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 2000L));
 
         assertThat(collector.metricsFor(artifact)).isEmpty();
     }
@@ -128,9 +128,9 @@ class DeploymentMetricsCollectorTest {
     // === Deployment Failed Tests ===
 
     @Test
-    void onDeploymentFailed_at_loading_sets_failed_loading_status() {
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onDeploymentFailed(new DeploymentFailed(artifact, self, SliceState.LOADING, 1200L));
+    void onDeploymentFailed_atLoadingState_setsFailedLoadingStatus() {
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onDeploymentFailed(DeploymentFailed.deploymentFailed(artifact, self, SliceState.LOADING, 1200L));
 
         assertThat(collector.inProgressDeployments()).isEmpty();
 
@@ -140,9 +140,9 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void onDeploymentFailed_at_activating_sets_failed_activating_status() {
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onDeploymentFailed(new DeploymentFailed(artifact, self, SliceState.ACTIVATING, 1700L));
+    void onDeploymentFailed_atActivatingState_setsFailedActivatingStatus() {
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onDeploymentFailed(DeploymentFailed.deploymentFailed(artifact, self, SliceState.ACTIVATING, 1700L));
 
         var completed = collector.metricsFor(artifact);
         assertThat(completed).hasSize(1);
@@ -152,14 +152,14 @@ class DeploymentMetricsCollectorTest {
     // === History Retention Tests ===
 
     @Test
-    void completed_metrics_retain_last_n_entries() {
+    void metricsFor_retentionLimitReached_retainsLastNEntries() {
         // Create collector with retention of 3
         collector = DeploymentMetricsCollector.deploymentMetricsCollector(self, network, 3);
 
         // Complete 5 deployments
         for (int i = 1; i <= 5; i++) {
-            collector.onDeploymentStarted(new DeploymentStarted(artifact, self, i * 1000L));
-            collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, i * 1000L + 500L));
+            collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, i * 1000L));
+            collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, i * 1000L + 500L));
         }
 
         var completed = collector.metricsFor(artifact);
@@ -174,9 +174,9 @@ class DeploymentMetricsCollectorTest {
     // === allDeploymentMetrics Tests ===
 
     @Test
-    void allDeploymentMetrics_returns_local_metrics() {
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, 2000L));
+    void allDeploymentMetrics_withCompletedDeployment_returnsLocalMetrics() {
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 2000L));
 
         var all = collector.allDeploymentMetrics();
 
@@ -185,7 +185,7 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void allDeploymentMetrics_returns_empty_when_no_metrics() {
+    void allDeploymentMetrics_noDeployments_returnsEmpty() {
         var all = collector.allDeploymentMetrics();
 
         assertThat(all).isEmpty();
@@ -194,10 +194,10 @@ class DeploymentMetricsCollectorTest {
     // === Ping/Pong Tests ===
 
     @Test
-    void onDeploymentMetricsPing_responds_with_pong() {
+    void onDeploymentMetricsPing_fromRemoteNode_respondsWithPong() {
         // Add local metrics
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, 2000L));
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 2000L));
 
         // Receive ping from remote node
         var ping = new DeploymentMetricsPing(remoteNode, Map.of());
@@ -209,7 +209,7 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void onDeploymentMetricsPing_stores_remote_metrics() {
+    void onDeploymentMetricsPing_withRemoteMetrics_storesRemoteMetrics() {
         var remoteArtifact = Artifact.artifact("org.remote:slice:1.0.0").unwrap();
         var remoteEntry = new DeploymentMetricsEntry(
             remoteArtifact.asString(),
@@ -226,7 +226,7 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void onDeploymentMetricsPong_stores_remote_metrics() {
+    void onDeploymentMetricsPong_withRemoteMetrics_storesRemoteMetrics() {
         var remoteArtifact = Artifact.artifact("org.remote:slice:1.0.0").unwrap();
         var remoteEntry = new DeploymentMetricsEntry(
             remoteArtifact.asString(),
@@ -245,7 +245,7 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void ping_from_self_does_not_store_metrics() {
+    void onDeploymentMetricsPing_fromSelf_doesNotStoreMetrics() {
         var entry = new DeploymentMetricsEntry(
             artifact.asString(),
             self.id(),
@@ -263,9 +263,9 @@ class DeploymentMetricsCollectorTest {
     // === Topology Change Tests ===
 
     @Test
-    void onTopologyChange_nodeRemoved_cleans_up_in_progress_deployments() {
+    void onTopologyChange_nodeRemoved_cleansUpInProgressDeployments() {
         // Start deployment on remote node
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, remoteNode, 1000L));
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, remoteNode, 1000L));
         assertThat(collector.inProgressDeployments()).hasSize(1);
 
         // Remove remote node
@@ -276,7 +276,7 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void onTopologyChange_nodeRemoved_cleans_up_remote_metrics() {
+    void onTopologyChange_nodeRemoved_cleansUpRemoteMetrics() {
         // Store remote metrics via ping
         var remoteEntry = new DeploymentMetricsEntry(
             artifact.asString(),
@@ -297,13 +297,13 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void onTopologyChange_nodeRemoved_keeps_local_metrics() {
+    void onTopologyChange_nodeRemoved_keepsLocalMetrics() {
         // Complete local deployment
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, 2000L));
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 2000L));
 
         // Start in-progress on remote
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, remoteNode, 3000L));
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, remoteNode, 3000L));
 
         // Remove remote node
         collector.onTopologyChange(TopologyChangeNotification.nodeRemoved(remoteNode, List.of(self)));
@@ -314,10 +314,10 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void onTopologyChange_nodeAdded_is_ignored() {
+    void onTopologyChange_nodeAdded_isIgnored() {
         // Complete deployment
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, 2000L));
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 2000L));
 
         var newNode = NodeId.randomNodeId();
         collector.onTopologyChange(TopologyChangeNotification.nodeAdded(newNode, List.of(self, newNode)));
@@ -329,16 +329,16 @@ class DeploymentMetricsCollectorTest {
     // === Sorting Tests ===
 
     @Test
-    void metrics_sorted_by_startTime_descending() {
+    void metricsFor_multipleDeployments_sortedByStartTimeDescending() {
         // Complete multiple deployments
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, 1500L));
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 1500L));
 
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 3000L));
-        collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, 3500L));
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 3000L));
+        collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 3500L));
 
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 2000L));
-        collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, 2500L));
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 2000L));
+        collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 2500L));
 
         var metrics = collector.metricsFor(artifact);
 
@@ -349,13 +349,13 @@ class DeploymentMetricsCollectorTest {
     }
 
     @Test
-    void failed_deployments_sorted_correctly() {
+    void metricsFor_failedAndCompleted_sortedByStartTimeDescending() {
         // Failed deployment has activeTime=0 but should still be sorted by startTime
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 1000L));
-        collector.onDeploymentCompleted(new DeploymentCompleted(artifact, self, 1500L));
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 1000L));
+        collector.onDeploymentCompleted(DeploymentCompleted.deploymentCompleted(artifact, self, 1500L));
 
-        collector.onDeploymentStarted(new DeploymentStarted(artifact, self, 2000L));
-        collector.onDeploymentFailed(new DeploymentFailed(artifact, self, SliceState.LOADING, 2200L));
+        collector.onDeploymentStarted(DeploymentStarted.deploymentStarted(artifact, self, 2000L));
+        collector.onDeploymentFailed(DeploymentFailed.deploymentFailed(artifact, self, SliceState.LOADING, 2200L));
 
         var metrics = collector.metricsFor(artifact);
 

@@ -210,7 +210,6 @@ public final class TlsContextFactory {
             return new TlsError.PrivateKeyLoadFailed(keyPath,
                                                      new java.io.FileNotFoundException("Private key file not found or not readable: " + keyPath)).result();
         }
-        var pwd = password.fold(() -> null, p -> p);
-        return Result.success(new KeyMaterial(certFile, keyFile, pwd));
+        return Result.success(new KeyMaterial(certFile, keyFile, password.or((String) null)));
     }
 }

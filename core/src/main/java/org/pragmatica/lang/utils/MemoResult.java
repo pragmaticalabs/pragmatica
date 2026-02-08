@@ -127,135 +127,135 @@ public interface MemoResult<K, V> {
         }
         return Result.success(new BoundedMemoResult<>(computation, maxSize));
     }
-}
 
-/// Wrapper to distinguish null values from absent entries.
-record ResultCacheEntry<V>(V value) {
-    static <V> ResultCacheEntry<V> resultCacheEntry(V value) {
-        return new ResultCacheEntry<>(value);
-    }
-}
-
-final class UnboundedMemoResult<K, V> implements MemoResult<K, V> {
-    private final ConcurrentHashMap<K, ResultCacheEntry<V>> cache = new ConcurrentHashMap<>();
-    private final Fn1<Result<V>, K> computation;
-    private final AtomicLong hits = new AtomicLong();
-    private final AtomicLong misses = new AtomicLong();
-
-    UnboundedMemoResult(Fn1<Result<V>, K> computation) {
-        this.computation = computation;
-    }
-
-    @Override
-    public Result<V> get(K key) {
-        Objects.requireNonNull(key, "key must not be null");
-        var cached = cache.get(key);
-        if (cached != null) {
-            hits.incrementAndGet();
-            return Result.success(cached.value());
+    /// Wrapper to distinguish null values from absent entries.
+    record ResultCacheEntry<V>(V value) {
+        static <V> ResultCacheEntry<V> resultCacheEntry(V value) {
+            return new ResultCacheEntry<>(value);
         }
-        misses.incrementAndGet();
-        return computation.apply(key)
-                          .onSuccess(value -> cache.put(key,
-                                                        ResultCacheEntry.resultCacheEntry(value)));
     }
 
-    @Override
-    public Unit invalidate(K key) {
-        cache.remove(key);
-        return Unit.unit();
-    }
+    final class UnboundedMemoResult<K, V> implements MemoResult<K, V> {
+        private final ConcurrentHashMap<K, ResultCacheEntry<V>> cache = new ConcurrentHashMap<>();
+        private final Fn1<Result<V>, K> computation;
+        private final AtomicLong hits = new AtomicLong();
+        private final AtomicLong misses = new AtomicLong();
 
-    @Override
-    public Unit invalidateAll() {
-        cache.clear();
-        return Unit.unit();
-    }
-
-    @Override
-    public long hitCount() {
-        return hits.get();
-    }
-
-    @Override
-    public long missCount() {
-        return misses.get();
-    }
-
-    @Override
-    public int size() {
-        return cache.size();
-    }
-}
-
-final class BoundedMemoResult<K, V> implements MemoResult<K, V> {
-    private final Map<K, ResultCacheEntry<V>> cache;
-    private final Fn1<Result<V>, K> computation;
-    private final AtomicLong hits = new AtomicLong();
-    private final AtomicLong misses = new AtomicLong();
-
-    BoundedMemoResult(Fn1<Result<V>, K> computation, int maxSize) {
-        this.computation = computation;
-        // LinkedHashMap with access-order for LRU, wrapped for thread safety
-        this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
-            @Override
-            protected boolean removeEldestEntry(Map.Entry<K, ResultCacheEntry<V>> eldest) {
-                                                     return size() > maxSize;
-                                                 }
-        });
-    }
-
-    @Override
-    public Result<V> get(K key) {
-        Objects.requireNonNull(key, "key must not be null");
-        ResultCacheEntry<V> cached;
-        synchronized (cache) {
-            cached = cache.get(key);
+        UnboundedMemoResult(Fn1<Result<V>, K> computation) {
+            this.computation = computation;
         }
-        if (cached != null) {
-            hits.incrementAndGet();
-            return Result.success(cached.value());
-        }
-        misses.incrementAndGet();
-        return computation.apply(key)
-                          .onSuccess(value -> {
-                                         synchronized (cache) {
-                                             cache.put(key,
-                                                       ResultCacheEntry.resultCacheEntry(value));
-                                         }
-                                     });
-    }
 
-    @Override
-    public Unit invalidate(K key) {
-        synchronized (cache) {
+        @Override
+        public Result<V> get(K key) {
+            Objects.requireNonNull(key, "key must not be null");
+            var cached = cache.get(key);
+            if (cached != null) {
+                hits.incrementAndGet();
+                return Result.success(cached.value());
+            }
+            misses.incrementAndGet();
+            return computation.apply(key)
+                              .onSuccess(value -> cache.put(key,
+                                                            ResultCacheEntry.resultCacheEntry(value)));
+        }
+
+        @Override
+        public Unit invalidate(K key) {
             cache.remove(key);
+            return Unit.unit();
         }
-        return Unit.unit();
-    }
 
-    @Override
-    public Unit invalidateAll() {
-        synchronized (cache) {
+        @Override
+        public Unit invalidateAll() {
             cache.clear();
+            return Unit.unit();
         }
-        return Unit.unit();
-    }
 
-    @Override
-    public long hitCount() {
-        return hits.get();
-    }
+        @Override
+        public long hitCount() {
+            return hits.get();
+        }
 
-    @Override
-    public long missCount() {
-        return misses.get();
-    }
+        @Override
+        public long missCount() {
+            return misses.get();
+        }
 
-    @Override
-    public int size() {
-        synchronized (cache) {
+        @Override
+        public int size() {
             return cache.size();
+        }
+    }
+
+    final class BoundedMemoResult<K, V> implements MemoResult<K, V> {
+        private final Map<K, ResultCacheEntry<V>> cache;
+        private final Fn1<Result<V>, K> computation;
+        private final AtomicLong hits = new AtomicLong();
+        private final AtomicLong misses = new AtomicLong();
+
+        BoundedMemoResult(Fn1<Result<V>, K> computation, int maxSize) {
+            this.computation = computation;
+            // LinkedHashMap with access-order for LRU, wrapped for thread safety
+            this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<K, ResultCacheEntry<V>> eldest) {
+                                                         return size() > maxSize;
+                                                     }
+            });
+        }
+
+        @Override
+        public Result<V> get(K key) {
+            Objects.requireNonNull(key, "key must not be null");
+            ResultCacheEntry<V> cached;
+            synchronized (cache) {
+                cached = cache.get(key);
+            }
+            if (cached != null) {
+                hits.incrementAndGet();
+                return Result.success(cached.value());
+            }
+            misses.incrementAndGet();
+            return computation.apply(key)
+                              .onSuccess(value -> {
+                                             synchronized (cache) {
+                                                 cache.put(key,
+                                                           ResultCacheEntry.resultCacheEntry(value));
+                                             }
+                                         });
+        }
+
+        @Override
+        public Unit invalidate(K key) {
+            synchronized (cache) {
+                cache.remove(key);
+            }
+            return Unit.unit();
+        }
+
+        @Override
+        public Unit invalidateAll() {
+            synchronized (cache) {
+                cache.clear();
+            }
+            return Unit.unit();
+        }
+
+        @Override
+        public long hitCount() {
+            return hits.get();
+        }
+
+        @Override
+        public long missCount() {
+            return misses.get();
+        }
+
+        @Override
+        public int size() {
+            synchronized (cache) {
+                return cache.size();
+            }
         }
     }
 }

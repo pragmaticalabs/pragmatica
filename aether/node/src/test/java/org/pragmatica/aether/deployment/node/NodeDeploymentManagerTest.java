@@ -11,10 +11,12 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceNodeKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceNodeValue;
 import org.pragmatica.aether.invoke.InvocationHandler;
+import org.pragmatica.aether.slice.DynamicAspectMode;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.*;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage.*;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -478,6 +480,11 @@ class NodeDeploymentManagerTest {
         }
 
         @Override
+        public TopologyManager topologyManager() {
+            return null;
+        }
+
+        @Override
         public Promise<Unit> start() {
             return Promise.unitPromise();
         }
@@ -515,13 +522,18 @@ class NodeDeploymentManagerTest {
         }
 
         @Override
-        public Option<SliceBridge> getLocalSlice(Artifact artifact) {
+        public Option<SliceBridge> localSlice(Artifact artifact) {
             return Option.none();
         }
 
         @Override
         public Option<org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector> metricsCollector() {
             return Option.none();
+        }
+
+        @Override
+        public DynamicAspectMode getAspectMode(String artifactBase, String methodName) {
+            return DynamicAspectMode.NONE;
         }
     }
 

@@ -80,91 +80,91 @@ public interface Lazy<T> {
     static <T> Lazy<T> value(T value) {
         return new EvaluatedLazy<>(value);
     }
-}
 
-/// Internal implementation of a deferred lazy value.
-final class DeferredLazy<T> implements Lazy<T> {
-    private final Supplier<T> supplier;
-    private volatile boolean computed;
-    private volatile T value;
+    /// Internal implementation of a deferred lazy value.
+    final class DeferredLazy<T> implements Lazy<T> {
+        private final Supplier<T> supplier;
+        private volatile boolean computed;
+        private volatile T value;
 
-    DeferredLazy(Supplier<T> supplier) {
-        this.supplier = supplier;
-        this.computed = false;
-    }
+        DeferredLazy(Supplier<T> supplier) {
+            this.supplier = supplier;
+            this.computed = false;
+        }
 
-    @Override
-    public T get() {
-        if (!computed) {
-            synchronized (this) {
-                if (!computed) {
-                    value = supplier.get();
-                    computed = true;
+        @Override
+        public T get() {
+            if (!computed) {
+                synchronized (this) {
+                    if (!computed) {
+                        value = supplier.get();
+                        computed = true;
+                    }
                 }
             }
+            return value;
         }
-        return value;
+
+        @Override
+        public boolean isComputed() {
+            return computed;
+        }
+
+        @Override
+        public <R> Lazy<R> map(Fn1<R, ? super T> fn) {
+            Objects.requireNonNull(fn, "fn must not be null");
+            return Lazy.lazy(() -> fn.apply(get()));
+        }
+
+        @Override
+        public <R> Lazy<R> flatMap(Fn1<Lazy<R>, ? super T> fn) {
+            Objects.requireNonNull(fn, "fn must not be null");
+            return Lazy.lazy(() -> fn.apply(get())
+                                     .get());
+        }
+
+        @Override
+        public String toString() {
+            return computed
+                   ? "Lazy(" + value + ")"
+                   : "Lazy(<not computed>)";
+        }
     }
 
-    @Override
-    public boolean isComputed() {
-        return computed;
-    }
+    /// Internal implementation of a pre-computed lazy value.
+    final class EvaluatedLazy<T> implements Lazy<T> {
+        private final T value;
 
-    @Override
-    public <R> Lazy<R> map(Fn1<R, ? super T> fn) {
-        Objects.requireNonNull(fn, "fn must not be null");
-        return Lazy.lazy(() -> fn.apply(get()));
-    }
+        EvaluatedLazy(T value) {
+            this.value = value;
+        }
 
-    @Override
-    public <R> Lazy<R> flatMap(Fn1<Lazy<R>, ? super T> fn) {
-        Objects.requireNonNull(fn, "fn must not be null");
-        return Lazy.lazy(() -> fn.apply(get())
-                                 .get());
-    }
+        @Override
+        public T get() {
+            return value;
+        }
 
-    @Override
-    public String toString() {
-        return computed
-               ? "Lazy(" + value + ")"
-               : "Lazy(<not computed>)";
-    }
-}
+        @Override
+        public boolean isComputed() {
+            return true;
+        }
 
-/// Internal implementation of a pre-computed lazy value.
-final class EvaluatedLazy<T> implements Lazy<T> {
-    private final T value;
+        @Override
+        public <R> Lazy<R> map(Fn1<R, ? super T> fn) {
+            Objects.requireNonNull(fn, "fn must not be null");
+            return Lazy.lazy(() -> fn.apply(value));
+        }
 
-    EvaluatedLazy(T value) {
-        this.value = value;
-    }
+        @Override
+        public <R> Lazy<R> flatMap(Fn1<Lazy<R>, ? super T> fn) {
+            Objects.requireNonNull(fn, "fn must not be null");
+            return Lazy.lazy(() -> fn.apply(value)
+                                     .get());
+        }
 
-    @Override
-    public T get() {
-        return value;
-    }
-
-    @Override
-    public boolean isComputed() {
-        return true;
-    }
-
-    @Override
-    public <R> Lazy<R> map(Fn1<R, ? super T> fn) {
-        Objects.requireNonNull(fn, "fn must not be null");
-        return Lazy.lazy(() -> fn.apply(value));
-    }
-
-    @Override
-    public <R> Lazy<R> flatMap(Fn1<Lazy<R>, ? super T> fn) {
-        Objects.requireNonNull(fn, "fn must not be null");
-        return Lazy.lazy(() -> fn.apply(value)
-                                 .get());
-    }
-
-    @Override
-    public String toString() {
-        return "Lazy(" + value + ")";
+        @Override
+        public String toString() {
+            return "Lazy(" + value + ")";
+        }
     }
 }

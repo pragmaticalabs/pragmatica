@@ -44,7 +44,7 @@ import picocli.CommandLine.Parameters;
  */
 @Command(name = "aether",
  mixinStandardHelpOptions = true,
- version = "Aether 0.7.2",
+ version = "Aether 0.15.0",
  description = "Command-line interface for Aether cluster management",
  subcommands = {AetherCli.StatusCommand.class,
  AetherCli.NodesCommand.class,
@@ -158,7 +158,7 @@ public class AetherCli implements Runnable {
     }
 
     private void runRepl(CommandLine cmd) {
-        System.out.println("Aether v0.7.2 - Connected to " + nodeAddress);
+        System.out.println("Aether v0.15.0 - Connected to " + nodeAddress);
         System.out.println("Type 'help' for available commands, 'exit' to quit.");
         System.out.println();
         try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
@@ -614,7 +614,12 @@ public class AetherCli implements Runnable {
 
     @Command(name = "blueprint",
     description = "Blueprint management",
-    subcommands = {BlueprintCommand.ApplyCommand.class})
+    subcommands = {BlueprintCommand.ApplyCommand.class,
+    BlueprintCommand.ListCommand.class,
+    BlueprintCommand.GetCommand.class,
+    BlueprintCommand.DeleteCommand.class,
+    BlueprintCommand.StatusCommand.class,
+    BlueprintCommand.ValidateCommand.class})
     static class BlueprintCommand implements Runnable {
         @CommandLine.ParentCommand
         private AetherCli parent;
@@ -640,7 +645,7 @@ public class AetherCli implements Runnable {
                         return 1;
                     }
                     var content = Files.readString(blueprintPath);
-                    var response = blueprintParent.parent.postToNode("/blueprint", content);
+                    var response = blueprintParent.parent.postToNode("/api/blueprint", content);
                     if (response.contains("\"error\":")) {
                         System.out.println("Failed to apply blueprint: " + response);
                         return 1;
@@ -652,6 +657,380 @@ public class AetherCli implements Runnable {
                     return 1;
                 }
             }
+        }
+
+        @Command(name = "list", description = "List all deployed blueprints")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueprintCommand blueprintParent;
+
+            @Option(names = {"--format"}, description = "Output format (table|json)", defaultValue = "table")
+            private String format;
+
+            @Override
+            public Integer call() {
+                var response = blueprintParent.parent.fetchFromNode("/api/blueprints");
+                if (response.contains("\"error\":")) {
+                    System.out.println("Failed to list blueprints: " + response);
+                    return 1;
+                }
+                if ("json".equalsIgnoreCase(format)) {
+                    System.out.println(formatJson(response));
+                } else {
+                    printBlueprintListTable(response);
+                }
+                return 0;
+            }
+
+            private void printBlueprintListTable(String json) {
+                // Simple table output - parse blueprints array
+                System.out.println("ID                                     SLICES");
+                System.out.println("─".repeat(60));
+                // Extract blueprints from JSON (simple parsing)
+                var blueprintsStart = json.indexOf("\"blueprints\":");
+                if (blueprintsStart == - 1) {
+                    System.out.println("No blueprints found");
+                    return;
+                }
+                var arrayStart = json.indexOf('[', blueprintsStart);
+                var arrayEnd = json.lastIndexOf(']');
+                if (arrayStart == - 1 || arrayEnd == - 1 || arrayEnd <= arrayStart) {
+                    System.out.println("No blueprints found");
+                    return;
+                }
+                var blueprintsArray = json.substring(arrayStart + 1, arrayEnd);
+                if (blueprintsArray.trim()
+                                   .isEmpty()) {
+                    System.out.println("No blueprints found");
+                    return;
+                }
+                // Parse each blueprint object
+                var depth = 0;
+                var start = 0;
+                for (int i = 0; i < blueprintsArray.length(); i++) {
+                    var c = blueprintsArray.charAt(i);
+                    if (c == '{') {
+                        if (depth == 0) start = i;
+                        depth++;
+                    } else if (c == '}') {
+                        depth--;
+                        if (depth == 0) {
+                            var obj = blueprintsArray.substring(start, i + 1);
+                            printBlueprintRow(obj);
+                        }
+                    }
+                }
+            }
+
+            private void printBlueprintRow(String json) {
+                var id = extractJsonString(json, "id");
+                var sliceCount = extractJsonNumber(json, "sliceCount");
+                System.out.printf("%-40s %s%n", id, sliceCount);
+            }
+        }
+
+        @Command(name = "get", description = "Get blueprint details")
+        static class GetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueprintCommand blueprintParent;
+
+            @Parameters(index = "0", description = "Blueprint ID (group:artifact:version)")
+            private String blueprintId;
+
+            @Option(names = {"--format"}, description = "Output format (table|json)", defaultValue = "table")
+            private String format;
+
+            @Override
+            public Integer call() {
+                var encodedId = blueprintId.replace(":", "%3A");
+                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + encodedId);
+                if (response.contains("\"error\":")) {
+                    System.out.println("Failed to get blueprint: " + response);
+                    return 1;
+                }
+                if ("json".equalsIgnoreCase(format)) {
+                    System.out.println(formatJson(response));
+                } else {
+                    printBlueprintDetailTable(response);
+                }
+                return 0;
+            }
+
+            private void printBlueprintDetailTable(String json) {
+                var id = extractJsonString(json, "id");
+                System.out.println("Blueprint: " + id);
+                System.out.println();
+                System.out.println("SLICES:");
+                System.out.println("─".repeat(80));
+                System.out.printf("%-50s %10s %12s%n", "ARTIFACT", "INSTANCES", "TYPE");
+                System.out.println("─".repeat(80));
+                // Parse slices array
+                var slicesStart = json.indexOf("\"slices\":");
+                if (slicesStart != - 1) {
+                    var arrayStart = json.indexOf('[', slicesStart);
+                    var arrayEnd = findMatchingBracket(json, arrayStart);
+                    if (arrayStart != - 1 && arrayEnd != - 1) {
+                        var slicesArray = json.substring(arrayStart + 1, arrayEnd);
+                        parseAndPrintSlices(slicesArray);
+                    }
+                }
+            }
+
+            private void parseAndPrintSlices(String slicesArray) {
+                var depth = 0;
+                var start = 0;
+                for (int i = 0; i < slicesArray.length(); i++) {
+                    var c = slicesArray.charAt(i);
+                    if (c == '{') {
+                        if (depth == 0) start = i;
+                        depth++;
+                    } else if (c == '}') {
+                        depth--;
+                        if (depth == 0) {
+                            var obj = slicesArray.substring(start, i + 1);
+                            printSliceRow(obj);
+                        }
+                    }
+                }
+            }
+
+            private void printSliceRow(String json) {
+                var artifact = extractJsonString(json, "artifact");
+                var instances = extractJsonNumber(json, "instances");
+                var isDep = json.contains("\"isDependency\":true");
+                var type = isDep
+                           ? "dependency"
+                           : "primary";
+                System.out.printf("%-50s %10s %12s%n", artifact, instances, type);
+            }
+        }
+
+        @Command(name = "delete", description = "Delete a blueprint from the cluster")
+        static class DeleteCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueprintCommand blueprintParent;
+
+            @Parameters(index = "0", description = "Blueprint ID (group:artifact:version)")
+            private String blueprintId;
+
+            @Option(names = {"--force", "-f"}, description = "Skip confirmation prompt")
+            private boolean force;
+
+            @Override
+            public Integer call() {
+                if (!force) {
+                    System.out.print("Are you sure you want to delete blueprint '" + blueprintId + "'? (y/N) ");
+                    try (var reader = new BufferedReader(new InputStreamReader(System.in))) {
+                        var line = reader.readLine();
+                        if (line == null || !line.trim()
+                                                 .equalsIgnoreCase("y")) {
+                            System.out.println("Cancelled.");
+                            return 0;
+                        }
+                    } catch (IOException e) {
+                        System.err.println("Error reading input: " + e.getMessage());
+                        return 1;
+                    }
+                }
+                var encodedId = blueprintId.replace(":", "%3A");
+                var response = blueprintParent.parent.deleteFromNode("/api/blueprint/" + encodedId);
+                if (response.contains("\"error\":")) {
+                    System.out.println("Failed to delete blueprint: " + response);
+                    return 1;
+                }
+                System.out.println("Deleted blueprint: " + blueprintId);
+                return 0;
+            }
+        }
+
+        @Command(name = "status", description = "Show deployment status of a blueprint")
+        static class StatusCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueprintCommand blueprintParent;
+
+            @Parameters(index = "0", description = "Blueprint ID (group:artifact:version)")
+            private String blueprintId;
+
+            @Option(names = {"--format"}, description = "Output format (table|json)", defaultValue = "table")
+            private String format;
+
+            @Override
+            public Integer call() {
+                var encodedId = blueprintId.replace(":", "%3A");
+                var response = blueprintParent.parent.fetchFromNode("/api/blueprint/" + encodedId + "/status");
+                if (response.contains("\"error\":")) {
+                    System.out.println("Failed to get blueprint status: " + response);
+                    return 1;
+                }
+                if ("json".equalsIgnoreCase(format)) {
+                    System.out.println(formatJson(response));
+                } else {
+                    printBlueprintStatusTable(response);
+                }
+                return 0;
+            }
+
+            private void printBlueprintStatusTable(String json) {
+                var id = extractJsonString(json, "id");
+                var overallStatus = extractJsonString(json, "overallStatus");
+                System.out.println("Blueprint: " + id);
+                System.out.println("Status: " + overallStatus);
+                System.out.println();
+                System.out.println("SLICE STATUS:");
+                System.out.println("─".repeat(90));
+                System.out.printf("%-50s %8s %8s %12s%n", "ARTIFACT", "TARGET", "ACTIVE", "STATUS");
+                System.out.println("─".repeat(90));
+                // Parse slices array
+                var slicesStart = json.indexOf("\"slices\":");
+                if (slicesStart != - 1) {
+                    var arrayStart = json.indexOf('[', slicesStart);
+                    var arrayEnd = findMatchingBracket(json, arrayStart);
+                    if (arrayStart != - 1 && arrayEnd != - 1) {
+                        var slicesArray = json.substring(arrayStart + 1, arrayEnd);
+                        parseAndPrintStatusSlices(slicesArray);
+                    }
+                }
+            }
+
+            private void parseAndPrintStatusSlices(String slicesArray) {
+                var depth = 0;
+                var start = 0;
+                for (int i = 0; i < slicesArray.length(); i++) {
+                    var c = slicesArray.charAt(i);
+                    if (c == '{') {
+                        if (depth == 0) start = i;
+                        depth++;
+                    } else if (c == '}') {
+                        depth--;
+                        if (depth == 0) {
+                            var obj = slicesArray.substring(start, i + 1);
+                            printStatusSliceRow(obj);
+                        }
+                    }
+                }
+            }
+
+            private void printStatusSliceRow(String json) {
+                var artifact = extractJsonString(json, "artifact");
+                var target = extractJsonNumber(json, "targetInstances");
+                var active = extractJsonNumber(json, "activeInstances");
+                var status = extractJsonString(json, "status");
+                System.out.printf("%-50s %8s %8s %12s%n", artifact, target, active, status);
+            }
+        }
+
+        @Command(name = "validate", description = "Validate a blueprint file without deploying")
+        static class ValidateCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private BlueprintCommand blueprintParent;
+
+            @Parameters(index = "0", description = "Path to the blueprint file (.toml)")
+            private Path blueprintPath;
+
+            @Override
+            public Integer call() {
+                try{
+                    if (!Files.exists(blueprintPath)) {
+                        System.err.println("Blueprint file not found: " + blueprintPath);
+                        return 1;
+                    }
+                    var content = Files.readString(blueprintPath);
+                    var response = blueprintParent.parent.postToNode("/api/blueprint/validate", content);
+                    if (response.contains("\"valid\":false")) {
+                        System.out.println("Validation FAILED");
+                        var errors = extractJsonArray(response, "errors");
+                        if (!errors.isEmpty()) {
+                            System.out.println("Errors:");
+                            for (var error : errors) {
+                                System.out.println("  - " + error);
+                            }
+                        }
+                        return 1;
+                    }
+                    var id = extractJsonString(response, "id");
+                    var sliceCount = extractJsonNumber(response, "sliceCount");
+                    System.out.println("Validation PASSED");
+                    System.out.println("  Blueprint ID: " + id);
+                    System.out.println("  Slices: " + sliceCount);
+                    return 0;
+                } catch (IOException e) {
+                    System.err.println("Error reading blueprint file: " + e.getMessage());
+                    return 1;
+                }
+            }
+
+            private java.util.List<String> extractJsonArray(String json, String key) {
+                var result = new java.util.ArrayList<String>();
+                var keyPattern = "\"" + key + "\":";
+                var start = json.indexOf(keyPattern);
+                if (start == - 1) return result;
+                var arrayStart = json.indexOf('[', start);
+                var arrayEnd = findMatchingBracket(json, arrayStart);
+                if (arrayStart == - 1 || arrayEnd == - 1) return result;
+                var arrayContent = json.substring(arrayStart + 1, arrayEnd);
+                // Parse string elements
+                var inString = false;
+                var stringStart = - 1;
+                for (int i = 0; i < arrayContent.length(); i++) {
+                    var c = arrayContent.charAt(i);
+                    if (c == '"' && (i == 0 || arrayContent.charAt(i - 1) != '\\')) {
+                        if (!inString) {
+                            inString = true;
+                            stringStart = i + 1;
+                        } else {
+                            result.add(arrayContent.substring(stringStart, i));
+                            inString = false;
+                        }
+                    }
+                }
+                return result;
+            }
+        }
+
+        // Helper methods for JSON parsing
+        private static String extractJsonString(String json, String key) {
+            var pattern = "\"" + key + "\":\"";
+            var start = json.indexOf(pattern);
+            if (start == - 1) return "";
+            start += pattern.length();
+            var end = json.indexOf("\"", start);
+            if (end == - 1) return "";
+            return json.substring(start, end);
+        }
+
+        private static String extractJsonNumber(String json, String key) {
+            var pattern = "\"" + key + "\":";
+            var start = json.indexOf(pattern);
+            if (start == - 1) return "0";
+            start += pattern.length();
+            var end = start;
+            while (end < json.length() && (Character.isDigit(json.charAt(end)) || json.charAt(end) == '-')) {
+                end++;
+            }
+            if (end == start) return "0";
+            return json.substring(start, end);
+        }
+
+        private static int findMatchingBracket(String json, int openIndex) {
+            if (openIndex == - 1 || openIndex >= json.length()) return - 1;
+            var openChar = json.charAt(openIndex);
+            var closeChar = openChar == '['
+                            ? ']'
+                            : '}';
+            var depth = 1;
+            var inString = false;
+            for (int i = openIndex + 1; i < json.length(); i++) {
+                var c = json.charAt(i);
+                if (c == '"' && (i == 0 || json.charAt(i - 1) != '\\')) {
+                    inString = !inString;
+                } else if (!inString) {
+                    if (c == openChar) depth++;else if (c == closeChar) {
+                        depth--;
+                        if (depth == 0) return i;
+                    }
+                }
+            }
+            return - 1;
         }
     }
 

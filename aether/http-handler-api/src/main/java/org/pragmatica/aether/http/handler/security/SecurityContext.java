@@ -1,5 +1,7 @@
 package org.pragmatica.aether.http.handler.security;
 
+import org.pragmatica.lang.Result;
+
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -39,10 +41,13 @@ public record SecurityContext(Principal principal,
      * Create context for API key authentication.
      *
      * @param keyName the API key identifier
-     * @return security context with SERVICE role
+     * @return Result containing security context with SERVICE role or validation error
      */
-    public static SecurityContext forApiKey(String keyName) {
-        return new SecurityContext(Principal.apiKeyPrincipal(keyName), Set.of(Role.SERVICE), Map.of());
+    public static Result<SecurityContext> forApiKey(String keyName) {
+        return Principal.apiKeyPrincipal(keyName)
+                        .map(principal -> new SecurityContext(principal,
+                                                              Set.of(Role.SERVICE),
+                                                              Map.of()));
     }
 
     /**
@@ -50,10 +55,13 @@ public record SecurityContext(Principal principal,
      *
      * @param keyName the API key identifier
      * @param roles   assigned roles
-     * @return security context with specified roles
+     * @return Result containing security context with specified roles or validation error
      */
-    public static SecurityContext forApiKey(String keyName, Set<Role> roles) {
-        return new SecurityContext(Principal.apiKeyPrincipal(keyName), roles, Map.of());
+    public static Result<SecurityContext> forApiKey(String keyName, Set<Role> roles) {
+        return Principal.apiKeyPrincipal(keyName)
+                        .map(principal -> new SecurityContext(principal,
+                                                              roles,
+                                                              Map.of()));
     }
 
     /**
@@ -62,10 +70,11 @@ public record SecurityContext(Principal principal,
      * @param subject user subject from token
      * @param roles   assigned roles from token
      * @param claims  additional claims from token
-     * @return security context for authenticated user
+     * @return Result containing security context for authenticated user or validation error
      */
-    public static SecurityContext forBearer(String subject, Set<Role> roles, Map<String, String> claims) {
-        return new SecurityContext(Principal.userPrincipal(subject), roles, claims);
+    public static Result<SecurityContext> forBearer(String subject, Set<Role> roles, Map<String, String> claims) {
+        return Principal.userPrincipal(subject)
+                        .map(principal -> new SecurityContext(principal, roles, claims));
     }
 
     /**
@@ -91,9 +100,12 @@ public record SecurityContext(Principal principal,
 
     /**
      * Check if context has role by name.
+     * Returns false if role name is invalid.
      */
     public boolean hasRole(String roleName) {
-        return roles.contains(Role.role(roleName));
+        return Role.role(roleName)
+                   .map(roles::contains)
+                   .or(false);
     }
 
     /**

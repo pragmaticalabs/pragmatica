@@ -37,23 +37,28 @@ public record ClusterConfiguration(
     List<NodeId> nodeIds
 ) {
     public static ClusterConfiguration threeNodes() {
-        return of(3);
+        return clusterConfiguration(3);
     }
 
     public static ClusterConfiguration fiveNodes() {
-        return of(5);
+        return clusterConfiguration(5);
     }
 
     public static ClusterConfiguration sevenNodes() {
-        return of(7);
+        return clusterConfiguration(7);
     }
 
-    public static ClusterConfiguration of(int n) {
+    public static ClusterConfiguration clusterConfiguration(int n) {
         int f = (n - 1) / 2;
         var nodeIds = IntStream.rangeClosed(1, n)
                                .mapToObj(i -> NodeId.nodeId("node-" + i).unwrap())
                                .toList();
         return new ClusterConfiguration(n, f + 1, f + 1, f, n - f, nodeIds);
+    }
+
+    @Deprecated(forRemoval = true)
+    public static ClusterConfiguration of(int n) {
+        return clusterConfiguration(n);
     }
 
     /// Return all possible majority quorums (combinations of quorumSize nodes)

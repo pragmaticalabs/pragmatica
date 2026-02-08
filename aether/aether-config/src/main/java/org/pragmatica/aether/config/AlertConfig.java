@@ -35,7 +35,7 @@ public record AlertConfig(boolean enabled,
     /**
      * Default configuration with alerting enabled but no webhooks configured.
      */
-    public static AlertConfig defaults() {
+    public static AlertConfig defaultConfig() {
         return DEFAULT;
     }
 

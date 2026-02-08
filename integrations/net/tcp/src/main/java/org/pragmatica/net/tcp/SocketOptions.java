@@ -42,11 +42,11 @@ public record SocketOptions(int soBacklog, boolean soKeepalive, boolean tcpNoDel
 
     /// Get default socket options.
     public static SocketOptions socketOptions() {
-        return defaults();
+        return DEFAULT;
     }
 
     /// Get default socket options (backlog=128, keepalive=true, nodelay=true).
-    public static SocketOptions defaults() {
+    public static SocketOptions defaultConfig() {
         return DEFAULT;
     }
 

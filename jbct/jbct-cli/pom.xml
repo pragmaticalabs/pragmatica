@@ -23,6 +23,24 @@
             <artifactId>jbct-core</artifactId>
         </dependency>
 
+        <!-- Formatter module -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-format</artifactId>
+        </dependency>
+
+        <!-- Linter module -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-lint</artifactId>
+        </dependency>
+
+        <!-- Init module -->
+        <dependency>
+            <groupId>org.pragmatica-lite</groupId>
+            <artifactId>jbct-init</artifactId>
+        </dependency>
+
         <!-- Picocli -->
         <dependency>
             <groupId>info.picocli</groupId>

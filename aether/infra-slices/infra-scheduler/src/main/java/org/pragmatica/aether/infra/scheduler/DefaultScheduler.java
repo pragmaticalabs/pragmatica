@@ -6,6 +6,8 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
+import static org.pragmatica.lang.Option.option;
+
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -120,13 +122,12 @@ final class DefaultScheduler implements Scheduler {
 
     @Override
     public Promise<Boolean> cancel(String name) {
-        var entry = tasks.remove(name);
-        if (entry != null) {
-            entry.cancel();
-            log.debug("Cancelled task '{}'", name);
-            return Promise.success(true);
-        }
-        return Promise.success(false);
+        return Promise.success(Option.option(tasks.remove(name))
+                                     .onPresent(entry -> {
+                                         entry.cancel();
+                                         log.debug("Cancelled task '{}'", name);
+                                     })
+                                     .isPresent());
     }
 
     @Override
@@ -141,8 +142,9 @@ final class DefaultScheduler implements Scheduler {
 
     @Override
     public Promise<Boolean> isScheduled(String name) {
-        var entry = tasks.get(name);
-        return Promise.success(entry != null && entry.isActive());
+        return Promise.success(Option.option(tasks.get(name))
+                                     .filter(TaskEntry::isActive)
+                                     .isPresent());
     }
 
     private void executeTask(String name, Fn0<Promise<Unit>> task) {

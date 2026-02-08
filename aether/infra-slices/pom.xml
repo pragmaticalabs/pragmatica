@@ -14,21 +14,16 @@
     <description>Infrastructure slices for Aether runtime</description>
 
     <modules>
-        <module>infra-cache</module>
-        <module>infra-database</module>
-        <module>infra-blob</module>
-        <module>infra-secrets</module>
-        <module>infra-outbox</module>
-        <module>infra-statemachine</module>
         <module>infra-aspect</module>
         <module>infra-config</module>
-        <module>infra-streaming</module>
+        <module>infra-database</module>
+        <module>infra-db-connector</module>
         <module>infra-http</module>
-        <module>infra-server</module>
-        <module>infra-feature</module>
         <module>infra-lock</module>
         <module>infra-pubsub</module>
         <module>infra-ratelimit</module>
         <module>infra-scheduler</module>
+        <module>infra-secrets</module>
+        <module>infra-statemachine</module>
     </modules>
 </project>

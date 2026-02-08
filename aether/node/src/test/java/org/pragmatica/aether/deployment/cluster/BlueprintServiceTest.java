@@ -1,6 +1,5 @@
 package org.pragmatica.aether.deployment.cluster;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -14,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.AppBlueprintValue;
 import org.pragmatica.aether.slice.repository.Repository;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.node.ClusterNode;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 class BlueprintServiceTest {
 
@@ -57,7 +58,7 @@ class BlueprintServiceTest {
 
             service.publish(dsl)
                    .await()
-                   .onSuccessRun(Assertions::fail)
+                   .onSuccessRun(() -> fail("Expected failure"))
                    .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }
 
@@ -70,7 +71,7 @@ class BlueprintServiceTest {
 
             service.publish(dsl)
                    .await()
-                   .onSuccessRun(Assertions::fail)
+                   .onSuccessRun(() -> fail("Expected failure"))
                    .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }
     }
@@ -158,7 +159,7 @@ class BlueprintServiceTest {
 
             service.delete(blueprintId)
                    .await()
-                   .onFailureRun(Assertions::fail);
+                   .onFailureRun(() -> fail("Expected success"));
 
             var result = service.get(blueprintId);
             assertThat(result.isPresent()).isFalse();
@@ -170,7 +171,69 @@ class BlueprintServiceTest {
 
             service.delete(id)
                    .await()
-                   .onFailureRun(Assertions::fail);
+                   .onFailureRun(() -> fail("Expected success"));
+        }
+    }
+
+    @Nested
+    class ValidateTests {
+        @Test
+        void validate_succeeds_forValidDsl() {
+            var dsl = """
+                    id = "org.example:my-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "org.example:user-service:1.0.0"
+                    instances = 2
+
+                    [[slices]]
+                    artifact = "org.example:order-service:1.0.0"
+                    instances = 3
+                    """;
+
+            service.validate(dsl)
+                   .onFailure(cause -> fail("Expected success but got: " + cause.message()))
+                   .onSuccess(blueprint -> {
+                       assertThat(blueprint.id().asString()).isEqualTo("org.example:my-app:1.0.0");
+                       assertThat(blueprint.slices()).hasSize(2);
+                   });
+        }
+
+        @Test
+        void validate_fails_forInvalidDsl() {
+            var dsl = "invalid blueprint";
+
+            service.validate(dsl)
+                   .onSuccessRun(() -> fail("Expected failure"))
+                   .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
+        }
+
+        @Test
+        void validate_fails_forMissingId() {
+            var dsl = """
+                    [[slices]]
+                    artifact = "org.example:slice:1.0.0"
+                    instances = 1
+                    """;
+
+            service.validate(dsl)
+                   .onSuccessRun(() -> fail("Expected failure"))
+                   .onFailure(cause -> assertThat(cause.message()).contains("Missing"));
+        }
+
+        @Test
+        void validate_fails_forInvalidArtifact() {
+            var dsl = """
+                    id = "org.example:my-app:1.0.0"
+
+                    [[slices]]
+                    artifact = "invalid-artifact"
+                    instances = 1
+                    """;
+
+            service.validate(dsl)
+                   .onSuccessRun(() -> fail("Expected failure"))
+                   .onFailure(cause -> assertThat(cause.message()).isNotEmpty());
         }
     }
 
@@ -185,6 +248,11 @@ class BlueprintServiceTest {
         @Override
         public NodeId self() {
             return NodeId.nodeId("test-node").unwrap();
+        }
+
+        @Override
+        public TopologyManager topologyManager() {
+            return null;
         }
 
         @Override
@@ -223,6 +291,16 @@ class BlueprintServiceTest {
         @Override
         public Option<AetherValue> get(AetherKey key) {
             return Option.option(storage.get(key));
+        }
+
+        @Override
+        @SuppressWarnings("unchecked")
+        public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, java.util.function.BiConsumer<KK, VV> consumer) {
+            storage.forEach((key, value) -> {
+                if (keyClass.isInstance(key) && valueClass.isInstance(value)) {
+                    consumer.accept((KK) key, (VV) value);
+                }
+            });
         }
 
         // Override the StateMachine process method

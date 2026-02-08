@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+    <parent>
+        <groupId>org.pragmatica-lite.aether</groupId>
+        <artifactId>aether</artifactId>
+        <version>0.15.0</version>
+        <relativePath>../../pom.xml</relativePath>
+    </parent>
+
+    <artifactId>infra-db-connector</artifactId>
+    <packaging>pom</packaging>
+    <name>Aether Infrastructure: Database Connector</name>
+    <description>Database connectivity modules for Aether runtime with JDBC, R2DBC, and jOOQ support.</description>
+
+    <licenses>
+        <license>
+            <name>Apache License, Version 2.0</name>
+            <url>https://www.apache.org/licenses/LICENSE-2.0.txt</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <modules>
+        <module>api</module>
+        <module>jdbc</module>
+        <module>r2dbc</module>
+        <module>jooq</module>
+        <module>jooq-r2dbc</module>
+    </modules>
+
+    <properties>
+        <jooq.version>3.20.10</jooq.version>
+        <hikari.version>7.0.2</hikari.version>
+        <r2dbc.version>1.0.0.RELEASE</r2dbc.version>
+        <r2dbc-pool.version>1.0.2.RELEASE</r2dbc-pool.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>infra-db-connector-api</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.jooq</groupId>
+                <artifactId>jooq</artifactId>
+                <version>${jooq.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.zaxxer</groupId>
+                <artifactId>HikariCP</artifactId>
+                <version>${hikari.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.r2dbc</groupId>
+                <artifactId>r2dbc-spi</artifactId>
+                <version>${r2dbc.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>io.r2dbc</groupId>
+                <artifactId>r2dbc-pool</artifactId>
+                <version>${r2dbc-pool.version}</version>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+</project>

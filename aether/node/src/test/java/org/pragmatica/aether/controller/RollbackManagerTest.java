@@ -13,6 +13,7 @@ import org.pragmatica.aether.slice.kvstore.AetherKey.SliceTargetKey;
 import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.slice.kvstore.AetherValue.SliceTargetValue;
 import org.pragmatica.cluster.node.ClusterNode;
+import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.cluster.state.kvstore.KVCommand;
 import org.pragmatica.cluster.state.kvstore.KVStore;
 import org.pragmatica.cluster.state.kvstore.KVStoreNotification.ValuePut;
@@ -43,7 +44,7 @@ class RollbackManagerTest {
 
     @BeforeEach
     void setup() {
-        config = RollbackConfig.defaults();
+        config = RollbackConfig.defaultConfig();
         clusterNode = new TestClusterNode(SELF);
         kvStore = new TestKVStore();
         rollbackManager = RollbackManager.rollbackManager(SELF, config, clusterNode, kvStore);
@@ -196,7 +197,7 @@ class RollbackManagerTest {
             "request-123",
             artifact,
             MethodName.methodName("doSomething").unwrap(),
-            Causes.cause("Test failure"),
+            Option.some(Causes.cause("Test failure")),
             List.of(NodeId.nodeId("node-2").unwrap(), NodeId.nodeId("node-3").unwrap())
         );
     }
@@ -213,6 +214,11 @@ class RollbackManagerTest {
         @Override
         public NodeId self() {
             return self;
+        }
+
+        @Override
+        public TopologyManager topologyManager() {
+            return null;
         }
 
         @Override

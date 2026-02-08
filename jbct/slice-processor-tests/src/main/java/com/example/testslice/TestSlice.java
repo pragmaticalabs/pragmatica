@@ -11,7 +11,6 @@ import java.util.List;
  */
 @Slice
 public interface TestSlice {
-
     // Body only (POST)
     Promise<CreateResponse> create(CreateRequest request);
 

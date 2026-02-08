@@ -55,6 +55,9 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Tuple.Tuple2;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.lang.io.TimeSpan;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.messaging.MessageRouter.DelegateRouter;
@@ -232,14 +235,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         LeaderManager leaderManager;
         if (useConsensusLeaderElection) {
             // Consensus-based leader election: submit proposals through consensus
-            LeaderManager.LeaderProposalHandler proposalHandler = (candidate, viewSequence) -> {
-                log.info("Submitting leader proposal: candidate={}", candidate);
-                var key = LeaderKey.INSTANCE;
-                var value = LeaderValue.leaderValue(candidate);
-                var command = new KVCommand.Put<>(key, value);
-                return consensus.apply(List.of((C) command))
-                                .mapToUnit();
-            };
+            LeaderManager.LeaderProposalHandler proposalHandler =
+            (candidate, viewSequence) -> submitLeaderProposal(consensus, candidate);
             leaderManager = LeaderManager.leaderManager(config.topology()
                                                               .self(),
                                                         delegateRouter,
@@ -398,5 +395,16 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         table.computeIfAbsent((Class) tuple.first(),
                               _ -> new ArrayList<>())
              .add((Consumer) tuple.last());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <C extends Command> Promise<Unit> submitLeaderProposal(RabiaEngine<C> consensus, NodeId candidate) {
+        log.info("Submitting leader proposal: candidate={}", candidate);
+        var command = new KVCommand.Put<>(LeaderKey.INSTANCE, LeaderValue.leaderValue(candidate));
+        // Timeout for leader proposals - if consensus doesn't complete in this time, fail and retry.
+        // This handles the case where other nodes are still syncing and ignoring proposals.
+        return consensus.apply(List.of((C) command))
+                        .timeout(timeSpan(3).seconds())
+                        .mapToUnit();
     }
 }

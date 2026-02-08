@@ -252,20 +252,23 @@ public class NettyClusterNetwork implements ClusterNetwork {
     @Override
     public Promise<Unit> stop() {
         if (isRunning.compareAndSet(true, false)) {
-            log.info("Stopping {}: notifying view change",
-                     server.get()
-                           .name());
+            var serverInstance = server.get();
+            if (serverInstance == null) {
+                return Promise.unitPromise();
+            }
+            log.info("Stopping {}: notifying view change", serverInstance.name());
             processViewChange(SHUTDOWN, self.id());
-            return server.get()
-                         .stop(this::onStop);
+            return serverInstance.stop(this::onStop);
         }
         return Promise.unitPromise();
     }
 
     private Promise<Unit> onStop() {
-        log.info("Stopping {}: closing peer connections",
-                 server.get()
-                       .name());
+        var serverInstance = server.get();
+        var serverName = serverInstance != null
+                         ? serverInstance.name()
+                         : "unknown";
+        log.info("Stopping {}: closing peer connections", serverName);
         var promises = new ArrayList<Promise<Unit>>();
         for (var link : peerLinks.values()) {
             var promise = Promise.<Unit>promise();

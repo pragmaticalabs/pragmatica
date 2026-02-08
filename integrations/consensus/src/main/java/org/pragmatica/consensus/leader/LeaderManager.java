@@ -32,6 +32,7 @@ import org.pragmatica.messaging.MessageRouter;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -153,6 +154,17 @@ public interface LeaderManager {
     /// Retry delay for leader proposals that fail (e.g., when consensus not ready yet)
     TimeSpan PROPOSAL_RETRY_DELAY = timeSpan(500).millis();
 
+    /// Initial delay before first leader election attempt.
+    /// This allows all nodes time to complete synchronization (Fury codec compilation, state sync)
+    /// before leader proposals are submitted. Without this delay, early nodes submit proposals
+    /// that are ignored by dormant nodes, causing leader election to stall.
+    TimeSpan INITIAL_ELECTION_DELAY = timeSpan(3).seconds();
+
+    /// Number of election retries before fallback allows any active node to propose.
+    /// With PROPOSAL_RETRY_DELAY of 500ms, this gives the designated min node 3 seconds
+    /// to become active before other nodes take over.
+    int ELECTION_FALLBACK_RETRIES = 6;
+
     private static LeaderManager leaderManager(NodeId self,
                                                MessageRouter router,
                                                Option<LeaderProposalHandler> proposalHandler,
@@ -167,7 +179,8 @@ public interface LeaderManager {
                              AtomicReference<List<NodeId>> currentTopology,
                              AtomicBoolean proposalInFlight,
                              AtomicBoolean needsReactivation,
-                             AtomicBoolean hasEverHadLeader) implements LeaderManager {
+                             AtomicBoolean hasEverHadLeader,
+                             AtomicInteger electionRetryCount) implements LeaderManager {
             @Override
             public Option<NodeId> leader() {
                 return currentLeader.get();
@@ -190,6 +203,7 @@ public interface LeaderManager {
                 hasEverHadLeader.set(true);
                 // Clear in-flight flag - proposal has committed through consensus
                 proposalInFlight.set(false);
+                electionRetryCount.set(0);
                 var oldLeader = currentLeader.get();
                 var newLeader = Option.some(leader);
                 if (currentLeader.compareAndSet(oldLeader, newLeader)) {
@@ -202,7 +216,11 @@ public interface LeaderManager {
                                   newLeader,
                                   forceNotify,
                                   !newLeader.equals(oldLeader));
-                        notifyLeaderChangeAsync();
+                        // Use synchronous notification to ensure all handlers (especially
+                        // ClusterDeploymentManager) process LeaderChange BEFORE any API
+                        // can report isLeader=true. This prevents race conditions where
+                        // deploy commands arrive before ClusterDeploymentManager is active.
+                        notifyLeaderChange();
                     } else {
                         LOG.debug("Leader unchanged ({}), skipping notification", newLeader);
                     }
@@ -218,9 +236,22 @@ public interface LeaderManager {
                           expectedCluster);
                 if (!active.get()) {
                     LOG.debug("triggerElection skipped: not active");
+                    scheduleElectionRetryIfNeeded();
                     return;
                 }
-                proposalHandler.onPresent(this::handleConsensusElection);
+                proposalHandler.onPresent(handler -> {
+                    handleConsensusElection(handler);
+                    scheduleElectionRetryIfNeeded();
+                });
+            }
+
+            private void scheduleElectionRetryIfNeeded() {
+                if (!hasEverHadLeader.get() && currentLeader.get().isEmpty()) {
+                    var retries = electionRetryCount.incrementAndGet();
+                    LOG.debug("No leader elected yet, scheduling election retry #{} in {}ms",
+                              retries, PROPOSAL_RETRY_DELAY.millis());
+                    SharedScheduler.schedule(this::triggerElection, PROPOSAL_RETRY_DELAY);
+                }
             }
 
             private void handleConsensusElection(LeaderProposalHandler handler) {
@@ -234,7 +265,20 @@ public interface LeaderManager {
                                              .min(Comparator.naturalOrder())
                                              .orElse(self);
                 var isInitialElection = !hasEverHadLeader.get();
-                if (!self.equals(candidate)) {
+                // Fallback: after multiple failed attempts during initial election,
+                // any active node can take over submission for the designated candidate.
+                // CRITICAL: The candidate stays the SAME (min node) — only the submitter changes.
+                // If each node proposed itself, different BatchIds would cause infinite V0 decisions
+                // because no single proposal gets quorum agreement.
+                var shouldSubmit = self.equals(candidate);
+                if (!shouldSubmit && isInitialElection
+                    && electionRetryCount.get() >= ELECTION_FALLBACK_RETRIES) {
+                    LOG.info("Election fallback after {} retries: self={} taking over submission "
+                             + "for candidate={} (designated min node may be slow)",
+                             electionRetryCount.get(), self, candidate);
+                    shouldSubmit = true;
+                }
+                if (!shouldSubmit) {
                     LOG.debug("Skipping election trigger: self={} is not min node {} in candidatePool {} (initial={})",
                               self,
                               candidate,
@@ -242,7 +286,8 @@ public interface LeaderManager {
                               isInitialElection);
                     return;
                 }
-                LOG.debug("Submitting leader proposal: self={} (min node in {}, initial={})",
+                LOG.debug("Submitting leader proposal: candidate={}, submitter={} (min node in {}, initial={})",
+                          candidate,
                           self,
                           expectedCluster.isEmpty()
                           ? "topology"
@@ -435,8 +480,13 @@ public interface LeaderManager {
                     // Consensus mode: only schedule election trigger.
                     // DO NOT re-notify here - it causes flapping when nodes have different partial views.
                     // Notification will come from onLeaderCommitted() with forceNotify if this is re-establishment.
-                    LOG.debug("Quorum established, scheduling leader election trigger");
-                    SharedScheduler.schedule(this::triggerElection, PROPOSAL_RETRY_DELAY);
+                    // Use INITIAL_ELECTION_DELAY on first election to allow all nodes to complete
+                    // synchronization before leader proposals are submitted.
+                    var isFirstElection = !hasEverHadLeader.get();
+                    var delay = isFirstElection ? INITIAL_ELECTION_DELAY : PROPOSAL_RETRY_DELAY;
+                    LOG.debug("Quorum established, scheduling leader election trigger (initial={}, delay={}ms)",
+                              isFirstElection, delay.millis());
+                    SharedScheduler.schedule(this::triggerElection, delay);
                 } else {
                     // Local mode: notify if we have a candidate
                     currentLeader.get()
@@ -467,7 +517,8 @@ public interface LeaderManager {
                                  new AtomicReference<>(List.of()),
                                  new AtomicBoolean(false),
                                  new AtomicBoolean(false),
-                                 new AtomicBoolean(false));
+                                 new AtomicBoolean(false),
+                                 new AtomicInteger(0));
     }
 
     @MessageReceiver

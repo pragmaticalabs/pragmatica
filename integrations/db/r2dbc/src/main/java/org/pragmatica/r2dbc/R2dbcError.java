@@ -109,8 +109,8 @@ public sealed interface R2dbcError extends Cause {
             case R2dbcTransientException e -> new ConnectionFailed(e.getMessage());
             case R2dbcException e -> Option.option(e.getSqlState())
                                            .filter(state -> state.startsWith("08"))
-                                           .fold(() -> databaseFailure(e),
-                                                 _ -> new ConnectionFailed(e.getMessage()));
+                                           .map(_ -> (R2dbcError) new ConnectionFailed(e.getMessage()))
+                                           .or(() -> databaseFailure(e));
             default -> databaseFailure(throwable);
         };
     }
@@ -129,8 +129,8 @@ public sealed interface R2dbcError extends Cause {
             case R2dbcTransientException e -> new ConnectionFailed(e.getMessage());
             case R2dbcException e -> Option.option(e.getSqlState())
                                            .filter(state -> state.startsWith("08"))
-                                           .fold(() -> new QueryFailed(e.getMessage()),
-                                                 _ -> new ConnectionFailed(e.getMessage()));
+                                           .map(_ -> (R2dbcError) new ConnectionFailed(e.getMessage()))
+                                           .or(() -> new QueryFailed(e.getMessage()));
             default -> databaseFailure(throwable);
         };
     }

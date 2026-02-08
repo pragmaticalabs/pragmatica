@@ -30,6 +30,10 @@ public sealed interface GitHubContentFetcher permits GitHubContentFetcher.unused
      * File information from GitHub tree API.
      */
     record FileInfo(String path, String type) {
+        static FileInfo fileInfo(String path, String type) {
+            return new FileInfo(path, type);
+        }
+
         boolean isBlob() {
             return "blob".equals(type);
         }

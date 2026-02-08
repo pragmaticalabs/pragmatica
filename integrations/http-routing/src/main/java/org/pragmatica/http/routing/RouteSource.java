@@ -9,8 +9,13 @@ public interface RouteSource {
         return () -> routes().map(route -> (Route<?>) route.withPrefix(prefix));
     }
 
-    static RouteSource of(RouteSource... routes) {
+    static RouteSource routeSource(RouteSource... routes) {
         return () -> Stream.of(routes)
                            .flatMap(RouteSource::routes);
+    }
+
+    @Deprecated(forRemoval = true)
+    static RouteSource of(RouteSource... routes) {
+        return routeSource(routes);
     }
 }

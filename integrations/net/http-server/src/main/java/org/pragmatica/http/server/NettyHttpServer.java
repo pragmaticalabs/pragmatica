@@ -227,7 +227,7 @@ final class NettyHttpServer implements HttpServer {
             // Regular HTTP request - generate request ID
             var requestId = IdGenerator.generate("req");
             var requestContext = createRequestContext(requestId, request);
-            var responseWriter = new NettyResponseWriter(ctx, requestId);
+            var responseWriter = new NettyResponseWriter(ctx, requestId, HttpUtil.isKeepAlive(request));
             try{
                 handler.accept(requestContext, responseWriter);
             } catch (Exception e) {
@@ -290,8 +290,8 @@ final class NettyHttpServer implements HttpServer {
             var decoder = new QueryStringDecoder(request.uri());
             var path = decoder.path();
             // Netty validates the HTTP method before we receive it, so this will always succeed
-            var method = HttpMethod.from(request.method()
-                                                .name())
+            var method = HttpMethod.httpMethod(request.method()
+                                                      .name())
                                    .fold(_ -> HttpMethod.GET, v -> v);
             // Parse headers
             var headerMap = new HashMap<String, List<String>>();
@@ -325,12 +325,14 @@ final class NettyHttpServer implements HttpServer {
     private static class NettyResponseWriter implements ResponseWriter {
         private final ChannelHandlerContext ctx;
         private final String requestId;
+        private final boolean keepAlive;
         private final io.netty.handler.codec.http.HttpHeaders responseHeaders;
         private final java.util.concurrent.atomic.AtomicBoolean written = new java.util.concurrent.atomic.AtomicBoolean(false);
 
-        NettyResponseWriter(ChannelHandlerContext ctx, String requestId) {
+        NettyResponseWriter(ChannelHandlerContext ctx, String requestId, boolean keepAlive) {
             this.ctx = ctx;
             this.requestId = requestId;
+            this.keepAlive = keepAlive;
             this.responseHeaders = new DefaultHttpHeaders();
         }
 
@@ -355,10 +357,16 @@ final class NettyHttpServer implements HttpServer {
                     .set(HttpHeaderNames.CONTENT_LENGTH, body.length);
             response.headers()
                     .set(X_REQUEST_ID, requestId);
+            if (keepAlive) {
+                response.headers()
+                        .set(HttpHeaderNames.CONNECTION, HttpHeaderValues.KEEP_ALIVE);
+            }
             response.headers()
                     .add(responseHeaders);
-            ctx.writeAndFlush(response)
-               .addListener(ChannelFutureListener.CLOSE);
+            var future = ctx.writeAndFlush(response);
+            if (!keepAlive) {
+                future.addListener(ChannelFutureListener.CLOSE);
+            }
         }
     }
 

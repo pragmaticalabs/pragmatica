@@ -297,12 +297,12 @@ public interface PlaceOrder {
             }
 
             private Money findShippingCost(ShippingQuote quote, ValidOrder order) {
-                return quote.options()
-                            .stream()
-                            .filter(opt -> opt.option() == order.shippingOption())
-                            .findFirst()
-                            .map(ShippingQuote.ShippingOptionQuote::cost)
-                            .orElse(Money.ZERO_USD);
+                return Option.from(quote.options()
+                                        .stream()
+                                        .filter(opt -> opt.option() == order.shippingOption())
+                                        .findFirst())
+                             .map(ShippingQuote.ShippingOptionQuote::cost)
+                             .or(Money.ZERO_USD);
             }
 
             private Promise<OrderWithReservation> reserveStock(OrderWithPricing context) {

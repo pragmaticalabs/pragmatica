@@ -8,7 +8,7 @@ Promise-based JDBC operations with typed error handling.
 <dependency>
     <groupId>org.pragmatica-lite</groupId>
     <artifactId>jdbc</artifactId>
-    <version>0.11.3</version>
+    <version>0.15.0</version>
 </dependency>
 ```
 

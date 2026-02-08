@@ -1,6 +1,7 @@
 package org.pragmatica.aether.http.handler.security;
 
-import java.util.Objects;
+import org.pragmatica.lang.Cause;
+import org.pragmatica.lang.Result;
 
 /**
  * Principal identity - who is making the request.
@@ -11,44 +12,78 @@ import java.util.Objects;
  * @param value the principal identifier
  */
 public record Principal(String value) {
-    public static final Principal ANONYMOUS = new Principal("anonymous");
+    /// Validation errors for Principal.
+    public sealed interface PrincipalError extends Cause {
+        record NullValue() implements PrincipalError {
+            @Override
+            public String message() {
+                return "Principal value cannot be null";
+            }
+        }
 
-    /**
-     * Canonical constructor with validation.
-     */
-    public Principal {
-        Objects.requireNonNull(value, "principal value");
-        if (value.isBlank()) {
-            throw new IllegalArgumentException("Principal cannot be blank");
+        record BlankValue() implements PrincipalError {
+            @Override
+            public String message() {
+                return "Principal cannot be blank";
+            }
         }
     }
 
+    public static final Principal ANONYMOUS = new Principal("anonymous");
+
     /**
-     * Create principal from raw value.
+     * Create principal from raw value with validation.
+     *
+     * @param value the principal identifier
+     * @return Result containing valid Principal or validation error
      */
-    public static Principal principal(String value) {
-        return new Principal(value);
+    public static Result<Principal> principal(String value) {
+        if (value == null) {
+            return new PrincipalError.NullValue().result();
+        }
+        if (value.isBlank()) {
+            return new PrincipalError.BlankValue().result();
+        }
+        return Result.success(new Principal(value));
     }
 
     /**
      * Create principal for API key authentication.
+     *
+     * @param keyName the API key name
+     * @return Result containing valid Principal or validation error
      */
-    public static Principal apiKeyPrincipal(String keyName) {
-        return new Principal("api-key:" + keyName);
+    public static Result<Principal> apiKeyPrincipal(String keyName) {
+        if (keyName == null || keyName.isBlank()) {
+            return new PrincipalError.BlankValue().result();
+        }
+        return Result.success(new Principal("api-key:" + keyName));
     }
 
     /**
      * Create principal for user authentication.
+     *
+     * @param userId the user ID
+     * @return Result containing valid Principal or validation error
      */
-    public static Principal userPrincipal(String userId) {
-        return new Principal("user:" + userId);
+    public static Result<Principal> userPrincipal(String userId) {
+        if (userId == null || userId.isBlank()) {
+            return new PrincipalError.BlankValue().result();
+        }
+        return Result.success(new Principal("user:" + userId));
     }
 
     /**
      * Create principal for service-to-service authentication.
+     *
+     * @param serviceName the service name
+     * @return Result containing valid Principal or validation error
      */
-    public static Principal servicePrincipal(String serviceName) {
-        return new Principal("service:" + serviceName);
+    public static Result<Principal> servicePrincipal(String serviceName) {
+        if (serviceName == null || serviceName.isBlank()) {
+            return new PrincipalError.BlankValue().result();
+        }
+        return Result.success(new Principal("service:" + serviceName));
     }
 
     /**

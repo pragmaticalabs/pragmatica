@@ -64,7 +64,8 @@ public class FormatCommand implements Callable<Integer> {
         if (verbose) {
             System.out.println("Found " + filesToProcess.size() + " Java file(s) to process.");
         }
-        var counters = new int[3]; // 0=formatted, 1=unchanged, 2=errors
+        var counters = new int[3];
+        // 0=formatted, 1=unchanged, 2=errors
         var needsFormatting = new ArrayList<Path>();
         for (var file : filesToProcess) {
             processFile(file, counters, needsFormatting);
@@ -72,7 +73,7 @@ public class FormatCommand implements Callable<Integer> {
         // Print summary
         printSummary(counters[0], counters[1], counters[2], needsFormatting);
         // Return appropriate exit code
-        if (counters[2] > 0) {
+        if (counters[2]> 0) {
             return 2;
         }
         if (checkOnly && !needsFormatting.isEmpty()) {
@@ -89,9 +90,9 @@ public class FormatCommand implements Callable<Integer> {
         SourceFile.sourceFile(file)
                   .flatMap(source -> checkAndFormat(source, file, counters, needsFormatting))
                   .onFailure(cause -> {
-                                 counters[2]++;
-                                 System.err.println("  error: " + file + " - " + cause.message());
-                             });
+                      counters[2]++;
+                      System.err.println("  error: " + file + " - " + cause.message());
+                  });
     }
 
     private org.pragmatica.lang.Result<SourceFile> checkAndFormat(SourceFile source,
@@ -129,18 +130,20 @@ public class FormatCommand implements Callable<Integer> {
                         .flatMap(formattedSource -> writeFormatted(formattedSource, file, counters));
     }
 
-    private org.pragmatica.lang.Result<SourceFile> writeFormatted(SourceFile formattedSource, Path file, int[] counters) {
+    private org.pragmatica.lang.Result<SourceFile> writeFormatted(SourceFile formattedSource,
+                                                                  Path file,
+                                                                  int[] counters) {
         if (dryRun) {
             System.out.println("  would format: " + file);
             return org.pragmatica.lang.Result.success(formattedSource);
         }
         return formattedSource.write()
                               .onSuccess(_ -> {
-                                             counters[0]++;
-                                             if (verbose) {
-                                                 System.out.println("  formatted: " + file);
-                                             }
-                                         });
+                                  counters[0]++;
+                                  if (verbose) {
+                                      System.out.println("  formatted: " + file);
+                                  }
+                              });
     }
 
     private void printSummary(int formatted, int unchanged, int errors, List<Path> needsFormatting) {

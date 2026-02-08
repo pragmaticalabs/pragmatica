@@ -29,4 +29,6 @@ public sealed interface ResolverError extends Cause {
     record UnknownError(String message) implements ResolverError {}
 
     record UnknownDomain(String message) implements ResolverError {}
+
+    record RequestIdExhausted(String message) implements ResolverError {}
 }

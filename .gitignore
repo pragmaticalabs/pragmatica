@@ -28,3 +28,10 @@ pom.xml.versionsBackup
 CLAUDE.md
 .claude/
 PUBLISHING.md
+
+### LSP ###
+.jdtls-data/
+.jdt.ls/
+*.jdtls/
+.metadata/
+.mcp.json

@@ -89,7 +89,7 @@ public final class ConfigLoader {
                               .or(PortsConfig.DEFAULT_MANAGEMENT_PORT);
             var clusterPort = doc.getInt("cluster.ports", "cluster")
                                  .or(PortsConfig.DEFAULT_CLUSTER_PORT);
-            builder.ports(new PortsConfig(mgmtPort, clusterPort));
+            builder.ports(PortsConfig.portsConfig(mgmtPort, clusterPort));
             // Node config
             doc.getString("node", "heap")
                .onPresent(builder::heap);
@@ -109,7 +109,7 @@ public final class ConfigLoader {
                                  .or("");
                 var caPath = doc.getString("tls", "ca_path")
                                 .or("");
-                builder.tlsConfig(new TlsConfig(autoGen, certPath, keyPath, caPath));
+                builder.tlsConfig(TlsConfig.tlsConfig(autoGen, certPath, keyPath, caPath));
             }
             // Docker config
             if (environment == Environment.DOCKER) {
@@ -117,7 +117,7 @@ public final class ConfigLoader {
                                  .or(DockerConfig.DEFAULT_NETWORK);
                 var image = doc.getString("docker", "image")
                                .or(DockerConfig.DEFAULT_IMAGE);
-                builder.dockerConfig(new DockerConfig(network, image));
+                builder.dockerConfig(DockerConfig.dockerConfig(network, image));
             }
             // Kubernetes config
             if (environment == Environment.KUBERNETES) {
@@ -127,7 +127,7 @@ public final class ConfigLoader {
                                      .or(KubernetesConfig.DEFAULT_SERVICE_TYPE);
                 var storageClass = doc.getString("kubernetes", "storage_class")
                                       .or("");
-                builder.kubernetesConfig(new KubernetesConfig(namespace, serviceType, storageClass));
+                builder.kubernetesConfig(KubernetesConfig.kubernetesConfig(namespace, serviceType, storageClass));
             }
             // TTM config
             var ttmEnabled = doc.getString("ttm", "enabled")
@@ -144,12 +144,14 @@ public final class ConfigLoader {
                                       .or(60_000L);
                 var confidence = doc.getDouble("ttm", "confidence_threshold")
                                     .or(0.7);
-                builder.ttm(new TTMConfig(modelPath, inputWindow, predictionHorizon, evalInterval, confidence, true));
+                builder.ttm(TTMConfig.ttmConfig(modelPath, inputWindow, predictionHorizon, evalInterval, confidence, true)
+                                   .or(TTMConfig.disabled()));
             }
             // Slice config
             doc.getStringList("slice", "repositories")
                .map(SliceConfig::sliceConfig)
-               .onPresent(result -> result.onSuccess(builder::sliceConfig));
+               .flatMap(Result::option)
+               .onPresent(builder::sliceConfig);
             // Apply CLI overrides (highest priority)
             if (overrides.containsKey("nodes")) {
                 builder.nodes(Integer.parseInt(overrides.get("nodes")));
@@ -169,24 +171,27 @@ public final class ConfigLoader {
 
     /**
      * Parse duration from string (e.g., "1s", "500ms", "5m").
+     * Blank input returns default of 1 second.
+     *
+     * @param value duration string, must not be null
      */
     public static Duration parseDuration(String value) {
-        if (value == null || value.isBlank()) {
+        if (value.isBlank()) {
             return Duration.ofSeconds(1);
         }
-        value = value.trim()
-                     .toLowerCase();
-        if (value.endsWith("ms")) {
-            return Duration.ofMillis(Long.parseLong(value.substring(0, value.length() - 2)));
+        var normalized = value.trim()
+                              .toLowerCase();
+        if (normalized.endsWith("ms")) {
+            return Duration.ofMillis(Long.parseLong(normalized.substring(0, normalized.length() - 2)));
         }
-        if (value.endsWith("s")) {
-            return Duration.ofSeconds(Long.parseLong(value.substring(0, value.length() - 1)));
+        if (normalized.endsWith("s")) {
+            return Duration.ofSeconds(Long.parseLong(normalized.substring(0, normalized.length() - 1)));
         }
-        if (value.endsWith("m")) {
-            return Duration.ofMinutes(Long.parseLong(value.substring(0, value.length() - 1)));
+        if (normalized.endsWith("m")) {
+            return Duration.ofMinutes(Long.parseLong(normalized.substring(0, normalized.length() - 1)));
         }
         // Default: assume seconds
-        return Duration.ofSeconds(Long.parseLong(value));
+        return Duration.ofSeconds(Long.parseLong(normalized));
     }
 
     /**

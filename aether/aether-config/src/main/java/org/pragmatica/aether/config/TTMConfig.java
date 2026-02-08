@@ -23,7 +23,7 @@ public record TTMConfig(String modelPath,
 
     private static final TTMConfig DISABLED = DEFAULT;
 
-    public static TTMConfig defaults() {
+    public static TTMConfig defaultConfig() {
         return DEFAULT;
     }
 

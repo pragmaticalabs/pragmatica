@@ -2,6 +2,7 @@ package org.pragmatica.aether.setup.generators;
 
 import org.pragmatica.aether.config.AetherConfig;
 import org.pragmatica.aether.config.Environment;
+import org.pragmatica.aether.config.ResourcesConfig;
 import org.pragmatica.lang.Result;
 
 import java.io.IOException;
@@ -178,7 +179,8 @@ public final class KubernetesGenerator implements Generator {
         var nodes = config.cluster()
                           .nodes();
         var resources = config.node()
-                              .resources();
+                              .resources()
+                              .or(ResourcesConfig.defaultConfig());
         return String.format("""
             apiVersion: apps/v1
             kind: StatefulSet

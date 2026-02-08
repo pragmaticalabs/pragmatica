@@ -116,4 +116,123 @@ public interface RequestContext {
                    q4.parse(queryParam(q4.name())),
                    q5.parse(queryParam(q5.name())));
     }
+
+    /**
+     * Implementation of RequestContext for Netty HTTP requests.
+     */
+    @SuppressWarnings("unused")
+    final class RequestContextImpl implements RequestContext {
+        private static final int PATH_PARAM_LIMIT = 1024;
+
+        private final io.netty.handler.codec.http.FullHttpRequest request;
+        private final Route<?> route;
+        private final JsonCodec jsonCodec;
+        private final String requestId;
+        private final io.netty.handler.codec.http.HttpHeaders responseHeaders = io.netty.handler.codec.http.DefaultHttpHeadersFactory.headersFactory()
+                                                                                 .withCombiningHeaders(true)
+                                                                                 .newHeaders();
+
+        private java.util.function.Supplier<List<String>> pathParamsSupplier = Utils.lazy(() -> pathParamsSupplier = Utils.value(initPathParams()));
+        private java.util.function.Supplier<Map<String, List<String>>> queryParamsSupplier = Utils.lazy(() -> queryParamsSupplier = Utils.value(initQueryParams()));
+        private java.util.function.Supplier<Map<String, String>> headersSupplier = Utils.lazy(() -> headersSupplier = Utils.value(initRequestHeaders()));
+
+        private RequestContextImpl(io.netty.handler.codec.http.FullHttpRequest request,
+                                   Route<?> route,
+                                   JsonCodec jsonCodec,
+                                   String requestId) {
+            this.request = request;
+            this.route = route;
+            this.jsonCodec = jsonCodec;
+            this.requestId = requestId;
+        }
+
+        public static RequestContextImpl requestContext(io.netty.handler.codec.http.FullHttpRequest request,
+                                                        Route<?> route,
+                                                        JsonCodec jsonCodec,
+                                                        String requestId) {
+            return new RequestContextImpl(request, route, jsonCodec, requestId);
+        }
+
+        @Override
+        public Route<?> route() {
+            return route;
+        }
+
+        @Override
+        public String requestPath() {
+            return PathUtils.normalize(request.uri());
+        }
+
+        @Override
+        public String requestId() {
+            return requestId;
+        }
+
+        @Override
+        public io.netty.buffer.ByteBuf body() {
+            return request.content();
+        }
+
+        @Override
+        public String bodyAsString() {
+            return body().toString(java.nio.charset.StandardCharsets.UTF_8);
+        }
+
+        @Override
+        public <T> Result<T> fromJson(TypeToken<T> literal) {
+            return jsonCodec.deserialize(request.content(), literal);
+        }
+
+        @Override
+        public List<String> pathParams() {
+            return pathParamsSupplier.get();
+        }
+
+        @Override
+        public Map<String, List<String>> queryParams() {
+            return queryParamsSupplier.get();
+        }
+
+        @Override
+        public Map<String, String> requestHeaders() {
+            return headersSupplier.get();
+        }
+
+        @Override
+        public io.netty.handler.codec.http.HttpHeaders responseHeaders() {
+            return responseHeaders;
+        }
+
+        private List<String> initPathParams() {
+            var remainder = PathUtils.normalize(request.uri())
+                                     .substring(route.path()
+                                                     .length());
+            // Strip leading slash before splitting
+            if (remainder.startsWith("/")) {
+                remainder = remainder.substring(1);
+            }
+            if (remainder.isEmpty()) {
+                return List.of();
+            }
+            var elements = remainder.split("/", PATH_PARAM_LIMIT);
+            // Remove trailing empty element if path ends with /
+            if (elements[elements.length - 1].isEmpty()) {
+                return List.of(elements)
+                           .subList(0, elements.length - 1);
+            }
+            return List.of(elements);
+        }
+
+        private Map<String, List<String>> initQueryParams() {
+            return new io.netty.handler.codec.http.QueryStringDecoder(request.uri()).parameters();
+        }
+
+        private Map<String, String> initRequestHeaders() {
+            var headers = new java.util.HashMap<String, String>();
+            request.headers()
+                   .forEach(entry -> headers.put(entry.getKey(),
+                                                 entry.getValue()));
+            return Map.copyOf(headers);
+        }
+    }
 }

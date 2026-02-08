@@ -294,7 +294,11 @@ public class RouteSourceGenerator {
             var hasMore = i < validRoutes.size() - 1;
             // methodOpt guaranteed present - we validated above
             Option.option(methodMap.get(handlerName))
-                  .onPresent(method -> generateRoute(out, routeConfig.prefix(), routeDsl, method, hasMore));
+                  .onPresent(method -> generateRoute(out,
+                                                     routeConfig.prefix(),
+                                                     routeDsl,
+                                                     method,
+                                                     hasMore));
         }
         out.println("        );");
         out.println("    }");

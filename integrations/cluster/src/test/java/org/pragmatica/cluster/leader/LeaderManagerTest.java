@@ -151,11 +151,11 @@ class LeaderManagerTest {
                 localRouter.route(nodeAdded(nodeId, topology));
             }
 
-            // Establish quorum - this schedules a proposal with PROPOSAL_RETRY_DELAY (500ms)
+            // Establish quorum - first election uses INITIAL_ELECTION_DELAY (10s) for Fury warmup
             localRouter.route(QuorumStateNotification.ESTABLISHED);
 
-            // Wait for scheduled proposal (500ms delay + margin)
-            Thread.sleep(600);
+            // Wait for scheduled proposal (10s initial delay + margin)
+            Thread.sleep(10_500);
 
             // Proposal should have been submitted by min node
             assertThat(localProposals).hasSize(1);
@@ -213,6 +213,127 @@ class LeaderManagerTest {
             assertThat(watcher.collected()).hasSize(1);
             var notification = (LeaderChange) watcher.collected().getFirst();
             assertThat(notification.leaderId()).isEqualTo(Option.some(nodes.getFirst()));
+        }
+
+        @Test
+        void triggerElection_eventuallyElectsLeader_whenMinNodeInactive() {
+            // Create manager for node-b (NOT min node) with expectedCluster
+            var localRouter = MessageRouter.mutable();
+            var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
+            LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> {
+                localProposals.add(new LeaderProposal(candidate, viewSequence));
+                return Promise.unitPromise();
+            };
+            // self=node-b, expectedCluster=[node-a, node-b, node-c]
+            // node-a is min but never proposes (simulating it being inactive)
+            var localManager = LeaderManager.leaderManager(self, localRouter, handler, nodes);
+            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
+
+            // Add nodes to topology
+            var list = new ArrayList<NodeId>();
+            for (var nodeId : nodes) {
+                list.add(nodeId);
+                localRouter.route(nodeAdded(nodeId, list.stream().sorted().toList()));
+            }
+
+            // Establish quorum (sets active=true)
+            localRouter.route(QuorumStateNotification.ESTABLISHED);
+
+            // Directly call triggerElection enough times to exceed fallback threshold.
+            // Each call increments electionRetryCount in scheduleElectionRetryIfNeeded().
+            // After ELECTION_FALLBACK_RETRIES (6) increments, the next call triggers fallback.
+            for (var i = 0; i <= LeaderManager.ELECTION_FALLBACK_RETRIES; i++) {
+                localManager.triggerElection();
+            }
+
+            // Non-min node should have taken over submission for the designated min candidate
+            assertThat(localProposals).isNotEmpty();
+            assertThat(localProposals.getLast().candidate()).isEqualTo(nodes.getFirst());
+        }
+
+        @Test
+        void triggerElection_recovers_afterQuorumFlapping() throws InterruptedException {
+            // Create manager for min node (node-a)
+            var minNode = nodes.getFirst();
+            var localRouter = MessageRouter.mutable();
+            var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
+            LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> {
+                localProposals.add(new LeaderProposal(candidate, viewSequence));
+                return Promise.unitPromise();
+            };
+            var localManager = LeaderManager.leaderManager(minNode, localRouter, handler, nodes);
+            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
+
+            // Build topology
+            var list = new ArrayList<NodeId>();
+            for (var nodeId : nodes) {
+                list.add(nodeId);
+                localRouter.route(nodeAdded(nodeId, list.stream().sorted().toList()));
+            }
+
+            // Simulate rapid quorum flapping: ESTABLISHED -> DISAPPEARED -> ESTABLISHED -> DISAPPEARED -> ESTABLISHED
+            localRouter.route(QuorumStateNotification.ESTABLISHED);
+            Thread.sleep(100);
+            localRouter.route(QuorumStateNotification.DISAPPEARED);
+            Thread.sleep(100);
+            localRouter.route(QuorumStateNotification.ESTABLISHED);
+            Thread.sleep(100);
+            localRouter.route(QuorumStateNotification.DISAPPEARED);
+            Thread.sleep(100);
+            localRouter.route(QuorumStateNotification.ESTABLISHED);
+
+            // Wait for retry mechanism to kick in and eventually propose
+            Thread.sleep(5_000);
+
+            // Despite flapping, proposals should eventually be submitted
+            assertThat(localProposals).isNotEmpty();
+            assertThat(localProposals.getLast().candidate()).isEqualTo(minNode);
+        }
+
+        @Test
+        void onLeaderCommitted_resetsRetryCount_afterElection() throws InterruptedException {
+            // Use min node (node-a) so proposals are actually submitted
+            var minNode = nodes.getFirst();
+            var localRouter = MessageRouter.mutable();
+            var localProposals = new CopyOnWriteArrayList<LeaderProposal>();
+            LeaderManager.LeaderProposalHandler handler = (candidate, viewSequence) -> {
+                localProposals.add(new LeaderProposal(candidate, viewSequence));
+                return Promise.unitPromise();
+            };
+            var localManager = LeaderManager.leaderManager(minNode, localRouter, handler, nodes);
+            localRouter.addRoute(NodeAdded.class, localManager::nodeAdded);
+            localRouter.addRoute(QuorumStateNotification.class, localManager::watchQuorumState);
+
+            // Build topology
+            var list = new ArrayList<NodeId>();
+            for (var nodeId : nodes) {
+                list.add(nodeId);
+                localRouter.route(nodeAdded(nodeId, list.stream().sorted().toList()));
+            }
+
+            // Establish quorum and wait for initial election proposal
+            localRouter.route(QuorumStateNotification.ESTABLISHED);
+            Thread.sleep(4_000);
+
+            // Commit leader — resets retry count and sets hasEverHadLeader=true
+            localManager.onLeaderCommitted(minNode);
+
+            // Record proposal count after initial election
+            var proposalsAfterInitial = localProposals.size();
+
+            // Simulate leader loss and re-election
+            localRouter.route(QuorumStateNotification.DISAPPEARED);
+            Thread.sleep(50);
+            localRouter.route(QuorumStateNotification.ESTABLISHED);
+
+            // Wait for re-election proposal (uses PROPOSAL_RETRY_DELAY since hasEverHadLeader=true)
+            Thread.sleep(1_000);
+
+            // Min node should submit a new proposal for re-election
+            assertThat(localProposals.size()).isGreaterThan(proposalsAfterInitial);
+            assertThat(localProposals.getLast().candidate()).isEqualTo(minNode);
         }
 
         @Test

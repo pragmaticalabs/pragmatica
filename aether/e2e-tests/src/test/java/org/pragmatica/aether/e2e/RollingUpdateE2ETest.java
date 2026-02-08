@@ -12,6 +12,7 @@ import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /**
@@ -26,7 +27,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
  *   <li>Request continuity during updates</li>
  * </ul>
  *
- * <p>Note: These tests require Docker and the inventory test artifacts.
+ * <p>Note: These tests require Docker and the echo-slice test artifact.
+ * Uses echo-slice v1 (0.15.0) and v2 (0.16.0) for version transition testing.
  * Run with: mvn test -pl e2e-tests -Dtest=RollingUpdateE2ETest
  *
  * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
@@ -36,14 +38,14 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 @Execution(ExecutionMode.SAME_THREAD)
 class RollingUpdateE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String OLD_VERSION = "org.pragmatica-lite.aether.example:inventory:0.0.1-test";
-    private static final String NEW_VERSION = "org.pragmatica-lite.aether.example:inventory:0.0.2-test";
-    private static final Duration UPDATE_TIMEOUT = Duration.ofSeconds(120);
+    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.16.0";
+    private static final Duration UPDATE_TIMEOUT = adapt(Duration.ofSeconds(120));
 
-    // Common timeouts
-    private static final TimeSpan DEPLOY_TIMEOUT = timeSpan(3).minutes();
-    private static final TimeSpan POLL_INTERVAL = timeSpan(2).seconds();
-    private static final TimeSpan CLEANUP_TIMEOUT = timeSpan(60).seconds();
+    // Common timeouts (CI gets 2x via adapt())
+    private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
+    private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
+    private static final Duration CLEANUP_TIMEOUT = adapt(timeSpan(60).seconds().duration());
 
     private static AetherCluster cluster;
 
@@ -53,6 +55,8 @@ class RollingUpdateE2ETest {
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
+        cluster.awaitLeader();
+        cluster.uploadTestArtifacts();
     }
 
     @AfterAll
@@ -91,7 +95,7 @@ class RollingUpdateE2ETest {
 
         // Wait for new version to be deployed
         await().atMost(UPDATE_TIMEOUT)
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    if (sliceHasFailed(NEW_VERSION)) {
                        throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
@@ -115,7 +119,7 @@ class RollingUpdateE2ETest {
     void rollingUpdate_graduallyShiftsTraffic() {
         startRollingUpdate(NEW_VERSION, 3);
         await().atMost(UPDATE_TIMEOUT)
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    if (sliceHasFailed(NEW_VERSION)) {
                        throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
@@ -126,19 +130,19 @@ class RollingUpdateE2ETest {
         // Shift traffic 1:3 (25% to new) - routing format is "new:old"
         adjustRouting("1:3");
         await().atMost(Duration.ofSeconds(30))
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .until(() -> getUpdateStatus().contains("\"routing\":\"1:3\""));
 
         // Shift traffic 1:1 (50% to new)
         adjustRouting("1:1");
         await().atMost(Duration.ofSeconds(30))
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .until(() -> getUpdateStatus().contains("\"routing\":\"1:1\""));
 
         // Shift traffic 3:1 (75% to new)
         adjustRouting("3:1");
         await().atMost(Duration.ofSeconds(30))
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .until(() -> getUpdateStatus().contains("\"routing\":\"3:1\""));
     }
 
@@ -147,7 +151,7 @@ class RollingUpdateE2ETest {
     void rollingUpdate_completion_removesOldVersion() {
         startRollingUpdate(NEW_VERSION, 3);
         await().atMost(UPDATE_TIMEOUT)
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    if (sliceHasFailed(NEW_VERSION)) {
                        throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
@@ -163,7 +167,7 @@ class RollingUpdateE2ETest {
 
         // Old version should be removed - use local slices view like forge tests
         await().atMost(Duration.ofSeconds(90))
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var slices = cluster.anyNode().getSlices();
                    return !slices.contains(OLD_VERSION) && slices.contains(NEW_VERSION);
@@ -175,7 +179,7 @@ class RollingUpdateE2ETest {
     void rollingUpdate_rollback_restoresOldVersion() {
         startRollingUpdate(NEW_VERSION, 3);
         await().atMost(UPDATE_TIMEOUT)
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    if (sliceHasFailed(NEW_VERSION)) {
                        throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
@@ -192,7 +196,7 @@ class RollingUpdateE2ETest {
 
         // After rollback completes, verify old version remains and new version is removed
         await().atMost(Duration.ofSeconds(90))
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var slicesStatus = cluster.anyNode().getSlicesStatus();
                    return slicesStatus.contains(OLD_VERSION) && !slicesStatus.contains(NEW_VERSION);
@@ -229,7 +233,7 @@ class RollingUpdateE2ETest {
         // Perform rolling update
         startRollingUpdate(NEW_VERSION, 3);
         await().atMost(UPDATE_TIMEOUT)
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    if (sliceHasFailed(NEW_VERSION)) {
                        throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
@@ -263,7 +267,7 @@ class RollingUpdateE2ETest {
     void rollingUpdate_nodeFailure_continuesUpdate() {
         startRollingUpdate(NEW_VERSION, 3);
         await().atMost(UPDATE_TIMEOUT)
-               .pollInterval(POLL_INTERVAL.duration())
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    if (sliceHasFailed(NEW_VERSION)) {
                        throw new AssertionError("Slice deployment failed: " + NEW_VERSION);
@@ -282,7 +286,7 @@ class RollingUpdateE2ETest {
         assertThat(status).contains("\"state\":\"ROUTING\"");
 
         // Restore node
-        cluster.restartNode("node-3");
+        cluster.node("node-3").start();
         cluster.awaitQuorum();
 
         // Complete update
@@ -315,8 +319,8 @@ class RollingUpdateE2ETest {
                 }
 
                 // Wait for update to finish
-                await().atMost(CLEANUP_TIMEOUT.duration())
-                       .pollInterval(POLL_INTERVAL.duration())
+                await().atMost(CLEANUP_TIMEOUT)
+                       .pollInterval(POLL_INTERVAL)
                        .ignoreExceptions()
                        .until(() -> {
                            var status = leader.getRollingUpdates();
@@ -354,8 +358,8 @@ class RollingUpdateE2ETest {
     }
 
     private void awaitNoSlices() {
-        await().atMost(CLEANUP_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(CLEANUP_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
                .until(() -> {
                    var slices = cluster.anyNode().getSlices();
@@ -369,8 +373,8 @@ class RollingUpdateE2ETest {
                             .toResult(Causes.cause("No leader elected"))
                             .unwrap();
         leader.deploy(OLD_VERSION, 3);
-        await().atMost(DEPLOY_TIMEOUT.duration())
-               .pollInterval(POLL_INTERVAL.duration())
+        await().atMost(DEPLOY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
                .failFast(() -> {
                    if (sliceHasFailed(OLD_VERSION)) {
                        throw new AssertionError("Slice deployment failed: " + OLD_VERSION);

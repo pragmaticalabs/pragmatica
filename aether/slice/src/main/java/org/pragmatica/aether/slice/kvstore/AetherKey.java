@@ -386,6 +386,53 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Dynamic aspect key format:
+    /// ```
+    /// dynamic-aspect/{artifactBase}/{methodName}
+    /// ```
+    /// Stores runtime aspect configuration (logging/metrics) per artifact method.
+    record DynamicAspectKey(String artifactBase, String methodName) implements AetherKey {
+        private static final String PREFIX = "dynamic-aspect/";
+
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.DynamicAspectPattern dynamicAspectPattern -> dynamicAspectPattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return PREFIX + artifactBase + "/" + methodName;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static DynamicAspectKey dynamicAspectKey(String artifactBase, String methodName) {
+            return new DynamicAspectKey(artifactBase, methodName);
+        }
+
+        public static Result<DynamicAspectKey> dynamicAspectKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return DYNAMIC_ASPECT_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
+            }
+            var content = key.substring(PREFIX.length());
+            var slashIndex = content.indexOf('/');
+            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                return DYNAMIC_ASPECT_KEY_FORMAT_ERROR.apply(key)
+                                                       .result();
+            }
+            var artifactBase = content.substring(0, slashIndex);
+            var methodName = content.substring(slashIndex + 1);
+            return Result.success(new DynamicAspectKey(artifactBase, methodName));
+        }
+    }
+
     /// Alert threshold key format:
     /// ```
     /// alert-threshold/{metricName}
@@ -435,6 +482,7 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> PREVIOUS_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid previous-version key format: %s");
     Fn1<Cause, String> HTTP_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid http-routes key format: %s");
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
+    Fn1<Cause, String> DYNAMIC_ASPECT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dynamic-aspect key format: %s");
 
     /// Aether KV-Store structured patterns for key matching
     sealed interface AetherKeyPattern extends StructuredPattern {
@@ -497,6 +545,13 @@ public sealed interface AetherKey extends StructuredKey {
         /// Pattern for alert-threshold keys: alert-threshold/*
         record AlertThresholdPattern() implements AetherKeyPattern {
             public boolean matches(AlertThresholdKey key) {
+                return true;
+            }
+        }
+
+        /// Pattern for dynamic-aspect keys: dynamic-aspect/*
+        record DynamicAspectPattern() implements AetherKeyPattern {
+            public boolean matches(DynamicAspectKey key) {
                 return true;
             }
         }

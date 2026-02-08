@@ -36,7 +36,7 @@ public interface RepositoryDependencyLoader {
                                                                             SliceManifest.SliceManifestInfo manifest) {
         if (!manifest.artifact()
                      .equals(expected)) {
-            return ExpanderError.ArtifactMismatch.cause(expected,
+            return ExpanderError.ArtifactMismatch.artifactMismatch(expected,
                                                         manifest.artifact())
                                 .result();
         }
