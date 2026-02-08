@@ -2,7 +2,6 @@ package org.pragmatica.aether.forge.api;
 
 import org.pragmatica.aether.forge.ForgeCluster;
 import org.pragmatica.aether.forge.ForgeMetrics;
-import org.pragmatica.aether.forge.LoadGenerator;
 import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.ForgeEvent;
 import org.pragmatica.aether.forge.api.SimulatorRoutes.InventoryState;
@@ -27,7 +26,6 @@ public final class ForgeRouter {
      * Create a RequestRouter combining all Forge API routes.
      *
      * @param cluster         the ForgeCluster for node management
-     * @param loadGenerator   the LoadGenerator for rate control
      * @param loadRunner      the ConfigurableLoadRunner for load testing
      * @param chaosController the ChaosController for chaos injection
      * @param configSupplier  supplier for SimulatorConfig
@@ -40,7 +38,6 @@ public final class ForgeRouter {
      * @return RequestRouter containing all Forge API routes
      */
     public static RequestRouter forgeRouter(ForgeCluster cluster,
-                                            LoadGenerator loadGenerator,
                                             ConfigurableLoadRunner loadRunner,
                                             ChaosController chaosController,
                                             Supplier<SimulatorConfig> configSupplier,
@@ -50,11 +47,10 @@ public final class ForgeRouter {
                                             long startTime,
                                             Consumer<EventLogEntry> eventLogger,
                                             Option<Path> loadConfigPath) {
-        return RequestRouter.with(StatusRoutes.statusRoutes(cluster, loadGenerator, metrics, events, startTime, loadRunner),
+        return RequestRouter.with(StatusRoutes.statusRoutes(cluster, metrics, events, startTime, loadRunner),
                                   ChaosRoutes.chaosRoutes(cluster, chaosController, events, inventoryState, eventLogger),
-                                  LoadRoutes.loadRoutes(loadGenerator, loadRunner),
-                                  SimulatorRoutes.simulatorRoutes(loadGenerator,
-                                                                  configSupplier,
+                                  LoadRoutes.loadRoutes(loadRunner),
+                                  SimulatorRoutes.simulatorRoutes(configSupplier,
                                                                   inventoryState,
                                                                   eventLogger),
                                   DeploymentRoutes.deploymentRoutes(cluster, eventLogger),

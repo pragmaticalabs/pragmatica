@@ -69,7 +69,6 @@ public final class ForgeServer {
     private final ForgeConfig forgeConfig;
 
     private volatile Option<ForgeCluster> cluster = Option.empty();
-    private volatile Option<LoadGenerator> loadGenerator = Option.empty();
     private volatile Option<ConfigurableLoadRunner> configurableLoadRunner = Option.empty();
     private volatile Option<ForgeMetrics> metrics = Option.empty();
     private volatile Option<ForgeApiHandler> apiHandler = Option.empty();
@@ -179,37 +178,31 @@ public final class ForgeServer {
                                                         "node",
                                                         configProvider);
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
-        var loadGeneratorInstance = LoadGenerator.loadGenerator(forgeConfig.appHttpPort(),
-                                                                metricsInstance,
-                                                                entryPointMetrics);
         var configurableLoadRunnerInstance = ConfigurableLoadRunner.configurableLoadRunner(
             clusterInstance::getAvailableAppHttpPorts,
             metricsInstance,
             entryPointMetrics);
         var apiHandlerInstance = ForgeApiHandler.forgeApiHandler(clusterInstance,
-                                                                 loadGeneratorInstance,
                                                                  metricsInstance,
                                                                  configurableLoadRunnerInstance,
                                                                  startupConfig.loadConfig());
         metrics = Option.some(metricsInstance);
         cluster = Option.some(clusterInstance);
-        loadGenerator = Option.some(loadGeneratorInstance);
         configurableLoadRunner = Option.some(configurableLoadRunnerInstance);
         apiHandler = Option.some(apiHandlerInstance);
         staticHandler = Option.some(StaticFileHandler.staticFileHandler());
         var wsPublisherInstance = StatusWebSocketPublisher.statusWebSocketPublisher(
             wsHandler,
-            () -> serializeStatus(clusterInstance, loadGeneratorInstance,
+            () -> serializeStatus(clusterInstance,
                                   metricsInstance, startTime, configurableLoadRunnerInstance));
         wsPublisher = Option.some(wsPublisherInstance);
     }
 
     private static String serializeStatus(ForgeCluster cluster,
-                                           LoadGenerator loadGenerator,
                                            ForgeMetrics metrics,
                                            long startTime,
                                            ConfigurableLoadRunner loadRunner) {
-        var status = StatusRoutes.buildFullStatus(cluster, loadGenerator, metrics, startTime, loadRunner);
+        var status = StatusRoutes.buildFullStatus(cluster, metrics, startTime, loadRunner);
         return CODEC.serialize(status)
                     .map(byteBuf -> {
                         try {
@@ -249,9 +242,6 @@ public final class ForgeServer {
             log.info("Auto-starting load generation...");
             configurableLoadRunner.onPresent(ConfigurableLoadRunner::start);
             apiHandler.onPresent(h -> h.addEvent("LOAD_STARTED", "Load generation auto-started"));
-        } else if (startupConfig.loadRate() > 0 && startupConfig.loadConfig().isEmpty()) {
-            log.info("Starting load generator at {} req/sec", startupConfig.loadRate());
-            loadGenerator.onPresent(lg -> lg.start(startupConfig.loadRate()));
         }
     }
 
@@ -307,7 +297,6 @@ public final class ForgeServer {
 
     public void stop() {
         log.info("Stopping Forge server...");
-        loadGenerator.onPresent(LoadGenerator::stop);
         wsPublisher.onPresent(StatusWebSocketPublisher::stop);
         metricsScheduler.onPresent(ScheduledExecutorService::shutdownNow);
         httpServer.onPresent(server -> server.stop()

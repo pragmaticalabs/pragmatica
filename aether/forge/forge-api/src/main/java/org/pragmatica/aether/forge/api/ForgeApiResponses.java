@@ -80,11 +80,11 @@ public final class ForgeApiResponses {
                               long totalFailures) {}
 
     /**
-     * Load generator status information.
+     * Load status information derived from ConfigurableLoadRunner.
      */
-    public record LoadInfo(int currentRate,
-                           int targetRate,
-                           boolean running) {}
+    public record LoadInfo(String state,
+                           int totalTargetRate,
+                           int targetCount) {}
 
     /**
      * Per-node metrics response from /api/node-metrics endpoint.
@@ -204,26 +204,7 @@ public final class ForgeApiResponses {
      */
     public record RateSetResponse(boolean success, int newRate) {}
 
-    /**
-     * Response from /api/load/ramp endpoint.
-     */
-    public record RampLoadResponse(boolean success, int targetRate, long durationMs) {}
-
-    // ========== Simulator Responses ==========
-    /**
-     * Entry point information for simulator.
-     */
-    public record EntryPointInfo(String name, int rate) {}
-
-    /**
-     * Response from /api/simulator/entry-points endpoint.
-     */
-    public record EntryPointsResponse(List<EntryPointInfo> entryPoints) {}
-
-    /**
-     * Response from /api/simulator/rate/{entryPoint} endpoint.
-     */
-    public record SimulatorRateResponse(boolean success, String entryPoint, int rate) {}
+    // ========== Simulator Responses ===========
 
     /**
      * Inventory mode response.
@@ -323,8 +304,4 @@ public final class ForgeApiResponses {
      */
     public record MultiplierSetResponse(boolean success, double multiplier) {}
 
-    /**
-     * Response from load generator enable/disable operation.
-     */
-    public record LoadGeneratorEnabledResponse(boolean success, boolean enabled) {}
 }

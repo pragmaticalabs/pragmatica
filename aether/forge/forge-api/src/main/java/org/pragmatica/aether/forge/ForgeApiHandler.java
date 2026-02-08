@@ -55,11 +55,9 @@ public final class ForgeApiHandler {
     private volatile SimulatorConfig config = SimulatorConfig.defaultConfig();
     private volatile SimulatorMode currentMode = SimulatorMode.DEVELOPMENT;
     private final ChaosController chaosController;
-    private final LoadGenerator loadGenerator;
     private final InventoryState inventoryState;
 
     private ForgeApiHandler(ForgeCluster cluster,
-                            LoadGenerator loadGenerator,
                             ForgeMetrics metrics,
                             ConfigurableLoadRunner configurableLoadRunner,
                             ChaosController chaosController,
@@ -67,7 +65,6 @@ public final class ForgeApiHandler {
                             Deque<ForgeEvent> events,
                             long startTime,
                             Option<Path> loadConfigPath) {
-        this.loadGenerator = loadGenerator;
         this.chaosController = chaosController;
         this.inventoryState = inventoryState;
         this.events = events;
@@ -75,7 +72,6 @@ public final class ForgeApiHandler {
         this.jsonCodec = JsonCodecAdapter.defaultCodec();
         // Create router with all route sources
         this.router = ForgeRouter.forgeRouter(cluster,
-                                              loadGenerator,
                                               configurableLoadRunner,
                                               chaosController,
                                               this::getConfig,
@@ -88,7 +84,6 @@ public final class ForgeApiHandler {
     }
 
     public static ForgeApiHandler forgeApiHandler(ForgeCluster cluster,
-                                                  LoadGenerator loadGenerator,
                                                   ForgeMetrics metrics,
                                                   ConfigurableLoadRunner configurableLoadRunner,
                                                   Option<Path> loadConfigPath) {
@@ -97,7 +92,6 @@ public final class ForgeApiHandler {
         var events = new ConcurrentLinkedDeque<ForgeEvent>();
         var startTime = System.currentTimeMillis();
         return new ForgeApiHandler(cluster,
-                                   loadGenerator,
                                    metrics,
                                    configurableLoadRunner,
                                    chaosController,
