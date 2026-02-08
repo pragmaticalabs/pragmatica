@@ -29,12 +29,16 @@ public class DashboardMetricsPublisher {
 
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
+    private final DynamicAspectManager aspectManager;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier, AlertManager alertManager) {
+    public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
+                                     AlertManager alertManager,
+                                     DynamicAspectManager aspectManager) {
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
+        this.aspectManager = aspectManager;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
                                                                         var thread = new Thread(r, "dashboard-publisher");
                                                                         thread.setDaemon(true);
@@ -202,6 +206,10 @@ public class DashboardMetricsPublisher {
         // Deployments (cluster-wide)
         appendDeployments(sb, node.deploymentMap()
                                   .allDeployments());
+        sb.append(",");
+        // Dynamic aspects
+        sb.append("\"aspects\":")
+          .append(aspectManager.aspectsAsJson());
         sb.append("}");
         return sb.toString();
     }

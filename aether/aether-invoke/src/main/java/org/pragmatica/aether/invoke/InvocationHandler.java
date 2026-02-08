@@ -6,6 +6,7 @@ import org.pragmatica.aether.http.handler.HttpRequestContext;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeRequest;
 import org.pragmatica.aether.invoke.InvocationMessage.InvokeResponse;
 import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
+import org.pragmatica.aether.slice.DynamicAspectMode;
 import org.pragmatica.aether.slice.SliceBridge;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
@@ -20,6 +21,7 @@ import org.pragmatica.serialization.Serializer;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import org.pragmatica.lang.Functions.Fn2;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -68,6 +70,16 @@ public interface InvocationHandler {
     Option<InvocationMetricsCollector> metricsCollector();
 
     /**
+     * Get the dynamic aspect mode for a specific artifact method.
+     * Returns NONE if no aspect manager is configured or no aspect is set.
+     *
+     * @param artifactBase The artifact base (groupId:artifactId)
+     * @param methodName The method name
+     * @return The current aspect mode
+     */
+    DynamicAspectMode getAspectMode(String artifactBase, String methodName);
+
+    /**
      * Default invocation timeout (5 minutes).
      * Long timeout to allow operations that may trigger rebalance/node launch.
      */
@@ -81,6 +93,7 @@ public interface InvocationHandler {
                                          network,
                                          Option.none(),
                                          DEFAULT_INVOCATION_TIMEOUT,
+                                         Option.none(),
                                          Option.none(),
                                          Option.none(),
                                          Option.none());
@@ -98,6 +111,7 @@ public interface InvocationHandler {
                                          network,
                                          Option.option(metricsCollector),
                                          DEFAULT_INVOCATION_TIMEOUT,
+                                         Option.none(),
                                          Option.none(),
                                          Option.none(),
                                          Option.none());
@@ -123,7 +137,8 @@ public interface InvocationHandler {
                                          DEFAULT_INVOCATION_TIMEOUT,
                                          Option.option(serializer),
                                          Option.option(deserializer),
-                                         Option.option(httpRoutePublisher));
+                                         Option.option(httpRoutePublisher),
+                                         Option.none());
     }
 
     /**
@@ -142,7 +157,28 @@ public interface InvocationHandler {
                                          invocationTimeout,
                                          Option.none(),
                                          Option.none(),
+                                         Option.none(),
                                          Option.none());
+    }
+
+    /**
+     * Create a new InvocationHandler with metrics, serialization, HTTP routing, and dynamic aspects.
+     */
+    static InvocationHandler invocationHandler(NodeId self,
+                                               ClusterNetwork network,
+                                               InvocationMetricsCollector metricsCollector,
+                                               Serializer serializer,
+                                               Deserializer deserializer,
+                                               HttpRoutePublisher httpRoutePublisher,
+                                               Fn2<DynamicAspectMode, String, String> aspectLookup) {
+        return new InvocationHandlerImpl(self,
+                                         network,
+                                         Option.option(metricsCollector),
+                                         DEFAULT_INVOCATION_TIMEOUT,
+                                         Option.option(serializer),
+                                         Option.option(deserializer),
+                                         Option.option(httpRoutePublisher),
+                                         Option.option(aspectLookup));
     }
 }
 
@@ -156,6 +192,7 @@ class InvocationHandlerImpl implements InvocationHandler {
     private final Option<Serializer> serializer;
     private final Option<Deserializer> deserializer;
     private final Option<HttpRoutePublisher> httpRoutePublisher;
+    private final Option<Fn2<DynamicAspectMode, String, String>> aspectLookup;
 
     // Local slice bridges available for invocation
     private final Map<Artifact, SliceBridge> localSlices = new ConcurrentHashMap<>();
@@ -166,7 +203,8 @@ class InvocationHandlerImpl implements InvocationHandler {
                           TimeSpan invocationTimeout,
                           Option<Serializer> serializer,
                           Option<Deserializer> deserializer,
-                          Option<HttpRoutePublisher> httpRoutePublisher) {
+                          Option<HttpRoutePublisher> httpRoutePublisher,
+                          Option<Fn2<DynamicAspectMode, String, String>> aspectLookup) {
         this.self = self;
         this.network = network;
         this.metricsCollector = metricsCollector;
@@ -174,6 +212,7 @@ class InvocationHandlerImpl implements InvocationHandler {
         this.serializer = serializer;
         this.deserializer = deserializer;
         this.httpRoutePublisher = httpRoutePublisher;
+        this.aspectLookup = aspectLookup;
     }
 
     @Override
@@ -196,6 +235,12 @@ class InvocationHandlerImpl implements InvocationHandler {
     @Override
     public Option<InvocationMetricsCollector> metricsCollector() {
         return metricsCollector;
+    }
+
+    @Override
+    public DynamicAspectMode getAspectMode(String artifactBase, String methodName) {
+        return aspectLookup.map(lookup -> lookup.apply(artifactBase, methodName))
+                           .or(DynamicAspectMode.NONE);
     }
 
     @Override
@@ -227,15 +272,31 @@ class InvocationHandlerImpl implements InvocationHandler {
     private void invokeSliceMethod(InvokeRequest request, SliceBridge bridge) {
         var startTime = System.nanoTime();
         var requestBytes = request.payload().length;
+        var aspectMode = getAspectMode(request.targetSlice().base().asString(), request.method().name());
         // Record invocation start for active invocation tracking
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
+        // Log entry if aspect logging is enabled
+        if (aspectMode.isLoggingEnabled()) {
+            log.info("[aspect] [requestId={}] ENTER {}.{}", request.requestId(), request.targetSlice(), request.method());
+        }
         // Check if this is an HTTP request that should be routed through SliceRouter
         invokeWithHttpRouting(request, bridge).timeout(invocationTimeout)
-                             .onSuccess(responseData -> handleInvocationSuccess(request,
-                                                                                responseData,
-                                                                                startTime,
-                                                                                requestBytes))
-                             .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
+                             .onSuccess(responseData -> {
+                                 handleInvocationSuccess(request, responseData, startTime, requestBytes);
+                                 if (aspectMode.isLoggingEnabled()) {
+                                     var durationMs = (System.nanoTime() - startTime) / 1_000_000;
+                                     log.info("[aspect] [requestId={}] EXIT {}.{} duration={}ms success=true",
+                                              request.requestId(), request.targetSlice(), request.method(), durationMs);
+                                 }
+                             })
+                             .onFailure(cause -> {
+                                 handleInvocationFailure(request, cause, startTime, requestBytes);
+                                 if (aspectMode.isLoggingEnabled()) {
+                                     var durationMs = (System.nanoTime() - startTime) / 1_000_000;
+                                     log.info("[aspect] [requestId={}] EXIT {}.{} duration={}ms success=false error={}",
+                                              request.requestId(), request.targetSlice(), request.method(), durationMs, cause.message());
+                                 }
+                             });
     }
 
     /**

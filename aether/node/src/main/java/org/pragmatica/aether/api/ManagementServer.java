@@ -3,6 +3,7 @@ package org.pragmatica.aether.api;
 import org.pragmatica.aether.api.routes.AlertRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
 import org.pragmatica.aether.api.routes.DashboardRoutes;
+import org.pragmatica.aether.api.routes.DynamicAspectRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
 import org.pragmatica.aether.api.routes.MetricsRoutes;
@@ -55,8 +56,9 @@ public interface ManagementServer {
     static ManagementServer managementServer(int port,
                                              Supplier<AetherNode> nodeSupplier,
                                              AlertManager alertManager,
+                                             DynamicAspectManager aspectManager,
                                              Option<TlsConfig> tls) {
-        return new ManagementServerImpl(port, nodeSupplier, alertManager, tls);
+        return new ManagementServerImpl(port, nodeSupplier, alertManager, aspectManager, tls);
     }
 }
 
@@ -68,6 +70,7 @@ class ManagementServerImpl implements ManagementServer {
     private final int port;
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
+    private final DynamicAspectManager aspectManager;
     private final DashboardMetricsPublisher metricsPublisher;
     private final StatusWebSocketHandler statusWsHandler;
     private final StatusWebSocketPublisher statusWsPublisher;
@@ -84,11 +87,13 @@ class ManagementServerImpl implements ManagementServer {
     ManagementServerImpl(int port,
                          Supplier<AetherNode> nodeSupplier,
                          AlertManager alertManager,
+                         DynamicAspectManager aspectManager,
                          Option<TlsConfig> tls) {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
-        this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager);
+        this.aspectManager = aspectManager;
+        this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager, aspectManager);
         this.statusWsHandler = new StatusWebSocketHandler();
         this.statusWsPublisher = StatusWebSocketPublisher.statusWebSocketPublisher(
             statusWsHandler,
@@ -98,6 +103,7 @@ class ManagementServerImpl implements ManagementServer {
         // Route-based router for migrated routes
         this.router = ManagementRouter.managementRouter(StatusRoutes.statusRoutes(nodeSupplier),
                                                         AlertRoutes.alertRoutes(alertManager),
+                                                        DynamicAspectRoutes.dynamicAspectRoutes(aspectManager),
                                                         ControllerRoutes.controllerRoutes(nodeSupplier),
                                                         SliceRoutes.sliceRoutes(nodeSupplier),
                                                         MetricsRoutes.metricsRoutes(nodeSupplier, observability),
