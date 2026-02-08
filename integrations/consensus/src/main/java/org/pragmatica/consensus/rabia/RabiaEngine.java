@@ -248,7 +248,7 @@ public class RabiaEngine<C extends Command> {
     }
 
     private void triggerPhaseIfNeeded() {
-        if (!isInPhase.get()) {
+        if (!isInPhase.get() && active.get()) {
             executor.execute(this::startPhase);
         }
     }
@@ -340,7 +340,13 @@ public class RabiaEngine<C extends Command> {
     }
 
     /// Starts a new phase with pending commands.
+    /// Dormant nodes must not enter phases — they accumulate batches in pendingBatches
+    /// and process them after activation. Without this guard, dormant nodes would broadcast
+    /// Propose messages but ignore incoming votes, creating an unrecoverable phase deadlock.
     private void startPhase() {
+        if (!active.get()) {
+            return;
+        }
         // Use compareAndSet to atomically check and set - prevents race condition
         if (!isInPhase.compareAndSet(false, true)) {
             return;

@@ -401,6 +401,83 @@ class RabiaConsensusIntegrationTest {
         }
     }
 
+    @Nested
+    class StaggeredActivation {
+
+        @Test
+        void staggeredActivation_dormantNodesAccumulateBatches_consensusCompletesAfterActivation() throws InterruptedException {
+            // Step 1: Activate only node-1 (simulates first node ready)
+            cluster.activateNode(NODE_1);
+            assertThat(cluster.engines.get(NODE_1).isActive()).isTrue();
+            assertThat(cluster.engines.get(NODE_2).isActive()).isFalse();
+            assertThat(cluster.engines.get(NODE_3).isActive()).isFalse();
+
+            // Step 2: Node-1 broadcasts a batch (simulates leader proposal)
+            var batch = Batch.batch(List.of(new TestCommand("leader-proposal")));
+            cluster.engines.get(NODE_1).handleNewBatch(new NewBatch<>(NODE_1, batch));
+            // Deliver to dormant nodes (simulates network delivering NewBatch)
+            cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_1, batch));
+            cluster.engines.get(NODE_3).handleNewBatch(new NewBatch<>(NODE_1, batch));
+            Thread.sleep(100);
+
+            // Step 3: Verify dormant nodes did NOT broadcast Propose
+            var node2Messages = cluster.networks.get(NODE_2).getAllMessages();
+            var node3Messages = cluster.networks.get(NODE_3).getAllMessages();
+            var node2Proposals = node2Messages.stream()
+                .filter(m -> m instanceof Propose<?>)
+                .count();
+            var node3Proposals = node3Messages.stream()
+                .filter(m -> m instanceof Propose<?>)
+                .count();
+            assertThat(node2Proposals).as("Dormant node-2 must not broadcast Propose").isZero();
+            assertThat(node3Proposals).as("Dormant node-3 must not broadcast Propose").isZero();
+
+            // Step 4: Activate node-2 and node-3 (staggered, with interval)
+            cluster.activateNode(NODE_2);
+            Thread.sleep(100);
+            cluster.activateNode(NODE_3);
+            Thread.sleep(100);
+
+            // Step 5: Deliver all messages and complete consensus rounds
+            for (int i = 0; i < 10; i++) {
+                cluster.deliverAllPendingMessages();
+                Thread.sleep(50);
+            }
+
+            // Step 6: Verify consensus was reached — at least one decision must exist
+            var decisions = cluster.getMessagesByType(Decision.class);
+            assertThat(decisions).as("Consensus must complete after staggered activation").isNotEmpty();
+        }
+
+        @Test
+        void staggeredActivation_batchAccumulatedWhileDormant_processedAfterActivation() throws InterruptedException {
+            // Activate only node-1
+            cluster.activateNode(NODE_1);
+
+            // Send multiple batches to dormant nodes
+            var batch1 = Batch.batch(List.of(new TestCommand("batch-1")));
+            var batch2 = Batch.batch(List.of(new TestCommand("batch-2")));
+            cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_1, batch1));
+            cluster.engines.get(NODE_2).handleNewBatch(new NewBatch<>(NODE_1, batch2));
+            Thread.sleep(50);
+
+            // Dormant node-2 should have zero outbound messages
+            assertThat(cluster.networks.get(NODE_2).getAllMessages()).isEmpty();
+
+            // Activate node-2
+            cluster.activateNode(NODE_2);
+            Thread.sleep(100);
+
+            // After activation, node-2 should process accumulated batches
+            // and broadcast a Propose for the first pending batch
+            var node2Messages = cluster.networks.get(NODE_2).getAllMessages();
+            var proposals = node2Messages.stream()
+                .filter(m -> m instanceof Propose<?>)
+                .count();
+            assertThat(proposals).as("Activated node must process accumulated batches").isPositive();
+        }
+    }
+
     // ==================== Cluster Simulator ====================
 
     static class ClusterSimulator {
@@ -420,6 +497,20 @@ class RabiaConsensusIntegrationTest {
                 stateMachines.put(nodeId, stateMachine);
                 engines.put(nodeId, engine);
             }
+        }
+
+        void activateNode(NodeId nodeId) throws InterruptedException {
+            var engine = engines.get(nodeId);
+            engine.quorumState(QuorumStateNotification.ESTABLISHED);
+            Thread.sleep(150); // Allow sync request to be sent
+
+            // Send sync responses from other nodes to trigger activation
+            for (var otherId : nodeIds) {
+                if (!nodeId.equals(otherId)) {
+                    engine.processSyncResponse(new SyncResponse<>(otherId, SavedState.empty()));
+                }
+            }
+            Thread.sleep(50); // Allow activation to complete
         }
 
         void activateAll() throws InterruptedException {
