@@ -30,7 +30,7 @@ import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
  *
  * <p>Usage:
  * <pre>{@code
- * try (var cluster = AetherCluster.aetherCluster(3, projectRoot)) {
+ * try (var cluster = AetherCluster.aetherCluster(5, projectRoot)) {
  *     cluster.start();
  *     cluster.awaitQuorum();
  *

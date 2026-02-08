@@ -77,6 +77,25 @@ class ArtifactRepositoryE2ETest {
         }
     }
 
+    @BeforeEach
+    void ensureClusterHealthy() {
+        // Restore any stopped nodes from previous tests
+        cluster.nodes().stream()
+            .filter(n -> !n.isRunning())
+            .forEach(n -> {
+                System.out.println("[SETUP] Restoring stopped node: " + n.nodeId());
+                n.start();
+            });
+
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
+        cluster.awaitLeader();
+
+        // Re-upload test artifacts to replenish replicas after node restarts
+        System.out.println("[SETUP] Re-uploading test artifacts to ensure replica coverage");
+        cluster.uploadTestArtifacts();
+    }
+
     @Test
     @Order(1)
     void uploadArtifact_metadataAvailable() {
@@ -172,11 +191,15 @@ class ArtifactRepositoryE2ETest {
                           !newLeader.toResult(Causes.cause("")).unwrap().nodeId().equals(originalLeaderId);
                });
 
-        var downloaded = cluster.anyNode().downloadArtifact(TEST_GROUP_PATH, TEST_ARTIFACT_ID, TEST_ARTIFACT_VERSION);
-        System.out.println("[TEST] Downloaded " + downloaded.length + " bytes after leader failover");
-
-        assertThat(downloaded.length).isEqualTo(localArtifactBytes.length);
-        assertThat(sha1Hex(downloaded)).isEqualTo(localArtifactSha1);
+        // DHT ring needs time to process NodeRemoved event and update routing
+        await().atMost(RECOVERY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .untilAsserted(() -> {
+                   var downloaded = cluster.anyNode().downloadArtifact(TEST_GROUP_PATH, TEST_ARTIFACT_ID, TEST_ARTIFACT_VERSION);
+                   System.out.println("[TEST] Downloaded " + downloaded.length + " bytes after leader failover");
+                   assertThat(downloaded.length).isEqualTo(localArtifactBytes.length);
+                   assertThat(sha1Hex(downloaded)).isEqualTo(localArtifactSha1);
+               });
 
         // Restore original leader
         cluster.node(originalLeaderId).start();

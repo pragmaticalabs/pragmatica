@@ -16,7 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Tests cover:
  * <ul>
- *   <li>3-node cluster formation</li>
+ *   <li>5-node cluster formation</li>
  *   <li>Quorum establishment</li>
  *   <li>Leader election</li>
  *   <li>Node visibility across cluster</li>
@@ -30,7 +30,7 @@ class ClusterFormationE2ETest {
 
     @BeforeAll
     static void createCluster() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();

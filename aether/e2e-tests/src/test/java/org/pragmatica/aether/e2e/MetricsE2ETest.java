@@ -38,7 +38,7 @@ class MetricsE2ETest {
 
     @BeforeAll
     static void createCluster() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
