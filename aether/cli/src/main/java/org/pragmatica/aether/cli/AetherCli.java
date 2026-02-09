@@ -19,29 +19,29 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-/**
- * Aether cluster management CLI.
- *
- * <p>Supports two modes:
- * <ul>
- *   <li>Batch mode: Execute commands directly from command line</li>
- *   <li>REPL mode: Interactive shell when no command specified</li>
- * </ul>
- *
- * <p>Usage examples:
- * <pre>
- * # Batch mode
- * aether-cli --connect node1:8080 status
- * aether-cli --connect node1:8080 nodes
- * aether-cli --connect node1:8080 metrics
- *
- * # REPL mode
- * aether-cli --connect node1:8080
- * aether> status
- * aether> nodes
- * aether> exit
- * </pre>
- */
+/// Aether cluster management CLI.
+///
+///
+/// Supports two modes:
+///
+///   - Batch mode: Execute commands directly from command line
+///   - REPL mode: Interactive shell when no command specified
+///
+///
+///
+/// Usage examples:
+/// ```
+/// # Batch mode
+/// aether-cli --connect node1:8080 status
+/// aether-cli --connect node1:8080 nodes
+/// aether-cli --connect node1:8080 metrics
+///
+/// # REPL mode
+/// aether-cli --connect node1:8080
+/// aether> status
+/// aether> nodes
+/// aether> exit
+/// ```
 @Command(name = "aether",
  mixinStandardHelpOptions = true,
  version = "Aether 0.15.0",

@@ -19,9 +19,7 @@ import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Downloads and installs JBCT JAR files.
- */
+/// Downloads and installs JBCT JAR files.
 public final class JarInstaller {
     private static final Logger LOG = LoggerFactory.getLogger(JarInstaller.class);
     private static final String DEFAULT_INSTALL_DIR = ".jbct";
@@ -34,16 +32,12 @@ public final class JarInstaller {
         this.http = http;
     }
 
-    /**
-     * Create installer with default settings.
-     */
+    /// Create installer with default settings.
     public static JarInstaller jarInstaller() {
         return new JarInstaller(HttpClients.httpOperations());
     }
 
-    /**
-     * Get the default installation path (~/.jbct/lib/jbct.jar).
-     */
+    /// Get the default installation path (~/.jbct/lib/jbct.jar).
     public static Path defaultInstallPath() {
         return Option.option(System.getProperty("user.home"))
                      .map(userHome -> Path.of(userHome, DEFAULT_INSTALL_DIR, LIB_DIR, JAR_NAME))
@@ -53,10 +47,8 @@ public final class JarInstaller {
                                        JAR_NAME));
     }
 
-    /**
-     * Auto-detect the current JAR location.
-     * Returns the path to the running JAR, or default install path if detection fails.
-     */
+    /// Auto-detect the current JAR location.
+    /// Returns the path to the running JAR, or default install path if detection fails.
     public static Path detectCurrentJar() {
         try{
             // Try to get the JAR from class path
@@ -86,20 +78,16 @@ public final class JarInstaller {
         return defaultInstallPath();
     }
 
-    /**
-     * Download and install a JAR from URL.
-     *
-     * @param downloadUrl URL to download from
-     * @param targetPath  Path to install to
-     * @return Success with installed path, or failure with error
-     */
+    /// Download and install a JAR from URL.
+    ///
+    /// @param downloadUrl URL to download from
+    /// @param targetPath  Path to install to
+    /// @return Success with installed path, or failure with error
     public Result<Path> install(String downloadUrl, Path targetPath) {
         return download(downloadUrl).flatMap(tempFile -> installFromTemp(tempFile, targetPath));
     }
 
-    /**
-     * Download JAR to a temporary file.
-     */
+    /// Download JAR to a temporary file.
     public Result<Path> download(String downloadUrl) {
         return UrlValidation.validateDownloadUrl(downloadUrl)
                             .flatMap(this::downloadFromUri);
@@ -140,11 +128,9 @@ public final class JarInstaller {
         }
     }
 
-    /**
-     * Install from a temporary file to target path.
-     * Creates parent directories if needed.
-     * Uses atomic move when possible.
-     */
+    /// Install from a temporary file to target path.
+    /// Creates parent directories if needed.
+    /// Uses atomic move when possible.
     public Result<Path> installFromTemp(Path tempFile, Path targetPath) {
         try{
             // Create parent directories
@@ -192,11 +178,9 @@ public final class JarInstaller {
         }
     }
 
-    /**
-     * Create initial installation directory structure.
-     *
-     * @return Path to the installation directory
-     */
+    /// Create initial installation directory structure.
+    ///
+    /// @return Path to the installation directory
     public static Result<Path> createInstallDir() {
         try{
             var installDir = defaultInstallPath().getParent()
@@ -213,10 +197,8 @@ public final class JarInstaller {
         }
     }
 
-    /**
-     * Copy shell wrapper scripts to installation directory.
-     * Scripts are loaded from classpath resources.
-     */
+    /// Copy shell wrapper scripts to installation directory.
+    /// Scripts are loaded from classpath resources.
     public static Result<Path> installWrapperScripts(Path installDir) {
         var binDir = installDir.resolve("bin");
         return copyResource("/dist/bin/jbct",

@@ -41,23 +41,21 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * Client-side component for invoking methods on remote slices.
- *
- * <p>Supports two invocation patterns:
- * <ul>
- *   <li>Fire-and-forget: {@link #invoke(Artifact, MethodName, Object)}</li>
- *   <li>Request-response: {@link #invoke(Artifact, MethodName, Object, TypeToken)}</li>
- * </ul>
- *
- * <p>Uses the EndpointRegistry to find the target node for a slice,
- * and routes the invocation via the ClusterNetwork.
- */
+/// Client-side component for invoking methods on remote slices.
+///
+///
+/// Supports two invocation patterns:
+///
+///   - Fire-and-forget: {@link #invoke(Artifact, MethodName, Object)}
+///   - Request-response: {@link #invoke(Artifact, MethodName, Object, TypeToken)}
+///
+///
+///
+/// Uses the EndpointRegistry to find the target node for a slice,
+/// and routes the invocation via the ClusterNetwork.
 public interface SliceInvoker extends SliceInvokerFacade {
-    /**
-     * Implementation of SliceInvokerFacade.methodHandle for creating reusable handles.
-     * Parses artifact and method once, returns a handle for repeated invocations.
-     */
+    /// Implementation of SliceInvokerFacade.methodHandle for creating reusable handles.
+    /// Parses artifact and method once, returns a handle for repeated invocations.
     @Override
     default <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,
                                                            String methodName,
@@ -71,10 +69,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                                                                         responseType)));
     }
 
-    /**
-     * Create a method handle with pre-parsed artifact and method.
-     * Subclasses may override to provide custom implementations.
-     */
+    /// Create a method handle with pre-parsed artifact and method.
+    /// Subclasses may override to provide custom implementations.
     default <R, T> MethodHandle<R, T> createMethodHandle(Artifact artifact,
                                                          MethodName method,
                                                          TypeToken<T> requestType,
@@ -82,10 +78,8 @@ public interface SliceInvoker extends SliceInvokerFacade {
         return new MethodHandleImpl<>(artifact, method, requestType, responseType, this);
     }
 
-    /**
-     * Internal record implementing MethodHandle with pre-parsed artifact/method.
-     * Delegates to typed invoke methods, avoiding repeated parsing.
-     */
+    /// Internal record implementing MethodHandle with pre-parsed artifact/method.
+    /// Delegates to typed invoke methods, avoiding repeated parsing.
     record MethodHandleImpl<R, T>(Artifact artifact,
                                   MethodName methodName,
                                   TypeToken<T> requestType,
@@ -112,134 +106,102 @@ public interface SliceInvoker extends SliceInvokerFacade {
         }
     }
 
-    /**
-     * Verify that an endpoint exists for the given artifact and method.
-     * Used during slice activation to eagerly validate dependencies.
-     *
-     * @param artifact Target slice artifact
-     * @param method   Method to verify
-     * @return Success if endpoint exists, failure if not found
-     */
+    /// Verify that an endpoint exists for the given artifact and method.
+    /// Used during slice activation to eagerly validate dependencies.
+    ///
+    /// @param artifact Target slice artifact
+    /// @param method   Method to verify
+    /// @return Success if endpoint exists, failure if not found
     Result<Unit> verifyEndpointExists(Artifact artifact, MethodName method);
 
-    /**
-     * Fire-and-forget invocation - sends request without waiting for response.
-     *
-     * @param slice  Target slice artifact
-     * @param method Method to invoke
-     * @param request Request parameter
-     * @return Promise that completes when request is sent
-     */
+    /// Fire-and-forget invocation - sends request without waiting for response.
+    ///
+    /// @param slice  Target slice artifact
+    /// @param method Method to invoke
+    /// @param request Request parameter
+    /// @return Promise that completes when request is sent
     Promise<Unit> invoke(Artifact slice, MethodName method, Object request);
 
-    /**
-     * Request-response invocation - sends request and waits for response.
-     *
-     * @param slice        Target slice artifact
-     * @param method       Method to invoke
-     * @param request      Request parameter
-     * @param responseType Expected response type token
-     * @param <R>          Response type
-     * @return Promise resolving to response
-     */
+    /// Request-response invocation - sends request and waits for response.
+    ///
+    /// @param slice        Target slice artifact
+    /// @param method       Method to invoke
+    /// @param request      Request parameter
+    /// @param responseType Expected response type token
+    /// @param <R>          Response type
+    /// @return Promise resolving to response
     <R> Promise<R> invoke(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
 
-    /**
-     * Request-response invocation with retry for idempotent operations.
-     * Uses exponential backoff with the specified number of retries.
-     *
-     * @param slice        Target slice artifact
-     * @param method       Method to invoke
-     * @param request      Request parameter
-     * @param responseType Expected response type token
-     * @param maxRetries   Maximum number of retry attempts (0 = no retries)
-     * @param <R>          Response type
-     * @return Promise resolving to response
-     */
+    /// Request-response invocation with retry for idempotent operations.
+    /// Uses exponential backoff with the specified number of retries.
+    ///
+    /// @param slice        Target slice artifact
+    /// @param method       Method to invoke
+    /// @param request      Request parameter
+    /// @param responseType Expected response type token
+    /// @param maxRetries   Maximum number of retry attempts (0 = no retries)
+    /// @param <R>          Response type
+    /// @return Promise resolving to response
     <R> Promise<R> invokeWithRetry(Artifact slice,
                                    MethodName method,
                                    Object request,
                                    TypeToken<R> responseType,
                                    int maxRetries);
 
-    /**
-     * Local invocation - invokes a slice on the local node without network round-trip.
-     * Used by HTTP router for handling incoming requests.
-     *
-     * @param slice        Target slice artifact
-     * @param method       Method to invoke
-     * @param request      Request parameter
-     * @param responseType Expected response type token
-     * @param <R>          Response type
-     * @return Promise resolving to response
-     */
+    /// Local invocation - invokes a slice on the local node without network round-trip.
+    /// Used by HTTP router for handling incoming requests.
+    ///
+    /// @param slice        Target slice artifact
+    /// @param method       Method to invoke
+    /// @param request      Request parameter
+    /// @param responseType Expected response type token
+    /// @param <R>          Response type
+    /// @return Promise resolving to response
     <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType);
 
-    /**
-     * Handle response from remote invocation.
-     */
+    /// Handle response from remote invocation.
     @MessageReceiver
     void onInvokeResponse(InvokeResponse response);
 
-    /**
-     * Handle node removal for immediate retry of pending invocations.
-     */
+    /// Handle node removal for immediate retry of pending invocations.
     @MessageReceiver
     void onNodeRemoved(TopologyChangeNotification.NodeRemoved event);
 
-    /**
-     * Handle node down for immediate retry of pending invocations.
-     */
+    /// Handle node down for immediate retry of pending invocations.
     @MessageReceiver
     void onNodeDown(TopologyChangeNotification.NodeDown event);
 
-    /**
-     * Stop the invoker and release resources.
-     * <p>
-     * Shuts down the retry scheduler, cancels pending invocations,
-     * and cleans up resources.
-     *
-     * @return Promise that completes when shutdown is finished
-     */
+    /// Stop the invoker and release resources.
+    ///
+    /// Shuts down the retry scheduler, cancels pending invocations,
+    /// and cleans up resources.
+    ///
+    /// @return Promise that completes when shutdown is finished
     Promise<Unit> stop();
 
-    /**
-     * Get count of pending invocations (for monitoring).
-     */
+    /// Get count of pending invocations (for monitoring).
     int pendingCount();
 
-    /**
-     * Default timeout for invocations (30 seconds).
-     */
+    /// Default timeout for invocations (30 seconds).
     long DEFAULT_TIMEOUT_MS = 30_000;
 
-    /**
-     * Default maximum retries.
-     */
+    /// Default maximum retries.
     int DEFAULT_MAX_RETRIES = 3;
 
-    /**
-     * Base delay for exponential backoff (100ms).
-     */
+    /// Base delay for exponential backoff (100ms).
     long BASE_RETRY_DELAY_MS = 100;
 
-    /**
-     * Listener for slice failure events.
-     */
+    /// Listener for slice failure events.
     @FunctionalInterface
     interface SliceFailureListener {
         void onSliceFailure(SliceFailureEvent event);
     }
 
-    /**
-     * Set the failure listener for slice failure events.
-     * Called when all instances of a slice fail during invocation.
-     */
+    /// Set the failure listener for slice failure events.
+    /// Called when all instances of a slice fail during invocation.
     Unit setFailureListener(SliceFailureListener listener);
 
-    /**
-     * Create a new SliceInvoker.
-     */
+    /// Create a new SliceInvoker.
     static SliceInvoker sliceInvoker(NodeId self,
                                      ClusterNetwork network,
                                      EndpointRegistry endpointRegistry,
@@ -259,9 +221,7 @@ public interface SliceInvoker extends SliceInvokerFacade {
                                     aspectInterceptor);
     }
 
-    /**
-     * Create with custom timeout.
-     */
+    /// Create with custom timeout.
     static SliceInvoker sliceInvoker(NodeId self,
                                      ClusterNetwork network,
                                      EndpointRegistry endpointRegistry,
@@ -510,10 +470,8 @@ class SliceInvokerImpl implements SliceInvoker {
         return Promise.promise(promise -> executeWithFailover(promise, ctx));
     }
 
-    /**
-     * Context for multi-instance failover retry logic.
-     * Tracks which endpoints have been tried and failed.
-     */
+    /// Context for multi-instance failover retry logic.
+    /// Tracks which endpoints have been tried and failed.
     private record FailoverContext<R>(Artifact slice,
                                       MethodName method,
                                       Object request,

@@ -20,9 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
-/**
- * Check command - combines format check and lint (for CI).
- */
+/// Check command - combines format check and lint (for CI).
 @Command(
  name = "check",
  description = "Run both format check and lint (for CI)",

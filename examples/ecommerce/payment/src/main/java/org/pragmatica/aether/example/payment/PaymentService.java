@@ -20,10 +20,8 @@ import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 
-/**
- * Payment processing slice.
- * Handles credit card authorization, capture, and refunds.
- */
+/// Payment processing slice.
+/// Handles credit card authorization, capture, and refunds.
 @Slice
 public interface PaymentService {
     // === Requests ===

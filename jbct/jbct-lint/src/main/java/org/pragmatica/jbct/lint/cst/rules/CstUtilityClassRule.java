@@ -10,13 +10,11 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-STY-04: Utility class pattern.
- *
- * Detects:
- * 1. Final classes with private constructor + only static methods → suggest sealed interface
- * 2. Sealed interfaces used as utilities missing 'unused' record
- */
+/// JBCT-STY-04: Utility class pattern.
+///
+/// Detects:
+/// 1. Final classes with private constructor + only static methods → suggest sealed interface
+/// 2. Sealed interfaces used as utilities missing 'unused' record
 public class CstUtilityClassRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-04";
 

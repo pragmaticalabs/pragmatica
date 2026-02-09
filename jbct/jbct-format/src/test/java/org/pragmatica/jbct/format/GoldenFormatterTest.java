@@ -14,14 +14,12 @@ import org.junit.jupiter.params.provider.ValueSource;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/**
- * Golden tests for JBCT formatter.
- *
- * These tests verify that the formatter produces output matching
- * the manually-formatted golden examples in format-examples/.
- *
- * The golden examples are the source of truth for JBCT formatting style.
- */
+/// Golden tests for JBCT formatter.
+///
+/// These tests verify that the formatter produces output matching
+/// the manually-formatted golden examples in format-examples/.
+///
+/// The golden examples are the source of truth for JBCT formatting style.
 class GoldenFormatterTest {
     private static final Path EXAMPLES_DIR = Path.of("src/test/resources/format-examples");
 

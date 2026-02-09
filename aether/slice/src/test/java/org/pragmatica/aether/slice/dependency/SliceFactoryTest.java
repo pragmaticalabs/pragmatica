@@ -18,12 +18,10 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for SliceFactory with new-style 2-parameter factories.
- * <p>
- * New-style factories take only (Aspect, SliceCreationContext) and resolve
- * dependencies dynamically via SliceCreationContext at runtime.
- */
+/// Tests for SliceFactory with new-style 2-parameter factories.
+///
+/// New-style factories take only (Aspect, SliceCreationContext) and resolve
+/// dependencies dynamically via SliceCreationContext at runtime.
 class SliceFactoryTest {
 
     private static final SliceInvokerFacade STUB_INVOKER = new SliceInvokerFacade() {

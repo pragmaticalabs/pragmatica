@@ -8,37 +8,25 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 
-/**
- * Factory for creating logging aspects.
- * Wraps slice method invocations with logging.
- */
+/// Factory for creating logging aspects.
+/// Wraps slice method invocations with logging.
 public interface LoggingAspectFactory extends Slice {
-    /**
-     * Create a logging aspect with the given configuration.
-     */
+    /// Create a logging aspect with the given configuration.
     <T> Aspect<T> create(LogConfig config);
 
-    /**
-     * Create a logging aspect with default configuration.
-     */
+    /// Create a logging aspect with default configuration.
     default <T> Aspect<T> create(String name) {
         return create(LogConfig.logConfig(name)
                                .unwrap());
     }
 
-    /**
-     * Enable or disable logging globally.
-     */
+    /// Enable or disable logging globally.
     Unit setEnabled(boolean enabled);
 
-    /**
-     * Check if logging is enabled.
-     */
+    /// Check if logging is enabled.
     boolean isEnabled();
 
-    /**
-     * Factory method.
-     */
+    /// Factory method.
     static LoggingAspectFactory loggingAspectFactory() {
         return new DefaultLoggingAspectFactory();
     }

@@ -19,22 +19,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for the cluster controller (DecisionTreeController).
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Controller runs only on leader node</li>
- *   <li>Controller configuration management</li>
- *   <li>Controller status reporting</li>
- *   <li>Controller evaluation triggering</li>
- *   <li>Controller transfer on leader change</li>
- * </ul>
- *
- * <p>Note: Auto-scaling based on CPU metrics requires controlled load
- * generation which is complex in E2E tests. These tests focus on
- * controller infrastructure rather than scaling decisions.
- */
+/// Tests for the cluster controller (DecisionTreeController).
+///
+///
+/// Tests cover:
+///
+///   - Controller runs only on leader node
+///   - Controller configuration management
+///   - Controller status reporting
+///   - Controller evaluation triggering
+///   - Controller transfer on leader change
+///
+///
+///
+/// Note: Auto-scaling based on CPU metrics requires controlled load
+/// generation which is complex in E2E tests. These tests focus on
+/// controller infrastructure rather than scaling decisions.
 @Execution(ExecutionMode.SAME_THREAD)
 class ControllerTest {
     private static final int BASE_PORT = 10500;

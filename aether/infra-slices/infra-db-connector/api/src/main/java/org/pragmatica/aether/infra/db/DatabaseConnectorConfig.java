@@ -8,21 +8,19 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.Map;
 import java.util.Properties;
 
-/**
- * Configuration for database connectors.
- *
- * @param name           Connector name for identification and metrics
- * @param type           Database type
- * @param host           Database host
- * @param port           Database port (0 to use default for database type)
- * @param database       Database name
- * @param username       Connection username (optional)
- * @param password       Connection password (optional)
- * @param poolConfig     Connection pool configuration
- * @param properties     Additional driver-specific properties
- * @param jdbcUrl        Override JDBC URL (optional, overrides host/port/database)
- * @param r2dbcUrl       Override R2DBC URL (optional, overrides host/port/database)
- */
+/// Configuration for database connectors.
+///
+/// @param name           Connector name for identification and metrics
+/// @param type           Database type
+/// @param host           Database host
+/// @param port           Database port (0 to use default for database type)
+/// @param database       Database name
+/// @param username       Connection username (optional)
+/// @param password       Connection password (optional)
+/// @param poolConfig     Connection pool configuration
+/// @param properties     Additional driver-specific properties
+/// @param jdbcUrl        Override JDBC URL (optional, overrides host/port/database)
+/// @param r2dbcUrl       Override R2DBC URL (optional, overrides host/port/database)
 public record DatabaseConnectorConfig(
     String name,
     DatabaseType type,
@@ -36,9 +34,7 @@ public record DatabaseConnectorConfig(
     Option<String> jdbcUrl,
     Option<String> r2dbcUrl
 ) {
-    /**
-     * Override toString() to mask password for security.
-     */
+    /// Override toString() to mask password for security.
     @Override
     public String toString() {
         return "DatabaseConnectorConfig[name=" + name +
@@ -62,17 +58,15 @@ public record DatabaseConnectorConfig(
         // Remove embedded credentials like user:password@ from URLs
         return url.replaceAll("://[^:]+:[^@]+@", "://[REDACTED]@");
     }
-    /**
-     * Creates a config with required parameters.
-     *
-     * @param name     Connector name
-     * @param type     Database type
-     * @param host     Database host
-     * @param database Database name
-     * @param username Connection username
-     * @param password Connection password
-     * @return Result with config or validation error
-     */
+    /// Creates a config with required parameters.
+    ///
+    /// @param name     Connector name
+    /// @param type     Database type
+    /// @param host     Database host
+    /// @param database Database name
+    /// @param username Connection username
+    /// @param password Connection password
+    /// @return Result with config or validation error
     public static Result<DatabaseConnectorConfig> databaseConnectorConfig(
         String name,
         DatabaseType type,
@@ -88,15 +82,13 @@ public record DatabaseConnectorConfig(
             ));
     }
 
-    /**
-     * Creates a config from a JDBC URL.
-     *
-     * @param name     Connector name
-     * @param jdbcUrl  JDBC connection URL
-     * @param username Connection username
-     * @param password Connection password
-     * @return Result with config or validation error
-     */
+    /// Creates a config from a JDBC URL.
+    ///
+    /// @param name     Connector name
+    /// @param jdbcUrl  JDBC connection URL
+    /// @param username Connection username
+    /// @param password Connection password
+    /// @return Result with config or validation error
     public static Result<DatabaseConnectorConfig> databaseConnectorConfigFromJdbcUrl(
         String name,
         String jdbcUrl,
@@ -118,38 +110,30 @@ public record DatabaseConnectorConfig(
                      });
     }
 
-    /**
-     * Creates a builder for fluent configuration.
-     *
-     * @return New builder
-     */
+    /// Creates a builder for fluent configuration.
+    ///
+    /// @return New builder
     public static Builder databaseConnectorConfigBuilder() {
         return new Builder();
     }
 
-    /**
-     * Returns the effective JDBC URL, either from override or constructed from components.
-     *
-     * @return JDBC connection URL
-     */
+    /// Returns the effective JDBC URL, either from override or constructed from components.
+    ///
+    /// @return JDBC connection URL
     public String effectiveJdbcUrl() {
         return jdbcUrl.or(() -> type.buildJdbcUrl(host, port, database));
     }
 
-    /**
-     * Returns the effective R2DBC URL, either from override or constructed from components.
-     *
-     * @return R2DBC connection URL
-     */
+    /// Returns the effective R2DBC URL, either from override or constructed from components.
+    ///
+    /// @return R2DBC connection URL
     public String effectiveR2dbcUrl() {
         return r2dbcUrl.or(() -> type.buildR2dbcUrl(host, port, database));
     }
 
-    /**
-     * Converts additional properties to java.util.Properties for JDBC drivers.
-     *
-     * @return Properties object with user/password and additional properties
-     */
+    /// Converts additional properties to java.util.Properties for JDBC drivers.
+    ///
+    /// @return Properties object with user/password and additional properties
     public Properties toJdbcProperties() {
         var props = new Properties();
         username.filter(u -> !u.isBlank()).onPresent(u -> props.setProperty("user", u));
@@ -173,9 +157,7 @@ public record DatabaseConnectorConfig(
                      .map(_ -> Unit.unit());
     }
 
-    /**
-     * Builder for DatabaseConnectorConfig.
-     */
+    /// Builder for DatabaseConnectorConfig.
     public static final class Builder {
         private String name;
         private DatabaseType type;

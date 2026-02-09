@@ -2,13 +2,9 @@ package org.pragmatica.aether.ttm.error;
 
 import org.pragmatica.lang.Cause;
 
-/**
- * Errors that can occur during TTM operations.
- */
+/// Errors that can occur during TTM operations.
 public sealed interface TTMError extends Cause {
-    /**
-     * Model file not found or cannot be loaded.
-     */
+    /// Model file not found or cannot be loaded.
     record ModelLoadFailed(String path, String reason) implements TTMError {
         @Override
         public String message() {
@@ -16,9 +12,7 @@ public sealed interface TTMError extends Cause {
         }
     }
 
-    /**
-     * Inference failed.
-     */
+    /// Inference failed.
     record InferenceFailed(String reason) implements TTMError {
         @Override
         public String message() {
@@ -26,9 +20,7 @@ public sealed interface TTMError extends Cause {
         }
     }
 
-    /**
-     * Insufficient data for prediction.
-     */
+    /// Insufficient data for prediction.
     record InsufficientData(int available, int required) implements TTMError {
         @Override
         public String message() {
@@ -37,9 +29,7 @@ public sealed interface TTMError extends Cause {
         }
     }
 
-    /**
-     * TTM is disabled.
-     */
+    /// TTM is disabled.
     record Disabled() implements TTMError {
         public static Disabled disabled() {
             return new Disabled();
@@ -51,9 +41,7 @@ public sealed interface TTMError extends Cause {
         }
     }
 
-    /**
-     * Unexpected output tensor type from model.
-     */
+    /// Unexpected output tensor type from model.
     record UnexpectedOutputType(String actualType) implements TTMError {
         @Override
         public String message() {
@@ -61,9 +49,7 @@ public sealed interface TTMError extends Cause {
         }
     }
 
-    /**
-     * No TTM predictor implementation available on classpath.
-     */
+    /// No TTM predictor implementation available on classpath.
     record NoProvider() implements TTMError {
         public static NoProvider noProvider() {
             return new NoProvider();

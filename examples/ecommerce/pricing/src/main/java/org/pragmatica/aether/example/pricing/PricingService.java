@@ -18,10 +18,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
-/**
- * Pricing slice.
- * Calculates prices, applies discounts, and computes taxes.
- */
+/// Pricing slice.
+/// Calculates prices, applies discounts, and computes taxes.
 @Slice
 public interface PricingService {
     // === Requests ===

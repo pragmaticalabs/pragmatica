@@ -15,23 +15,24 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for slice method invocation.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Route registration when slices are deployed</li>
- *   <li>HTTP request routing to slice methods</li>
- *   <li>Error handling for non-existent routes</li>
- *   <li>Request distribution across slice instances</li>
- * </ul>
- *
- * <p>Note: Uses the echo-slice test artifact which provides pure function
- * methods (echo, ping, transform, fail) for testing invocation infrastructure.
- *
- * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
- * Tests run in order and each test cleans up previous state before running.
- */
+/// E2E tests for slice method invocation.
+///
+///
+/// Tests cover:
+///
+///   - Route registration when slices are deployed
+///   - HTTP request routing to slice methods
+///   - Error handling for non-existent routes
+///   - Request distribution across slice instances
+///
+///
+///
+/// Note: Uses the echo-slice test artifact which provides pure function
+/// methods (echo, ping, transform, fail) for testing invocation infrastructure.
+///
+///
+/// This test class uses a shared cluster for all tests to reduce startup overhead.
+/// Tests run in order and each test cleans up previous state before running.
 @TestClassOrder(ClassOrderer.OrderAnnotation.class)
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)

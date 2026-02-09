@@ -33,21 +33,21 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * HTTP management API server for cluster administration.
- *
- * <p>Exposes REST endpoints for:
- * <ul>
- *   <li>GET /api/status - Cluster status</li>
- *   <li>GET /api/nodes - List active nodes</li>
- *   <li>GET /api/slices - List deployed slices</li>
- *   <li>GET /api/metrics - Cluster metrics</li>
- *   <li>GET /api/artifact-metrics - Artifact storage and deployment metrics</li>
- *   <li>GET /repository/info/{groupPath}/{artifactId}/{version} - Artifact metadata</li>
- * </ul>
- *
- * <p>Uses pragmatica-lite's HttpServer infrastructure.
- */
+/// HTTP management API server for cluster administration.
+///
+///
+/// Exposes REST endpoints for:
+///
+///   - GET /api/status - Cluster status
+///   - GET /api/nodes - List active nodes
+///   - GET /api/slices - List deployed slices
+///   - GET /api/metrics - Cluster metrics
+///   - GET /api/artifact-metrics - Artifact storage and deployment metrics
+///   - GET /repository/info/{groupPath}/{artifactId}/{version} - Artifact metadata
+///
+///
+///
+/// Uses pragmatica-lite's HttpServer infrastructure.
 public interface ManagementServer {
     Promise<Unit> start();
 

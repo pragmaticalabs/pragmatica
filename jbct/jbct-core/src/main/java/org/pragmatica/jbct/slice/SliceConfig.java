@@ -6,14 +6,10 @@ import org.pragmatica.lang.Result;
 
 import java.nio.file.Path;
 
-/**
- * Slice configuration loaded from {SliceName}.toml files.
- * Located in src/main/resources/slices/
- */
+/// Slice configuration loaded from {SliceName}.toml files.
+/// Located in src/main/resources/slices/
 public record SliceConfig(BlueprintConfig blueprint) {
-    /**
-     * Blueprint-related configuration.
-     */
+    /// Blueprint-related configuration.
     public record BlueprintConfig(int instances) {
         public static BlueprintConfig blueprintConfig(int instances) {
             return new BlueprintConfig(instances);
@@ -24,23 +20,17 @@ public record SliceConfig(BlueprintConfig blueprint) {
         }
     }
 
-    /**
-     * Factory method for creating SliceConfig.
-     */
+    /// Factory method for creating SliceConfig.
     public static SliceConfig sliceConfig(BlueprintConfig blueprint) {
         return new SliceConfig(blueprint);
     }
 
-    /**
-     * Default configuration when no config file exists.
-     */
+    /// Default configuration when no config file exists.
     public static SliceConfig defaultConfig() {
         return sliceConfig(BlueprintConfig.defaultConfig());
     }
 
-    /**
-     * Load slice config from a TOML file.
-     */
+    /// Load slice config from a TOML file.
     public static Result<SliceConfig> load(Path configPath) {
         return TomlParser.parseFile(configPath)
                          .map(SliceConfig::fromTomlDocument);

@@ -9,28 +9,22 @@ import org.pragmatica.aether.ttm.model.TTMForecast;
 
 import java.util.List;
 
-/**
- * Analyzes TTM predictions and generates scaling recommendations.
- */
+/// Analyzes TTM predictions and generates scaling recommendations.
 public interface ForecastAnalyzer {
-    /**
-     * Analyze predictions against current state.
-     *
-     * @param predictions   Raw predictions from TTM model
-     * @param confidence    Confidence score from model
-     * @param recentHistory Recent minute aggregates for comparison
-     * @param currentConfig Current controller configuration
-     *
-     * @return TTMForecast with recommendation
-     */
+    /// Analyze predictions against current state.
+    ///
+    /// @param predictions   Raw predictions from TTM model
+    /// @param confidence    Confidence score from model
+    /// @param recentHistory Recent minute aggregates for comparison
+    /// @param currentConfig Current controller configuration
+    ///
+    /// @return TTMForecast with recommendation
     TTMForecast analyze(float[] predictions,
                         double confidence,
                         List<MinuteAggregate> recentHistory,
                         ControllerConfig currentConfig);
 
-    /**
-     * Create default analyzer.
-     */
+    /// Create default analyzer.
     static ForecastAnalyzer forecastAnalyzer(TTMConfig config) {
         return new ForecastAnalyzerImpl(config);
     }

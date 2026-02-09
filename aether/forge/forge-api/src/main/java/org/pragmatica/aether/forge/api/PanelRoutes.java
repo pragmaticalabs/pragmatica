@@ -7,18 +7,14 @@ import org.pragmatica.lang.Promise;
 
 import static org.pragmatica.http.routing.Route.in;
 
-/**
- * Routes for HTML panel endpoints.
- * Returns HTML fragments for the dashboard panels.
- */
+/// Routes for HTML panel endpoints.
+/// Returns HTML fragments for the dashboard panels.
 public final class PanelRoutes {
     private PanelRoutes() {}
 
-    /**
-     * Create panel routes that return HTML content.
-     *
-     * @return RouteSource containing panel routes
-     */
+    /// Create panel routes that return HTML content.
+    ///
+    /// @return RouteSource containing panel routes
     public static RouteSource panelRoutes() {
         return in("/api/panel").serve(chaosPanelRoute(), loadPanelRoute());
     }

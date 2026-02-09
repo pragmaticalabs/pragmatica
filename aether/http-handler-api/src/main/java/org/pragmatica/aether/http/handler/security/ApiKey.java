@@ -5,14 +5,12 @@ import org.pragmatica.lang.Result;
 
 import java.util.regex.Pattern;
 
-/**
- * API Key value object with validation.
- * <p>
- * Validates that API keys conform to expected format:
- * alphanumeric plus underscore/hyphen, 8-64 characters.
- *
- * @param value the API key value
- */
+/// API Key value object with validation.
+///
+/// Validates that API keys conform to expected format:
+/// alphanumeric plus underscore/hyphen, 8-64 characters.
+///
+/// @param value the API key value
 public record ApiKey(String value) {
     private static final Pattern VALID_KEY = Pattern.compile("^[a-zA-Z0-9_-]{8,64}$");
 
@@ -33,12 +31,10 @@ public record ApiKey(String value) {
         }
     }
 
-    /**
-     * Parse and validate API key.
-     *
-     * @param value raw key value
-     * @return Result containing valid ApiKey or failure
-     */
+    /// Parse and validate API key.
+    ///
+    /// @param value raw key value
+    /// @return Result containing valid ApiKey or failure
     public static Result<ApiKey> apiKey(String value) {
         if (value == null) {
             return new ApiKeyError.NullValue().result();
@@ -50,9 +46,7 @@ public record ApiKey(String value) {
         return Result.success(new ApiKey(value));
     }
 
-    /**
-     * Check if a raw string is a valid API key format.
-     */
+    /// Check if a raw string is a valid API key format.
     public static boolean isValidFormat(String value) {
         return value != null && VALID_KEY.matcher(value)
                                          .matches();

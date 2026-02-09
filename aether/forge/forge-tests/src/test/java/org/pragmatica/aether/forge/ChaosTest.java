@@ -25,18 +25,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Chaos testing for cluster resilience.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Random node kills with recovery</li>
- *   <li>Rapid kill/restart cycles</li>
- *   <li>Concurrent operations during chaos</li>
- *   <li>Leader kill spree</li>
- *   <li>Split brain recovery</li>
- * </ul>
- */
+/// Chaos testing for cluster resilience.
+///
+///
+/// Tests cover:
+///
+///   - Random node kills with recovery
+///   - Rapid kill/restart cycles
+///   - Concurrent operations during chaos
+///   - Leader kill spree
+///   - Split brain recovery
+///
 @Execution(ExecutionMode.SAME_THREAD)
 class ChaosTest {
     private static final int BASE_PORT = 9500;

@@ -5,10 +5,8 @@ import org.pragmatica.lang.Cause;
 import java.net.URI;
 import java.nio.file.Path;
 
-/**
- * Security-related errors for path and URL validation.
- * Named using past tense per JBCT error naming convention.
- */
+/// Security-related errors for path and URL validation.
+/// Named using past tense per JBCT error naming convention.
 public sealed interface SecurityError extends Cause {
     record PathTraversalDetected(String path, String reason) implements SecurityError {
         public static PathTraversalDetected pathTraversalDetected(String path, String reason) {

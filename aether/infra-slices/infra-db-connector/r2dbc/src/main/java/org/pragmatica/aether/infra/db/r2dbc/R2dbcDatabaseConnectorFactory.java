@@ -11,16 +11,12 @@ import org.pragmatica.aether.infra.db.DatabaseConnectorError;
 import org.pragmatica.aether.infra.db.DatabaseConnectorFactory;
 import org.pragmatica.lang.Result;
 
-/**
- * Factory for creating R2DBC-based DatabaseConnector instances with connection pooling.
- */
+/// Factory for creating R2DBC-based DatabaseConnector instances with connection pooling.
 public final class R2dbcDatabaseConnectorFactory implements DatabaseConnectorFactory {
 
-    /**
-     * Creates a new factory instance.
-     *
-     * @return New R2dbcDatabaseConnectorFactory
-     */
+    /// Creates a new factory instance.
+    ///
+    /// @return New R2dbcDatabaseConnectorFactory
     public static R2dbcDatabaseConnectorFactory r2dbcDatabaseConnectorFactory() {
         return new R2dbcDatabaseConnectorFactory();
     }

@@ -9,22 +9,18 @@ import java.util.regex.Pattern;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * Extracts @SuppressWarnings annotations and determines which rules are suppressed at which locations.
- *
- * Supports both standard suppressions and JBCT rule IDs:
- * - @SuppressWarnings("JBCT-RET-01") - single rule
- * - @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-02"}) - multiple rules
- * - @SuppressWarnings("all") - suppresses all JBCT rules
- */
+/// Extracts @SuppressWarnings annotations and determines which rules are suppressed at which locations.
+///
+/// Supports both standard suppressions and JBCT rule IDs:
+/// - @SuppressWarnings("JBCT-RET-01") - single rule
+/// - @SuppressWarnings({"JBCT-RET-01", "JBCT-RET-02"}) - multiple rules
+/// - @SuppressWarnings("all") - suppresses all JBCT rules
 public final class SuppressionExtractor {
     private static final Pattern JBCT_RULE_PATTERN = Pattern.compile("JBCT-[A-Z]+-\\d+");
 
     private SuppressionExtractor() {}
 
-    /**
-     * A suppression scope with the suppressed rules and line range.
-     */
+    /// A suppression scope with the suppressed rules and line range.
     public record Suppression(Set<String> ruleIds, int startLine, int endLine) {
         public static Suppression suppression(Set<String> ruleIds, int startLine, int endLine) {
             return new Suppression(Set.copyOf(ruleIds), startLine, endLine);
@@ -47,9 +43,7 @@ public final class SuppressionExtractor {
         }
     }
 
-    /**
-     * Extract all suppressions from a CST.
-     */
+    /// Extract all suppressions from a CST.
     public static List<Suppression> extractSuppressions(CstNode root, String source) {
         var suppressions = new ArrayList<Suppression>();
         // Find all annotations
@@ -77,9 +71,7 @@ public final class SuppressionExtractor {
         return suppressions;
     }
 
-    /**
-     * Check if a rule is suppressed at a specific line.
-     */
+    /// Check if a rule is suppressed at a specific line.
     public static boolean isSuppressed(List<Suppression> suppressions, String ruleId, int line) {
         for (var suppression : suppressions) {
             if (suppression.suppresses(ruleId, line)) {

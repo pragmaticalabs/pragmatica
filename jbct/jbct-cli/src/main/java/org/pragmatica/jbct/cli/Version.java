@@ -6,9 +6,7 @@ import java.util.Properties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Provides version information for JBCT CLI.
- */
+/// Provides version information for JBCT CLI.
 public final class Version {
     private static final Logger LOG = LoggerFactory.getLogger(Version.class);
     private static final String VERSION;
@@ -27,9 +25,7 @@ public final class Version {
 
     private Version() {}
 
-    /**
-     * Get the current JBCT version.
-     */
+    /// Get the current JBCT version.
     public static String get() {
         return VERSION;
     }

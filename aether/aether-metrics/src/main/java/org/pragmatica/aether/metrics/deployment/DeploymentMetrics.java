@@ -8,10 +8,8 @@ import org.pragmatica.lang.Option;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
-/**
- * Deployment timing metrics for a single slice deployment.
- * Tracks timestamps for each state transition to calculate latencies.
- */
+/// Deployment timing metrics for a single slice deployment.
+/// Tracks timestamps for each state transition to calculate latencies.
 public record DeploymentMetrics(Artifact artifact,
                                 NodeId nodeId,
                                 long startTime,
@@ -41,29 +39,23 @@ DeploymentStatus status) {
         }
     }
 
-    /**
-     * Full deployment time from blueprint change to ACTIVE state.
-     * Returns -1 if deployment not yet complete.
-     */
+    /// Full deployment time from blueprint change to ACTIVE state.
+    /// Returns -1 if deployment not yet complete.
     public long fullDeploymentTime() {
         return activeTime > 0
                ? activeTime - startTime
                : - 1;
     }
 
-    /**
-     * Net deployment time from LOADED to ACTIVE state.
-     * Returns -1 if deployment not yet complete.
-     */
+    /// Net deployment time from LOADED to ACTIVE state.
+    /// Returns -1 if deployment not yet complete.
     public long netDeploymentTime() {
         return activeTime > 0 && loadedTime > 0
                ? activeTime - loadedTime
                : - 1;
     }
 
-    /**
-     * Time spent in each transition.
-     */
+    /// Time spent in each transition.
     public Map<String, Long> transitionLatencies() {
         var latencies = new LinkedHashMap<String, Long>();
         if (loadTime > 0 && startTime > 0) {
@@ -81,9 +73,7 @@ DeploymentStatus status) {
         return latencies;
     }
 
-    /**
-     * Convert to protocol message entry for network transmission.
-     */
+    /// Convert to protocol message entry for network transmission.
     public DeploymentMetricsEntry toEntry() {
         return new DeploymentMetricsEntry(artifact.asString(),
                                           nodeId.id(),
@@ -95,10 +85,8 @@ DeploymentStatus status) {
                                           status.name());
     }
 
-    /**
-     * Create from protocol message entry.
-     * Returns empty Option if artifact or nodeId parsing fails (should not happen with valid entries).
-     */
+    /// Create from protocol message entry.
+    /// Returns empty Option if artifact or nodeId parsing fails (should not happen with valid entries).
     public static Option<DeploymentMetrics> fromEntry(DeploymentMetricsEntry entry) {
         return Artifact.artifact(entry.artifact())
                        .flatMap(artifact -> NodeId.nodeId(entry.nodeId())
@@ -113,16 +101,12 @@ DeploymentStatus status) {
                        .option();
     }
 
-    /**
-     * Create a new in-progress deployment starting now.
-     */
+    /// Create a new in-progress deployment starting now.
     public static DeploymentMetrics deploymentMetrics(Artifact artifact, NodeId nodeId, long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, timestamp, 0, 0, 0, 0, DeploymentStatus.IN_PROGRESS);
     }
 
-    /**
-     * Update with LOAD state timestamp.
-     */
+    /// Update with LOAD state timestamp.
     public DeploymentMetrics withLoadTime(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
@@ -134,23 +118,17 @@ DeploymentStatus status) {
                                      status);
     }
 
-    /**
-     * Update with LOADED state timestamp.
-     */
+    /// Update with LOADED state timestamp.
     public DeploymentMetrics withLoadedTime(long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, startTime, loadTime, timestamp, activateTime, activeTime, status);
     }
 
-    /**
-     * Update with ACTIVATE state timestamp.
-     */
+    /// Update with ACTIVATE state timestamp.
     public DeploymentMetrics withActivateTime(long timestamp) {
         return new DeploymentMetrics(artifact, nodeId, startTime, loadTime, loadedTime, timestamp, activeTime, status);
     }
 
-    /**
-     * Mark as completed with ACTIVE state timestamp.
-     */
+    /// Mark as completed with ACTIVE state timestamp.
     public DeploymentMetrics completed(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
@@ -162,9 +140,7 @@ DeploymentStatus status) {
                                      DeploymentStatus.SUCCESS);
     }
 
-    /**
-     * Mark as failed during loading.
-     */
+    /// Mark as failed during loading.
     public DeploymentMetrics failedLoading(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,
@@ -176,9 +152,7 @@ DeploymentStatus status) {
                                      DeploymentStatus.FAILED_LOADING);
     }
 
-    /**
-     * Mark as failed during activation.
-     */
+    /// Mark as failed during activation.
     public DeploymentMetrics failedActivating(long timestamp) {
         return new DeploymentMetrics(artifact,
                                      nodeId,

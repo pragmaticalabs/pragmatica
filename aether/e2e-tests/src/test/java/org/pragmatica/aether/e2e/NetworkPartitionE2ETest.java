@@ -14,24 +14,25 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for network partition and split-brain scenarios.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Majority partition continues operating</li>
- *   <li>Minority partition behavior (no quorum)</li>
- *   <li>Partition healing and cluster reconvergence</li>
- *   <li>Quorum behavior under various failure scenarios</li>
- * </ul>
- *
- * <p>Note: True network partitioning (isolating nodes at network level) is complex
- * to implement in Testcontainers. These tests simulate partition-like behavior
- * by stopping nodes, which achieves similar quorum effects.
- *
- * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
- * Tests run in order and each test cleans up previous state before running.
- */
+/// E2E tests for network partition and split-brain scenarios.
+///
+///
+/// Tests cover:
+///
+///   - Majority partition continues operating
+///   - Minority partition behavior (no quorum)
+///   - Partition healing and cluster reconvergence
+///   - Quorum behavior under various failure scenarios
+///
+///
+///
+/// Note: True network partitioning (isolating nodes at network level) is complex
+/// to implement in Testcontainers. These tests simulate partition-like behavior
+/// by stopping nodes, which achieves similar quorum effects.
+///
+///
+/// This test class uses a shared cluster for all tests to reduce startup overhead.
+/// Tests run in order and each test cleans up previous state before running.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 class NetworkPartitionE2ETest {

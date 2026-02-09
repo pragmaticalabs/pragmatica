@@ -33,18 +33,16 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for super-majority fast path optimization in Rabia consensus.
- * <p>
- * When n - f nodes vote the same value in Round 1, we can skip Round 2
- * and decide immediately. This is safe because:
- * <pre>
- * 1. At least (n-f) - f = n - 2f >= 1 of these voters are non-faulty
- * 2. Any future quorum will include at least f+1 of these voters
- * 3. Therefore Round 2 would produce the same value anyway
- * 4. Safe to skip Round 2 and decide immediately
- * </pre>
- */
+/// Tests for super-majority fast path optimization in Rabia consensus.
+///
+/// When n - f nodes vote the same value in Round 1, we can skip Round 2
+/// and decide immediately. This is safe because:
+/// ```
+/// 1. At least (n-f) - f = n - 2f >= 1 of these voters are non-faulty
+/// 2. Any future quorum will include at least f+1 of these voters
+/// 3. Therefore Round 2 would produce the same value anyway
+/// 4. Safe to skip Round 2 and decide immediately
+/// ```
 class RabiaSuperMajorityFastPathTest {
 
     record TestCommand(String value) implements Command {}

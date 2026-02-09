@@ -26,9 +26,7 @@ import static org.pragmatica.aether.api.ManagementApiResponses.VersionHealth;
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.http.routing.PathParameter.spacer;
 
-/**
- * Routes for rolling update management: start, routing, complete, rollback.
- */
+/// Routes for rolling update management: start, routing, complete, rollback.
 public final class RollingUpdateRoutes implements RouteSource {
     private static final Cause MISSING_ARTIFACT_BASE_OR_VERSION = Causes.cause("Missing artifactBase or version");
     private static final Cause NOT_LEADER = Causes.cause("This operation requires the leader node");
@@ -179,9 +177,7 @@ public final class RollingUpdateRoutes implements RouteSource {
                : defaultValue;
     }
 
-    /**
-     * Resolves "current" to the first active rolling update ID.
-     */
+    /// Resolves "current" to the first active rolling update ID.
     private String resolveUpdateId(String updateId) {
         if ("current".equals(updateId)) {
             var updates = nodeSupplier.get()

@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-RET-05: Avoid methods that always return Result.success().
- */
+/// JBCT-RET-05: Avoid methods that always return Result.success().
 public class CstAlwaysSuccessResultRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-05";
 

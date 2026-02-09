@@ -18,19 +18,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for cluster formation and quorum behavior using ForgeCluster.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>3-node cluster formation</li>
- *   <li>Quorum establishment</li>
- *   <li>Leader election</li>
- *   <li>Node visibility across cluster</li>
- *   <li>Status consistency</li>
- *   <li>Metrics availability</li>
- * </ul>
- */
+/// Tests for cluster formation and quorum behavior using ForgeCluster.
+///
+///
+/// Tests cover:
+///
+///   - 3-node cluster formation
+///   - Quorum establishment
+///   - Leader election
+///   - Node visibility across cluster
+///   - Status consistency
+///   - Metrics availability
+///
 @Execution(ExecutionMode.SAME_THREAD)
 class ClusterFormationTest {
     private static final int BASE_PORT = 5050;

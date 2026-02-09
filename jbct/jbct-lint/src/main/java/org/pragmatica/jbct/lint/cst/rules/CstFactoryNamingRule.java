@@ -10,11 +10,9 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-NAM-01: Factory method naming convention.
- *
- * Factory methods should be named after the type: TypeName.typeName()
- */
+/// JBCT-NAM-01: Factory method naming convention.
+///
+/// Factory methods should be named after the type: TypeName.typeName()
 public class CstFactoryNamingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-NAM-01";
 

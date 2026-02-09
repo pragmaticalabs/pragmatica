@@ -10,11 +10,9 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-PAT-01: Use functional iteration instead of raw loops.
- *
- * Raw for/while/do loops should be replaced with stream operations.
- */
+/// JBCT-PAT-01: Use functional iteration instead of raw loops.
+///
+/// Raw for/while/do loops should be replaced with stream operations.
 public class CstRawLoopRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-PAT-01";
 

@@ -6,15 +6,13 @@ import org.pragmatica.lang.parse.Number;
 
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Generates sequential values starting from a specified number.
- * <p>
- * Pattern: {@code ${seq:START}} where START is the initial value.
- * <p>
- * Example: {@code ${seq:1000}} generates 1000, 1001, 1002, ...
- * <p>
- * Note: This generator is thread-safe and maintains state across calls.
- */
+/// Generates sequential values starting from a specified number.
+///
+/// Pattern: `${seq:START`} where START is the initial value.
+///
+/// Example: `${seq:1000`} generates 1000, 1001, 1002, ...
+///
+/// Note: This generator is thread-safe and maintains state across calls.
 public final class SequenceGenerator implements PatternGenerator {
     public static final String TYPE = "seq";
 
@@ -30,9 +28,7 @@ public final class SequenceGenerator implements PatternGenerator {
         this.counter = new AtomicLong(start);
     }
 
-    /**
-     * Parses a sequence specification like "1000".
-     */
+    /// Parses a sequence specification like "1000".
     public static Result<PatternGenerator> sequenceGenerator(String seqSpec) {
         return Option.option(seqSpec)
                      .map(String::trim)
@@ -52,16 +48,12 @@ public final class SequenceGenerator implements PatternGenerator {
         return "${seq:" + start + "}";
     }
 
-    /**
-     * Resets the counter to the initial start value.
-     */
+    /// Resets the counter to the initial start value.
     public void reset() {
         counter.set(start);
     }
 
-    /**
-     * Returns the current counter value without incrementing.
-     */
+    /// Returns the current counter value without incrementing.
     public long current() {
         return counter.get();
     }

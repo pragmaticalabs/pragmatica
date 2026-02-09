@@ -14,49 +14,37 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Tracks artifact deployment status across the cluster by watching KV-Store events.
- *
- * <p>Responsibilities:
- * <ul>
- *   <li>Watch ValuePut/ValueRemove events for slice-node keys</li>
- *   <li>Maintain set of deployed artifacts across the cluster</li>
- *   <li>Provide deployment status queries</li>
- * </ul>
- *
- * <p>Key format watched: {@code slices/{nodeId}/{artifact}}
- */
+/// Tracks artifact deployment status across the cluster by watching KV-Store events.
+///
+///
+/// Responsibilities:
+///
+///   - Watch ValuePut/ValueRemove events for slice-node keys
+///   - Maintain set of deployed artifacts across the cluster
+///   - Provide deployment status queries
+///
+///
+///
+/// Key format watched: `slices/{nodeId`/{artifact}}
 public interface ArtifactDeploymentTracker {
-    /**
-     * Handle slice deployment event.
-     */
+    /// Handle slice deployment event.
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
-    /**
-     * Handle slice removal event.
-     */
+    /// Handle slice removal event.
     @MessageReceiver
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
-    /**
-     * Check if an artifact is deployed anywhere in the cluster.
-     */
+    /// Check if an artifact is deployed anywhere in the cluster.
     boolean isDeployed(Artifact artifact);
 
-    /**
-     * Get all deployed artifacts.
-     */
+    /// Get all deployed artifacts.
     Set<Artifact> deployedArtifacts();
 
-    /**
-     * Get count of deployed artifacts.
-     */
+    /// Get count of deployed artifacts.
     int deployedCount();
 
-    /**
-     * Create a new artifact deployment tracker.
-     */
+    /// Create a new artifact deployment tracker.
     static ArtifactDeploymentTracker artifactDeploymentTracker() {
         return new ArtifactDeploymentTrackerImpl();
     }

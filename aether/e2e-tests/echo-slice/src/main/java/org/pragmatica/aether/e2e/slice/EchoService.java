@@ -13,11 +13,9 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Set;
 
-/**
- * Pure function test slice for E2E testing.
- * No external dependencies, no infrastructure, no provisioning.
- * Supports: echo, ping, transform, and controlled failure operations.
- */
+/// Pure function test slice for E2E testing.
+/// No external dependencies, no infrastructure, no provisioning.
+/// Supports: echo, ping, transform, and controlled failure operations.
 @Slice
 public interface EchoService {
     // === Requests ===

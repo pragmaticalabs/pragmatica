@@ -38,6 +38,7 @@ import static org.pragmatica.lang.Unit.unit;
 /// @param <T> Type of value in case of success.
 @SuppressWarnings("unused")
 public sealed interface Result<T> permits Success, Failure {
+    /// **[Pure Transform]**
     /// Transform the operation result value into a value of another type and wrap the new value into [Result]. Transformation takes place if the current
     /// instance (this) contains a successful result, otherwise the current instance remains unchanged and the transformation function is not invoked.
     ///
@@ -49,6 +50,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(_ -> (Result<U>) this, r -> success(mapper.apply(r)));
     }
 
+    /// **[Pure Transform]**
     /// Replace a successful result with the value obtained from the provided supplier.
     ///
     /// @param supplier Source of the replacement value
@@ -58,6 +60,7 @@ public sealed interface Result<T> permits Success, Failure {
         return map(_ -> supplier.get());
     }
 
+    /// **[Pure Transform]**
     /// Transform an operation result into another operation result. In case if the current instance (this) is an error, the transformation function is not
     /// invoked and the value remains the same.
     ///
@@ -69,6 +72,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(_ -> (Result<U>) this, mapper);
     }
 
+    /// **[Pure Transform]**
     /// Version of the [#flatMap(Fn1)] which allows convenient "mixing in" additional parameter without the need to revert
     /// to traditional lambda.
     ///
@@ -82,6 +86,7 @@ public sealed interface Result<T> permits Success, Failure {
         return flatMap(value -> mapper.apply(value, parameter2));
     }
 
+    /// **[Pure Transform]**
     /// Replace the current instance with the instance returned by provided [Supplier]. The replacement happens only if the current instance contains
     /// a successful result, otherwise the current instance remains unchanged.
     ///
@@ -93,6 +98,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(_ -> (Result<U>) this, _ -> mapper.get());
     }
 
+    /// **[Pure Transform]**
     /// Transform the current result into a result containing [Unit] value. This is useful when you need to discard the value but preserve the success/failure state.
     ///
     /// @return result instance with [Unit] value (in case of success) or current instance (in case of failure)
@@ -100,6 +106,7 @@ public sealed interface Result<T> permits Success, Failure {
         return map(Unit::toUnit);
     }
 
+    /// **[Pure Transform]**
     /// Transform the cause of the failure.
     ///
     /// @param mapper Function to transform failure cause
@@ -111,11 +118,13 @@ public sealed interface Result<T> permits Success, Failure {
                     _ -> this);
     }
 
+    /// **[Pure Transform]**
     /// Add tracing information to the failure cause.
     ///
     /// @return current instance (in case of success) or instance with tracing information (in case of failure)
     Result<T> trace();
 
+    /// **[Resolution]**
     /// Recover from failure by transforming failure cause into new value.
     ///
     /// @param mapper Function to transform failure cause
@@ -125,6 +134,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(cause -> success(mapper.apply(cause)), _ -> this);
     }
 
+    /// **[Side Effect]**
     /// Apply consumers to result value. Note that depending on the result, success or failure, only one consumer will be applied at a time.
     ///
     /// @param failureConsumer Consumer for failure result
@@ -142,6 +152,7 @@ public sealed interface Result<T> permits Success, Failure {
                     });
     }
 
+    /// **[Side Effect]**
     /// Pass successful operation result value into provided consumer.
     ///
     /// @param consumer Consumer to pass value to
@@ -156,6 +167,7 @@ public sealed interface Result<T> permits Success, Failure {
         return this;
     }
 
+    /// **[Side Effect]**
     /// Run provided action in case of success.
     ///
     /// @return current instance for fluent call chaining
@@ -168,6 +180,7 @@ public sealed interface Result<T> permits Success, Failure {
         return this;
     }
 
+    /// **[Side Effect]**
     /// Pass failure operation result value into provided consumer.
     ///
     /// @param consumer Consumer to pass value to
@@ -182,6 +195,7 @@ public sealed interface Result<T> permits Success, Failure {
         return this;
     }
 
+    /// **[Side Effect]**
     /// Run provided action in case of failure.
     ///
     /// @return current instance for fluent call chaining
@@ -194,6 +208,7 @@ public sealed interface Result<T> permits Success, Failure {
         return this;
     }
 
+    /// **[Pure Transform]**
     /// Filter instance against provided predicate. If the predicate returns `true`, then the instance remains unchanged. If the predicate returns
     /// `false`, then a failure instance is created using given [Cause].
     ///
@@ -207,6 +222,7 @@ public sealed interface Result<T> permits Success, Failure {
                                     : failure(cause));
     }
 
+    /// **[Pure Transform]**
     /// Filter instance against provided predicate. If the predicate returns `true`, then the instance remains unchanged. If the predicate returns
     /// `false`, then a failure instance is created using [Cause] created by the provided function.
     ///
@@ -221,6 +237,7 @@ public sealed interface Result<T> permits Success, Failure {
                          : failure(causeMapper.apply(v)));
     }
 
+    /// **[Resolution]**
     /// Return value store in the current instance (if this instance represents a successful result) or provided replacement value.
     ///
     /// @param replacement replacement value returned if current instance represents failure.
@@ -230,6 +247,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(_ -> replacement, Functions::id);
     }
 
+    /// **[Resolution]**
     /// Return value store in the current instance (if this instance represents a successful result) or value returned by the provided supplier.
     ///
     /// @param supplier source of replacement value returned if current instance represents failure.
@@ -239,6 +257,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(_ -> supplier.get(), Functions::id);
     }
 
+    /// **[Resolution]**
     /// Return current instance if this instance represents successful result or replacement instance if current instance represents a failure.
     ///
     /// @param replacement replacement instance returned if current instance represents failure.
@@ -248,6 +267,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(_ -> replacement, _ -> this);
     }
 
+    /// **[Resolution]**
     /// Return the current instance if this instance represents a successful result or instance returned by provided supplier if current instance represents
     /// a failure.
     ///
@@ -258,6 +278,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(_ -> supplier.get(), _ -> this);
     }
 
+    /// **[Pure Transform]**
     /// Convert an instance into [Option] of the same value type. Successful instance is converted into present [Option] and failure - into
     /// empty [Option]. Note that during such a conversion error information is getting lost.
     ///
@@ -266,6 +287,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(_ -> Option.empty(), Option::option);
     }
 
+    /// **[Pure Transform]**
     /// Stream current instance. For failure instance, an empty stream is created. For success instance,
     /// the stream with a single element is returned. The element is the value stored in
     /// the current instance.
@@ -275,6 +297,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(_ -> Stream.empty(), Stream::of);
     }
 
+    /// **[Pure Transform]**
     /// Convert the current instance into [Promise] instance resolved with the current instance.
     ///
     /// @return created promise
@@ -282,6 +305,7 @@ public sealed interface Result<T> permits Success, Failure {
         return Promise.resolved(this);
     }
 
+    /// **[Pure Transform]**
     /// Check if instance is success.
     ///
     /// @return `true` if instance is success and `false` otherwise
@@ -289,6 +313,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(Functions::toFalse, Functions::toTrue);
     }
 
+    /// **[Pure Transform]**
     /// Check if an instance is failure.
     ///
     /// @return `true` if instance is failure and `false` otherwise
@@ -296,6 +321,7 @@ public sealed interface Result<T> permits Success, Failure {
         return fold(Functions::toTrue, Functions::toFalse);
     }
 
+    /// **[Side Effect]**
     /// Pass the entire result (success or failure) to the provided consumer. This allows handling both success and failure cases with a single consumer.
     ///
     /// @param consumer Consumer to process the result
@@ -306,6 +332,7 @@ public sealed interface Result<T> permits Success, Failure {
         return this;
     }
 
+    /// **[Side Effect]**
     /// Run the provided action regardless of whether the result is success or failure.
     ///
     /// @param runnable Action to execute
@@ -318,6 +345,7 @@ public sealed interface Result<T> permits Success, Failure {
     //------------------------------------------------------------------------------------------------------------------
     // Instance method aliases
     //------------------------------------------------------------------------------------------------------------------
+    /// **[Side Effect]**
     /// Alias for {@link #onFailure(Consumer)}.
     ///
     /// @param consumer Consumer to pass failure cause to
@@ -327,6 +355,7 @@ public sealed interface Result<T> permits Success, Failure {
         return onFailure(consumer);
     }
 
+    /// **[Side Effect]**
     /// Alias for {@link #onSuccess(Consumer)}.
     ///
     /// @param consumer Consumer to pass value to
@@ -336,6 +365,7 @@ public sealed interface Result<T> permits Success, Failure {
         return onSuccess(consumer);
     }
 
+    /// **[Side Effect]**
     /// Alias for {@link #apply(Consumer, Consumer)}.
     ///
     /// @param failureConsumer Consumer for failure result
@@ -347,6 +377,7 @@ public sealed interface Result<T> permits Success, Failure {
     //------------------------------------------------------------------------------------------------------------------
     // Instance all() methods for for-comprehension style composition
     //------------------------------------------------------------------------------------------------------------------
+    /// **[Pure Transform]**
     /// Chain a dependent operation with access to this Result's value.
     /// Enables for-comprehension style composition without nested flatMaps.
     ///
@@ -359,6 +390,7 @@ public sealed interface Result<T> permits Success, Failure {
                                      .map(Tuple::tuple));
     }
 
+    /// **[Pure Transform]**
     /// Chain two dependent operations with access to this Result's value.
     ///
     /// @param fn1 First function that takes the current value and returns a Result
@@ -374,6 +406,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                        .map(v2 -> tuple(v1, v2))));
     }
 
+    /// **[Pure Transform]**
     /// Chain three dependent operations with access to this Result's value.
     ///
     /// @param fn1 First function that takes the current value and returns a Result
@@ -393,6 +426,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                          .map(v3 -> tuple(v1, v2, v3)))));
     }
 
+    /// **[Pure Transform]**
     /// Chain four dependent operations with access to this Result's value.
     default <T1, T2, T3, T4> Mapper4<T1, T2, T3, T4> all(Fn1<Result<T1>, T> fn1,
                                                          Fn1<Result<T2>, T> fn2,
@@ -408,6 +442,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                             v4))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain five dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5> Mapper5<T1, T2, T3, T4, T5> all(Fn1<Result<T1>, T> fn1,
                                                                  Fn1<Result<T2>, T> fn2,
@@ -426,6 +461,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                               v5)))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain six dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5, T6> Mapper6<T1, T2, T3, T4, T5, T6> all(Fn1<Result<T1>, T> fn1,
                                                                          Fn1<Result<T2>, T> fn2,
@@ -447,6 +483,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                 v6))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain seven dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5, T6, T7> Mapper7<T1, T2, T3, T4, T5, T6, T7> all(Fn1<Result<T1>, T> fn1,
                                                                                  Fn1<Result<T2>, T> fn2,
@@ -471,6 +508,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                   v7)))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain eight dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8> Mapper8<T1, T2, T3, T4, T5, T6, T7, T8> all(Fn1<Result<T1>, T> fn1,
                                                                                          Fn1<Result<T2>, T> fn2,
@@ -498,6 +536,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                     v8))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain nine dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9> Mapper9<T1, T2, T3, T4, T5, T6, T7, T8, T9> all(Fn1<Result<T1>, T> fn1,
                                                                                                  Fn1<Result<T2>, T> fn2,
@@ -528,6 +567,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                       v9)))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain ten dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> Mapper10<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> all(Fn1<Result<T1>, T> fn1,
                                                                                                             Fn1<Result<T2>, T> fn2,
@@ -561,6 +601,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                           v10))))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain eleven dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> Mapper11<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> all(Fn1<Result<T1>, T> fn1,
                                                                                                                       Fn1<Result<T2>, T> fn2,
@@ -597,6 +638,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                               v11)))))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain twelve dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12>
     Mapper12<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> all(Fn1<Result<T1>, T> fn1,
@@ -637,6 +679,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                                                   v12))))))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain thirteen dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13>
     Mapper13<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13> all(Fn1<Result<T1>, T> fn1,
@@ -680,6 +723,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                                                                       v13)))))))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain fourteen dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14>
     Mapper14<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14> all(Fn1<Result<T1>, T> fn1,
@@ -726,6 +770,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                                                                                           v14))))))))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain fifteen dependent operations with access to this Result's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15>
     Mapper15<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15> all(Fn1<Result<T1>, T> fn1,
@@ -775,6 +820,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                                                                                                               v15)))))))))))))))));
     }
 
+    /// **[Unsafe Extraction]**
     /// This method allows "unwrapping" the value stored inside the Result instance. If a value is missing, then [IllegalStateException] is thrown.
     ///
     /// WARNING!!!
@@ -788,6 +834,7 @@ public sealed interface Result<T> permits Success, Failure {
         return getOrThrow("Unwrap error");
     }
 
+    /// **[Unsafe Extraction]**
     /// This method assumes that some previous code ensures that [Result] we're working with is successful
     /// and allows extracting value from monad. If this is not the case, the method throws [Error], which
     /// most likely will cause application to crash.
@@ -795,6 +842,7 @@ public sealed interface Result<T> permits Success, Failure {
         return getOrThrow(message);
     }
 
+    /// **[Unsafe Extraction]**
     /// Extract the success value or throw a custom exception if this Result is a failure.
     ///
     /// This method is intended for cases where you need to convert a failure Result into
@@ -812,6 +860,7 @@ public sealed interface Result<T> permits Success, Failure {
                     Functions::id);
     }
 
+    /// **[Unsafe Extraction]**
     /// Extract the success value or throw an [IllegalStateException] if this Result is a failure.
     ///
     /// This method is intended for cases where you are confident the Result is successful,
@@ -825,6 +874,7 @@ public sealed interface Result<T> permits Success, Failure {
         return getOrThrow(IllegalStateException::new, message);
     }
 
+    /// **[Pure Transform]**
     /// Handle both possible states (success/failure) and produce a single value from it.
     ///
     /// @param failureMapper function to transform failure into value
@@ -835,6 +885,7 @@ public sealed interface Result<T> permits Success, Failure {
 
     Result<Unit> UNIT_RESULT = success(unit());
 
+    /// **[Factory]**
     /// A constant instance of a successful instance holding [Unit] value.
     ///
     /// @return instance of a successful result with [Unit] value
@@ -842,6 +893,7 @@ public sealed interface Result<T> permits Success, Failure {
         return UNIT_RESULT;
     }
 
+    /// **[Factory]**
     /// Create an instance of a successful operation result.
     ///
     /// @param value Operation result
@@ -851,6 +903,7 @@ public sealed interface Result<T> permits Success, Failure {
         return new Success<>(value);
     }
 
+    /// **[Factory]**
     /// Create an instance of a successful operation result. This is an alias for [#success(Object)].
     ///
     /// @param value Operation result value
@@ -877,6 +930,7 @@ public sealed interface Result<T> permits Success, Failure {
         }
     }
 
+    /// **[Factory]**
     /// Create an instance of a failure result.
     ///
     /// @param value Operation error value
@@ -886,6 +940,7 @@ public sealed interface Result<T> permits Success, Failure {
         return new Failure<>(value);
     }
 
+    /// **[Factory]**
     /// Create an instance of a failure result. This is an alias for [#failure(Cause)].
     ///
     /// @param value Operation error cause
@@ -921,6 +976,7 @@ public sealed interface Result<T> permits Success, Failure {
     //------------------------------------------------------------------------------------------------------------------
     // Interaction with legacy code
     //------------------------------------------------------------------------------------------------------------------
+    /// **[Factory]**
     /// Wrap value returned by provided lambda into success [Result] if the call succeeds or into failure [Result] if call throws exception.
     ///
     /// @param exceptionMapper the function which will transform exception into instance of [Cause]
@@ -935,6 +991,7 @@ public sealed interface Result<T> permits Success, Failure {
         }
     }
 
+    /// **[Factory]**
     /// Convenience method for directly invoking a throwing unary function and wrapping the result in a Result.
     /// This method provides immediate invocation rather than returning a function factory.
     ///
@@ -951,6 +1008,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift(exceptionMapper, () -> function.apply(value1));
     }
 
+    /// **[Factory]**
     /// Same as [#lift1(Fn1, ThrowingFn1, Object)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function   The throwing unary function to invoke
@@ -963,6 +1021,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift1(Causes::fromThrowable, function, inputValue);
     }
 
+    /// **[Factory]**
     /// Convenience method for directly invoking a throwing binary function and wrapping the result in a Result.
     /// This method provides immediate invocation rather than returning a function factory.
     ///
@@ -982,6 +1041,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift(exceptionMapper, () -> function.apply(value1, value2));
     }
 
+    /// **[Factory]**
     /// Same as [#lift2(Fn1, ThrowingFn2, Object, Object)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function    The throwing binary function to invoke
@@ -996,6 +1056,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift2(Causes::fromThrowable, function, inputValue1, inputValue2);
     }
 
+    /// **[Factory]**
     /// Convenience method for directly invoking a throwing ternary function and wrapping the result in a Result.
     /// This method provides immediate invocation rather than returning a function factory.
     ///
@@ -1018,6 +1079,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift(exceptionMapper, () -> function.apply(value1, value2, value3));
     }
 
+    /// **[Factory]**
     /// Same as [#lift3(Fn1, ThrowingFn3, Object, Object, Object)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function    The throwing ternary function to invoke
@@ -1037,6 +1099,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift3(Causes::fromThrowable, function, inputValue1, inputValue2, inputValue3);
     }
 
+    /// **[Factory]**
     /// Wrap the call to the provided lambda into success [Result] if the call succeeds or into failure [Result] if call throws exception.
     ///
     /// @param exceptionMapper the function which will transform exception into instance of [Cause]
@@ -1052,6 +1115,7 @@ public sealed interface Result<T> permits Success, Failure {
         }
     }
 
+    /// **[Factory]**
     /// Similar to [#lift(Fn1,ThrowingFn0)] but with a fixed [Cause] instance.
     ///
     /// @param cause    the cause to use in case of failure
@@ -1062,6 +1126,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift(_ -> cause, supplier);
     }
 
+    /// **[Factory]**
     /// Similar to [#lift(Fn1,ThrowingFn0)] but with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param supplier the call to wrap
@@ -1071,6 +1136,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift(Causes::fromThrowable, supplier);
     }
 
+    /// **[Factory]**
     /// Similar to [#lift(Fn1,ThrowingRunnable)] but with a fixed [Cause] instance.
     ///
     /// @param cause    the cause to use in case of failure
@@ -1081,6 +1147,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift(_ -> cause, runnable);
     }
 
+    /// **[Factory]**
     /// Similar to [#lift(Fn1,ThrowingRunnable)] but with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param runnable the call to wrap
@@ -1093,6 +1160,7 @@ public sealed interface Result<T> permits Success, Failure {
     //------------------------------------------------------------------------------------------------------------------
     // tryOf aliases for lift (supplier first, cause/exceptionMapper at end)
     //------------------------------------------------------------------------------------------------------------------
+    /// **[Factory]**
     /// Alias for {@link #lift(ThrowingFn0)} with supplier as first parameter.
     ///
     /// @param supplier the call to wrap
@@ -1102,6 +1170,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift(supplier);
     }
 
+    /// **[Factory]**
     /// Alias for {@link #lift(Cause, ThrowingFn0)} with supplier first and cause at end.
     ///
     /// @param supplier the call to wrap
@@ -1112,6 +1181,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift(cause, supplier);
     }
 
+    /// **[Factory]**
     /// Alias for {@link #lift(Fn1, ThrowingFn0)} with supplier first and exceptionMapper at end.
     ///
     /// @param supplier        the call to wrap
@@ -1122,6 +1192,7 @@ public sealed interface Result<T> permits Success, Failure {
         return lift(exceptionMapper, supplier);
     }
 
+    /// **[Factory]**
     /// Wrap the call to the provided function into success [Result] if the call succeeds of into failure [Result] if call throws exception.
     ///
     /// @param exceptionMapper the function which will transform exception into instance of [Cause]
@@ -1135,6 +1206,7 @@ public sealed interface Result<T> permits Success, Failure {
         return input -> lift(exceptionMapper, () -> function.apply(input));
     }
 
+    /// **[Factory]**
     /// Convenience method for creating a binary function that wraps a throwing function and returns a Result.
     /// This is a function factory that creates reusable binary functions for result-based operations.
     ///
@@ -1150,6 +1222,7 @@ public sealed interface Result<T> permits Success, Failure {
         return ( inputValue1, inputValue2) -> lift(exceptionMapper, () -> function.apply(inputValue1, inputValue2));
     }
 
+    /// **[Factory]**
     /// Convenience method for creating a ternary function that wraps a throwing function and returns a Result.
     /// This is a function factory that creates reusable ternary functions for result-based operations.
     ///
@@ -1169,6 +1242,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                      inputValue3));
     }
 
+    /// **[Factory]**
     /// Same as [#liftFn2(Fn1, ThrowingFn2)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function The throwing binary function to wrap
@@ -1181,6 +1255,7 @@ public sealed interface Result<T> permits Success, Failure {
         return liftFn2(Causes::fromThrowable, function);
     }
 
+    /// **[Factory]**
     /// Same as [#liftFn3(Fn1, ThrowingFn3)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function The throwing ternary function to wrap
@@ -1197,6 +1272,7 @@ public sealed interface Result<T> permits Success, Failure {
     //------------------------------------------------------------------------------------------------------------------
     // Predicates
     //------------------------------------------------------------------------------------------------------------------
+    /// **[Factory]**
     /// Find and return the first success instance among provided.
     ///
     /// @param first   first input result
@@ -1216,6 +1292,7 @@ public sealed interface Result<T> permits Success, Failure {
         return first;
     }
 
+    /// **[Factory]**
     /// Lazy version of the [#any(Result, Result\[\])].
     ///
     /// @param first     first instance to check
@@ -1236,6 +1313,7 @@ public sealed interface Result<T> permits Success, Failure {
         return first;
     }
 
+    /// **[Factory]**
     /// Transform the stream of [Result] instances into [Result] with the list of values.
     ///
     /// @param results input stream of [Result] instances
@@ -1250,6 +1328,7 @@ public sealed interface Result<T> permits Success, Failure {
                : failure(causes);
     }
 
+    /// **[Factory]**
     /// Transform provided [Result] instances into [Result] with the list of values.
     ///
     /// @param results input stream of [Result] instances
@@ -1260,6 +1339,7 @@ public sealed interface Result<T> permits Success, Failure {
         return allOf(List.of(results));
     }
 
+    /// **[Factory]**
     /// Transform the list of [Result] instances into [Result] with the list of values.
     ///
     /// @param results input list of [Result] instances
@@ -1277,6 +1357,7 @@ public sealed interface Result<T> permits Success, Failure {
                : failure(causes);
     }
 
+    /// **[Factory]**
     /// Transform provided results into a single result containing the tuple of values.
     /// The result is failure if any input result is failure. Otherwise,
     /// the returned instance contains a tuple with values from input results.
@@ -1288,6 +1369,7 @@ public sealed interface Result<T> permits Success, Failure {
                           .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     /// Transform provided results into the single result containing a tuple of values. The result is failure if any input result is failure. Otherwise,
     /// the returned instance contains a tuple with values from input results.
     ///
@@ -1298,6 +1380,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     /// Transform provided results into the single result containing a tuple of values. The result is failure if any input result is failure. Otherwise,
     /// the returned instance contains a tuple with values from input results.
     ///
@@ -1308,6 +1391,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     /// Transform provided results into the single result containing a tuple of values. The result is failure if any input result is failure. Otherwise,
     /// the returned instance contains a tuple with values from input results.
     ///
@@ -1324,6 +1408,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     /// Transform provided results into the single result containing a tuple of values. The result is failure if any input result is failure. Otherwise,
     /// the returned instance contains a tuple with values from input results.
     ///
@@ -1342,6 +1427,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     /// Transform provided results into the single result containing a tuple of values. The result is failure if any input result is failure. Otherwise,
     /// the returned instance contains a tuple with values from input results.
     ///
@@ -1362,6 +1448,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     /// Transform provided results into the single result containing a tuple of values. The result is failure if any input result is failure. Otherwise,
     /// the returned instance contains a tuple with values from input results.
     ///
@@ -1384,6 +1471,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     /// Transform provided results into the single result containing a tuple of values. The result is failure if any input result is failure. Otherwise,
     /// the returned instance contains a tuple with values from input results.
     ///
@@ -1408,6 +1496,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     /// Transform provided results into the single result containing a tuple of values. The result is failure if any input result is failure. Otherwise,
     /// the returned instance contains a tuple with values from input results.
     ///
@@ -1434,6 +1523,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> Mapper10<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> all(Result<T1> value1,
                                                                                                            Result<T2> value2,
                                                                                                            Result<T3> value3,
@@ -1458,6 +1548,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> Mapper11<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> all(Result<T1> value1,
                                                                                                                      Result<T2> value2,
                                                                                                                      Result<T3> value3,
@@ -1494,6 +1585,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12>
     Mapper12<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> all(Result<T1> value1,
                                                                     Result<T2> value2,
@@ -1534,6 +1626,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13>
     Mapper13<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13> all(Result<T1> value1,
                                                                          Result<T2> value2,
@@ -1577,6 +1670,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14>
     Mapper14<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14> all(Result<T1> value1,
                                                                               Result<T2> value2,
@@ -1623,6 +1717,7 @@ public sealed interface Result<T> permits Success, Failure {
                            .mapError(causes::replace);
     }
 
+    /// **[Factory]**
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15>
     Mapper15<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15> all(Result<T1> value1,
                                                                                    Result<T2> value2,
@@ -1675,6 +1770,7 @@ public sealed interface Result<T> permits Success, Failure {
     //------------------------------------------------------------------------------------------------------------------
     // Lazy/sequential aggregation (sequence) - evaluates suppliers in order, short-circuits on first failure
     //------------------------------------------------------------------------------------------------------------------
+    /// **[Factory]**
     /// Lazily evaluate a single Result supplier.
     /// The supplier is only invoked when the Mapper's terminal operation is called.
     ///
@@ -1687,6 +1783,7 @@ public sealed interface Result<T> permits Success, Failure {
                               .map(Tuple::tuple);
     }
 
+    /// **[Factory]**
     /// Lazily evaluate two Result suppliers in sequence.
     /// Each supplier is only invoked if the previous one succeeded.
     /// Short-circuits on first failure.
@@ -1704,6 +1801,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                       .map(v2 -> tuple(v1, v2)));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate three Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -1718,6 +1816,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                               .map(v3 -> tuple(v1, v2, v3))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate four Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -1737,6 +1836,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                        v4)))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate five Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -1759,6 +1859,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                v5))))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate six Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -1784,6 +1885,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                        v6)))))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate seven Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -1812,6 +1914,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                v7))))))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate eight Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -1843,6 +1946,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                        v8)))))))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate nine Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -1877,6 +1981,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                                v9))))))))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate ten Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -1914,6 +2019,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                                                          v10)))))))))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate eleven Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -1955,6 +2061,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                                                                                    v11))))))))))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate twelve Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -1999,6 +2106,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                                                                                                              v12)))))))))))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate thirteen Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -2046,6 +2154,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                                                                                                                                        v13))))))))))))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate fourteen Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.
@@ -2096,6 +2205,7 @@ public sealed interface Result<T> permits Success, Failure {
                                                                                                                                                                                                                                                                                                                                                                                  v14)))))))))))))));
     }
 
+    /// **[Factory]**
     /// Lazily evaluate fifteen Result suppliers in sequence.
     /// Each supplier is only invoked if all previous ones succeeded.
     /// Short-circuits on first failure.

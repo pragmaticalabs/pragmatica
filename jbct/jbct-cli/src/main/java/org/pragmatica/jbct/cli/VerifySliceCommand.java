@@ -9,9 +9,7 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-/**
- * Verify command - validate slice project configuration.
- */
+/// Verify command - validate slice project configuration.
 @Command(
  name = "verify-slice",
  description = "Verify slice project configuration",

@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-NAM-02: Use Valid prefix, not Validated.
- */
+/// JBCT-NAM-02: Use Valid prefix, not Validated.
 public class CstValidatedNamingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-NAM-02";
 

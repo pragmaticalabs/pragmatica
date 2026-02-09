@@ -13,15 +13,15 @@ import org.pragmatica.lang.utils.Causes;
 import java.util.List;
 import java.util.stream.Collectors;
 
-/**
- * CST-based JBCT linter.
- *
- * <p>Uses the generated Java25Parser and CST lint rules.
- *
- * <p><b>Thread Safety:</b> Thread-safe for concurrent use. Each {@link #lint(SourceFile)}
- * call creates per-operation state for parsing. The lint rules are stateless and safe
- * for concurrent access. Instances can be safely shared across threads.
- */
+/// CST-based JBCT linter.
+///
+///
+/// Uses the generated Java25Parser and CST lint rules.
+///
+///
+/// **Thread Safety:** Thread-safe for concurrent use. Each {@link #lint(SourceFile)}
+/// call creates per-operation state for parsing. The lint rules are stateless and safe
+/// for concurrent access. Instances can be safely shared across threads.
 public class CstLinter {
     private final LintContext context;
     private final List<CstLintRule> rules;
@@ -33,30 +33,22 @@ public class CstLinter {
         this.parser = new Java25Parser();
     }
 
-    /**
-     * Create linter with default rules.
-     */
+    /// Create linter with default rules.
     public static CstLinter cstLinter() {
         return new CstLinter(LintContext.defaultContext(), defaultRules());
     }
 
-    /**
-     * Create linter with custom context.
-     */
+    /// Create linter with custom context.
     public static CstLinter cstLinter(LintContext context) {
         return new CstLinter(context, defaultRules());
     }
 
-    /**
-     * Lint a source file.
-     */
+    /// Lint a source file.
     public Result<List<Diagnostic>> lint(SourceFile source) {
         return parse(source).map(cst -> analyzeWithRules(cst, source));
     }
 
-    /**
-     * Check if source passes lint rules.
-     */
+    /// Check if source passes lint rules.
     public Result<Boolean> check(SourceFile source) {
         return lint(source).map(this::passesLintRules);
     }

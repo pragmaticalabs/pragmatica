@@ -12,10 +12,8 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * In-memory implementation of StateMachine.
- * Uses ConcurrentHashMap for thread-safe storage.
- */
+/// In-memory implementation of StateMachine.
+/// Uses ConcurrentHashMap for thread-safe storage.
 final class InMemoryStateMachine<S, E, C> implements StateMachine<S, E, C> {
     private final StateMachineDefinition<S, E, C> definition;
     private final ConcurrentHashMap<String, MachineInstance<S, C>> instances = new ConcurrentHashMap<>();

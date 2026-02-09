@@ -16,107 +16,89 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Layered configuration provider that merges multiple sources.
- * <p>
- * Sources are merged in priority order (higher priority wins).
- * Nested maps are deep-merged, other values are replaced.
- * <p>
- * Typical layering (lowest to highest priority):
- * <ol>
- *   <li>Default values (built-in)</li>
- *   <li>TOML file (aether.toml)</li>
- *   <li>Environment variables (AETHER_*)</li>
- *   <li>System properties (-Daether.*)</li>
- * </ol>
- * <p>
- * Example usage:
- * <pre>{@code
- * var config = ConfigurationProvider.builder()
- *     .withDefaults(Map.of("server.port", "8080"))
- *     .withTomlFile(Path.of("aether.toml"))
- *     .withEnvironment("AETHER_")
- *     .withSystemProperties("aether.")
- *     .build();
- *
- * config.getString("server.port")  // Returns merged value
- * }</pre>
- */
+/// Layered configuration provider that merges multiple sources.
+///
+/// Sources are merged in priority order (higher priority wins).
+/// Nested maps are deep-merged, other values are replaced.
+///
+/// Typical layering (lowest to highest priority):
+/// <ol>
+///   - Default values (built-in)
+///   - TOML file (aether.toml)
+///   - Environment variables (AETHER_*)
+///   - System properties (-Daether.*)
+/// </ol>
+///
+/// Example usage:
+/// ```{@code
+/// var config = ConfigurationProvider.builder()
+///     .withDefaults(Map.of("server.port", "8080"))
+///     .withTomlFile(Path.of("aether.toml"))
+///     .withEnvironment("AETHER_")
+///     .withSystemProperties("aether.")
+///     .build();
+///
+/// config.getString("server.port")  // Returns merged value
+/// }```
 public interface ConfigurationProvider extends ConfigSource {
 
-    /**
-     * Get all registered sources in priority order (highest first).
-     *
-     * @return List of configuration sources
-     */
+    /// Get all registered sources in priority order (highest first).
+    ///
+    /// @return List of configuration sources
     List<ConfigSource> sources();
 
-    /**
-     * Create a new builder for ConfigurationProvider.
-     *
-     * @return Builder instance
-     */
+    /// Create a new builder for ConfigurationProvider.
+    ///
+    /// @return Builder instance
     static Builder builder() {
         return new Builder();
     }
 
-    /**
-     * Create a minimal configuration provider from a single source.
-     *
-     * @param source The configuration source
-     * @return ConfigurationProvider wrapping the source
-     */
+    /// Create a minimal configuration provider from a single source.
+    ///
+    /// @param source The configuration source
+    /// @return ConfigurationProvider wrapping the source
     static ConfigurationProvider configurationProvider(ConfigSource source) {
         return builder().withSource(source).build();
     }
 
-    /**
-     * Builder for creating layered ConfigurationProvider instances.
-     */
+    /// Builder for creating layered ConfigurationProvider instances.
     final class Builder {
         private final List<ConfigSource> sources = new ArrayList<>();
 
         private Builder() {}
 
-        /**
-         * Add a configuration source.
-         *
-         * @param source The source to add
-         * @return This builder
-         */
+        /// Add a configuration source.
+        ///
+        /// @param source The source to add
+        /// @return This builder
         public Builder withSource(ConfigSource source) {
             sources.add(source);
             return this;
         }
 
-        /**
-         * Add default values (lowest priority: -1000).
-         *
-         * @param defaults Map of default key-value pairs
-         * @return This builder
-         */
+        /// Add default values (lowest priority: -1000).
+        ///
+        /// @param defaults Map of default key-value pairs
+        /// @return This builder
         public Builder withDefaults(Map<String, String> defaults) {
             return withSource(MapConfigSource.mapConfigSource("defaults", defaults, -1000));
         }
 
-        /**
-         * Add a TOML file source (priority: 0).
-         *
-         * @param path Path to the TOML file
-         * @return This builder
-         */
+        /// Add a TOML file source (priority: 0).
+        ///
+        /// @param path Path to the TOML file
+        /// @return This builder
         public Builder withTomlFile(Path path) {
             TomlConfigSource.tomlConfigSource(path)
                             .onSuccess(this::withSource);
             return this;
         }
 
-        /**
-         * Add a TOML file source, returning error if file cannot be loaded.
-         *
-         * @param path Path to the TOML file
-         * @return Result containing this builder or error
-         */
+        /// Add a TOML file source, returning error if file cannot be loaded.
+        ///
+        /// @param path Path to the TOML file
+        /// @return Result containing this builder or error
         public Result<Builder> withRequiredTomlFile(Path path) {
             return TomlConfigSource.tomlConfigSource(path)
                                    .map(source -> {
@@ -125,37 +107,31 @@ public interface ConfigurationProvider extends ConfigSource {
                                    });
         }
 
-        /**
-         * Add environment variables with prefix (priority: 100).
-         * <p>
-         * Variables are matched by prefix and converted from SCREAMING_SNAKE_CASE
-         * to dot.notation (e.g., AETHER_DATABASE_HOST -> database.host).
-         *
-         * @param prefix Prefix to filter environment variables (e.g., "AETHER_")
-         * @return This builder
-         */
+        /// Add environment variables with prefix (priority: 100).
+        ///
+        /// Variables are matched by prefix and converted from SCREAMING_SNAKE_CASE
+        /// to dot.notation (e.g., AETHER_DATABASE_HOST -> database.host).
+        ///
+        /// @param prefix Prefix to filter environment variables (e.g., "AETHER_")
+        /// @return This builder
         public Builder withEnvironment(String prefix) {
             return withSource(EnvironmentConfigSource.environmentConfigSource(prefix));
         }
 
-        /**
-         * Add system properties with prefix (priority: 200).
-         * <p>
-         * Properties are matched by prefix and the prefix is stripped
-         * (e.g., -Daether.database.host -> database.host).
-         *
-         * @param prefix Prefix to filter system properties (e.g., "aether.")
-         * @return This builder
-         */
+        /// Add system properties with prefix (priority: 200).
+        ///
+        /// Properties are matched by prefix and the prefix is stripped
+        /// (e.g., -Daether.database.host -> database.host).
+        ///
+        /// @param prefix Prefix to filter system properties (e.g., "aether.")
+        /// @return This builder
         public Builder withSystemProperties(String prefix) {
             return withSource(SystemPropertyConfigSource.systemPropertyConfigSource(prefix));
         }
 
-        /**
-         * Build the ConfigurationProvider.
-         *
-         * @return Configured provider with all sources merged
-         */
+        /// Build the ConfigurationProvider.
+        ///
+        /// @return Configured provider with all sources merged
         public ConfigurationProvider build() {
             var sortedSources = sources.stream()
                                        .sorted(Comparator.comparingInt(ConfigSource::priority).reversed())
@@ -167,9 +143,7 @@ public interface ConfigurationProvider extends ConfigSource {
     }
 }
 
-/**
- * Implementation of ConfigurationProvider with layered sources.
- */
+/// Implementation of ConfigurationProvider with layered sources.
 final class LayeredConfigurationProvider implements ConfigurationProvider {
     private final List<ConfigSource> sources;
     private final Map<String, String> mergedValues;

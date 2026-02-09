@@ -32,98 +32,80 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.slice.kvstore.AetherValue.HttpRouteValue.httpRouteValue;
 
-/**
- * Publishes HTTP routes to KV-Store when slices become active.
- *
- * <p>Discovers {@link HttpRequestHandlerFactory} implementations via ServiceLoader,
- * creates handlers, and publishes their route definitions to the cluster.
- *
- * <p>Routes track which nodes have registered them. When a node publishes a route,
- * it adds itself to the node set. When unpublishing, it removes itself. The route
- * key is only deleted when no nodes have it registered.
- */
+/// Publishes HTTP routes to KV-Store when slices become active.
+///
+///
+/// Discovers {@link HttpRequestHandlerFactory} implementations via ServiceLoader,
+/// creates handlers, and publishes their route definitions to the cluster.
+///
+///
+/// Routes track which nodes have registered them. When a node publishes a route,
+/// it adds itself to the node set. When unpublishing, it removes itself. The route
+/// key is only deleted when no nodes have it registered.
 public interface HttpRoutePublisher {
-    /**
-     * Publish HTTP routes for a slice that just became active.
-     *
-     * @param artifact     The slice artifact
-     * @param classLoader  The slice's class loader for ServiceLoader discovery
-     * @param invokerFacade SliceInvokerFacade for creating handlers
-     * @return Promise completing when routes are published
-     */
+    /// Publish HTTP routes for a slice that just became active.
+    ///
+    /// @param artifact     The slice artifact
+    /// @param classLoader  The slice's class loader for ServiceLoader discovery
+    /// @param invokerFacade SliceInvokerFacade for creating handlers
+    /// @return Promise completing when routes are published
     Promise<Unit> publishRoutes(Artifact artifact, ClassLoader classLoader, SliceInvokerFacade invokerFacade);
 
-    /**
-     * Publish HTTP routes for a slice with direct slice instance access.
-     * <p>
-     * This method first attempts to discover {@link SliceRouterFactory} implementations,
-     * which provide type-safe routing with better performance. Falls back to
-     * {@link HttpRequestHandlerFactory} pattern if no SliceRouterFactory is found.
-     *
-     * @param artifact      The slice artifact
-     * @param classLoader   The slice's class loader for ServiceLoader discovery
-     * @param sliceInstance The slice implementation instance
-     * @param invokerFacade SliceInvokerFacade for fallback handler creation
-     * @return Promise completing when routes are published
-     */
+    /// Publish HTTP routes for a slice with direct slice instance access.
+    ///
+    /// This method first attempts to discover {@link SliceRouterFactory} implementations,
+    /// which provide type-safe routing with better performance. Falls back to
+    /// {@link HttpRequestHandlerFactory} pattern if no SliceRouterFactory is found.
+    ///
+    /// @param artifact      The slice artifact
+    /// @param classLoader   The slice's class loader for ServiceLoader discovery
+    /// @param sliceInstance The slice implementation instance
+    /// @param invokerFacade SliceInvokerFacade for fallback handler creation
+    /// @return Promise completing when routes are published
     Promise<Unit> publishRoutes(Artifact artifact,
                                 ClassLoader classLoader,
                                 Object sliceInstance,
                                 SliceInvokerFacade invokerFacade);
 
-    /**
-     * Unpublish HTTP routes when a slice is deactivated.
-     *
-     * @param artifact The slice artifact
-     * @return Promise completing when routes are unpublished
-     */
+    /// Unpublish HTTP routes when a slice is deactivated.
+    ///
+    /// @param artifact The slice artifact
+    /// @return Promise completing when routes are unpublished
     Promise<Unit> unpublishRoutes(Artifact artifact);
 
-    /**
-     * Get the handler for a slice (for local invocation).
-     */
+    /// Get the handler for a slice (for local invocation).
     Option<HttpRequestHandler> getHandler(Artifact artifact);
 
-    /**
-     * Get the SliceRouter for a slice (for local invocation via http-routing).
-     *
-     * @param artifact The slice artifact
-     * @return SliceRouter if one exists for the artifact
-     */
+    /// Get the SliceRouter for a slice (for local invocation via http-routing).
+    ///
+    /// @param artifact The slice artifact
+    /// @return SliceRouter if one exists for the artifact
     Option<SliceRouter> getSliceRouter(Artifact artifact);
 
-    /**
-     * Get all HTTP routes that this node can handle locally.
-     * Used by AppHttpServer to distinguish local vs remote routes.
-     *
-     * @return Set of HttpRouteKey for locally available routes
-     */
+    /// Get all HTTP routes that this node can handle locally.
+    /// Used by AppHttpServer to distinguish local vs remote routes.
+    ///
+    /// @return Set of HttpRouteKey for locally available routes
     Set<HttpRouteKey> allLocalRoutes();
 
-    /**
-     * Find a local SliceRouter that can handle the given HTTP method and path prefix.
-     * Used by AppHttpServer for local request handling.
-     *
-     * @param httpMethod HTTP method (GET, POST, etc.)
-     * @param pathPrefix path prefix
-     * @return SliceRouter if this node has a local handler for the route
-     */
+    /// Find a local SliceRouter that can handle the given HTTP method and path prefix.
+    /// Used by AppHttpServer for local request handling.
+    ///
+    /// @param httpMethod HTTP method (GET, POST, etc.)
+    /// @param pathPrefix path prefix
+    /// @return SliceRouter if this node has a local handler for the route
     Option<SliceRouter> findLocalRouter(String httpMethod, String pathPrefix);
 
-    /**
-     * Find local route info for a given HTTP method and path.
-     * Used by AppHttpServer to get artifact/method info for local routing.
-     *
-     * @param httpMethod HTTP method
-     * @param path request path
-     * @return LocalRouteInfo if found locally
-     */
+    /// Find local route info for a given HTTP method and path.
+    /// Used by AppHttpServer to get artifact/method info for local routing.
+    ///
+    /// @param httpMethod HTTP method
+    /// @param path request path
+    /// @return LocalRouteInfo if found locally
     Option<LocalRouteInfo> findLocalRoute(String httpMethod, String path);
 
-    /**
-     * Local route information containing artifact and method details.
-     * This information is only available on nodes that have the route registered.
-     */
+    /// Local route information containing artifact and method details.
+    /// This information is only available on nodes that have the route registered.
     record LocalRouteInfo(String httpMethod,
                           String pathPrefix,
                           String artifactCoord,

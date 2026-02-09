@@ -89,21 +89,15 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
 
     LeaderManager leaderManager();
 
-    /**
-     * Check if the consensus engine is active and ready for commands.
-     */
+    /// Check if the consensus engine is active and ready for commands.
     boolean isActive();
 
-    /**
-     * Get the route entries for RabiaNode's internal components.
-     * These should be combined with other entries when building the final router.
-     */
+    /// Get the route entries for RabiaNode's internal components.
+    /// These should be combined with other entries when building the final router.
     List<Entry<?>> routeEntries();
 
-    /**
-     * Creates a RabiaNode without metrics collection.
-     * Uses local leader election (backward compatible).
-     */
+    /// Creates a RabiaNode without metrics collection.
+    /// Uses local leader election (backward compatible).
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
                                                               StateMachine<C> stateMachine,
@@ -119,10 +113,8 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                          false);
     }
 
-    /**
-     * Creates a RabiaNode with metrics collection.
-     * Uses local leader election (backward compatible).
-     */
+    /// Creates a RabiaNode with metrics collection.
+    /// Uses local leader election (backward compatible).
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
                                                               StateMachine<C> stateMachine,
@@ -132,16 +124,14 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
         return rabiaNode(config, delegateRouter, stateMachine, serializer, deserializer, metrics, List.of(), false);
     }
 
-    /**
-     * Creates a RabiaNode with metrics collection and custom network handlers.
-     * Uses local leader election (backward compatible).
-     * <p>
-     * TODO: Remove local leader election entirely. It causes leader flapping when nodes
-     * see different topologies during concurrent topology changes. Consensus-based election
-     * should be the only option. Kept temporarily for test compatibility.
-     *
-     * @deprecated Use the overload with {@code useConsensusLeaderElection=true} for production.
-     */
+    /// Creates a RabiaNode with metrics collection and custom network handlers.
+    /// Uses local leader election (backward compatible).
+    ///
+    /// TODO: Remove local leader election entirely. It causes leader flapping when nodes
+    /// see different topologies during concurrent topology changes. Consensus-based election
+    /// should be the only option. Kept temporarily for test compatibility.
+    ///
+    /// @deprecated Use the overload with `useConsensusLeaderElection=true` for production.
     @Deprecated
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
@@ -160,33 +150,31 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                          false);
     }
 
-    /**
-     * Creates a RabiaNode with metrics collection, custom network handlers, and consensus-based leader election.
-     * <p>
-     * When {@code useConsensusLeaderElection} is true:
-     * <ul>
-     *   <li>Leader proposals are submitted through consensus (KVStore with LeaderKey)</li>
-     *   <li>LeaderChange notifications are sent asynchronously after commit</li>
-     *   <li>All nodes agree on leader through consensus protocol</li>
-     * </ul>
-     * <p>
-     * When {@code useConsensusLeaderElection} is false (default):
-     * <ul>
-     *   <li>Leader is computed locally on view change</li>
-     *   <li>LeaderChange notifications are sent immediately (synchronously)</li>
-     *   <li>Backward compatible with existing behavior</li>
-     * </ul>
-     *
-     * @param config                     Node configuration
-     * @param delegateRouter             DelegateRouter for message routing (caller must wire after collecting all routes)
-     * @param stateMachine               State machine for consensus
-     * @param serializer                 Message serializer
-     * @param deserializer               Message deserializer
-     * @param metrics                    Consensus metrics collector
-     * @param additionalHandlers         Additional Netty handlers (e.g., NetworkMetricsHandler)
-     * @param useConsensusLeaderElection Whether to use consensus-based leader election
-     * @return Result containing RabiaNode instance, or failure if topology manager creation fails
-     */
+    /// Creates a RabiaNode with metrics collection, custom network handlers, and consensus-based leader election.
+    ///
+    /// When `useConsensusLeaderElection` is true:
+    ///
+    ///   - Leader proposals are submitted through consensus (KVStore with LeaderKey)
+    ///   - LeaderChange notifications are sent asynchronously after commit
+    ///   - All nodes agree on leader through consensus protocol
+    ///
+    ///
+    /// When `useConsensusLeaderElection` is false (default):
+    ///
+    ///   - Leader is computed locally on view change
+    ///   - LeaderChange notifications are sent immediately (synchronously)
+    ///   - Backward compatible with existing behavior
+    ///
+    ///
+    /// @param config                     Node configuration
+    /// @param delegateRouter             DelegateRouter for message routing (caller must wire after collecting all routes)
+    /// @param stateMachine               State machine for consensus
+    /// @param serializer                 Message serializer
+    /// @param deserializer               Message deserializer
+    /// @param metrics                    Consensus metrics collector
+    /// @param additionalHandlers         Additional Netty handlers (e.g., NetworkMetricsHandler)
+    /// @param useConsensusLeaderElection Whether to use consensus-based leader election
+    /// @return Result containing RabiaNode instance, or failure if topology manager creation fails
     static <C extends Command> Result<RabiaNode<C>> rabiaNode(NodeConfig config,
                                                               DelegateRouter delegateRouter,
                                                               StateMachine<C> stateMachine,
@@ -348,14 +336,12 @@ public interface RabiaNode<C extends Command> extends ClusterNode<C> {
                                List.copyOf(allEntries));
     }
 
-    /**
-     * Builds an ImmutableRouter from route entries and wires it to a DelegateRouter.
-     * Validates all sealed hierarchies and merges entries into a single routing table.
-     *
-     * @param delegateRouter Router to wire
-     * @param entries        All route entries to include
-     * @return Result containing the ImmutableRouter, or failure if validation fails
-     */
+    /// Builds an ImmutableRouter from route entries and wires it to a DelegateRouter.
+    /// Validates all sealed hierarchies and merges entries into a single routing table.
+    ///
+    /// @param delegateRouter Router to wire
+    /// @param entries        All route entries to include
+    /// @return Result containing the ImmutableRouter, or failure if validation fails
     @SuppressWarnings({"rawtypes", "unchecked"})
     static Result<MessageRouter> buildAndWireRouter(DelegateRouter delegateRouter, List<Entry<?>> entries) {
         // Validate all sealed hierarchies

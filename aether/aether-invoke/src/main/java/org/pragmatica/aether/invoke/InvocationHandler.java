@@ -28,66 +28,49 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * Server-side component that handles incoming slice invocation requests.
- *
- * <p>Receives InvokeRequest messages from remote SliceInvokers,
- * finds the local slice, invokes the method, and optionally sends
- * the response back.
- */
+/// Server-side component that handles incoming slice invocation requests.
+///
+///
+/// Receives InvokeRequest messages from remote SliceInvokers,
+/// finds the local slice, invokes the method, and optionally sends
+/// the response back.
 public interface InvocationHandler {
-    /**
-     * Handle incoming invocation request.
-     */
+    /// Handle incoming invocation request.
     @MessageReceiver
     void onInvokeRequest(InvokeRequest request);
 
-    /**
-     * Register a slice bridge for handling invocations.
-     * Called when a slice becomes active.
-     */
+    /// Register a slice bridge for handling invocations.
+    /// Called when a slice becomes active.
     void registerSlice(Artifact artifact, SliceBridge bridge);
 
-    /**
-     * Unregister a slice.
-     * Called when a slice is deactivated.
-     */
+    /// Unregister a slice.
+    /// Called when a slice is deactivated.
     void unregisterSlice(Artifact artifact);
 
-    /**
-     * Get a local slice bridge for direct invocation.
-     *
-     * @param artifact The slice artifact
-     * @return Option containing the SliceBridge if registered
-     */
+    /// Get a local slice bridge for direct invocation.
+    ///
+    /// @param artifact The slice artifact
+    /// @return Option containing the SliceBridge if registered
     Option<SliceBridge> localSlice(Artifact artifact);
 
-    /**
-     * Get the metrics collector if configured.
-     *
-     * @return Option containing the metrics collector
-     */
+    /// Get the metrics collector if configured.
+    ///
+    /// @return Option containing the metrics collector
     Option<InvocationMetricsCollector> metricsCollector();
 
-    /**
-     * Get the dynamic aspect mode for a specific artifact method.
-     * Returns NONE if no aspect manager is configured or no aspect is set.
-     *
-     * @param artifactBase The artifact base (groupId:artifactId)
-     * @param methodName The method name
-     * @return The current aspect mode
-     */
+    /// Get the dynamic aspect mode for a specific artifact method.
+    /// Returns NONE if no aspect manager is configured or no aspect is set.
+    ///
+    /// @param artifactBase The artifact base (groupId:artifactId)
+    /// @param methodName The method name
+    /// @return The current aspect mode
     DynamicAspectMode getAspectMode(String artifactBase, String methodName);
 
-    /**
-     * Default invocation timeout (5 minutes).
-     * Long timeout to allow operations that may trigger rebalance/node launch.
-     */
+    /// Default invocation timeout (5 minutes).
+    /// Long timeout to allow operations that may trigger rebalance/node launch.
     TimeSpan DEFAULT_INVOCATION_TIMEOUT = timeSpan(5).minutes();
 
-    /**
-     * Create a new InvocationHandler without metrics or HTTP routing.
-     */
+    /// Create a new InvocationHandler without metrics or HTTP routing.
     static InvocationHandler invocationHandler(NodeId self, ClusterNetwork network) {
         return new InvocationHandlerImpl(self,
                                          network,
@@ -99,11 +82,9 @@ public interface InvocationHandler {
                                          DynamicAspectInterceptor.noOp());
     }
 
-    /**
-     * Create a new InvocationHandler with metrics collection.
-     *
-     * @param metricsCollector The metrics collector to use
-     */
+    /// Create a new InvocationHandler with metrics collection.
+    ///
+    /// @param metricsCollector The metrics collector to use
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector) {
@@ -117,14 +98,12 @@ public interface InvocationHandler {
                                          DynamicAspectInterceptor.noOp());
     }
 
-    /**
-     * Create a new InvocationHandler with metrics collection, serialization, and HTTP routing.
-     *
-     * @param metricsCollector   The metrics collector to use
-     * @param serializer         Serializer for response serialization
-     * @param deserializer       Deserializer for payload deserialization
-     * @param httpRoutePublisher HTTP route publisher for SliceRouter access
-     */
+    /// Create a new InvocationHandler with metrics collection, serialization, and HTTP routing.
+    ///
+    /// @param metricsCollector   The metrics collector to use
+    /// @param serializer         Serializer for response serialization
+    /// @param deserializer       Deserializer for payload deserialization
+    /// @param httpRoutePublisher HTTP route publisher for SliceRouter access
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector,
@@ -141,12 +120,10 @@ public interface InvocationHandler {
                                          DynamicAspectInterceptor.noOp());
     }
 
-    /**
-     * Create a new InvocationHandler with metrics collection and custom timeout.
-     *
-     * @param metricsCollector  The metrics collector to use
-     * @param invocationTimeout Timeout for slice invocations
-     */
+    /// Create a new InvocationHandler with metrics collection and custom timeout.
+    ///
+    /// @param metricsCollector  The metrics collector to use
+    /// @param invocationTimeout Timeout for slice invocations
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector,
@@ -161,9 +138,7 @@ public interface InvocationHandler {
                                          DynamicAspectInterceptor.noOp());
     }
 
-    /**
-     * Create a new InvocationHandler with metrics, serialization, HTTP routing, and dynamic aspects.
-     */
+    /// Create a new InvocationHandler with metrics, serialization, HTTP routing, and dynamic aspects.
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector,
@@ -181,10 +156,8 @@ public interface InvocationHandler {
                                          DynamicAspectInterceptor.dynamicAspectInterceptor(aspectLookup));
     }
 
-    /**
-     * Create a new InvocationHandler with metrics, serialization, HTTP routing, and a pre-built interceptor.
-     * Use this when the same interceptor should be shared with SliceInvoker.
-     */
+    /// Create a new InvocationHandler with metrics, serialization, HTTP routing, and a pre-built interceptor.
+    /// Use this when the same interceptor should be shared with SliceInvoker.
     static InvocationHandler invocationHandler(NodeId self,
                                                ClusterNetwork network,
                                                InvocationMetricsCollector metricsCollector,
@@ -307,10 +280,8 @@ class InvocationHandlerImpl implements InvocationHandler {
          .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
     }
 
-    /**
-     * Attempt to route HTTP requests through SliceRouter if available.
-     * Falls back to direct SliceBridge invocation for non-HTTP requests or when SliceRouter is unavailable.
-     */
+    /// Attempt to route HTTP requests through SliceRouter if available.
+    /// Falls back to direct SliceBridge invocation for non-HTTP requests or when SliceRouter is unavailable.
     private Promise<byte[]> invokeWithHttpRouting(InvokeRequest request, SliceBridge bridge) {
         // Check if we have the necessary components for HTTP routing
         if (deserializer.isEmpty() || serializer.isEmpty() || httpRoutePublisher.isEmpty()) {

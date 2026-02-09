@@ -20,11 +20,9 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Resolves latest version from the pragmatica monorepo GitHub Releases.
- * All components (pragmatica-lite, aether, jbct) share the same version.
- * Caches results for 24 hours to avoid excessive API calls.
- */
+/// Resolves latest version from the pragmatica monorepo GitHub Releases.
+/// All components (pragmatica-lite, aether, jbct) share the same version.
+/// Caches results for 24 hours to avoid excessive API calls.
 public final class GitHubVersionResolver {
     private static final Logger LOG = LoggerFactory.getLogger(GitHubVersionResolver.class);
     private static final Path CACHE_FILE = Path.of(System.getProperty("user.home"),
@@ -67,59 +65,43 @@ public final class GitHubVersionResolver {
         this.cache = loadCache();
     }
 
-    /**
-     * Create a new version resolver.
-     */
+    /// Create a new version resolver.
     public static GitHubVersionResolver gitHubVersionResolver() {
         return new GitHubVersionResolver(HttpClients.httpOperations());
     }
 
-    /**
-     * Get latest pragmatica-lite version.
-     */
+    /// Get latest pragmatica-lite version.
     public String pragmaticaLiteVersion() {
         return monorepoVersion();
     }
 
-    /**
-     * Get latest aether version.
-     */
+    /// Get latest aether version.
     public String aetherVersion() {
         return monorepoVersion();
     }
 
-    /**
-     * Get latest jbct-cli version.
-     * Uses the newer of: running binary version or latest GitHub release.
-     */
+    /// Get latest jbct-cli version.
+    /// Uses the newer of: running binary version or latest GitHub release.
     public String jbctVersion() {
         return maxVersion(RUNNING_JBCT_VERSION, monorepoVersion());
     }
 
-    /**
-     * Get default pragmatica-lite version (used as fallback).
-     */
+    /// Get default pragmatica-lite version (used as fallback).
     public static String defaultPragmaticaVersion() {
         return DEFAULT_VERSION;
     }
 
-    /**
-     * Get default aether version (used as fallback).
-     */
+    /// Get default aether version (used as fallback).
     public static String defaultAetherVersion() {
         return DEFAULT_VERSION;
     }
 
-    /**
-     * Get default jbct version (used as fallback).
-     */
+    /// Get default jbct version (used as fallback).
     public static String defaultJbctVersion() {
         return DEFAULT_VERSION;
     }
 
-    /**
-     * Clear the version cache.
-     */
+    /// Clear the version cache.
     public Result<Unit> clearCache() {
         resolvedVersion = null;
         cache.clear();
@@ -209,9 +191,7 @@ public final class GitHubVersionResolver {
         });
     }
 
-    /**
-     * Compare two semantic versions and return the newer one.
-     */
+    /// Compare two semantic versions and return the newer one.
     private static String maxVersion(String v1, String v2) {
         var parts1 = v1.split("\\.");
         var parts2 = v2.split("\\.");

@@ -32,9 +32,7 @@ import java.util.function.Consumer;
 
 import static org.pragmatica.utility.HierarchyScanner.concreteSubtypes;
 
-/**
- * Registers Aether-specific classes for serialization.
- */
+/// Registers Aether-specific classes for serialization.
 public interface AetherCustomClasses {
     static void configure(Consumer<Class<?>> consumer) {
         // Include base Rabia classes

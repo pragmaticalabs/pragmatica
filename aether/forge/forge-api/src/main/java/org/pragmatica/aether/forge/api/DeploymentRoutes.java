@@ -20,65 +20,49 @@ import static org.pragmatica.http.routing.Route.get;
 import static org.pragmatica.http.routing.Route.post;
 import static org.pragmatica.http.routing.Route.put;
 
-/**
- * REST API routes for deployment-related operations.
- * These endpoints proxy requests to the cluster leader's ManagementServer.
- * <p>
- * Provides endpoints for:
- * <ul>
- *   <li>Slice deployment (POST /api/deploy)</li>
- *   <li>Slice undeployment (POST /api/undeploy)</li>
- *   <li>Blueprint application (POST /api/blueprint)</li>
- *   <li>Slice status (GET /api/slices/status)</li>
- *   <li>Cluster metrics (GET /api/cluster/metrics)</li>
- *   <li>Artifact repository (PUT /api/repository)</li>
- * </ul>
- */
+/// REST API routes for deployment-related operations.
+/// These endpoints proxy requests to the cluster leader's ManagementServer.
+///
+/// Provides endpoints for:
+///
+///   - Slice deployment (POST /api/deploy)
+///   - Slice undeployment (POST /api/undeploy)
+///   - Blueprint application (POST /api/blueprint)
+///   - Slice status (GET /api/slices/status)
+///   - Cluster metrics (GET /api/cluster/metrics)
+///   - Artifact repository (PUT /api/repository)
+///
 public sealed interface DeploymentRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(30);
 
     // ========== Request Records ==========
-    /**
-     * Request body for deploy operation.
-     */
+    /// Request body for deploy operation.
     record DeployRequest(String artifact, int instances) {}
 
-    /**
-     * Request body for undeploy operation.
-     */
+    /// Request body for undeploy operation.
     record UndeployRequest(String artifact) {}
 
-    /**
-     * Request body for repository PUT operation.
-     */
+    /// Request body for repository PUT operation.
     record RepositoryPutRequest(String groupId, String artifactId, String version, byte[] content) {}
 
     // ========== Response Records ==========
-    /**
-     * Generic proxy response wrapper.
-     * The actual response body comes from the leader's ManagementServer.
-     */
+    /// Generic proxy response wrapper.
+    /// The actual response body comes from the leader's ManagementServer.
     record ProxyResponse(boolean success, String body) {}
 
-    /**
-     * Slices status response.
-     * Contains slice data directly from ForgeCluster's KV store query.
-     */
+    /// Slices status response.
+    /// Contains slice data directly from ForgeCluster's KV store query.
     record SlicesStatusResponse(java.util.List<ForgeCluster.SliceStatus> slices) {}
 
-    /**
-     * Cluster metrics response from leader.
-     */
+    /// Cluster metrics response from leader.
     record ClusterMetricsResponse(String body) {}
 
     // ========== Route Factory ==========
-    /**
-     * Create route source for all deployment-related endpoints.
-     *
-     * @param cluster     the ForgeCluster for finding the leader node
-     * @param eventLogger callback to log events for the dashboard
-     * @return RouteSource containing all deployment routes
-     */
+    /// Create route source for all deployment-related endpoints.
+    ///
+    /// @param cluster     the ForgeCluster for finding the leader node
+    /// @param eventLogger callback to log events for the dashboard
+    /// @return RouteSource containing all deployment routes
     static RouteSource deploymentRoutes(ForgeCluster cluster,
                                         Consumer<EventLogEntry> eventLogger) {
         var http = JdkHttpOperations.jdkHttpOperations();
@@ -272,9 +256,7 @@ public sealed interface DeploymentRoutes {
     }
 
     // ========== Error Types ==========
-    /**
-     * Error when no leader node is available.
-     */
+    /// Error when no leader node is available.
     enum LeaderNotAvailable implements org.pragmatica.lang.Cause {
         INSTANCE;
         @Override
@@ -283,9 +265,7 @@ public sealed interface DeploymentRoutes {
         }
     }
 
-    /**
-     * Error when no nodes are available in the cluster.
-     */
+    /// Error when no nodes are available in the cluster.
     enum NoNodesAvailable implements org.pragmatica.lang.Cause {
         INSTANCE;
         @Override

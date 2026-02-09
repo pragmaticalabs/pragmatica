@@ -11,19 +11,19 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * E2E tests for cluster formation and quorum behavior.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>5-node cluster formation</li>
- *   <li>Quorum establishment</li>
- *   <li>Leader election</li>
- *   <li>Node visibility across cluster</li>
- * </ul>
- *
- * <p>This test class uses a shared cluster (read-only tests).
- */
+/// E2E tests for cluster formation and quorum behavior.
+///
+///
+/// Tests cover:
+///
+///   - 5-node cluster formation
+///   - Quorum establishment
+///   - Leader election
+///   - Node visibility across cluster
+///
+///
+///
+/// This test class uses a shared cluster (read-only tests).
 class ClusterFormationE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static AetherCluster cluster;

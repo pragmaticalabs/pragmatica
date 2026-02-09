@@ -10,15 +10,11 @@ import java.util.function.Consumer;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
-/**
- * Utility methods for working with CST nodes.
- */
+/// Utility methods for working with CST nodes.
 public final class CstNodes {
     private CstNodes() {}
 
-    /**
-     * Get children of a node (empty list for terminals/tokens).
-     */
+    /// Get children of a node (empty list for terminals/tokens).
     public static List<CstNode> children(CstNode node) {
         return switch (node) {
             case CstNode.NonTerminal nt -> nt.children();
@@ -28,46 +24,34 @@ public final class CstNodes {
         };
     }
 
-    /**
-     * Get the text content of a node.
-     */
+    /// Get the text content of a node.
     public static String text(CstNode node, String source) {
         return node.span()
                    .extract(source);
     }
 
-    /**
-     * Check if node matches a rule type.
-     */
+    /// Check if node matches a rule type.
     public static boolean isRule(CstNode node, Class<? extends RuleId> ruleClass) {
         return ruleClass.isInstance(node.rule());
     }
 
-    /**
-     * Find all descendants matching a rule type.
-     */
+    /// Find all descendants matching a rule type.
     public static List<CstNode> findAll(CstNode root, Class<? extends RuleId> ruleClass) {
         return findAll(root, node -> isRule(node, ruleClass));
     }
 
-    /**
-     * Find all descendants matching a predicate.
-     */
+    /// Find all descendants matching a predicate.
     public static List<CstNode> findAll(CstNode root, Predicate<CstNode> predicate) {
         return stream(root).filter(predicate)
                      .toList();
     }
 
-    /**
-     * Find first descendant matching a rule type.
-     */
+    /// Find first descendant matching a rule type.
     public static Option<CstNode> findFirst(CstNode root, Class<? extends RuleId> ruleClass) {
         return findFirst(root, node -> isRule(node, ruleClass));
     }
 
-    /**
-     * Find first descendant matching a predicate.
-     */
+    /// Find first descendant matching a predicate.
     public static Option<CstNode> findFirst(CstNode root, Predicate<CstNode> predicate) {
         if (predicate.test(root)) {
             return Option.some(root);
@@ -81,9 +65,7 @@ public final class CstNodes {
         return Option.none();
     }
 
-    /**
-     * Find ancestor matching a rule type.
-     */
+    /// Find ancestor matching a rule type.
     public static Option<CstNode> findAncestor(CstNode root, CstNode target, Class<? extends RuleId> ruleClass) {
         return findAncestorPath(root, target).flatMap(path -> findAncestorInPath(path, ruleClass));
     }
@@ -97,9 +79,7 @@ public final class CstNodes {
         return Option.none();
     }
 
-    /**
-     * Get path from root to target node.
-     */
+    /// Get path from root to target node.
     public static Option<List<CstNode>> findAncestorPath(CstNode root, CstNode target) {
         var path = new ArrayList<CstNode>();
         if (findPath(root, target, path)) {
@@ -123,9 +103,7 @@ public final class CstNodes {
         return false;
     }
 
-    /**
-     * Walk the tree depth-first, calling visitor for each node.
-     */
+    /// Walk the tree depth-first, calling visitor for each node.
     public static void walk(CstNode root, Consumer<CstNode> visitor) {
         visitor.accept(root);
         for (var child : children(root)) {
@@ -133,18 +111,14 @@ public final class CstNodes {
         }
     }
 
-    /**
-     * Stream all nodes in the tree depth-first.
-     */
+    /// Stream all nodes in the tree depth-first.
     public static Stream<CstNode> stream(CstNode root) {
         return Stream.concat(Stream.of(root),
                              children(root).stream()
                                      .flatMap(CstNodes::stream));
     }
 
-    /**
-     * Get child by index.
-     */
+    /// Get child by index.
     public static Option<CstNode> child(CstNode node, int index) {
         var kids = children(node);
         if (index >= 0 && index < kids.size()) {
@@ -153,9 +127,7 @@ public final class CstNodes {
         return Option.none();
     }
 
-    /**
-     * Get first child matching a rule type.
-     */
+    /// Get first child matching a rule type.
     public static Option<CstNode> childByRule(CstNode node, Class<? extends RuleId> ruleClass) {
         for (var child : children(node)) {
             if (isRule(child, ruleClass)) {
@@ -165,9 +137,7 @@ public final class CstNodes {
         return Option.none();
     }
 
-    /**
-     * Get all direct children matching a rule type.
-     */
+    /// Get all direct children matching a rule type.
     public static List<CstNode> childrenByRule(CstNode node, Class<? extends RuleId> ruleClass) {
         var results = new ArrayList<CstNode>();
         for (var child : children(node)) {
@@ -178,16 +148,12 @@ public final class CstNodes {
         return results;
     }
 
-    /**
-     * Check if node contains a descendant matching rule type.
-     */
+    /// Check if node contains a descendant matching rule type.
     public static boolean contains(CstNode root, Class<? extends RuleId> ruleClass) {
         return findFirst(root, ruleClass).isPresent();
     }
 
-    /**
-     * Check if node is a terminal with specific text.
-     */
+    /// Check if node is a terminal with specific text.
     public static boolean isLiteral(CstNode node, String text) {
         return switch (node) {
             case CstNode.Terminal t -> text.equals(t.text());
@@ -197,9 +163,7 @@ public final class CstNodes {
         };
     }
 
-    /**
-     * Get terminal/token text if node is terminal.
-     */
+    /// Get terminal/token text if node is terminal.
     public static Option<String> terminalText(CstNode node) {
         return switch (node) {
             case CstNode.Terminal t -> Option.some(t.text());
@@ -209,34 +173,26 @@ public final class CstNodes {
         };
     }
 
-    /**
-     * Count descendants matching a rule type.
-     */
+    /// Count descendants matching a rule type.
     public static int count(CstNode root, Class<? extends RuleId> ruleClass) {
         return findAll(root, ruleClass).size();
     }
 
-    /**
-     * Get start line of a node.
-     */
+    /// Get start line of a node.
     public static int startLine(CstNode node) {
         return node.span()
                    .start()
                    .line();
     }
 
-    /**
-     * Get start column of a node.
-     */
+    /// Get start column of a node.
     public static int startColumn(CstNode node) {
         return node.span()
                    .start()
                    .column();
     }
 
-    /**
-     * Extract package name from a compilation unit root node.
-     */
+    /// Extract package name from a compilation unit root node.
     public static String packageName(CstNode root, String source) {
         return findFirst(root, RuleId.PackageDecl.class).flatMap(pd -> findFirst(pd, RuleId.QualifiedName.class))
                         .map(qn -> text(qn, source))

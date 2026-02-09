@@ -16,22 +16,22 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for artifact repository distributed operations.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Artifact metadata availability after upload</li>
- *   <li>Artifact resolution from non-leader nodes</li>
- *   <li>Artifact download content integrity</li>
- *   <li>Artifact survival after single node failure</li>
- *   <li>Artifact survival after leader failover</li>
- *   <li>Maven metadata listing uploaded versions</li>
- * </ul>
- *
- * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
- * Tests run in order. Artifacts persist in DHT, no cleanup needed between tests.
- */
+/// E2E tests for artifact repository distributed operations.
+///
+///
+/// Tests cover:
+///
+///   - Artifact metadata availability after upload
+///   - Artifact resolution from non-leader nodes
+///   - Artifact download content integrity
+///   - Artifact survival after single node failure
+///   - Artifact survival after leader failover
+///   - Maven metadata listing uploaded versions
+///
+///
+///
+/// This test class uses a shared cluster for all tests to reduce startup overhead.
+/// Tests run in order. Artifacts persist in DHT, no cleanup needed between tests.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 class ArtifactRepositoryE2ETest {

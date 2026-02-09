@@ -2,9 +2,7 @@ package org.pragmatica.aether.infra.pubsub;
 
 import org.pragmatica.lang.Cause;
 
-/**
- * Error hierarchy for pub/sub operations.
- */
+/// Error hierarchy for pub/sub operations.
 public sealed interface PubSubError extends Cause {
     record TopicNotFound(String topic) implements PubSubError {
         @Override

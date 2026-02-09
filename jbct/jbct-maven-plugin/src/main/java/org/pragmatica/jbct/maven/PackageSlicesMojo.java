@@ -39,20 +39,19 @@ import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 import org.codehaus.plexus.archiver.jar.JarArchiver;
 
-/**
- * Packages slices into separate JAR artifacts.
- * Reads slice manifests from META-INF/slice/*.manifest and creates:
- * - {module}-{slice}-api.jar - API interface only
- * - {module}-{slice}.jar - Implementation + factory + request/response types (fat JAR)
- *
- * <p>The impl JAR includes:
- * <ul>
- *   <li>META-INF/dependencies/{FactoryClass} - runtime dependency file</li>
- *   <li>META-INF/MANIFEST.MF with Slice-Artifact and Slice-Class entries</li>
- *   <li>Bundled external libs (compile scope, non-slice, non-infra, non-provided)</li>
- *   <li>Application shared code (sibling shared package or slice subpackages)</li>
- * </ul>
- */
+/// Packages slices into separate JAR artifacts.
+/// Reads slice manifests from META-INF/slice/*.manifest and creates:
+/// - {module}-{slice}-api.jar - API interface only
+/// - {module}-{slice}.jar - Implementation + factory + request/response types (fat JAR)
+///
+///
+/// The impl JAR includes:
+///
+///   - META-INF/dependencies/{FactoryClass} - runtime dependency file
+///   - META-INF/MANIFEST.MF with Slice-Artifact and Slice-Class entries
+///   - Bundled external libs (compile scope, non-slice, non-infra, non-provided)
+///   - Application shared code (sibling shared package or slice subpackages)
+///
 @Mojo(name = "package-slices",
  defaultPhase = LifecyclePhase.PACKAGE,
  requiresDependencyResolution = ResolutionScope.COMPILE)
@@ -472,10 +471,8 @@ public class PackageSlicesMojo extends AbstractMojo {
         }
     }
 
-    /**
-     * Builds artifact → version mapping from dependency file.
-     * Maps "groupId:artifactId" → "1.0.0" (strips semver range prefix)
-     */
+    /// Builds artifact → version mapping from dependency file.
+    /// Maps "groupId:artifactId" → "1.0.0" (strips semver range prefix)
     private Map<String, String> buildVersionMap(String depsContent) {
         var map = new HashMap<String, String>();
         if (depsContent == null || depsContent.isEmpty()) {
@@ -505,10 +502,8 @@ public class PackageSlicesMojo extends AbstractMojo {
         return map;
     }
 
-    /**
-     * Strip semver range prefix (^, ~) to get actual version.
-     * ^1.0.0 → 1.0.0, ~2.1.0 → 2.1.0, 1.0.0 → 1.0.0
-     */
+    /// Strip semver range prefix (^, ~) to get actual version.
+    /// ^1.0.0 → 1.0.0, ~2.1.0 → 2.1.0, 1.0.0 → 1.0.0
     private String stripSemverPrefix(String version) {
         if (version.startsWith("^") || version.startsWith("~")) {
             return version.substring(1);
@@ -516,10 +511,8 @@ public class PackageSlicesMojo extends AbstractMojo {
         return version;
     }
 
-    /**
-     * Transforms factory .class file to replace UNRESOLVED version strings in constant pool.
-     * Uses JEP 484 Class-File API for bytecode manipulation.
-     */
+    /// Transforms factory .class file to replace UNRESOLVED version strings in constant pool.
+    /// Uses JEP 484 Class-File API for bytecode manipulation.
     private byte[] transformFactoryBytecode(File classFile, Map<String, String> versionMap)
     throws IOException {
         var originalBytes = Files.readAllBytes(classFile.toPath());

@@ -21,21 +21,17 @@ import static org.pragmatica.http.routing.Route.get;
 import static org.pragmatica.http.routing.Route.in;
 import static org.pragmatica.http.routing.Route.post;
 
-/**
- * REST API routes for simulator operations.
- * <p>
- * Provides endpoints for:
- * <ul>
- *   <li>Entry point listing and rate control</li>
- *   <li>Inventory mode management (infinite/realistic)</li>
- *   <li>Simulated order operations (place, status, cancel)</li>
- *   <li>Simulated inventory and pricing queries</li>
- * </ul>
- */
+/// REST API routes for simulator operations.
+///
+/// Provides endpoints for:
+///
+///   - Entry point listing and rate control
+///   - Inventory mode management (infinite/realistic)
+///   - Simulated order operations (place, status, cancel)
+///   - Simulated inventory and pricing queries
+///
 public sealed interface SimulatorRoutes {
-    /**
-     * State holder for inventory simulation.
-     */
+    /// State holder for inventory simulation.
     record InventoryState(AtomicLong reservations,
                           AtomicLong releases,
                           AtomicLong stockOuts,
@@ -62,9 +58,7 @@ public sealed interface SimulatorRoutes {
         }
     }
 
-    /**
-     * Create route source for all simulator-related endpoints.
-     */
+    /// Create route source for all simulator-related endpoints.
     static RouteSource simulatorRoutes(Supplier<SimulatorConfig> configSupplier,
                                        InventoryState inventoryState,
                                        Consumer<EventLogEntry> eventLogger) {

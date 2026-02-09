@@ -13,10 +13,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-/**
- * Unified configuration for JBCT tools.
- * Combines formatter and linter configuration with project settings.
- */
+/// Unified configuration for JBCT tools.
+/// Combines formatter and linter configuration with project settings.
 public record JbctConfig(FormatterConfig formatter,
                          LintConfig lint,
                          List<String> sourceDirectories,
@@ -28,19 +26,15 @@ public record JbctConfig(FormatterConfig formatter,
         slicePackages = List.copyOf(slicePackages);
     }
 
-    /**
-     * Default configuration.
-     * Note: slicePackages is empty by default - must be configured for JBCT-SLICE-01 rule.
-     */
+    /// Default configuration.
+    /// Note: slicePackages is empty by default - must be configured for JBCT-SLICE-01 rule.
     public static final JbctConfig DEFAULT = jbctConfig(FormatterConfig.DEFAULT,
                                                         LintConfig.DEFAULT,
                                                         List.of("src/main/java"),
                                                         List.of("**.usecase.**", "**.domain.**"),
                                                         List.of());
 
-    /**
-     * Factory method for creating JbctConfig.
-     */
+    /// Factory method for creating JbctConfig.
     public static JbctConfig jbctConfig(FormatterConfig formatter,
                                         LintConfig lint,
                                         List<String> sourceDirectories,
@@ -49,9 +43,7 @@ public record JbctConfig(FormatterConfig formatter,
         return new JbctConfig(formatter, lint, sourceDirectories, businessPackages, slicePackages);
     }
 
-    /**
-     * Create config from parsed TOML document.
-     */
+    /// Create config from parsed TOML document.
     public static JbctConfig fromToml(TomlDocument toml) {
         // Format section
         var formatterConfig = FormatterConfig.DEFAULT.withMaxLineLength(toml.getInt("format", "maxLineLength")
@@ -107,9 +99,7 @@ public record JbctConfig(FormatterConfig formatter,
         return jbctConfig(formatterConfig, lintConfig, sourceDirectories, businessPackages, slicePackages);
     }
 
-    /**
-     * Merge this config with another, with other taking precedence.
-     */
+    /// Merge this config with another, with other taking precedence.
     public JbctConfig merge(Option<JbctConfig> other) {
         return other.map(this::mergeWith)
                     .or(this);
@@ -139,9 +129,7 @@ public record JbctConfig(FormatterConfig formatter,
         return jbctConfig(mergedFormatter, mergedLint, mergedSourceDirs, mergedBusinessPackages, mergedSlicePackages);
     }
 
-    /**
-     * Generate TOML representation of this config.
-     */
+    /// Generate TOML representation of this config.
     public String toToml() {
         var sb = new StringBuilder();
         sb.append("# JBCT Configuration\n\n");

@@ -13,21 +13,19 @@ import com.sun.management.GarbageCollectionNotificationInfo;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Collects GC metrics using JMX notifications.
- * <p>
- * Thread-safe: uses atomic operations for all counters.
- * <p>
- * Usage:
- * <pre>{@code
- * var collector = GCMetricsCollector.gcMetricsCollector();
- * collector.start();
- * // ... later ...
- * var metrics = collector.snapshot();
- * // ... on shutdown ...
- * collector.stop();
- * }</pre>
- */
+/// Collects GC metrics using JMX notifications.
+///
+/// Thread-safe: uses atomic operations for all counters.
+///
+/// Usage:
+/// ```{@code
+/// var collector = GCMetricsCollector.gcMetricsCollector();
+/// collector.start();
+/// // ... later ...
+/// var metrics = collector.snapshot();
+/// // ... on shutdown ...
+/// collector.stop();
+/// }```
 public final class GCMetricsCollector {
     private static final Logger log = LoggerFactory.getLogger(GCMetricsCollector.class);
 
@@ -56,9 +54,7 @@ public final class GCMetricsCollector {
         return new GCMetricsCollector();
     }
 
-    /**
-     * Start collecting GC metrics via JMX notifications.
-     */
+    /// Start collecting GC metrics via JMX notifications.
     public void start() {
         if (started) {
             return;
@@ -83,9 +79,7 @@ public final class GCMetricsCollector {
         log.info("GC metrics collection started");
     }
 
-    /**
-     * Stop collecting GC metrics.
-     */
+    /// Stop collecting GC metrics.
     public void stop() {
         if (!started || listener == null) {
             return;
@@ -162,9 +156,7 @@ public final class GCMetricsCollector {
         }
     }
 
-    /**
-     * Take a snapshot of current metrics.
-     */
+    /// Take a snapshot of current metrics.
     public GCMetrics snapshot() {
         return new GCMetrics(youngGcCount.sum(),
                              youngGcPauseMs.sum(),
@@ -176,9 +168,7 @@ public final class GCMetricsCollector {
                              lastMajorGcTimestamp.get());
     }
 
-    /**
-     * Take a snapshot and reset counters (for delta-based reporting).
-     */
+    /// Take a snapshot and reset counters (for delta-based reporting).
     public GCMetrics snapshotAndReset() {
         var snap = new GCMetrics(youngGcCount.sumThenReset(),
                                  youngGcPauseMs.sumThenReset(),

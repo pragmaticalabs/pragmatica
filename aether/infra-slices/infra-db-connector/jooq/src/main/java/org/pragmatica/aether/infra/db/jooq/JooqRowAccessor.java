@@ -7,9 +7,7 @@ import org.pragmatica.lang.Result;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-/**
- * JDBC ResultSet implementation of RowAccessor for jOOQ connector.
- */
+/// JDBC ResultSet implementation of RowAccessor for jOOQ connector.
 final class JooqRowAccessor implements RowAccessor {
     private final ResultSet rs;
 

@@ -18,23 +18,19 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * Handles loading of shared dependencies into SharedLibraryClassLoader
- * and creates SliceClassLoader with appropriate parent and conflict overrides.
- */
+/// Handles loading of shared dependencies into SharedLibraryClassLoader
+/// and creates SliceClassLoader with appropriate parent and conflict overrides.
 public interface SharedDependencyLoader {
     Logger log = LoggerFactory.getLogger(SharedDependencyLoader.class);
 
-    /**
-     * Process infrastructure dependencies from [infra] section.
-     * <p>
-     * Infrastructure JARs are loaded into SharedLibraryClassLoader like [shared] dependencies.
-     *
-     * @param dependencies        List of infra dependencies from [infra] section
-     * @param sharedLibraryLoader The shared library classloader
-     * @param repository          Repository to locate artifacts
-     * @return Promise that completes when all infra JARs are loaded
-     */
+    /// Process infrastructure dependencies from [infra] section.
+    ///
+    /// Infrastructure JARs are loaded into SharedLibraryClassLoader like [shared] dependencies.
+    ///
+    /// @param dependencies        List of infra dependencies from [infra] section
+    /// @param sharedLibraryLoader The shared library classloader
+    /// @param repository          Repository to locate artifacts
+    /// @return Promise that completes when all infra JARs are loaded
     static Promise<Unit> processInfraDependencies(List<ArtifactDependency> dependencies,
                                                   SharedLibraryClassLoader sharedLibraryLoader,
                                                   Repository repository) {
@@ -88,29 +84,25 @@ public interface SharedDependencyLoader {
         return Promise.success(unit());
     }
 
-    /**
-     * Result of processing shared dependencies for a slice.
-     *
-     * @param sliceClassLoader   The ClassLoader to use for loading the slice
-     * @param conflictingJarUrls URLs of JARs that conflict with shared versions (loaded into slice)
-     */
+    /// Result of processing shared dependencies for a slice.
+    ///
+    /// @param sliceClassLoader   The ClassLoader to use for loading the slice
+    /// @param conflictingJarUrls URLs of JARs that conflict with shared versions (loaded into slice)
     record SharedDependencyResult(SliceClassLoader sliceClassLoader,
                                   List<URL> conflictingJarUrls) {}
 
-    /**
-     * Process shared dependencies for a slice.
-     * <p>
-     * For each shared dependency:
-     * - If not loaded: load into SharedLibraryClassLoader
-     * - If loaded and compatible: reuse
-     * - If loaded and conflict: add to slice's conflict list
-     *
-     * @param dependencies           List of shared dependencies from [shared] section
-     * @param sharedLibraryLoader    The shared library classloader
-     * @param repository             Repository to locate artifacts
-     * @param sliceJarUrl            URL of the slice JAR
-     * @return SliceClassLoader configured with appropriate parent and conflict overrides
-     */
+    /// Process shared dependencies for a slice.
+    ///
+    /// For each shared dependency:
+    /// - If not loaded: load into SharedLibraryClassLoader
+    /// - If loaded and compatible: reuse
+    /// - If loaded and conflict: add to slice's conflict list
+    ///
+    /// @param dependencies           List of shared dependencies from [shared] section
+    /// @param sharedLibraryLoader    The shared library classloader
+    /// @param repository             Repository to locate artifacts
+    /// @param sliceJarUrl            URL of the slice JAR
+    /// @return SliceClassLoader configured with appropriate parent and conflict overrides
     static Promise<SharedDependencyResult> processSharedDependencies(List<ArtifactDependency> dependencies,
                                                                      SharedLibraryClassLoader sharedLibraryLoader,
                                                                      Repository repository,

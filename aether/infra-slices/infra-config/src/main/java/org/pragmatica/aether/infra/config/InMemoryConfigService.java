@@ -14,9 +14,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * In-memory implementation of ConfigService for testing and single-node scenarios.
- */
+/// In-memory implementation of ConfigService for testing and single-node scenarios.
 final class InMemoryConfigService implements ConfigService {
     private final Map<ConfigScope, TomlDocument> documents = new ConcurrentHashMap<>();
     private final Map<String, List<WatchEntry>> watchers = new ConcurrentHashMap<>();

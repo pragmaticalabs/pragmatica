@@ -47,10 +47,8 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.consensus.NodeId.nodeId;
 import static org.pragmatica.net.tcp.NodeAddress.nodeAddress;
 
-/**
- * Manages a cluster of AetherNodes for Forge.
- * Supports starting, stopping, adding, and killing nodes.
- */
+/// Manages a cluster of AetherNodes for Forge.
+/// Supports starting, stopping, adding, and killing nodes.
 public final class ForgeCluster {
     private static final Logger log = LoggerFactory.getLogger(ForgeCluster.class);
 
@@ -85,9 +83,7 @@ public final class ForgeCluster {
     // Node provider for auto-healing (CDM provisions replacements via this)
     private final NodeProvider forgeNodeProvider;
 
-    /**
-     * NodeProvider implementation that provisions nodes via ForgeCluster.addNode().
-     */
+    /// NodeProvider implementation that provisions nodes via ForgeCluster.addNode().
     private final class ForgeNodeProvider implements NodeProvider {
         @Override
         public Promise<Unit> provision(InstanceType instanceType) {
@@ -125,40 +121,34 @@ public final class ForgeCluster {
                                 Option.empty());
     }
 
-    /**
-     * Create a ForgeCluster with custom port ranges.
-     * Use this to avoid port conflicts when running multiple tests in parallel.
-     *
-     * @param initialSize  Number of nodes to start with
-     * @param basePort     Base port for cluster communication (each node uses basePort + nodeIndex)
-     * @param baseMgmtPort Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
-     */
+    /// Create a ForgeCluster with custom port ranges.
+    /// Use this to avoid port conflicts when running multiple tests in parallel.
+    ///
+    /// @param initialSize  Number of nodes to start with
+    /// @param basePort     Base port for cluster communication (each node uses basePort + nodeIndex)
+    /// @param baseMgmtPort Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
     public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort) {
         return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, "node", Option.empty());
     }
 
-    /**
-     * Create a ForgeCluster with custom port ranges and node ID prefix.
-     * Use this to avoid port conflicts when running multiple tests in parallel.
-     *
-     * @param initialSize   Number of nodes to start with
-     * @param basePort      Base port for cluster communication (each node uses basePort + nodeIndex)
-     * @param baseMgmtPort  Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
-     * @param nodeIdPrefix  Prefix for node IDs (e.g., "cf" creates nodes "cf-1", "cf-2", etc.)
-     */
+    /// Create a ForgeCluster with custom port ranges and node ID prefix.
+    /// Use this to avoid port conflicts when running multiple tests in parallel.
+    ///
+    /// @param initialSize   Number of nodes to start with
+    /// @param basePort      Base port for cluster communication (each node uses basePort + nodeIndex)
+    /// @param baseMgmtPort  Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
+    /// @param nodeIdPrefix  Prefix for node IDs (e.g., "cf" creates nodes "cf-1", "cf-2", etc.)
     public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
         return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, nodeIdPrefix, Option.empty());
     }
 
-    /**
-     * Create a ForgeCluster with custom port ranges including app HTTP.
-     *
-     * @param initialSize     Number of nodes to start with
-     * @param basePort        Base port for cluster communication
-     * @param baseMgmtPort    Base port for management HTTP API
-     * @param baseAppHttpPort Base port for application HTTP API (slice endpoints)
-     * @param nodeIdPrefix    Prefix for node IDs
-     */
+    /// Create a ForgeCluster with custom port ranges including app HTTP.
+    ///
+    /// @param initialSize     Number of nodes to start with
+    /// @param basePort        Base port for cluster communication
+    /// @param baseMgmtPort    Base port for management HTTP API
+    /// @param baseAppHttpPort Base port for application HTTP API (slice endpoints)
+    /// @param nodeIdPrefix    Prefix for node IDs
     public static ForgeCluster forgeCluster(int initialSize,
                                             int basePort,
                                             int baseMgmtPort,
@@ -167,16 +157,14 @@ public final class ForgeCluster {
         return forgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, Option.empty());
     }
 
-    /**
-     * Create a ForgeCluster with ConfigurationProvider for node configuration.
-     *
-     * @param initialSize        Number of nodes to start with
-     * @param basePort           Base port for cluster communication
-     * @param baseMgmtPort       Base port for management HTTP API
-     * @param baseAppHttpPort    Base port for application HTTP API (slice endpoints)
-     * @param nodeIdPrefix       Prefix for node IDs
-     * @param configProvider     Configuration provider for all nodes (shared)
-     */
+    /// Create a ForgeCluster with ConfigurationProvider for node configuration.
+    ///
+    /// @param initialSize        Number of nodes to start with
+    /// @param basePort           Base port for cluster communication
+    /// @param baseMgmtPort       Base port for management HTTP API
+    /// @param baseAppHttpPort    Base port for application HTTP API (slice endpoints)
+    /// @param nodeIdPrefix       Prefix for node IDs
+    /// @param configProvider     Configuration provider for all nodes (shared)
     public static ForgeCluster forgeCluster(int initialSize,
                                             int basePort,
                                             int baseMgmtPort,
@@ -186,10 +174,8 @@ public final class ForgeCluster {
         return new ForgeCluster(initialSize, basePort, baseMgmtPort, baseAppHttpPort, nodeIdPrefix, configProvider);
     }
 
-    /**
-     * Start the initial cluster with configured number of nodes.
-     * If any node fails to start, all successfully started nodes are stopped and the failure is returned.
-     */
+    /// Start the initial cluster with configured number of nodes.
+    /// If any node fails to start, all successfully started nodes are stopped and the failure is returned.
     public Promise<Unit> start() {
         log.info("Starting Forge cluster with {} nodes on ports {}-{}",
                  initialClusterSize,
@@ -302,9 +288,7 @@ public final class ForgeCluster {
         nodeCounter.set(0);
     }
 
-    /**
-     * Stop all nodes gracefully.
-     */
+    /// Stop all nodes gracefully.
     public Promise<Unit> stop() {
         log.info("Stopping Forge cluster");
         // Cancel rolling restart if active
@@ -331,10 +315,8 @@ public final class ForgeCluster {
         log.info("Forge cluster stopped");
     }
 
-    /**
-     * Add a new node to the cluster.
-     * Returns the new node's ID.
-     */
+    /// Add a new node to the cluster.
+    /// Returns the new node's ID.
     public Promise<NodeId> addNode() {
         var slot = Option.option(availableSlots.poll())
                          .onEmpty(() -> log.warn("Slot pool exhausted, this shouldn't happen"))
@@ -358,20 +340,16 @@ public final class ForgeCluster {
                                             nodeId.id()));
     }
 
-    /**
-     * Gracefully stop and remove a node from the cluster.
-     * The node cannot be restarted - use addNode() to create a new node.
-     */
+    /// Gracefully stop and remove a node from the cluster.
+    /// The node cannot be restarted - use addNode() to create a new node.
     public Promise<Unit> killNode(String nodeIdStr) {
         return killNode(nodeIdStr, true);
     }
 
-    /**
-     * Stop and remove a node from the cluster.
-     *
-     * @param nodeIdStr Node ID to kill
-     * @param graceful  If true, waits for normal timeout; if false, uses 1-second timeout
-     */
+    /// Stop and remove a node from the cluster.
+    ///
+    /// @param nodeIdStr Node ID to kill
+    /// @param graceful  If true, waits for normal timeout; if false, uses 1-second timeout
     public Promise<Unit> killNode(String nodeIdStr, boolean graceful) {
         return Option.option(nodes.get(nodeIdStr))
                      .map(node -> killNodeInternal(nodeIdStr, node, graceful))
@@ -403,17 +381,13 @@ public final class ForgeCluster {
                    .onSuccess(_ -> log.info("Node {} removed from cluster", nodeIdStr));
     }
 
-    /**
-     * Get the target cluster size for auto-heal.
-     */
+    /// Get the target cluster size for auto-heal.
     public int targetClusterSize() {
         return targetClusterSize;
     }
 
-    /**
-     * Route SetClusterSize to all nodes in the cluster.
-     * Each node's topology manager validates and applies the new size.
-     */
+    /// Route SetClusterSize to all nodes in the cluster.
+    /// Each node's topology manager validates and applies the new size.
     public void setClusterSize(int newSize) {
         effectiveSize.set(newSize);
         var message = new TopologyManagementMessage.SetClusterSize(newSize);
@@ -421,16 +395,12 @@ public final class ForgeCluster {
         log.info("SetClusterSize({}) routed to {} nodes", newSize, nodes.size());
     }
 
-    /**
-     * Get the effective cluster size (last value set via setClusterSize, or the initial target).
-     */
+    /// Get the effective cluster size (last value set via setClusterSize, or the initial target).
     public int effectiveClusterSize() {
         return effectiveSize.get();
     }
 
-    /**
-     * Get the current leader node ID from consensus.
-     */
+    /// Get the current leader node ID from consensus.
     public Option<String> currentLeader() {
         return Option.option(nodes.values()
                                   .stream()
@@ -440,9 +410,7 @@ public final class ForgeCluster {
                      .map(NodeId::id);
     }
 
-    /**
-     * Get the current cluster status for the dashboard.
-     */
+    /// Get the current cluster status for the dashboard.
     public ClusterStatus status() {
         var nodeStatuses = nodes.entrySet()
                                 .stream()
@@ -463,47 +431,35 @@ public final class ForgeCluster {
                                            .or(false));
     }
 
-    /**
-     * Get a node by ID.
-     */
+    /// Get a node by ID.
     public Option<AetherNode> getNode(String nodeIdStr) {
         return Option.option(nodes.get(nodeIdStr));
     }
 
-    /**
-     * Get all nodes.
-     */
+    /// Get all nodes.
     public List<AetherNode> allNodes() {
         return new ArrayList<>(nodes.values());
     }
 
-    /**
-     * Get node count.
-     */
+    /// Get node count.
     public int nodeCount() {
         return nodes.size();
     }
 
-    /**
-     * Get the management port of the current leader node.
-     */
+    /// Get the management port of the current leader node.
     public Option<Integer> getLeaderManagementPort() {
         return currentLeader().flatMap(leaderId -> Option.option(nodeInfos.get(leaderId)))
                             .map(info -> baseMgmtPort + (info.address()
                                                              .port() - basePort));
     }
 
-    /**
-     * Get the app HTTP port of the first node (for load generation).
-     */
+    /// Get the app HTTP port of the first node (for load generation).
     public int getAppHttpPort() {
         return baseAppHttpPort;
     }
 
-    /**
-     * Get the app HTTP ports of all currently active nodes.
-     * Used for load balancing across available nodes.
-     */
+    /// Get the app HTTP ports of all currently active nodes.
+    /// Used for load balancing across available nodes.
     public List<Integer> getAvailableAppHttpPorts() {
         return slotsByNodeId.values()
                             .stream()
@@ -537,11 +493,9 @@ public final class ForgeCluster {
                          .unwrap();
     }
 
-    /**
-     * Get per-node metrics for all nodes.
-     * Uses the leader's cached allMetrics() (populated via MetricsPing/MetricsPong)
-     * instead of calling collectLocal() per node — zero MXBean calls, zero HashMap allocations.
-     */
+    /// Get per-node metrics for all nodes.
+    /// Uses the leader's cached allMetrics() (populated via MetricsPing/MetricsPong)
+    /// instead of calling collectLocal() per node — zero MXBean calls, zero HashMap allocations.
     public List<NodeMetrics> nodeMetrics() {
         var leaderId = currentLeader().or("");
         // Find leader node — it has cached metrics from all nodes via MetricsPong
@@ -576,33 +530,25 @@ public final class ForgeCluster {
                                (long) (heapMax / 1024 / 1024));
     }
 
-    /**
-     * Status of a single node.
-     */
+    /// Status of a single node.
     public record NodeStatus(String id,
                              int port,
                              int mgmtPort,
                              String state,
                              boolean isLeader) {}
 
-    /**
-     * Status of the entire cluster.
-     */
+    /// Status of the entire cluster.
     public record ClusterStatus(List<NodeStatus> nodes,
                                 String leaderId) {}
 
-    /**
-     * Per-node metrics for dashboard display.
-     */
+    /// Per-node metrics for dashboard display.
     public record NodeMetrics(String nodeId,
                               boolean isLeader,
                               double cpuUsage,
                               long heapUsedMb,
                               long heapMaxMb) {}
 
-    /**
-     * Slice status records for dashboard display.
-     */
+    /// Slice status records for dashboard display.
     public record SliceStatus(String artifact,
                               String state,
                               List<SliceInstanceStatus> instances) {}
@@ -611,25 +557,17 @@ public final class ForgeCluster {
                                       String state,
                                       String health) {}
 
-    /**
-     * Event log entry for dashboard events.
-     */
+    /// Event log entry for dashboard events.
     public record EventLogEntry(String type, String message) {}
 
-    /**
-     * Response from rolling restart operation.
-     */
+    /// Response from rolling restart operation.
     public record RollingRestartResponse(boolean success, String message) {}
 
-    /**
-     * Response from rolling restart status check.
-     */
+    /// Response from rolling restart status check.
     public record RollingRestartStatusResponse(boolean active) {}
 
-    /**
-     * Get slice status from the DeploymentMap.
-     * Uses event-driven index instead of KV store scan — zero allocations per poll.
-     */
+    /// Get slice status from the DeploymentMap.
+    /// Uses event-driven index instead of KV store scan — zero allocations per poll.
     public List<SliceStatus> slicesStatus() {
         if (nodes.isEmpty()) {
             return List.of();
@@ -655,10 +593,8 @@ public final class ForgeCluster {
                    .toList();
     }
 
-    /**
-     * Start rolling restart cycle.
-     * Continuously kills random nodes and adds new ones to simulate rolling updates.
-     */
+    /// Start rolling restart cycle.
+    /// Continuously kills random nodes and adds new ones to simulate rolling updates.
     public Promise<RollingRestartResponse> startRollingRestart(Consumer<EventLogEntry> eventLogger) {
         if (rollingRestartActive.compareAndSet(false, true)) {
             eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Rolling restart started"));
@@ -711,9 +647,7 @@ public final class ForgeCluster {
         scheduleNextCycle(eventLogger);
     }
 
-    /**
-     * Stop rolling restart cycle.
-     */
+    /// Stop rolling restart cycle.
     public Promise<RollingRestartResponse> stopRollingRestart(Consumer<EventLogEntry> eventLogger) {
         if (rollingRestartActive.compareAndSet(true, false)) {
             var activeTask = rollingRestartTask.getAndSet(null);
@@ -727,9 +661,7 @@ public final class ForgeCluster {
         return Promise.success(new RollingRestartResponse(false, "Rolling restart not active"));
     }
 
-    /**
-     * Get rolling restart status.
-     */
+    /// Get rolling restart status.
     public RollingRestartStatusResponse rollingRestartStatus() {
         return new RollingRestartStatusResponse(rollingRestartActive.get());
     }

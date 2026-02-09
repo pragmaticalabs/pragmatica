@@ -39,16 +39,15 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Control loop that runs the ClusterController periodically on the leader node.
- *
- * <p>Responsibilities:
- * <ul>
- *   <li>Run only on leader node</li>
- *   <li>Periodically evaluate controller with current metrics</li>
- *   <li>Apply scaling decisions by updating blueprints in KVStore</li>
- * </ul>
- */
+/// Control loop that runs the ClusterController periodically on the leader node.
+///
+///
+/// Responsibilities:
+///
+///   - Run only on leader node
+///   - Periodically evaluate controller with current metrics
+///   - Apply scaling decisions by updating blueprints in KVStore
+///
 public interface ControlLoop {
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);
@@ -56,47 +55,31 @@ public interface ControlLoop {
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
-    /**
-     * Handle blueprint creation/update from KVStore.
-     */
+    /// Handle blueprint creation/update from KVStore.
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
-    /**
-     * Handle blueprint removal from KVStore.
-     */
+    /// Handle blueprint removal from KVStore.
     @MessageReceiver
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
-    /**
-     * Handle quorum state changes (stop evaluation when quorum disappears).
-     */
+    /// Handle quorum state changes (stop evaluation when quorum disappears).
     @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification notification);
 
-    /**
-     * Register a blueprint for controller management.
-     */
+    /// Register a blueprint for controller management.
     void registerBlueprint(Artifact artifact, int instances);
 
-    /**
-     * Unregister a blueprint from controller management.
-     */
+    /// Unregister a blueprint from controller management.
     void unregisterBlueprint(Artifact artifact);
 
-    /**
-     * Get current controller configuration.
-     */
+    /// Get current controller configuration.
     ControllerConfig configuration();
 
-    /**
-     * Update controller configuration at runtime.
-     */
+    /// Update controller configuration at runtime.
     void updateConfiguration(ControllerConfig config);
 
-    /**
-     * Stop the control loop.
-     */
+    /// Stop the control loop.
     void stop();
 
     static ControlLoop controlLoop(NodeId self,

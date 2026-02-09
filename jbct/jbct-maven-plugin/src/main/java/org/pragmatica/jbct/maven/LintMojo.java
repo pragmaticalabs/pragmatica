@@ -14,9 +14,7 @@ import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 
-/**
- * Maven goal for linting Java source files for JBCT compliance.
- */
+/// Maven goal for linting Java source files for JBCT compliance.
 @Mojo(name = "lint", defaultPhase = LifecyclePhase.VERIFY)
 public class LintMojo extends AbstractJbctMojo {
     @Override

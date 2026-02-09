@@ -5,9 +5,7 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Configuration for the JBCT linter.
- */
+/// Configuration for the JBCT linter.
 public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
                          Set<String> disabledRules,
                          boolean failOnWarning) {
@@ -16,18 +14,14 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
         disabledRules = Set.copyOf(disabledRules);
     }
 
-    /**
-     * Factory method for creating LintConfig.
-     */
+    /// Factory method for creating LintConfig.
     public static LintConfig lintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
                                         Set<String> disabledRules,
                                         boolean failOnWarning) {
         return new LintConfig(ruleSeverities, disabledRules, failOnWarning);
     }
 
-    /**
-     * Default lint configuration.
-     */
+    /// Default lint configuration.
     public static final LintConfig DEFAULT = lintConfig(Map.ofEntries(// Return kinds
     Map.entry("JBCT-RET-01", DiagnosticSeverity.ERROR),
     // Bad return types (void, Optional, etc)
@@ -120,34 +114,26 @@ public record LintConfig(Map<String, DiagnosticSeverity> ruleSeverities,
                                                         Set.of(),
                                                         false);
 
-    /**
-     * Factory method for default config.
-     */
+    /// Factory method for default config.
     public static LintConfig defaultConfig() {
         return DEFAULT;
     }
 
-    /**
-     * Builder-style method to set rule severity.
-     */
+    /// Builder-style method to set rule severity.
     public LintConfig withRuleSeverity(String ruleId, DiagnosticSeverity severity) {
         var newSeverities = new HashMap<>(ruleSeverities);
         newSeverities.put(ruleId, severity);
         return lintConfig(Map.copyOf(newSeverities), disabledRules, failOnWarning);
     }
 
-    /**
-     * Builder-style method to disable a rule.
-     */
+    /// Builder-style method to disable a rule.
     public LintConfig withDisabledRule(String ruleId) {
         var newDisabled = new HashSet<>(disabledRules);
         newDisabled.add(ruleId);
         return lintConfig(ruleSeverities, Set.copyOf(newDisabled), failOnWarning);
     }
 
-    /**
-     * Builder-style method to set fail on warning.
-     */
+    /// Builder-style method to set fail on warning.
     public LintConfig withFailOnWarning(boolean failOnWarning) {
         return lintConfig(ruleSeverities, disabledRules, failOnWarning);
     }

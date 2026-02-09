@@ -47,11 +47,9 @@ public enum SliceState {
     public boolean isTransitional() {
         return hasTimeout();
     }
-    /**
-     * Returns true if this state indicates an operation is in progress.
-     * Includes both transitional states (with timeouts) and command states (triggers).
-     * Used by ControlLoop to block auto-scaling during deployment.
-     */
+    /// Returns true if this state indicates an operation is in progress.
+    /// Includes both transitional states (with timeouts) and command states (triggers).
+    /// Used by ControlLoop to block auto-scaling during deployment.
     public boolean isInProgress() {
         return switch (this) {
             case LOAD, LOADING, ACTIVATE, ACTIVATING, DEACTIVATE, DEACTIVATING, UNLOAD, UNLOADING -> true;

@@ -6,9 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Tests for PackageSlicesMojo version mapping and transformation logic.
- */
+/// Tests for PackageSlicesMojo version mapping and transformation logic.
 class PackageSlicesMojoTest {
     @Test
     void buildVersionMap_parsesSlicesDependencies() {

@@ -10,29 +10,21 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 
-/**
- * Framework for generating test data for load testing.
- * Each generator produces data appropriate for a specific entry point type.
- */
+/// Framework for generating test data for load testing.
+/// Each generator produces data appropriate for a specific entry point type.
 public sealed interface DataGenerator {
-    /**
-     * Generate test data.
-     *
-     * @param random thread-local random for deterministic generation
-     * @return generated data appropriate for the entry point
-     */
+    /// Generate test data.
+    ///
+    /// @param random thread-local random for deterministic generation
+    /// @return generated data appropriate for the entry point
     Object generate(Random random);
 
-    /**
-     * Convenience method using thread-local random.
-     */
+    /// Convenience method using thread-local random.
     default Object generate() {
         return generate(ThreadLocalRandom.current());
     }
 
-    /**
-     * Range for integer values.
-     */
+    /// Range for integer values.
     record IntRange(int min, int max) {
         private static final Cause MIN_GREATER_THAN_MAX = Causes.cause("min must be <= max");
 
@@ -54,9 +46,7 @@ public sealed interface DataGenerator {
         }
     }
 
-    /**
-     * Generates random product IDs from a configured list.
-     */
+    /// Generates random product IDs from a configured list.
     record ProductIdGenerator(List<String> productIds) implements DataGenerator {
         private static final Cause PRODUCT_IDS_EMPTY = Causes.cause("productIds cannot be null or empty");
 
@@ -83,9 +73,7 @@ public sealed interface DataGenerator {
         }
     }
 
-    /**
-     * Generates random customer IDs.
-     */
+    /// Generates random customer IDs.
     record CustomerIdGenerator(String prefix, int maxId) implements DataGenerator {
         private static final Cause PREFIX_NULL = Causes.cause("prefix cannot be null");
         private static final Cause MAX_ID_NOT_POSITIVE = Causes.cause("maxId must be positive");
@@ -110,9 +98,7 @@ public sealed interface DataGenerator {
         }
     }
 
-    /**
-     * Generates order request data for placeOrder entry point.
-     */
+    /// Generates order request data for placeOrder entry point.
     record OrderRequestGenerator(ProductIdGenerator productGenerator,
                                  CustomerIdGenerator customerGenerator,
                                  IntRange quantityRange) implements DataGenerator {
@@ -140,9 +126,7 @@ public sealed interface DataGenerator {
                                              IntRange.intRangeExact(1));
         }
 
-        /**
-         * Generated order request data.
-         */
+        /// Generated order request data.
         public record OrderRequestData(String customerId, String productId, int quantity) {
             public String toJson() {
                 return String.format("{\"customerId\":\"%s\",\"items\":[{\"productId\":\"%s\",\"quantity\":%d}]}",
@@ -153,11 +137,9 @@ public sealed interface DataGenerator {
         }
     }
 
-    /**
-     * Generates order IDs from a pool of recent order IDs.
-     * Falls back to synthetic IDs if pool is empty.
-     * Thread-safe for concurrent load generation.
-     */
+    /// Generates order IDs from a pool of recent order IDs.
+    /// Falls back to synthetic IDs if pool is empty.
+    /// Thread-safe for concurrent load generation.
     record OrderIdGenerator(Queue<String> orderIdPool, int maxPoolSize) implements DataGenerator {
         private static final Queue<String> SHARED_POOL = new ConcurrentLinkedQueue<>();
         private static final int DEFAULT_MAX_POOL_SIZE = 1000;
@@ -174,9 +156,7 @@ public sealed interface DataGenerator {
             return "ORD-" + String.format("%08d", random.nextInt(100_000_000));
         }
 
-        /**
-         * Add an order ID to the pool (called when orders are created).
-         */
+        /// Add an order ID to the pool (called when orders are created).
         public void addOrderId(String orderId) {
             if (orderIdPool.size() < maxPoolSize) {
                 orderIdPool.offer(orderId);
@@ -201,9 +181,7 @@ public sealed interface DataGenerator {
             return new OrderIdGenerator(new ConcurrentLinkedQueue<>(), DEFAULT_MAX_POOL_SIZE);
         }
 
-        /**
-         * Add order ID to the shared pool.
-         */
+        /// Add order ID to the shared pool.
         public static void trackOrderId(String orderId) {
             if (SHARED_POOL.size() < DEFAULT_MAX_POOL_SIZE) {
                 SHARED_POOL.offer(orderId);
@@ -211,9 +189,7 @@ public sealed interface DataGenerator {
         }
     }
 
-    /**
-     * Generates stock check request data.
-     */
+    /// Generates stock check request data.
     record StockCheckGenerator(ProductIdGenerator productGenerator) implements DataGenerator {
         private static final Cause GENERATOR_NULL = Causes.cause("productGenerator cannot be null");
 
@@ -236,9 +212,7 @@ public sealed interface DataGenerator {
         public record StockCheckData(String productId) {}
     }
 
-    /**
-     * Generates price check request data.
-     */
+    /// Generates price check request data.
     record PriceCheckGenerator(ProductIdGenerator productGenerator) implements DataGenerator {
         private static final Cause GENERATOR_NULL = Causes.cause("productGenerator cannot be null");
 

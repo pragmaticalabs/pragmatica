@@ -2,20 +2,16 @@ package org.pragmatica.http.routing;
 
 import java.util.function.Supplier;
 
-/**
- * Utility methods for HTTP routing.
- */
+/// Utility methods for HTTP routing.
 public sealed interface Utils {
-    /**
-     * Lazy initialization pattern for fields.
-     * <p>
-     * <b>WARNING:</b> Suitable only for single thread access and only for field initialization!
-     * <p>
-     * Usage:
-     * <pre>
-     * Supplier&lt;Baz&gt; fieldBaz = lazy(() -&gt; fieldBaz=value(expensiveInitBaz()));
-     * </pre>
-     */
+    /// Lazy initialization pattern for fields.
+    ///
+    /// **WARNING:** Suitable only for single thread access and only for field initialization!
+    ///
+    /// Usage:
+    /// ```
+    /// Supplier&lt;Baz&gt; fieldBaz = lazy(() -&gt; fieldBaz=value(expensiveInitBaz()));
+    /// ```
     interface Lazy<T> extends Supplier<T> {
         Supplier<T> init();
 

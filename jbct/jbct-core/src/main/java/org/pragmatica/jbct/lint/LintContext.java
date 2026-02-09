@@ -3,9 +3,7 @@ package org.pragmatica.jbct.lint;
 import java.util.List;
 import java.util.regex.Pattern;
 
-/**
- * Context for lint analysis providing configuration.
- */
+/// Context for lint analysis providing configuration.
 public record LintContext(List<Pattern> businessPackagePatterns,
                           List<Pattern> slicePackagePatterns,
                           LintConfig config,
@@ -15,50 +13,38 @@ public record LintContext(List<Pattern> businessPackagePatterns,
         slicePackagePatterns = List.copyOf(slicePackagePatterns);
     }
 
-    /**
-     * Check if a package name matches any business package pattern.
-     */
+    /// Check if a package name matches any business package pattern.
     public boolean isBusinessPackage(String packageName) {
         return businessPackagePatterns.stream()
                                       .anyMatch(pattern -> pattern.matcher(packageName)
                                                                   .matches());
     }
 
-    /**
-     * Check if a package name matches any slice package pattern.
-     */
+    /// Check if a package name matches any slice package pattern.
     public boolean isSlicePackage(String packageName) {
         return slicePackagePatterns.stream()
                                    .anyMatch(pattern -> pattern.matcher(packageName)
                                                                .matches());
     }
 
-    /**
-     * Check if slice packages are configured.
-     */
+    /// Check if slice packages are configured.
     public boolean hasSlicePackages() {
         return ! slicePackagePatterns.isEmpty();
     }
 
-    /**
-     * Get the configured severity for a rule.
-     */
+    /// Get the configured severity for a rule.
     public DiagnosticSeverity severityFor(String ruleId) {
         return config.ruleSeverities()
                      .getOrDefault(ruleId, DiagnosticSeverity.WARNING);
     }
 
-    /**
-     * Check if a rule is enabled.
-     */
+    /// Check if a rule is enabled.
     public boolean isRuleEnabled(String ruleId) {
         return ! config.disabledRules()
                       .contains(ruleId);
     }
 
-    /**
-     * Factory method with default configuration.
-     */
+    /// Factory method with default configuration.
     public static LintContext defaultContext() {
         return new LintContext(List.of(Pattern.compile(".*\\.usecase\\..*"), Pattern.compile(".*\\.domain\\..*")),
                                List.of(),
@@ -67,9 +53,7 @@ public record LintContext(List<Pattern> businessPackagePatterns,
                                "Unknown.java");
     }
 
-    /**
-     * Factory method with custom business package patterns.
-     */
+    /// Factory method with custom business package patterns.
     public static LintContext lintContext(List<String> businessPackagePatterns) {
         var patterns = businessPackagePatterns.stream()
                                               .map(LintContext::globToRegex)
@@ -85,23 +69,17 @@ public record LintContext(List<Pattern> businessPackagePatterns,
                    .replace("\0DOTSTAR\0", ".*");
     }
 
-    /**
-     * Builder-style method to set config.
-     */
+    /// Builder-style method to set config.
     public LintContext withConfig(LintConfig config) {
         return new LintContext(businessPackagePatterns, slicePackagePatterns, config, fileName);
     }
 
-    /**
-     * Builder-style method to set file name.
-     */
+    /// Builder-style method to set file name.
     public LintContext withFileName(String fileName) {
         return new LintContext(businessPackagePatterns, slicePackagePatterns, config, fileName);
     }
 
-    /**
-     * Builder-style method to set business package patterns from glob strings.
-     */
+    /// Builder-style method to set business package patterns from glob strings.
     public LintContext withBusinessPackages(List<String> patterns) {
         var compiledPatterns = patterns.stream()
                                        .map(LintContext::globToRegex)
@@ -110,9 +88,7 @@ public record LintContext(List<Pattern> businessPackagePatterns,
         return new LintContext(compiledPatterns, slicePackagePatterns, config, fileName);
     }
 
-    /**
-     * Builder-style method to set slice package patterns from glob strings.
-     */
+    /// Builder-style method to set slice package patterns from glob strings.
     public LintContext withSlicePackages(List<String> patterns) {
         var compiledPatterns = patterns.stream()
                                        .map(LintContext::globToRegex)
@@ -121,9 +97,7 @@ public record LintContext(List<Pattern> businessPackagePatterns,
         return new LintContext(businessPackagePatterns, compiledPatterns, config, fileName);
     }
 
-    /**
-     * Factory method from JbctConfig.
-     */
+    /// Factory method from JbctConfig.
     public static LintContext fromConfig(org.pragmatica.jbct.config.JbctConfig jbctConfig) {
         return lintContext(jbctConfig.businessPackages()).withSlicePackages(jbctConfig.slicePackages())
                           .withConfig(jbctConfig.lint());

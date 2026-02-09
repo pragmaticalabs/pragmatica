@@ -25,12 +25,11 @@ import java.util.concurrent.LinkedBlockingDeque;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Manages alert thresholds and tracks active alerts.
- *
- * <p>Thresholds are persisted to consensus KV-Store for cluster-wide consistency
- * and survival across node restarts.
- */
+/// Manages alert thresholds and tracks active alerts.
+///
+///
+/// Thresholds are persisted to consensus KV-Store for cluster-wide consistency
+/// and survival across node restarts.
 public class AlertManager {
     private static final Logger log = LoggerFactory.getLogger(AlertManager.class);
     private static final int MAX_ALERT_HISTORY = 100;
@@ -48,9 +47,7 @@ public class AlertManager {
         this.kvStore = kvStore;
     }
 
-    /**
-     * Factory method following JBCT naming convention.
-     */
+    /// Factory method following JBCT naming convention.
     public static AlertManager alertManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                             KVStore<AetherKey, AetherValue> kvStore) {
         var manager = new AlertManager(clusterNode, kvStore);
@@ -59,9 +56,7 @@ public class AlertManager {
         return manager;
     }
 
-    /**
-     * Load thresholds from KV-Store on startup.
-     */
+    /// Load thresholds from KV-Store on startup.
     private void loadThresholdsFromKvStore() {
         kvStore.forEach(AlertThresholdKey.class, AlertThresholdValue.class, this::loadThreshold);
         log.info("Loaded {} thresholds from KV-Store", thresholds.size());
@@ -76,9 +71,7 @@ public class AlertManager {
                   thresholdValue.criticalThreshold());
     }
 
-    /**
-     * Ensure default thresholds exist if no thresholds were loaded.
-     */
+    /// Ensure default thresholds exist if no thresholds were loaded.
     private void ensureDefaultThresholds() {
         if (thresholds.isEmpty()) {
             // Set defaults in-memory, they will be persisted on first explicit setThreshold call
@@ -88,11 +81,9 @@ public class AlertManager {
         }
     }
 
-    /**
-     * Set threshold for a metric and persist to KV-Store.
-     *
-     * @return Promise that completes when threshold is persisted across cluster
-     */
+    /// Set threshold for a metric and persist to KV-Store.
+    ///
+    /// @return Promise that completes when threshold is persisted across cluster
     @SuppressWarnings("unchecked")
     public Promise<Unit> setThreshold(String metric, double warning, double critical) {
         var key = new AetherKey.AlertThresholdKey(metric);
@@ -113,11 +104,9 @@ public class AlertManager {
                                                         cause.message()));
     }
 
-    /**
-     * Remove threshold for a metric and persist removal to KV-Store.
-     *
-     * @return Promise that completes when removal is persisted across cluster
-     */
+    /// Remove threshold for a metric and persist removal to KV-Store.
+    ///
+    /// @return Promise that completes when removal is persisted across cluster
     @SuppressWarnings("unchecked")
     public Promise<Unit> removeThreshold(String metric) {
         var key = new AetherKey.AlertThresholdKey(metric);
@@ -135,33 +124,25 @@ public class AlertManager {
                                                         cause.message()));
     }
 
-    /**
-     * Get all configured thresholds.
-     */
+    /// Get all configured thresholds.
     public Map<String, double[]> getAllThresholds() {
         Map<String, double[]> result = new ConcurrentHashMap<>();
         thresholds.forEach((k, v) -> result.put(k, new double[]{v.warning, v.critical}));
         return result;
     }
 
-    /**
-     * Clear all active alerts.
-     */
+    /// Clear all active alerts.
     public void clearAlerts() {
         activeAlerts.clear();
         log.info("All active alerts cleared");
     }
 
-    /**
-     * Get count of active alerts.
-     */
+    /// Get count of active alerts.
     public int activeAlertCount() {
         return activeAlerts.size();
     }
 
-    /**
-     * Check if a metric value exceeds threshold and return alert JSON if triggered.
-     */
+    /// Check if a metric value exceeds threshold and return alert JSON if triggered.
     public Option<String> checkThreshold(String metric, NodeId nodeId, double value) {
         return Option.option(thresholds.get(metric))
                      .flatMap(threshold -> {
@@ -218,11 +199,10 @@ public class AlertManager {
         return Option.none();
     }
 
-    /**
-     * Handle KV-Store update notification for threshold changes from other nodes.
-     *
-     * <p>Called by AetherNode when it receives KV-Store value updates.
-     */
+    /// Handle KV-Store update notification for threshold changes from other nodes.
+    ///
+    ///
+    /// Called by AetherNode when it receives KV-Store value updates.
     public void onKvStoreUpdate(AetherKey key, AetherValue value) {
         if (key instanceof AetherKey.AlertThresholdKey thresholdKey &&
         value instanceof AetherValue.AlertThresholdValue thresholdValue) {
@@ -235,9 +215,7 @@ public class AlertManager {
         }
     }
 
-    /**
-     * Handle KV-Store remove notification for threshold deletions from other nodes.
-     */
+    /// Handle KV-Store remove notification for threshold deletions from other nodes.
     public void onKvStoreRemove(AetherKey key) {
         if (key instanceof AetherKey.AlertThresholdKey thresholdKey) {
             thresholds.remove(thresholdKey.metricName());
@@ -259,9 +237,7 @@ public class AlertManager {
         }
     }
 
-    /**
-     * Get all thresholds as JSON.
-     */
+    /// Get all thresholds as JSON.
     public String thresholdsAsJson() {
         var sb = new StringBuilder();
         sb.append("{");
@@ -283,9 +259,7 @@ public class AlertManager {
         return sb.toString();
     }
 
-    /**
-     * Get active alerts as JSON.
-     */
+    /// Get active alerts as JSON.
     public String activeAlertsAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
@@ -317,9 +291,7 @@ public class AlertManager {
         return sb.toString();
     }
 
-    /**
-     * Get alert history as JSON.
-     */
+    /// Get alert history as JSON.
     public String alertHistoryAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
@@ -355,11 +327,10 @@ public class AlertManager {
     // ============================================
     // Slice Failure Alerting
     // ============================================
-    /**
-     * Handle slice failure event - all instances of a slice have failed.
-     *
-     * <p>This is a CRITICAL alert that may trigger automatic rollback.
-     */
+    /// Handle slice failure event - all instances of a slice have failed.
+    ///
+    ///
+    /// This is a CRITICAL alert that may trigger automatic rollback.
     @MessageReceiver
     public void onAllInstancesFailed(SliceFailureEvent.AllInstancesFailed event) {
         var alertKey = "slice.all_failed:" + event.artifact()
@@ -407,25 +378,19 @@ public class AlertManager {
         }
     }
 
-    /**
-     * Get active slice failure alerts.
-     */
+    /// Get active slice failure alerts.
     public List<SliceFailureAlert> getActiveSliceFailureAlerts() {
         return List.copyOf(activeSliceFailureAlerts.values());
     }
 
-    /**
-     * Clear a slice failure alert (e.g., after rollback or manual resolution).
-     */
+    /// Clear a slice failure alert (e.g., after rollback or manual resolution).
     public void clearSliceFailureAlert(Artifact artifact, MethodName method) {
         var alertKey = "slice.all_failed:" + artifact.asString() + "/" + method.name();
         activeSliceFailureAlerts.remove(alertKey);
         log.info("Cleared slice failure alert for {}.{}", artifact, method);
     }
 
-    /**
-     * Get slice failure alerts as JSON.
-     */
+    /// Get slice failure alerts as JSON.
     public String sliceFailureAlertsAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
@@ -467,9 +432,7 @@ public class AlertManager {
         return sb.toString();
     }
 
-    /**
-     * Get slice failure history as JSON.
-     */
+    /// Get slice failure history as JSON.
     public String sliceFailureHistoryAsJson() {
         var sb = new StringBuilder();
         sb.append("[");
@@ -518,9 +481,7 @@ public class AlertManager {
                 .replace("\t", "\\t");
     }
 
-    /**
-     * Record for tracking active slice failure alerts.
-     */
+    /// Record for tracking active slice failure alerts.
     public record SliceFailureAlert(Artifact artifact,
                                     MethodName method,
                                     Option<Cause> lastError,

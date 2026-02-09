@@ -24,10 +24,8 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.IntStream;
 
-/**
- * Configuration record for cluster testing.
- * For n=2f+1 nodes: quorum = f+1 (majority), fPlusOne = f+1
- */
+/// Configuration record for cluster testing.
+/// For n=2f+1 nodes: quorum = f+1 (majority), fPlusOne = f+1
 public record ClusterConfiguration(
     int clusterSize,
     int quorumSize,

@@ -104,16 +104,14 @@ public class KVStore<K extends StructuredKey, V> implements StateMachine<KVComma
         return Option.option(storage.get(key));
     }
 
-    /**
-     * Iterates over entries matching the specified key and value types.
-     * This avoids ClassCastException when the store contains mixed key types (e.g., AetherKey and LeaderKey).
-     *
-     * @param keyClass   the expected key class
-     * @param valueClass the expected value class
-     * @param consumer   the action to perform on each matching entry
-     * @param <KK>       the key type
-     * @param <VV>       the value type
-     */
+    /// Iterates over entries matching the specified key and value types.
+    /// This avoids ClassCastException when the store contains mixed key types (e.g., AetherKey and LeaderKey).
+    ///
+    /// @param keyClass   the expected key class
+    /// @param valueClass the expected value class
+    /// @param consumer   the action to perform on each matching entry
+    /// @param <KK>       the key type
+    /// @param <VV>       the value type
     @SuppressWarnings("unchecked")
     public <KK, VV> void forEach(Class<KK> keyClass, Class<VV> valueClass, BiConsumer<KK, VV> consumer) {
         storage.forEach((key, value) -> {

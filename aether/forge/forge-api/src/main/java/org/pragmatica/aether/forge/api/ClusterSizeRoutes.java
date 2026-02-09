@@ -7,11 +7,9 @@ import org.pragmatica.lang.Promise;
 
 import static org.pragmatica.http.routing.Route.in;
 
-/**
- * Routes for cluster size management.
- * Uses a desired-state model: buttons change target cluster size,
- * and CDM auto-heal handles provisioning/deprovisioning.
- */
+/// Routes for cluster size management.
+/// Uses a desired-state model: buttons change target cluster size,
+/// and CDM auto-heal handles provisioning/deprovisioning.
 public sealed interface ClusterSizeRoutes {
     record ClusterSizeResponse(boolean success, int newSize, int currentNodes) {}
 

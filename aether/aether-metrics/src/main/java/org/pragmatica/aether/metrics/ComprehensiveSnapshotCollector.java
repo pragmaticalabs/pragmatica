@@ -22,20 +22,18 @@ import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Collects comprehensive metrics from all subsystems and feeds MinuteAggregator.
- * <p>
- * This is the missing link that connects all subsystem collectors to the TTM pipeline:
- * <pre>
- * GCMetricsCollector ─────────────┐
- * EventLoopMetricsCollector ──────┤
- * NetworkMetricsHandler ──────────┼──► ComprehensiveSnapshotCollector ──► MinuteAggregator ──► TTMManager
- * RabiaMetricsCollector ──────────┤
- * InvocationMetricsCollector ─────┘
- * </pre>
- * <p>
- * Runs on a 1-second interval to collect snapshots.
- */
+/// Collects comprehensive metrics from all subsystems and feeds MinuteAggregator.
+///
+/// This is the missing link that connects all subsystem collectors to the TTM pipeline:
+/// ```
+/// GCMetricsCollector ─────────────┐
+/// EventLoopMetricsCollector ──────┤
+/// NetworkMetricsHandler ──────────┼──► ComprehensiveSnapshotCollector ──► MinuteAggregator ──► TTMManager
+/// RabiaMetricsCollector ──────────┤
+/// InvocationMetricsCollector ─────┘
+/// ```
+///
+/// Runs on a 1-second interval to collect snapshots.
 public final class ComprehensiveSnapshotCollector {
     private static final Logger log = LoggerFactory.getLogger(ComprehensiveSnapshotCollector.class);
     private static final long COLLECTION_INTERVAL_MS = 1000;
@@ -79,9 +77,7 @@ public final class ComprehensiveSnapshotCollector {
                                                                     });
     }
 
-    /**
-     * Factory method following JBCT naming convention.
-     */
+    /// Factory method following JBCT naming convention.
     public static ComprehensiveSnapshotCollector comprehensiveSnapshotCollector(GCMetricsCollector gcCollector,
                                                                                 EventLoopMetricsCollector eventLoopCollector,
                                                                                 NetworkMetricsHandler networkHandler,
@@ -98,9 +94,7 @@ public final class ComprehensiveSnapshotCollector {
                                                   derivedCalculator);
     }
 
-    /**
-     * Factory method with defaults for derived metrics calculator.
-     */
+    /// Factory method with defaults for derived metrics calculator.
     public static ComprehensiveSnapshotCollector comprehensiveSnapshotCollector(GCMetricsCollector gcCollector,
                                                                                 EventLoopMetricsCollector eventLoopCollector,
                                                                                 NetworkMetricsHandler networkHandler,
@@ -116,9 +110,7 @@ public final class ComprehensiveSnapshotCollector {
                                                   DerivedMetricsCalculator.derivedMetricsCalculator());
     }
 
-    /**
-     * Start collecting snapshots on 1-second interval.
-     */
+    /// Start collecting snapshots on 1-second interval.
     public void start() {
         if (started) {
             return;
@@ -137,9 +129,7 @@ public final class ComprehensiveSnapshotCollector {
         log.info("Comprehensive snapshot collection started (interval: {}ms)", COLLECTION_INTERVAL_MS);
     }
 
-    /**
-     * Stop collecting snapshots.
-     */
+    /// Stop collecting snapshots.
     public void stop() {
         if (!started) {
             return;
@@ -164,23 +154,17 @@ public final class ComprehensiveSnapshotCollector {
         log.info("Comprehensive snapshot collection stopped");
     }
 
-    /**
-     * Get the MinuteAggregator (for TTM access).
-     */
+    /// Get the MinuteAggregator (for TTM access).
     public MinuteAggregator minuteAggregator() {
         return minuteAggregator;
     }
 
-    /**
-     * Get current derived metrics.
-     */
+    /// Get current derived metrics.
     public DerivedMetrics derivedMetrics() {
         return derivedCalculator.current();
     }
 
-    /**
-     * Collect a single comprehensive snapshot from all subsystems.
-     */
+    /// Collect a single comprehensive snapshot from all subsystems.
     private void collectSnapshot() {
         try{
             var snapshot = buildSnapshot();

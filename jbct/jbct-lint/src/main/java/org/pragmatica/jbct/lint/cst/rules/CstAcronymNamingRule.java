@@ -11,12 +11,10 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-ACR-01: Acronym naming convention.
- *
- * Detects all-caps acronyms in type and method names (e.g., HTTPClient, XMLParser)
- * and suggests proper camelCase (HttpClient, XmlParser).
- */
+/// JBCT-ACR-01: Acronym naming convention.
+///
+/// Detects all-caps acronyms in type and method names (e.g., HTTPClient, XMLParser)
+/// and suggests proper camelCase (HttpClient, XmlParser).
 public class CstAcronymNamingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ACR-01";
 

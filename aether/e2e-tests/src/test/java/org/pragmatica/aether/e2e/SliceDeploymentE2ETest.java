@@ -15,21 +15,21 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for slice deployment and lifecycle.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Slice deployment via API</li>
- *   <li>Slice activation and health</li>
- *   <li>Slice scaling</li>
- *   <li>Slice undeployment</li>
- *   <li>Slice replication across nodes</li>
- * </ul>
- *
- * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
- * Tests run in order and each test cleans up previous state before running.
- */
+/// E2E tests for slice deployment and lifecycle.
+///
+///
+/// Tests cover:
+///
+///   - Slice deployment via API
+///   - Slice activation and health
+///   - Slice scaling
+///   - Slice undeployment
+///   - Slice replication across nodes
+///
+///
+///
+/// This test class uses a shared cluster for all tests to reduce startup overhead.
+/// Tests run in order and each test cleans up previous state before running.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceDeploymentE2ETest {

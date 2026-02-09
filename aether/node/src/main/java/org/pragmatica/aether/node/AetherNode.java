@@ -86,10 +86,8 @@ import static org.pragmatica.cluster.state.kvstore.KVStoreNotification.filterRem
 import static org.pragmatica.serialization.fury.FuryDeserializer.furyDeserializer;
 import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 
-/**
- * Main entry point for an Aether cluster node.
- * Assembles all components: consensus, KV-store, slice management, deployment managers.
- */
+/// Main entry point for an Aether cluster node.
+/// Assembles all components: consensus, KV-store, slice management, deployment managers.
 public interface AetherNode {
     String VERSION = "0.15.1";
     NodeId self();
@@ -116,122 +114,76 @@ public interface AetherNode {
 
     MavenProtocolHandler mavenProtocolHandler();
 
-    /**
-     * Get the artifact store for artifact storage operations.
-     */
+    /// Get the artifact store for artifact storage operations.
     ArtifactStore artifactStore();
 
-    /**
-     * Get the invocation metrics collector for method-level metrics.
-     */
+    /// Get the invocation metrics collector for method-level metrics.
     InvocationMetricsCollector invocationMetrics();
 
-    /**
-     * Get the cluster controller for scaling decisions.
-     */
+    /// Get the cluster controller for scaling decisions.
     ClusterController controller();
 
-    /**
-     * Get the rolling update manager for managing version transitions.
-     */
+    /// Get the rolling update manager for managing version transitions.
     RollingUpdateManager rollingUpdateManager();
 
-    /**
-     * Get the endpoint registry for service discovery.
-     */
+    /// Get the endpoint registry for service discovery.
     EndpointRegistry endpointRegistry();
 
-    /**
-     * Get the alert manager for threshold management.
-     */
+    /// Get the alert manager for threshold management.
     AlertManager alertManager();
 
-    /**
-     * Get the dynamic aspect registry for runtime-togglable logging/metrics.
-     */
+    /// Get the dynamic aspect registry for runtime-togglable logging/metrics.
     DynamicAspectRegistry dynamicAspectRegistry();
 
-    /**
-     * Get the application HTTP server for slice routes.
-     */
+    /// Get the application HTTP server for slice routes.
     AppHttpServer appHttpServer();
 
-    /**
-     * Get the HTTP route registry for route lookup.
-     */
+    /// Get the HTTP route registry for route lookup.
     HttpRouteRegistry httpRouteRegistry();
 
-    /**
-     * Get the TTM manager for predictive scaling.
-     */
+    /// Get the TTM manager for predictive scaling.
     TTMManager ttmManager();
 
-    /**
-     * Get the rollback manager for automatic version rollback.
-     */
+    /// Get the rollback manager for automatic version rollback.
     RollbackManager rollbackManager();
 
-    /**
-     * Get the comprehensive snapshot collector for detailed metrics.
-     */
+    /// Get the comprehensive snapshot collector for detailed metrics.
     ComprehensiveSnapshotCollector snapshotCollector();
 
-    /**
-     * Get the artifact metrics collector for storage and deployment metrics.
-     */
+    /// Get the artifact metrics collector for storage and deployment metrics.
     ArtifactMetricsCollector artifactMetricsCollector();
 
-    /**
-     * Get the deployment map for event-driven slice-node indexing.
-     */
+    /// Get the deployment map for event-driven slice-node indexing.
     DeploymentMap deploymentMap();
 
-    /**
-     * Get the number of currently connected peer nodes in the cluster.
-     * This is a network-level count, not based on metrics exchange.
-     */
+    /// Get the number of currently connected peer nodes in the cluster.
+    /// This is a network-level count, not based on metrics exchange.
     int connectedNodeCount();
 
-    /**
-     * Check if this node is the current leader.
-     */
+    /// Check if this node is the current leader.
     boolean isLeader();
 
-    /**
-     * Check if this node is ready for operations (consensus active).
-     */
+    /// Check if this node is ready for operations (consensus active).
     boolean isReady();
 
-    /**
-     * Get the current leader node ID.
-     */
+    /// Get the current leader node ID.
     Option<NodeId> leader();
 
-    /**
-     * Apply commands to the cluster via consensus.
-     */
+    /// Apply commands to the cluster via consensus.
     <R> Promise<List<R>> apply(List<KVCommand<AetherKey>> commands);
 
-    /**
-     * Get the management server port for this node.
-     * Returns 0 if management server is disabled.
-     */
+    /// Get the management server port for this node.
+    /// Returns 0 if management server is disabled.
     int managementPort();
 
-    /**
-     * Get the node uptime in seconds since start.
-     */
+    /// Get the node uptime in seconds since start.
     long uptimeSeconds();
 
-    /**
-     * Get the initial topology node IDs from configuration.
-     * This includes all core nodes that were configured at startup.
-     */
+    /// Get the initial topology node IDs from configuration.
+    /// This includes all core nodes that were configured at startup.
     List<NodeId> initialTopology();
 
-    /**
-     * Route a message to registered handlers via the internal MessageRouter.
-     */
+    /// Route a message to registered handlers via the internal MessageRouter.
     void route(Message message);
 
     static Result<AetherNode> aetherNode(AetherNodeConfig config) {
@@ -1003,10 +955,8 @@ public interface AetherNode {
         return entries;
     }
 
-    /**
-     * Handle leader election commits from KV-Store.
-     * When a LeaderKey is committed, notify the LeaderManager.
-     */
+    /// Handle leader election commits from KV-Store.
+    /// When a LeaderKey is committed, notify the LeaderManager.
     @SuppressWarnings("unchecked")
     private static void handleLeaderCommit(KVStoreNotification.ValuePut<?, ?> notification,
                                            LeaderManager leaderManager) {
@@ -1018,12 +968,10 @@ public interface AetherNode {
         }
     }
 
-    /**
-     * Create SharedLibraryClassLoader with appropriate parent based on configuration.
-     * <p>
-     * If frameworkJarsPath is configured, creates a FrameworkClassLoader with isolated
-     * framework classes. Otherwise, falls back to Application ClassLoader (no isolation).
-     */
+    /// Create SharedLibraryClassLoader with appropriate parent based on configuration.
+    ///
+    /// If frameworkJarsPath is configured, creates a FrameworkClassLoader with isolated
+    /// framework classes. Otherwise, falls back to Application ClassLoader (no isolation).
     private static SharedLibraryClassLoader createSharedLibraryLoader(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         return config.sliceAction()
@@ -1047,11 +995,9 @@ public interface AetherNode {
                                     .or(new SharedLibraryClassLoader(AetherNode.class.getClassLoader())));
     }
 
-    /**
-     * Create ResourceProviderFacade from config.
-     * If ConfigurationProvider is configured, creates ConfigService and ResourceProvider.
-     * Otherwise, returns a no-op facade that fails with an informative message.
-     */
+    /// Create ResourceProviderFacade from config.
+    /// If ConfigurationProvider is configured, creates ConfigService and ResourceProvider.
+    /// Otherwise, returns a no-op facade that fails with an informative message.
     private static ResourceProviderFacade createResourceProviderFacade(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         return config.configProvider()
@@ -1088,12 +1034,10 @@ public interface AetherNode {
         };
     }
 
-    /**
-     * Create a composite repository that tries each repository in order until one succeeds.
-     * <p>
-     * Note: For simplicity, currently uses the first repository only.
-     * Multi-repository fallback can be added if needed.
-     */
+    /// Create a composite repository that tries each repository in order until one succeeds.
+    ///
+    /// Note: For simplicity, currently uses the first repository only.
+    /// Multi-repository fallback can be added if needed.
     private static Repository compositeRepository(List<Repository> repositories) {
         if (repositories.isEmpty()) {
             return artifact -> Causes.cause("No repositories configured")

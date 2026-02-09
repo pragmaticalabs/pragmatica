@@ -3,16 +3,14 @@ package org.pragmatica.aether.config;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
 
-/**
- * Configuration for TTM (Tiny Time Mixers) predictive scaling.
- *
- * @param modelPath            Path to ONNX model file
- * @param inputWindowMinutes   Number of minutes of historical data for prediction (default: 60)
- * @param predictionHorizon    Minutes ahead to predict (default: 1)
- * @param evaluationIntervalMs Interval between TTM evaluations in milliseconds (default: 60000)
- * @param confidenceThreshold  Minimum confidence for applying predictions (0.0-1.0, default: 0.7)
- * @param enabled              Whether TTM is enabled (default: false)
- */
+/// Configuration for TTM (Tiny Time Mixers) predictive scaling.
+///
+/// @param modelPath            Path to ONNX model file
+/// @param inputWindowMinutes   Number of minutes of historical data for prediction (default: 60)
+/// @param predictionHorizon    Minutes ahead to predict (default: 1)
+/// @param evaluationIntervalMs Interval between TTM evaluations in milliseconds (default: 60000)
+/// @param confidenceThreshold  Minimum confidence for applying predictions (0.0-1.0, default: 0.7)
+/// @param enabled              Whether TTM is enabled (default: false)
 public record TTMConfig(String modelPath,
                         int inputWindowMinutes,
                         int predictionHorizon,
@@ -31,9 +29,7 @@ public record TTMConfig(String modelPath,
         return DISABLED;
     }
 
-    /**
-     * Factory method following JBCT naming convention.
-     */
+    /// Factory method following JBCT naming convention.
     public static Result<TTMConfig> ttmConfig(String modelPath,
                                               int inputWindowMinutes,
                                               int predictionHorizon,
@@ -115,13 +111,9 @@ public record TTMConfig(String modelPath,
                              enabled);
     }
 
-    /**
-     * Error hierarchy for TTM configuration failures.
-     */
+    /// Error hierarchy for TTM configuration failures.
     public sealed interface TTMConfigError extends Cause {
-        /**
-         * Configuration error for TTM.
-         */
+        /// Configuration error for TTM.
         record InvalidTTMConfig(String detail) implements TTMConfigError {
             public static InvalidTTMConfig invalidConfig(String detail) {
                 return new InvalidTTMConfig(detail);

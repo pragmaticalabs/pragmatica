@@ -2,9 +2,7 @@ package org.pragmatica.jbct.score;
 
 import java.util.Map;
 
-/**
- * Maps lint rule IDs to scoring categories.
- */
+/// Maps lint rule IDs to scoring categories.
 public sealed interface RuleCategoryMapping permits RuleCategoryMapping.unused {
     record unused() implements RuleCategoryMapping {}
 

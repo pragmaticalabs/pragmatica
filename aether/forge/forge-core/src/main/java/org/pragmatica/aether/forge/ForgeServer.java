@@ -32,29 +32,27 @@ import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Main entry point for Aether Forge.
- * Starts a cluster, load generator, and web dashboard on a single JVM.
- * <p>
- * CLI arguments:
- * <pre>
- * --config &lt;forge.toml&gt;       Forge cluster configuration
- * --blueprint &lt;file.toml&gt;     Blueprint to deploy on startup
- * --load-config &lt;file.toml&gt;   Load test configuration
- * --auto-start                Start load generation after config loaded
- * </pre>
- * <p>
- * Environment variables (override CLI args):
- * <pre>
- * FORGE_CONFIG        - Path to forge.toml
- * FORGE_BLUEPRINT     - Path to blueprint file
- * FORGE_LOAD_CONFIG   - Path to load config file
- * FORGE_AUTO_START    - Set to "true" to auto-start load
- * FORGE_PORT          - Dashboard port (backwards compatible)
- * CLUSTER_SIZE        - Number of nodes (backwards compatible)
- * LOAD_RATE           - Initial load rate (backwards compatible)
- * </pre>
- */
+/// Main entry point for Aether Forge.
+/// Starts a cluster, load generator, and web dashboard on a single JVM.
+///
+/// CLI arguments:
+/// ```
+/// --config &lt;forge.toml&gt;       Forge cluster configuration
+/// --blueprint &lt;file.toml&gt;     Blueprint to deploy on startup
+/// --load-config &lt;file.toml&gt;   Load test configuration
+/// --auto-start                Start load generation after config loaded
+/// ```
+///
+/// Environment variables (override CLI args):
+/// ```
+/// FORGE_CONFIG        - Path to forge.toml
+/// FORGE_BLUEPRINT     - Path to blueprint file
+/// FORGE_LOAD_CONFIG   - Path to load config file
+/// FORGE_AUTO_START    - Set to "true" to auto-start load
+/// FORGE_PORT          - Dashboard port (backwards compatible)
+/// CLUSTER_SIZE        - Number of nodes (backwards compatible)
+/// LOAD_RATE           - Initial load rate (backwards compatible)
+/// ```
 public final class ForgeServer {
     private static final Logger log = LoggerFactory.getLogger(ForgeServer.class);
 
@@ -327,20 +325,18 @@ public final class ForgeServer {
               });
     }
 
-    /**
-     * Build ConfigurationProvider with layered configuration.
-     * <p>
-     * Priority (highest to lowest):
-     * <ol>
-     *   <li>Runtime values (H2 URL if enabled)</li>
-     *   <li>Environment variables (AETHER_*)</li>
-     *   <li>System properties (-Daether.*)</li>
-     *   <li>forge.toml (if specified)</li>
-     *   <li>aether.toml (if exists)</li>
-     * </ol>
-     *
-     * @return ConfigurationProvider for all nodes, or empty if no config needed
-     */
+    /// Build ConfigurationProvider with layered configuration.
+    ///
+    /// Priority (highest to lowest):
+    /// <ol>
+    ///   - Runtime values (H2 URL if enabled)
+    ///   - Environment variables (AETHER_*)
+    ///   - System properties (-Daether.*)
+    ///   - forge.toml (if specified)
+    ///   - aether.toml (if exists)
+    /// </ol>
+    ///
+    /// @return ConfigurationProvider for all nodes, or empty if no config needed
     private Option<ConfigurationProvider> buildConfigurationProvider() {
         var builder = ConfigurationProvider.builder();
 
@@ -386,9 +382,7 @@ public final class ForgeServer {
                                                                         cause.message())));
     }
 
-    /**
-     * Get the H2 JDBC URL if H2 is enabled and running.
-     */
+    /// Get the H2 JDBC URL if H2 is enabled and running.
     public Option<String> h2JdbcUrl() {
         return h2Server.filter(ForgeH2Server::isRunning)
                        .map(ForgeH2Server::jdbcUrl);

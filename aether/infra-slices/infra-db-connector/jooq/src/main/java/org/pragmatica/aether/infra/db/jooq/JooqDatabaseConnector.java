@@ -26,12 +26,10 @@ import java.sql.SQLTransactionRollbackException;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * jOOQ implementation of DatabaseConnector for type-safe SQL queries.
- * <p>
- * Provides both standard DatabaseConnector operations and jOOQ-specific
- * operations for type-safe query building.
- */
+/// jOOQ implementation of DatabaseConnector for type-safe SQL queries.
+///
+/// Provides both standard DatabaseConnector operations and jOOQ-specific
+/// operations for type-safe query building.
 public final class JooqDatabaseConnector implements DatabaseConnector {
     private final DatabaseConnectorConfig config;
     private final DataSource dataSource;
@@ -45,46 +43,38 @@ public final class JooqDatabaseConnector implements DatabaseConnector {
         this.dsl = DSL.using(dialect);
     }
 
-    /**
-     * Creates a jOOQ connector with the given configuration and data source.
-     *
-     * @param config     Connector configuration
-     * @param dataSource JDBC DataSource
-     * @return New JooqDatabaseConnector instance
-     */
+    /// Creates a jOOQ connector with the given configuration and data source.
+    ///
+    /// @param config     Connector configuration
+    /// @param dataSource JDBC DataSource
+    /// @return New JooqDatabaseConnector instance
     public static JooqDatabaseConnector jooqDatabaseConnector(DatabaseConnectorConfig config, DataSource dataSource) {
         var dialect = mapDialect(config.type());
         return new JooqDatabaseConnector(config, dataSource, dialect);
     }
 
-    /**
-     * Creates a jOOQ connector with explicit SQL dialect.
-     *
-     * @param config     Connector configuration
-     * @param dataSource JDBC DataSource
-     * @param dialect    SQL dialect
-     * @return New JooqDatabaseConnector instance
-     */
+    /// Creates a jOOQ connector with explicit SQL dialect.
+    ///
+    /// @param config     Connector configuration
+    /// @param dataSource JDBC DataSource
+    /// @param dialect    SQL dialect
+    /// @return New JooqDatabaseConnector instance
     public static JooqDatabaseConnector jooqDatabaseConnector(DatabaseConnectorConfig config, DataSource dataSource, SQLDialect dialect) {
         return new JooqDatabaseConnector(config, dataSource, dialect);
     }
 
-    /**
-     * Returns the DSLContext for type-safe query building.
-     *
-     * @return DSLContext instance
-     */
+    /// Returns the DSLContext for type-safe query building.
+    ///
+    /// @return DSLContext instance
     public DSLContext dsl() {
         return dsl;
     }
 
-    /**
-     * Fetches a single record from the query.
-     *
-     * @param query jOOQ ResultQuery
-     * @param <R>   Record type
-     * @return Promise with single record or failure
-     */
+    /// Fetches a single record from the query.
+    ///
+    /// @param query jOOQ ResultQuery
+    /// @param <R>   Record type
+    /// @return Promise with single record or failure
     public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
         return Promise.lift(
             e -> mapException(e, query.getSQL()),
@@ -103,13 +93,11 @@ public final class JooqDatabaseConnector implements DatabaseConnector {
         );
     }
 
-    /**
-     * Fetches an optional record from the query.
-     *
-     * @param query jOOQ ResultQuery
-     * @param <R>   Record type
-     * @return Promise with Option containing record
-     */
+    /// Fetches an optional record from the query.
+    ///
+    /// @param query jOOQ ResultQuery
+    /// @param <R>   Record type
+    /// @return Promise with Option containing record
     public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
         return Promise.lift(
             e -> mapException(e, query.getSQL()),
@@ -122,13 +110,11 @@ public final class JooqDatabaseConnector implements DatabaseConnector {
         );
     }
 
-    /**
-     * Fetches all records from the query.
-     *
-     * @param query jOOQ ResultQuery
-     * @param <R>   Record type
-     * @return Promise with list of records
-     */
+    /// Fetches all records from the query.
+    ///
+    /// @param query jOOQ ResultQuery
+    /// @param <R>   Record type
+    /// @return Promise with list of records
     public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
         return Promise.lift(
             e -> mapException(e, query.getSQL()),
@@ -140,12 +126,10 @@ public final class JooqDatabaseConnector implements DatabaseConnector {
         );
     }
 
-    /**
-     * Executes a jOOQ query.
-     *
-     * @param query jOOQ Query
-     * @return Promise with number of affected rows
-     */
+    /// Executes a jOOQ query.
+    ///
+    /// @param query jOOQ Query
+    /// @return Promise with number of affected rows
     public Promise<Integer> execute(Query query) {
         return Promise.lift(
             e -> mapException(e, query.getSQL()),
@@ -393,9 +377,7 @@ public final class JooqDatabaseConnector implements DatabaseConnector {
         }
     }
 
-    /**
-     * Transaction-bound jOOQ connector.
-     */
+    /// Transaction-bound jOOQ connector.
     private record TransactionalJooqConnector(DatabaseConnectorConfig config, Connection conn, SQLDialect dialect) implements DatabaseConnector {
 
         @Override

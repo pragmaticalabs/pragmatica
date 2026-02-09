@@ -23,9 +23,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * ONNX Runtime implementation of {@link TTMPredictor}.
- */
+/// ONNX Runtime implementation of {@link TTMPredictor}.
 record OnnxTTMPredictor(OrtEnvironment env,
                         OrtSession session,
                         TTMConfig config,

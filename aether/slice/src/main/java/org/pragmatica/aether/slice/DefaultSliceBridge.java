@@ -16,51 +16,45 @@ import org.pragmatica.serialization.Serializer;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Default implementation of SliceBridge for Node-Slice communication.
- * <p>
- * This class bridges the Node (Application ClassLoader) and Slices (isolated ClassLoader)
- * using byte arrays for serialized data. It wraps a Slice instance and handles all
- * serialization/deserialization at the boundary.
- * <p>
- * This implementation uses byte[] at the boundary, avoiding Netty types in the API
- * to maintain complete isolation from Netty at the API level.
- * <p>
- * <b>Invocation Flow:</b>
- * <ol>
- *   <li>Receive method name + serialized input (byte[])</li>
- *   <li>Look up method by name</li>
- *   <li>Deserialize input to typed parameter</li>
- *   <li>Invoke method on slice</li>
- *   <li>Serialize response to byte[]</li>
- *   <li>Return serialized response</li>
- * </ol>
- * <p>
- * Note: This implementation is in a separate module from SliceBridge (slice-api) due to
- * classloader isolation requirements. The factory method follows JBCT naming convention.
- *
- * @see SliceBridge
- * @see Slice
- */
+/// Default implementation of SliceBridge for Node-Slice communication.
+///
+/// This class bridges the Node (Application ClassLoader) and Slices (isolated ClassLoader)
+/// using byte arrays for serialized data. It wraps a Slice instance and handles all
+/// serialization/deserialization at the boundary.
+///
+/// This implementation uses byte[] at the boundary, avoiding Netty types in the API
+/// to maintain complete isolation from Netty at the API level.
+///
+/// **Invocation Flow:**
+/// <ol>
+///   - Receive method name + serialized input (byte[])
+///   - Look up method by name
+///   - Deserialize input to typed parameter
+///   - Invoke method on slice
+///   - Serialize response to byte[]
+///   - Return serialized response
+/// </ol>
+///
+/// Note: This implementation is in a separate module from SliceBridge (slice-api) due to
+/// classloader isolation requirements. The factory method follows JBCT naming convention.
+///
+/// @see SliceBridge
+/// @see Slice
 public record DefaultSliceBridge(Artifact artifact,
                                  Slice slice,
                                  Map<String, InternalMethod> methodMap,
                                  SerializerFactory serializerFactory) implements SliceBridge {
-    /**
-     * Internal method descriptor containing type information for serialization.
-     */
+    /// Internal method descriptor containing type information for serialization.
     public record InternalMethod(SliceMethod<?, ?> method,
                                  TypeToken<?> parameterType,
                                  TypeToken<?> returnType) {}
 
-    /**
-     * Create a DefaultSliceBridge from a Slice instance.
-     *
-     * @param artifact          The slice artifact coordinates
-     * @param slice             The slice instance
-     * @param serializerFactory Factory for serialization
-     * @return DefaultSliceBridge wrapping the slice
-     */
+    /// Create a DefaultSliceBridge from a Slice instance.
+    ///
+    /// @param artifact          The slice artifact coordinates
+    /// @param slice             The slice instance
+    /// @param serializerFactory Factory for serialization
+    /// @return DefaultSliceBridge wrapping the slice
     public static DefaultSliceBridge defaultSliceBridge(Artifact artifact,
                                                         Slice slice,
                                                         SerializerFactory serializerFactory) {
@@ -74,9 +68,7 @@ public record DefaultSliceBridge(Artifact artifact,
         return new DefaultSliceBridge(artifact, slice, Map.copyOf(methodMap), serializerFactory);
     }
 
-    /**
-     * @deprecated Use {@link #defaultSliceBridge(Artifact, Slice, SerializerFactory)} instead.
-     */
+    /// @deprecated Use {@link #defaultSliceBridge(Artifact, Slice, SerializerFactory)} instead.
     @Deprecated
     public static DefaultSliceBridge sliceBridgeImpl(Artifact artifact,
                                                      Slice slice,
@@ -84,9 +76,7 @@ public record DefaultSliceBridge(Artifact artifact,
         return defaultSliceBridge(artifact, slice, serializerFactory);
     }
 
-    /**
-     * @deprecated Use {@link #defaultSliceBridge(Artifact, Slice, SerializerFactory)} instead.
-     */
+    /// @deprecated Use {@link #defaultSliceBridge(Artifact, Slice, SerializerFactory)} instead.
     @Deprecated
     public static DefaultSliceBridge sliceBridge(Artifact artifact,
                                                  Slice slice,

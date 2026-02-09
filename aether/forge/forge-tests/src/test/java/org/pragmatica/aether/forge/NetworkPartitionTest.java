@@ -18,21 +18,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for network partition and split-brain scenarios.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Majority partition continues operating</li>
- *   <li>Minority partition behavior (no quorum)</li>
- *   <li>Partition healing and cluster reconvergence</li>
- *   <li>Quorum behavior under various failure scenarios</li>
- * </ul>
- *
- * <p>Note: True network partitioning (isolating nodes at network level) is complex.
- * These tests simulate partition-like behavior by stopping nodes, which achieves
- * similar quorum effects.
- */
+/// Tests for network partition and split-brain scenarios.
+///
+///
+/// Tests cover:
+///
+///   - Majority partition continues operating
+///   - Minority partition behavior (no quorum)
+///   - Partition healing and cluster reconvergence
+///   - Quorum behavior under various failure scenarios
+///
+///
+///
+/// Note: True network partitioning (isolating nodes at network level) is complex.
+/// These tests simulate partition-like behavior by stopping nodes, which achieves
+/// similar quorum effects.
 @Execution(ExecutionMode.SAME_THREAD)
 class NetworkPartitionTest {
     private static final int BASE_PORT = 11000;

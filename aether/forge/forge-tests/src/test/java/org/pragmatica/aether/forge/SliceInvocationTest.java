@@ -19,21 +19,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for slice method invocation.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Route registration when slices are deployed</li>
- *   <li>HTTP request routing to slice methods</li>
- *   <li>Error handling for non-existent routes</li>
- *   <li>Request distribution across slice instances</li>
- * </ul>
- *
- * <p>Note: Full invocation testing requires slices with defined methods.
- * The echo-slice has an echo method. Tests focus on infrastructure and error handling
- * rather than successful invocations.
- */
+/// Tests for slice method invocation.
+///
+///
+/// Tests cover:
+///
+///   - Route registration when slices are deployed
+///   - HTTP request routing to slice methods
+///   - Error handling for non-existent routes
+///   - Request distribution across slice instances
+///
+///
+///
+/// Note: Full invocation testing requires slices with defined methods.
+/// The echo-slice has an echo method. Tests focus on infrastructure and error handling
+/// rather than successful invocations.
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceInvocationTest {
     private static final int BASE_PORT = 6000;

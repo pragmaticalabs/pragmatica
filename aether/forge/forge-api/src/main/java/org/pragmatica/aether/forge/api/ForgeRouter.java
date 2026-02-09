@@ -16,27 +16,23 @@ import java.util.Deque;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-/**
- * Combines all Forge API route sources into a single RequestRouter.
- */
+/// Combines all Forge API route sources into a single RequestRouter.
 public final class ForgeRouter {
     private ForgeRouter() {}
 
-    /**
-     * Create a RequestRouter combining all Forge API routes.
-     *
-     * @param cluster         the ForgeCluster for node management
-     * @param loadRunner      the ConfigurableLoadRunner for load testing
-     * @param chaosController the ChaosController for chaos injection
-     * @param configSupplier  supplier for SimulatorConfig
-     * @param inventoryState  state for inventory simulation
-     * @param metrics         the ForgeMetrics instance
-     * @param events          the event log deque
-     * @param startTime       server start time in milliseconds
-     * @param eventLogger     callback to log events for the dashboard
-     * @param loadConfigPath  optional path to the load config TOML file
-     * @return RequestRouter containing all Forge API routes
-     */
+    /// Create a RequestRouter combining all Forge API routes.
+    ///
+    /// @param cluster         the ForgeCluster for node management
+    /// @param loadRunner      the ConfigurableLoadRunner for load testing
+    /// @param chaosController the ChaosController for chaos injection
+    /// @param configSupplier  supplier for SimulatorConfig
+    /// @param inventoryState  state for inventory simulation
+    /// @param metrics         the ForgeMetrics instance
+    /// @param events          the event log deque
+    /// @param startTime       server start time in milliseconds
+    /// @param eventLogger     callback to log events for the dashboard
+    /// @param loadConfigPath  optional path to the load config TOML file
+    /// @return RequestRouter containing all Forge API routes
     public static RequestRouter forgeRouter(ForgeCluster cluster,
                                             ConfigurableLoadRunner loadRunner,
                                             ChaosController chaosController,

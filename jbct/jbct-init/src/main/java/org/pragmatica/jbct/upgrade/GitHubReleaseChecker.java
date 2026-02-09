@@ -11,9 +11,7 @@ import java.net.http.HttpRequest;
 import java.time.Duration;
 import java.util.regex.Pattern;
 
-/**
- * Checks GitHub Releases for the latest JBCT version.
- */
+/// Checks GitHub Releases for the latest JBCT version.
 public final class GitHubReleaseChecker {
     private static final String GITHUB_API_URL = "https://api.github.com/repos/siy/jbct-cli/releases/latest";
     private static final Pattern VERSION_PATTERN = Pattern.compile("\"tag_name\"\\s*:\\s*\"v?([^\"]+)\"");
@@ -28,25 +26,19 @@ public final class GitHubReleaseChecker {
         this.apiUrl = apiUrl;
     }
 
-    /**
-     * Create a release checker with default settings.
-     */
+    /// Create a release checker with default settings.
     public static GitHubReleaseChecker releaseChecker() {
         return new GitHubReleaseChecker(HttpClients.httpOperations(), GITHUB_API_URL);
     }
 
-    /**
-     * Create a release checker with custom API URL (for testing).
-     */
+    /// Create a release checker with custom API URL (for testing).
     public static GitHubReleaseChecker releaseChecker(String apiUrl) {
         return new GitHubReleaseChecker(HttpClients.httpOperations(), apiUrl);
     }
 
-    /**
-     * Check for the latest release.
-     *
-     * @return ReleaseInfo with version and download URL if available
-     */
+    /// Check for the latest release.
+    ///
+    /// @return ReleaseInfo with version and download URL if available
     public Result<ReleaseInfo> checkLatestRelease() {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create(apiUrl))
@@ -60,12 +52,10 @@ public final class GitHubReleaseChecker {
                    .flatMap(this::handleResponse);
     }
 
-    /**
-     * Check if a newer version is available.
-     *
-     * @param currentVersion Current installed version
-     * @return Option with new version info if available
-     */
+    /// Check if a newer version is available.
+    ///
+    /// @param currentVersion Current installed version
+    /// @return Option with new version info if available
     public Result<Option<ReleaseInfo>> checkForUpdate(String currentVersion) {
         return checkLatestRelease().map(release -> filterNewerRelease(release, currentVersion));
     }
@@ -98,10 +88,8 @@ public final class GitHubReleaseChecker {
         return Result.success(ReleaseInfo.releaseInfo(version, downloadUrl));
     }
 
-    /**
-     * Compare versions to check if newVersion is newer than currentVersion.
-     * Supports semantic versioning (e.g., 1.2.3, 0.3.1-SNAPSHOT).
-     */
+    /// Compare versions to check if newVersion is newer than currentVersion.
+    /// Supports semantic versioning (e.g., 1.2.3, 0.3.1-SNAPSHOT).
     public static boolean isNewerVersion(String currentVersion, String newVersion) {
         var current = normalizeVersion(currentVersion);
         var newer = normalizeVersion(newVersion);
@@ -147,18 +135,14 @@ public final class GitHubReleaseChecker {
         }
     }
 
-    /**
-     * Information about a GitHub release.
-     */
+    /// Information about a GitHub release.
     public record ReleaseInfo(String version,
                               Option<String> downloadUrl) {
         public static ReleaseInfo releaseInfo(String version, Option<String> downloadUrl) {
             return new ReleaseInfo(version, downloadUrl);
         }
 
-        /**
-         * Check if this release has a downloadable JAR.
-         */
+        /// Check if this release has a downloadable JAR.
         public boolean hasDownloadUrl() {
             return downloadUrl.isPresent();
         }

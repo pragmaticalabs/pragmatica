@@ -50,17 +50,17 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * Application HTTP server for cluster-wide HTTP routing.
- *
- * <p>Handles HTTP requests by:
- * <ol>
- *   <li>Looking up routes locally via HttpRoutePublisher</li>
- *   <li>If not local, forwarding to remote nodes via HttpForwardRequest/Response</li>
- * </ol>
- *
- * <p>Separate from ManagementServer for security isolation.
- */
+/// Application HTTP server for cluster-wide HTTP routing.
+///
+///
+/// Handles HTTP requests by:
+/// <ol>
+///   - Looking up routes locally via HttpRoutePublisher
+///   - If not local, forwarding to remote nodes via HttpForwardRequest/Response
+/// </ol>
+///
+///
+/// Separate from ManagementServer for security isolation.
 public interface AppHttpServer {
     Promise<Unit> start();
 
@@ -68,44 +68,30 @@ public interface AppHttpServer {
 
     Option<Integer> boundPort();
 
-    /**
-     * Handle KV-Store updates to rebuild router when routes change.
-     */
+    /// Handle KV-Store updates to rebuild router when routes change.
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
-    /**
-     * Handle KV-Store removals to rebuild router when routes change.
-     */
+    /// Handle KV-Store removals to rebuild router when routes change.
     @MessageReceiver
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
-    /**
-     * Handle incoming HTTP forward request from another node.
-     */
+    /// Handle incoming HTTP forward request from another node.
     @MessageReceiver
     void onHttpForwardRequest(HttpForwardRequest request);
 
-    /**
-     * Handle HTTP forward response from another node.
-     */
+    /// Handle HTTP forward response from another node.
     @MessageReceiver
     void onHttpForwardResponse(HttpForwardResponse response);
 
-    /**
-     * Trigger router rebuild (called when local slices deploy/undeploy).
-     */
+    /// Trigger router rebuild (called when local slices deploy/undeploy).
     void rebuildRouter();
 
-    /**
-     * Handle node removal for immediate retry of pending forwards.
-     */
+    /// Handle node removal for immediate retry of pending forwards.
     @MessageReceiver
     void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
 
-    /**
-     * Handle node down for immediate retry of pending forwards.
-     */
+    /// Handle node down for immediate retry of pending forwards.
     @MessageReceiver
     void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
 
@@ -127,9 +113,7 @@ public interface AppHttpServer {
                                      tls);
     }
 
-    /**
-     * @deprecated Use full factory method with all parameters.
-     */
+    /// @deprecated Use full factory method with all parameters.
     @Deprecated
     static AppHttpServer appHttpServer(AppHttpConfig config,
                                        HttpRouteRegistry routeRegistry,
@@ -863,9 +847,7 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     // ================== Route Table ==================
-    /**
-     * Snapshot of current route state for thread-safe access.
-     */
+    /// Snapshot of current route state for thread-safe access.
     record RouteTable(Set<HttpRouteKey> localRoutes,
                       List<HttpRouteRegistry.RouteInfo> remoteRoutes) {
         static RouteTable empty() {

@@ -17,20 +17,20 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.DoubleAdder;
 import java.util.concurrent.atomic.LongAdder;
 
-/**
- * Collects and manages metrics for a single node.
- *
- * <p>Responsibilities:
- * <ul>
- *   <li>Collect JVM metrics (CPU, heap usage)</li>
- *   <li>Track per-method call stats (count, duration)</li>
- *   <li>Store custom metrics from slices</li>
- *   <li>Store received metrics from other nodes</li>
- *   <li>Handle MetricsPing/MetricsPong messages</li>
- * </ul>
- *
- * <p>Metrics are stored in-memory with a sliding window for historical data.
- */
+/// Collects and manages metrics for a single node.
+///
+///
+/// Responsibilities:
+///
+///   - Collect JVM metrics (CPU, heap usage)
+///   - Track per-method call stats (count, duration)
+///   - Store custom metrics from slices
+///   - Store received metrics from other nodes
+///   - Handle MetricsPing/MetricsPong messages
+///
+///
+///
+/// Metrics are stored in-memory with a sliding window for historical data.
 public interface MetricsCollector {
     // Standard metric names
     String CPU_USAGE = "cpu.usage";
@@ -38,41 +38,27 @@ public interface MetricsCollector {
     String HEAP_MAX = "heap.max";
     String HEAP_USAGE = "heap.usage";
 
-    /**
-     * Collect current local JVM metrics.
-     */
+    /// Collect current local JVM metrics.
     Map<String, Double> collectLocal();
 
-    /**
-     * Record a method call with its duration.
-     */
+    /// Record a method call with its duration.
     void recordCall(MethodName method, long durationMs);
 
-    /**
-     * Record a custom metric value from a slice.
-     */
+    /// Record a custom metric value from a slice.
     void recordCustom(String name, double value);
 
-    /**
-     * Get all known metrics (local + remote nodes).
-     */
+    /// Get all known metrics (local + remote nodes).
     Map<NodeId, Map<String, Double>> allMetrics();
 
-    /**
-     * Get metrics for a specific node.
-     */
+    /// Get metrics for a specific node.
     Map<String, Double> metricsFor(NodeId nodeId);
 
-    /**
-     * Get historical metrics within the sliding window (2 hours).
-     *
-     * @return Map of NodeId to list of timestamped snapshots, oldest first
-     */
+    /// Get historical metrics within the sliding window (2 hours).
+    ///
+    /// @return Map of NodeId to list of timestamped snapshots, oldest first
     Map<NodeId, java.util.List<MetricsSnapshot>> historicalMetrics();
 
-    /**
-     * Immutable metrics snapshot with timestamp.
-     */
+    /// Immutable metrics snapshot with timestamp.
     record MetricsSnapshot(long timestamp, Map<String, Double> metrics) {}
 
     @MessageReceiver
@@ -81,17 +67,13 @@ public interface MetricsCollector {
     @MessageReceiver
     void onMetricsPong(MetricsPong pong);
 
-    /**
-     * Create a new MetricsCollector instance.
-     */
+    /// Create a new MetricsCollector instance.
     static MetricsCollector metricsCollector(NodeId self, ClusterNetwork network) {
         return new MetricsCollectorImpl(self, network);
     }
 }
 
-/**
- * Implementation of MetricsCollector.
- */
+/// Implementation of MetricsCollector.
 class MetricsCollectorImpl implements MetricsCollector {
     // Sliding window duration: 2 hours in milliseconds
     private static final long SLIDING_WINDOW_MS = 2 * 60 * 60 * 1000L;
@@ -224,18 +206,14 @@ class MetricsCollectorImpl implements MetricsCollector {
         }
     }
 
-    /**
-     * Add metrics snapshot to historical ring buffer.
-     * Old entries are automatically evicted when buffer is full.
-     */
+    /// Add metrics snapshot to historical ring buffer.
+    /// Old entries are automatically evicted when buffer is full.
     private void addToHistory(NodeId nodeId, Map<String, Double> metrics) {
         var ringBuffer = historicalMetricsMap.computeIfAbsent(nodeId, _ -> RingBuffer.ringBuffer(RING_BUFFER_CAPACITY));
         ringBuffer.add(new MetricsSnapshot(System.currentTimeMillis(), metrics));
     }
 
-    /**
-     * Mutable call statistics for a method.
-     */
+    /// Mutable call statistics for a method.
     private record CallStats(LongAdder count, DoubleAdder totalDuration) {
         static CallStats callStats() {
             return new CallStats(new LongAdder(), new DoubleAdder());

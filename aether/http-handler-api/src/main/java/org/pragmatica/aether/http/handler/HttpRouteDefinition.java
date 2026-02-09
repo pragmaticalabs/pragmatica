@@ -4,26 +4,22 @@ import org.pragmatica.aether.http.handler.security.RouteSecurityPolicy;
 
 import java.util.Objects;
 
-/**
- * Route metadata for KV-Store registration.
- * <p>
- * Maps HTTP method + path prefix to artifact + slice method.
- * Used by HttpRouteRegistry to route incoming requests.
- *
- * @param httpMethod    HTTP method (GET, POST, PUT, DELETE, etc.)
- * @param pathPrefix    path prefix for TreeMap matching (e.g., "/users/", "/api/orders/")
- * @param artifactCoord full artifact coordinate (e.g., "org.example:user-service:1.0.0")
- * @param sliceMethod   slice method name to invoke
- * @param security      security policy for this route
- */
+/// Route metadata for KV-Store registration.
+///
+/// Maps HTTP method + path prefix to artifact + slice method.
+/// Used by HttpRouteRegistry to route incoming requests.
+///
+/// @param httpMethod    HTTP method (GET, POST, PUT, DELETE, etc.)
+/// @param pathPrefix    path prefix for TreeMap matching (e.g., "/users/", "/api/orders/")
+/// @param artifactCoord full artifact coordinate (e.g., "org.example:user-service:1.0.0")
+/// @param sliceMethod   slice method name to invoke
+/// @param security      security policy for this route
 public record HttpRouteDefinition(String httpMethod,
                                   String pathPrefix,
                                   String artifactCoord,
                                   String sliceMethod,
                                   RouteSecurityPolicy security) {
-    /**
-     * Canonical constructor with validation.
-     */
+    /// Canonical constructor with validation.
     public HttpRouteDefinition {
         Objects.requireNonNull(httpMethod, "httpMethod");
         Objects.requireNonNull(pathPrefix, "pathPrefix");
@@ -32,9 +28,7 @@ public record HttpRouteDefinition(String httpMethod,
         Objects.requireNonNull(security, "security");
     }
 
-    /**
-     * Create public route definition with path normalization.
-     */
+    /// Create public route definition with path normalization.
     public static HttpRouteDefinition httpRouteDefinition(String httpMethod,
                                                           String pathPrefix,
                                                           String artifactCoord,
@@ -46,9 +40,7 @@ public record HttpRouteDefinition(String httpMethod,
                                        RouteSecurityPolicy.publicRoute());
     }
 
-    /**
-     * Create route definition with path normalization and security policy.
-     */
+    /// Create route definition with path normalization and security policy.
     public static HttpRouteDefinition httpRouteDefinition(String httpMethod,
                                                           String pathPrefix,
                                                           String artifactCoord,

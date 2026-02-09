@@ -25,59 +25,41 @@ import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Manages TTM lifecycle, leader awareness, and periodic evaluation.
- * <p>
- * Only runs inference on the leader node. Followers receive state updates
- * via Rabia replication (through the DecisionTreeController threshold adjustments).
- */
+/// Manages TTM lifecycle, leader awareness, and periodic evaluation.
+///
+/// Only runs inference on the leader node. Followers receive state updates
+/// via Rabia replication (through the DecisionTreeController threshold adjustments).
 public interface TTMManager {
-    /**
-     * React to leader changes.
-     */
+    /// React to leader changes.
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);
 
-    /**
-     * Get current forecast if available.
-     */
+    /// Get current forecast if available.
     Option<TTMForecast> currentForecast();
 
-    /**
-     * Get current TTM state.
-     */
+    /// Get current TTM state.
     TTMState state();
 
-    /**
-     * Register callback for forecast updates.
-     */
+    /// Register callback for forecast updates.
     void onForecast(Consumer<TTMForecast> callback);
 
-    /**
-     * Get the TTM configuration.
-     */
+    /// Get the TTM configuration.
     TTMConfig config();
 
-    /**
-     * Check if TTM is actually enabled and functional.
-     * Returns false for NoOpTTMManager or if model failed to load.
-     */
+    /// Check if TTM is actually enabled and functional.
+    /// Returns false for NoOpTTMManager or if model failed to load.
     boolean isEnabled();
 
-    /**
-     * Stop the TTM manager.
-     */
+    /// Stop the TTM manager.
     Unit stop();
 
-    /**
-     * Create TTM manager.
-     *
-     * @param config                   TTM configuration
-     * @param aggregator               MinuteAggregator providing input data
-     * @param controllerConfigSupplier Supplier for current controller config
-     *
-     * @return Result containing TTMManager or error
-     */
+    /// Create TTM manager.
+    ///
+    /// @param config                   TTM configuration
+    /// @param aggregator               MinuteAggregator providing input data
+    /// @param controllerConfigSupplier Supplier for current controller config
+    ///
+    /// @return Result containing TTMManager or error
     static Result<TTMManager> ttmManager(TTMConfig config,
                                          MinuteAggregator aggregator,
                                          Supplier<ControllerConfig> controllerConfigSupplier) {
@@ -110,16 +92,12 @@ public interface TTMManager {
                               new CopyOnWriteArrayList<>());
     }
 
-    /**
-     * Create a no-op TTM manager (for when TTM is disabled).
-     */
+    /// Create a no-op TTM manager (for when TTM is disabled).
     static TTMManager noOp(TTMConfig config) {
         return new NoOpTTMManager(config);
     }
 
-    /**
-     * No-op implementation for when TTM is disabled.
-     */
+    /// No-op implementation for when TTM is disabled.
     record NoOpTTMManager(TTMConfig config) implements TTMManager {
         @Override
         public void onLeaderChange(LeaderChange leaderChange) {}
@@ -148,9 +126,7 @@ public interface TTMManager {
         }
     }
 
-    /**
-     * Implementation of TTMManager.
-     */
+    /// Implementation of TTMManager.
     record ActiveTTMManager(TTMConfig config,
                             TTMPredictor predictor,
                             ForecastAnalyzer analyzer,

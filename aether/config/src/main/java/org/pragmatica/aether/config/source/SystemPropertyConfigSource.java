@@ -7,17 +7,15 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Configuration source backed by Java system properties.
- * <p>
- * System properties are filtered by prefix and the prefix is stripped.
- * <p>
- * Example with prefix "aether.":
- * <ul>
- *   <li>-Daether.database.host=localhost -> database.host</li>
- *   <li>-Daether.server.port=8080 -> server.port</li>
- * </ul>
- */
+/// Configuration source backed by Java system properties.
+///
+/// System properties are filtered by prefix and the prefix is stripped.
+///
+/// Example with prefix "aether.":
+///
+///   - -Daether.database.host=localhost -> database.host
+///   - -Daether.server.port=8080 -> server.port
+///
 public final class SystemPropertyConfigSource implements ConfigSource {
     private static final int DEFAULT_PRIORITY = 200;
 
@@ -31,23 +29,19 @@ public final class SystemPropertyConfigSource implements ConfigSource {
         this.values = Map.copyOf(values);
     }
 
-    /**
-     * Create a SystemPropertyConfigSource with the specified prefix.
-     *
-     * @param prefix Prefix to filter system properties (e.g., "aether.")
-     * @return New SystemPropertyConfigSource
-     */
+    /// Create a SystemPropertyConfigSource with the specified prefix.
+    ///
+    /// @param prefix Prefix to filter system properties (e.g., "aether.")
+    /// @return New SystemPropertyConfigSource
     public static SystemPropertyConfigSource systemPropertyConfigSource(String prefix) {
         return systemPropertyConfigSource(prefix, DEFAULT_PRIORITY);
     }
 
-    /**
-     * Create a SystemPropertyConfigSource with specified prefix and priority.
-     *
-     * @param prefix   Prefix to filter system properties
-     * @param priority Source priority
-     * @return New SystemPropertyConfigSource
-     */
+    /// Create a SystemPropertyConfigSource with specified prefix and priority.
+    ///
+    /// @param prefix   Prefix to filter system properties
+    /// @param priority Source priority
+    /// @return New SystemPropertyConfigSource
     public static SystemPropertyConfigSource systemPropertyConfigSource(String prefix, int priority) {
         var values = loadFromSystemProperties(prefix);
         return new SystemPropertyConfigSource(prefix, priority, values);

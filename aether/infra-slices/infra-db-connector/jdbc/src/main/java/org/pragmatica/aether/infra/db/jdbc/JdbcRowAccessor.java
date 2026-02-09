@@ -7,9 +7,7 @@ import org.pragmatica.lang.Result;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 
-/**
- * JDBC ResultSet implementation of RowAccessor.
- */
+/// JDBC ResultSet implementation of RowAccessor.
 final class JdbcRowAccessor implements RowAccessor {
     private final ResultSet rs;
 

@@ -26,13 +26,11 @@ import org.pragmatica.r2dbc.ReactiveOperations;
 
 import java.util.List;
 
-/**
- * jOOQ R2DBC implementation of DatabaseConnector for reactive type-safe SQL queries.
- * <p>
- * Combines jOOQ's type-safe query building with R2DBC's reactive execution.
- * <p>
- * Uses JooqR2dbcOperations from integrations/db/jooq-r2dbc for Promise-based execution.
- */
+/// jOOQ R2DBC implementation of DatabaseConnector for reactive type-safe SQL queries.
+///
+/// Combines jOOQ's type-safe query building with R2DBC's reactive execution.
+///
+/// Uses JooqR2dbcOperations from integrations/db/jooq-r2dbc for Promise-based execution.
 public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     private final DatabaseConnectorConfig config;
     private final ConnectionFactory connectionFactory;
@@ -46,108 +44,88 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
         this.operations = JooqR2dbcOperations.jooqR2dbcOperations(connectionFactory, dialect);
     }
 
-    /**
-     * Creates a jOOQ R2DBC connector with the given configuration and connection factory.
-     *
-     * @param config            Connector configuration
-     * @param connectionFactory R2DBC ConnectionFactory
-     * @return New JooqR2dbcDatabaseConnector instance
-     */
+    /// Creates a jOOQ R2DBC connector with the given configuration and connection factory.
+    ///
+    /// @param config            Connector configuration
+    /// @param connectionFactory R2DBC ConnectionFactory
+    /// @return New JooqR2dbcDatabaseConnector instance
     public static JooqR2dbcDatabaseConnector jooqR2dbcDatabaseConnector(DatabaseConnectorConfig config, ConnectionFactory connectionFactory) {
         var dialect = mapDialect(config.type());
         return new JooqR2dbcDatabaseConnector(config, connectionFactory, dialect);
     }
 
-    /**
-     * Creates a jOOQ R2DBC connector with explicit SQL dialect.
-     *
-     * @param config            Connector configuration
-     * @param connectionFactory R2DBC ConnectionFactory
-     * @param dialect           SQL dialect
-     * @return New JooqR2dbcDatabaseConnector instance
-     */
+    /// Creates a jOOQ R2DBC connector with explicit SQL dialect.
+    ///
+    /// @param config            Connector configuration
+    /// @param connectionFactory R2DBC ConnectionFactory
+    /// @param dialect           SQL dialect
+    /// @return New JooqR2dbcDatabaseConnector instance
     public static JooqR2dbcDatabaseConnector jooqR2dbcDatabaseConnector(DatabaseConnectorConfig config, ConnectionFactory connectionFactory, SQLDialect dialect) {
         return new JooqR2dbcDatabaseConnector(config, connectionFactory, dialect);
     }
 
-    /**
-     * Returns the underlying ConnectionFactory.
-     *
-     * @return R2DBC ConnectionFactory
-     */
+    /// Returns the underlying ConnectionFactory.
+    ///
+    /// @return R2DBC ConnectionFactory
     public ConnectionFactory connectionFactory() {
         return connectionFactory;
     }
 
-    /**
-     * Returns the DSLContext for type-safe query building.
-     *
-     * @return DSLContext instance
-     */
+    /// Returns the DSLContext for type-safe query building.
+    ///
+    /// @return DSLContext instance
     public DSLContext dsl() {
         return operations.dsl();
     }
 
-    /**
-     * Returns the SQL dialect.
-     *
-     * @return SQL dialect
-     */
+    /// Returns the SQL dialect.
+    ///
+    /// @return SQL dialect
     public SQLDialect dialect() {
         return dialect;
     }
 
-    /**
-     * Returns the underlying JooqR2dbcOperations for advanced use.
-     *
-     * @return JooqR2dbcOperations instance
-     */
+    /// Returns the underlying JooqR2dbcOperations for advanced use.
+    ///
+    /// @return JooqR2dbcOperations instance
     public JooqR2dbcOperations operations() {
         return operations;
     }
 
-    /**
-     * Fetches a single record from the query.
-     *
-     * @param query jOOQ ResultQuery
-     * @param <R>   Record type
-     * @return Promise with single record or failure
-     */
+    /// Fetches a single record from the query.
+    ///
+    /// @param query jOOQ ResultQuery
+    /// @param <R>   Record type
+    /// @return Promise with single record or failure
     public <R extends Record> Promise<R> fetchOne(ResultQuery<R> query) {
         return operations.fetchOne(query)
                          .mapError(JooqR2dbcDatabaseConnector::toConnectorError);
     }
 
-    /**
-     * Fetches an optional record from the query.
-     *
-     * @param query jOOQ ResultQuery
-     * @param <R>   Record type
-     * @return Promise with Option containing record
-     */
+    /// Fetches an optional record from the query.
+    ///
+    /// @param query jOOQ ResultQuery
+    /// @param <R>   Record type
+    /// @return Promise with Option containing record
     public <R extends Record> Promise<Option<R>> fetchOptional(ResultQuery<R> query) {
         return operations.fetchOptional(query)
                          .mapError(JooqR2dbcDatabaseConnector::toConnectorError);
     }
 
-    /**
-     * Fetches all records from the query.
-     *
-     * @param query jOOQ ResultQuery
-     * @param <R>   Record type
-     * @return Promise with list of records
-     */
+    /// Fetches all records from the query.
+    ///
+    /// @param query jOOQ ResultQuery
+    /// @param <R>   Record type
+    /// @return Promise with list of records
     public <R extends Record> Promise<List<R>> fetch(ResultQuery<R> query) {
         return operations.fetch(query)
                          .mapError(JooqR2dbcDatabaseConnector::toConnectorError);
     }
 
-    /**
-     * Executes a jOOQ query.
-     *
-     * @param query jOOQ Query
-     * @return Promise with number of affected rows
-     */
+    /// Executes a jOOQ query.
+    ///
+    /// @param query jOOQ Query
+    /// @return Promise with number of affected rows
     public Promise<Integer> execute(Query query) {
         return operations.execute(query)
                          .mapError(JooqR2dbcDatabaseConnector::toConnectorError);
@@ -364,9 +342,7 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
         };
     }
 
-    /**
-     * RowAccessor implementation for R2DBC Row.
-     */
+    /// RowAccessor implementation for R2DBC Row.
     private record R2dbcRowAccessor(Row row) implements RowMapper.RowAccessor {
         @Override
         public Result<String> getString(String column) {
@@ -404,9 +380,7 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
         }
     }
 
-    /**
-     * A DatabaseConnector bound to a specific R2DBC Connection for transactional operations.
-     */
+    /// A DatabaseConnector bound to a specific R2DBC Connection for transactional operations.
     private record TransactionalJooqR2dbcConnector(DatabaseConnectorConfig config, Connection connection, SQLDialect dialect)
         implements DatabaseConnector {
 

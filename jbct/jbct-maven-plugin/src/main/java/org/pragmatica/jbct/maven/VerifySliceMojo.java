@@ -21,9 +21,7 @@ import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 
-/**
- * Validates slice configuration by checking manifest entries and generated artifacts.
- */
+/// Validates slice configuration by checking manifest entries and generated artifacts.
 @Mojo(name = "verify-slice",
  defaultPhase = LifecyclePhase.VERIFY,
  requiresDependencyResolution = ResolutionScope.COMPILE)
@@ -128,10 +126,8 @@ public class VerifySliceMojo extends AbstractMojo {
         return PartialResult.partialResult(errors, List.of());
     }
 
-    /**
-     * Validates that Aether runtime and Pragmatica Lite dependencies are marked as 'provided'.
-     * These libraries are provided by the Aether runtime and should not be bundled with slices.
-     */
+    /// Validates that Aether runtime and Pragmatica Lite dependencies are marked as 'provided'.
+    /// These libraries are provided by the Aether runtime and should not be bundled with slices.
     private PartialResult checkRuntimeDependencyScopes() {
         // Group IDs that must use 'provided' scope
         var runtimeGroupIds = Set.of("org.pragmatica-lite", "org.pragmatica-lite.aether");
@@ -154,10 +150,8 @@ public class VerifySliceMojo extends AbstractMojo {
         return PartialResult.partialResult(errors, List.of());
     }
 
-    /**
-     * Validates that slice dependencies use 'provided' scope.
-     * Slice dependencies should not be bundled - the Aether runtime loads them at deployment.
-     */
+    /// Validates that slice dependencies use 'provided' scope.
+    /// Slice dependencies should not be bundled - the Aether runtime loads them at deployment.
     private PartialResult checkSliceDependencyScopes() {
         var errors = new ArrayList<String>();
         for (var artifact : project.getDependencyArtifacts()) {

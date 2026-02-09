@@ -8,83 +8,65 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * Strategy for determining when an invocation is considered "slow".
- * <p>
- * Slow invocations are captured for debugging, while all invocations
- * contribute to aggregated metrics.
- */
+/// Strategy for determining when an invocation is considered "slow".
+///
+/// Slow invocations are captured for debugging, while all invocations
+/// contribute to aggregated metrics.
 public sealed interface ThresholdStrategy {
-    /**
-     * Determine if a duration qualifies as slow for the given method.
-     *
-     * @param method     The method being invoked
-     * @param durationNs Duration in nanoseconds
-     * @return true if the invocation should be captured as slow
-     */
+    /// Determine if a duration qualifies as slow for the given method.
+    ///
+    /// @param method     The method being invoked
+    /// @param durationNs Duration in nanoseconds
+    /// @return true if the invocation should be captured as slow
     boolean isSlow(MethodName method, long durationNs);
 
-    /**
-     * Update the strategy with observed data (for adaptive strategies).
-     * Called after each invocation.
-     *
-     * @param method     The method that was invoked
-     * @param durationNs Duration in nanoseconds
-     */
+    /// Update the strategy with observed data (for adaptive strategies).
+    /// Called after each invocation.
+    ///
+    /// @param method     The method that was invoked
+    /// @param durationNs Duration in nanoseconds
     default void observe(MethodName method, long durationNs) {}
 
-    /**
-     * Get the current threshold for a method (for monitoring).
-     *
-     * @param method The method
-     * @return Threshold in nanoseconds
-     */
+    /// Get the current threshold for a method (for monitoring).
+    ///
+    /// @param method The method
+    /// @return Threshold in nanoseconds
     long thresholdNs(MethodName method);
 
     // ========== Factory methods ==========
-    /**
-     * Fixed threshold strategy - same threshold for all methods.
-     *
-     * @param thresholdMs Threshold in milliseconds
-     */
+    /// Fixed threshold strategy - same threshold for all methods.
+    ///
+    /// @param thresholdMs Threshold in milliseconds
     static ThresholdStrategy fixed(long thresholdMs) {
         return new Fixed(thresholdMs * 1_000_000);
     }
 
-    /**
-     * Adaptive threshold strategy - adjusts based on observed latencies.
-     * Captures invocations slower than 3x the rolling average.
-     *
-     * @param minThresholdMs Minimum threshold in milliseconds (floor)
-     * @param maxThresholdMs Maximum threshold in milliseconds (ceiling)
-     */
+    /// Adaptive threshold strategy - adjusts based on observed latencies.
+    /// Captures invocations slower than 3x the rolling average.
+    ///
+    /// @param minThresholdMs Minimum threshold in milliseconds (floor)
+    /// @param maxThresholdMs Maximum threshold in milliseconds (ceiling)
     static ThresholdStrategy adaptive(long minThresholdMs, long maxThresholdMs) {
         return Adaptive.adaptive(minThresholdMs * 1_000_000, maxThresholdMs * 1_000_000, 3.0);
     }
 
-    /**
-     * Adaptive threshold with custom multiplier.
-     *
-     * @param minThresholdMs Minimum threshold in milliseconds
-     * @param maxThresholdMs Maximum threshold in milliseconds
-     * @param multiplier     Multiplier for average (e.g., 3.0 means 3x average)
-     */
+    /// Adaptive threshold with custom multiplier.
+    ///
+    /// @param minThresholdMs Minimum threshold in milliseconds
+    /// @param maxThresholdMs Maximum threshold in milliseconds
+    /// @param multiplier     Multiplier for average (e.g., 3.0 means 3x average)
     static ThresholdStrategy adaptive(long minThresholdMs, long maxThresholdMs, double multiplier) {
         return Adaptive.adaptive(minThresholdMs * 1_000_000, maxThresholdMs * 1_000_000, multiplier);
     }
 
-    /**
-     * Per-method threshold strategy - different thresholds per method.
-     *
-     * @param defaultThresholdMs Default threshold for methods not explicitly configured
-     */
+    /// Per-method threshold strategy - different thresholds per method.
+    ///
+    /// @param defaultThresholdMs Default threshold for methods not explicitly configured
     static PerMethod perMethod(long defaultThresholdMs) {
         return PerMethod.perMethod(defaultThresholdMs * 1_000_000);
     }
 
-    /**
-     * Composite strategy - uses per-method thresholds with adaptive fallback.
-     */
+    /// Composite strategy - uses per-method thresholds with adaptive fallback.
     static ThresholdStrategy composite(Map<MethodName, Long> methodThresholdsMs,
                                        long defaultMinMs,
                                        long defaultMaxMs) {
@@ -95,9 +77,7 @@ public sealed interface ThresholdStrategy {
     }
 
     // ========== Implementations ==========
-    /**
-     * Fixed threshold - same for all methods.
-     */
+    /// Fixed threshold - same for all methods.
     record Fixed(long thresholdNs) implements ThresholdStrategy {
         @Override
         public boolean isSlow(MethodName method, long durationNs) {
@@ -110,9 +90,7 @@ public sealed interface ThresholdStrategy {
         }
     }
 
-    /**
-     * Adaptive threshold - learns from observed latencies.
-     */
+    /// Adaptive threshold - learns from observed latencies.
     record Adaptive(long minThresholdNs,
                     long maxThresholdNs,
                     double multiplier,
@@ -154,10 +132,8 @@ public sealed interface ThresholdStrategy {
             return Math.max(minThresholdNs, Math.min(maxThresholdNs, threshold));
         }
 
-        /**
-         * Per-method statistics using exponential moving average.
-         * Thread-safe using CAS loop for atomic EMA updates.
-         */
+        /// Per-method statistics using exponential moving average.
+        /// Thread-safe using CAS loop for atomic EMA updates.
         record MethodStats(AtomicLong count, AtomicReference<Double> ema) {
             private static final double ALPHA = 0.1;
 
@@ -187,29 +163,23 @@ public sealed interface ThresholdStrategy {
         }
     }
 
-    /**
-     * Per-method configurable thresholds.
-     */
+    /// Per-method configurable thresholds.
     record PerMethod(long defaultThresholdNs,
                      Map<MethodName, Long> methodThresholds) implements ThresholdStrategy {
         static PerMethod perMethod(long defaultThresholdNs) {
             return new PerMethod(defaultThresholdNs, new ConcurrentHashMap<>());
         }
 
-        /**
-         * Set threshold for a specific method.
-         *
-         * @param method      The method
-         * @param thresholdMs Threshold in milliseconds
-         */
+        /// Set threshold for a specific method.
+        ///
+        /// @param method      The method
+        /// @param thresholdMs Threshold in milliseconds
         public PerMethod withThreshold(MethodName method, long thresholdMs) {
             methodThresholds.put(method, thresholdMs * 1_000_000);
             return this;
         }
 
-        /**
-         * Remove custom threshold for a method (revert to default).
-         */
+        /// Remove custom threshold for a method (revert to default).
         public PerMethod removeThreshold(MethodName method) {
             methodThresholds.remove(method);
             return this;
@@ -226,9 +196,7 @@ public sealed interface ThresholdStrategy {
         }
     }
 
-    /**
-     * Composite strategy - per-method overrides with adaptive fallback.
-     */
+    /// Composite strategy - per-method overrides with adaptive fallback.
     record Composite(Map<MethodName, Long> methodThresholdsNs,
                      ThresholdStrategy fallback) implements ThresholdStrategy {
         @Override

@@ -14,10 +14,8 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * Default implementation of LoggingAspectFactory.
- * Uses JDK dynamic proxies to wrap slice instances.
- */
+/// Default implementation of LoggingAspectFactory.
+/// Uses JDK dynamic proxies to wrap slice instances.
 final class DefaultLoggingAspectFactory implements LoggingAspectFactory {
     private static final Logger LOG = LoggerFactory.getLogger(DefaultLoggingAspectFactory.class);
     private final AtomicBoolean enabled = new AtomicBoolean(true);

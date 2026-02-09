@@ -9,10 +9,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * In-memory implementation of RateLimiter using fixed window strategy.
- * Thread-safe implementation using synchronized blocks per key.
- */
+/// In-memory implementation of RateLimiter using fixed window strategy.
+/// Thread-safe implementation using synchronized blocks per key.
 final class InMemoryRateLimiter implements RateLimiter {
     private final ConcurrentHashMap<String, RateLimitConfig> configs = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, WindowState> windows = new ConcurrentHashMap<>();
@@ -51,9 +49,7 @@ final class InMemoryRateLimiter implements RateLimiter {
         return windows.computeIfAbsent(key, k -> new WindowState(config.window()));
     }
 
-    /**
-     * Thread-safe window state using synchronized methods.
-     */
+    /// Thread-safe window state using synchronized methods.
     private static final class WindowState {
         private final long windowNanos;
         private long windowStart;

@@ -13,10 +13,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * Default implementation of CircuitBreakerFactory.
- * Uses JDK dynamic proxies with pragmatica-lite CircuitBreaker for circuit breaker logic.
- */
+/// Default implementation of CircuitBreakerFactory.
+/// Uses JDK dynamic proxies with pragmatica-lite CircuitBreaker for circuit breaker logic.
 final class DefaultCircuitBreakerFactory implements CircuitBreakerFactory {
     private final AtomicBoolean enabled = new AtomicBoolean(true);
 

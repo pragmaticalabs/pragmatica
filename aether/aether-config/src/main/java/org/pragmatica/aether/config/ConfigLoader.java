@@ -9,40 +9,33 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Map;
 
-/**
- * Loads Aether configuration from TOML files with environment-aware defaults.
- *
- * <p>Configuration resolution order (highest priority first):
- * <ol>
- *   <li>Explicit overrides via Builder</li>
- *   <li>Values from TOML file</li>
- *   <li>Environment-specific defaults</li>
- * </ol>
- */
+/// Loads Aether configuration from TOML files with environment-aware defaults.
+///
+///
+/// Configuration resolution order (highest priority first):
+/// <ol>
+///   - Explicit overrides via Builder
+///   - Values from TOML file
+///   - Environment-specific defaults
+/// </ol>
 public final class ConfigLoader {
     private ConfigLoader() {}
 
-    /**
-     * Load configuration from file path.
-     */
+    /// Load configuration from file path.
     public static Result<AetherConfig> load(Path path) {
         return TomlParser.parseFile(path)
                          .flatMap(ConfigLoader::fromDocument)
                          .flatMap(ConfigValidator::validate);
     }
 
-    /**
-     * Load configuration from TOML string content.
-     */
+    /// Load configuration from TOML string content.
     public static Result<AetherConfig> loadFromString(String content) {
         return TomlParser.parse(content)
                          .flatMap(ConfigLoader::fromDocument)
                          .flatMap(ConfigValidator::validate);
     }
 
-    /**
-     * Load configuration with CLI overrides.
-     */
+    /// Load configuration with CLI overrides.
     public static Result<AetherConfig> loadWithOverrides(Path path,
                                                          Map<String, String> overrides) {
         return TomlParser.parseFile(path)
@@ -50,9 +43,7 @@ public final class ConfigLoader {
                          .flatMap(ConfigValidator::validate);
     }
 
-    /**
-     * Create configuration from environment defaults only.
-     */
+    /// Create configuration from environment defaults only.
     public static AetherConfig aetherConfig(Environment env) {
         return AetherConfig.forEnvironment(env);
     }
@@ -169,12 +160,10 @@ public final class ConfigLoader {
         }
     }
 
-    /**
-     * Parse duration from string (e.g., "1s", "500ms", "5m").
-     * Blank input returns default of 1 second.
-     *
-     * @param value duration string, must not be null
-     */
+    /// Parse duration from string (e.g., "1s", "500ms", "5m").
+    /// Blank input returns default of 1 second.
+    ///
+    /// @param value duration string, must not be null
     public static Duration parseDuration(String value) {
         if (value.isBlank()) {
             return Duration.ofSeconds(1);
@@ -194,9 +183,7 @@ public final class ConfigLoader {
         return Duration.ofSeconds(Long.parseLong(normalized));
     }
 
-    /**
-     * Configuration loading errors.
-     */
+    /// Configuration loading errors.
     public sealed interface ConfigError extends Cause {
         record InvalidConfig(String reason) implements ConfigError {
             @Override

@@ -6,30 +6,26 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-/**
- * Dependency descriptor parsed from META-INF/dependencies/ file format.
- * <p>
- * Format: {@code <fully.qualified.class>:<version-pattern>[:<optional-param-name>]}
- * <p>
- * Examples:
- * - {@code com.example.UserService:1.2.3} - Exact version, no param name
- * - {@code com.example.EmailService:^1.0.0:emailService} - Caret pattern with param name
- * - {@code com.example.OrderProcessor:[1.0.0,2.0.0):orderProcessor} - Range with param name
- *
- * @param sliceClassName Fully qualified class name of the dependency slice
- * @param versionPattern Version pattern for dependency resolution
- * @param parameterName  Optional parameter name for factory method (for verification)
- */
+/// Dependency descriptor parsed from META-INF/dependencies/ file format.
+///
+/// Format: `<fully.qualified.class>:<version-pattern>[:<optional-param-name>]`
+///
+/// Examples:
+/// - `com.example.UserService:1.2.3` - Exact version, no param name
+/// - `com.example.EmailService:^1.0.0:emailService` - Caret pattern with param name
+/// - `com.example.OrderProcessor:[1.0.0,2.0.0):orderProcessor` - Range with param name
+///
+/// @param sliceClassName Fully qualified class name of the dependency slice
+/// @param versionPattern Version pattern for dependency resolution
+/// @param parameterName  Optional parameter name for factory method (for verification)
 public record DependencyDescriptor(String sliceClassName, VersionPattern versionPattern, Option<String> parameterName) {
-    /**
-     * Parse dependency descriptor from string.
-     * <p>
-     * Format: {@code className:versionPattern[:paramName]}
-     *
-     * @param line The dependency descriptor string
-     *
-     * @return Parsed descriptor or error
-     */
+    /// Parse dependency descriptor from string.
+    ///
+    /// Format: `className:versionPattern[:paramName]`
+    ///
+    /// @param line The dependency descriptor string
+    ///
+    /// @return Parsed descriptor or error
     public static Result<DependencyDescriptor> dependencyDescriptor(String line) {
         var trimmed = line.trim();
         if (trimmed.isEmpty()) {
@@ -65,9 +61,7 @@ public record DependencyDescriptor(String sliceClassName, VersionPattern version
                              .map(pattern -> new DependencyDescriptor(className, pattern, paramName));
     }
 
-    /**
-     * Format descriptor back to string representation.
-     */
+    /// Format descriptor back to string representation.
     public String asString() {
         var base = sliceClassName + ":" + versionPattern.asString();
         return parameterName.map(name -> base + ":" + name)

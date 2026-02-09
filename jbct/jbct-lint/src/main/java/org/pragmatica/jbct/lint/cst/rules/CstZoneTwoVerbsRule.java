@@ -12,16 +12,14 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-ZONE-01: Step interfaces should use Zone 2 verbs.
- *
- * Zone 2 (orchestration level) verbs are high-level coordination operations.
- * Step interfaces in Sequencer and Fork-Join patterns should use these verbs
- * for consistent abstraction levels.
- *
- * Zone 2 verbs: validate, process, handle, transform, apply, check, load, save,
- *               manage, configure, initialize, execute, prepare, complete
- */
+/// JBCT-ZONE-01: Step interfaces should use Zone 2 verbs.
+///
+/// Zone 2 (orchestration level) verbs are high-level coordination operations.
+/// Step interfaces in Sequencer and Fork-Join patterns should use these verbs
+/// for consistent abstraction levels.
+///
+/// Zone 2 verbs: validate, process, handle, transform, apply, check, load, save,
+///               manage, configure, initialize, execute, prepare, complete
 public class CstZoneTwoVerbsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ZONE-01";
 

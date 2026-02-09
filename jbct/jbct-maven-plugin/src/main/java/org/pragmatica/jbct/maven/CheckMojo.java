@@ -15,9 +15,7 @@ import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 
-/**
- * Maven goal combining format check and lint (for CI).
- */
+/// Maven goal combining format check and lint (for CI).
 @Mojo(name = "check", defaultPhase = LifecyclePhase.VERIFY)
 public class CheckMojo extends AbstractJbctMojo {
     @Override

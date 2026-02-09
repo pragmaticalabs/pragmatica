@@ -77,6 +77,7 @@ This makes synchronization points in code more explicit, easier to write and rea
  */
 @SuppressWarnings("unused")
 public interface Promise<T> {
+    /// **[Pure Transform]**
     /// Underlying method for all dependent actions. It applies provided action to the result of the promise and returns new promise.
     ///
     /// @param action Function to be applied to the result of the promise.
@@ -84,6 +85,7 @@ public interface Promise<T> {
     /// @return New promise instance.
     <U> Promise<U> fold(Fn1<Promise<U>, Result<T>> action);
 
+    /// **[Side Effect]**
     /// Underlying method for all independent actions. It asynchronously runs consumer with the promise result once it is available.
     ///
     /// @param action Consumer to be executed with the result of the promise.
@@ -91,6 +93,7 @@ public interface Promise<T> {
     /// @return Current promise instance.
     Promise<T> onResult(Consumer<Result<T>> action);
 
+    /// **[Pure Transform]**
     /// Transform the success value of the promise once the promise is resolved.
     ///
     /// This method is a dependent action and executed in the order in which transformations are written in the code.
@@ -102,6 +105,7 @@ public interface Promise<T> {
         return replaceResult(result -> result.map(transformation));
     }
 
+    /// **[Pure Transform]**
     /// Replace the value of the promise with the provided value once the promise is resolved into a success result.
     ///
     /// This method is a dependent action and executed in the order in which transformations are written in the code.
@@ -113,6 +117,7 @@ public interface Promise<T> {
         return map(_ -> supplier.get());
     }
 
+    /// **[Pure Transform]**
     /// Transform the success value of the promise once the promise is resolved. The transformation function returns a new promise.
     ///
     /// This method is a dependent action and executed in the order in which transformations are written in the code.
@@ -124,12 +129,14 @@ public interface Promise<T> {
         return fold(result -> result.fold(Promise::<U> failure, transformation));
     }
 
+    /// **[Pure Transform]**
     /// Version of the [#flatMap(Fn1)] which allows convenient "mixing in" additional parameter without the need to revert
     /// to traditional lambda.
     default <U, I> Promise<U> flatMap2(Fn2<Promise<U>, ? super T, ? super I> mapper, I parameter2) {
         return flatMap(value -> mapper.apply(value, parameter2));
     }
 
+    /// **[Pure Transform]**
     /// Replace the success value of the promise once the promise is resolved with the promise obtained from the provided supplier.
     ///
     /// This method is a dependent action and executed in the order in which transformations are written in the code.
@@ -141,6 +148,7 @@ public interface Promise<T> {
         return flatMap(_ -> supplier.get());
     }
 
+    /// **[Pure Transform]**
     /// Transform the failure value of the promise once the promise is resolved.
     ///
     /// This method is a dependent action and executed in the order in which transformations are written in the code.
@@ -152,6 +160,7 @@ public interface Promise<T> {
         return replaceResult(result -> result.mapError(transformation));
     }
 
+    /// **[Pure Transform]**
     /// Add tracing information to the failure value of the promise once the promise is resolved.
     ///
     /// This method is a dependent action and executed in the order in which transformations are written in the code.
@@ -164,6 +173,7 @@ public interface Promise<T> {
         return mapError(cause -> Causes.CompositeCause.toComposite(text, cause));
     }
 
+    /// **[Resolution]**
     /// Recover from failure by transforming failure cause into new value.
     ///
     /// @param mapper Function to transform failure cause
@@ -173,6 +183,7 @@ public interface Promise<T> {
         return replaceResult(result -> result.recover(mapper));
     }
 
+    /// **[Pure Transform]**
     /// Transform the result of the promise once the promise is resolved.
     ///
     /// This method is a dependent action and executed in the order in which transformations are written in the code.
@@ -184,6 +195,7 @@ public interface Promise<T> {
         return replaceResult(result -> result.flatMap(transformation));
     }
 
+    /// **[Pure Transform]**
     /// Replace the result of the promise with the transformed result once the promise is resolved.
     ///
     /// This method is a dependent action and executed in the order in which transformations are written in the code.
@@ -195,6 +207,7 @@ public interface Promise<T> {
         return fold(result -> Promise.resolved(transformation.apply(result)));
     }
 
+    /// **[Side Effect]**
     /// Run an asynchronous action once the promise is resolved.
     ///
     /// This method is an independent action and executed asynchronously.
@@ -206,6 +219,7 @@ public interface Promise<T> {
         return onResult(action);
     }
 
+    /// **[Side Effect]**
     /// Run the provided action once the promise is resolved, regardless of success or failure.
     ///
     /// @param action Action to execute when promise resolves
@@ -215,6 +229,7 @@ public interface Promise<T> {
         return onResult(_ -> action.run());
     }
 
+    /// **[Side Effect]**
     /// Run the provided action asynchronously once the promise is resolved, regardless of success or failure.
     ///
     /// @param action Action to execute when promise resolves
@@ -224,6 +239,7 @@ public interface Promise<T> {
         return onResult(_ -> action.run());
     }
 
+    /// **[Side Effect]**
     /// Run an action once the promise is resolved. The action is executed in the order in which transformations
     ///
     /// @param consumer Action to be executed once the promise is resolved.
@@ -236,6 +252,7 @@ public interface Promise<T> {
         });
     }
 
+    /// **[Side Effect]**
     /// Run an action once the promise is resolved with success. The action is executed asynchronously.
     ///
     /// @param action Action to be executed once the promise is resolved with success.
@@ -245,6 +262,7 @@ public interface Promise<T> {
         return onResult(result -> result.onSuccess(action));
     }
 
+    /// **[Side Effect]**
     /// Run an action asynchronously once the promise is resolved with success. This is an alias for [#onSuccess(Consumer)].
     ///
     /// @param action Action to be executed once the promise is resolved with success
@@ -254,6 +272,7 @@ public interface Promise<T> {
         return onSuccess(action);
     }
 
+    /// **[Side Effect]**
     /// Run an action once the promise is resolved with success. The action is executed asynchronously.
     ///
     /// @param action Action to be executed once the promise is resolved with success.
@@ -263,6 +282,7 @@ public interface Promise<T> {
         return onResult(result -> result.onSuccessRun(action));
     }
 
+    /// **[Side Effect]**
     /// Run an action asynchronously once the promise is resolved with success. This is an alias for [#onSuccessRun(Runnable)].
     ///
     /// @param action Action to be executed once the promise is resolved with success
@@ -272,6 +292,7 @@ public interface Promise<T> {
         return onSuccessRun(action);
     }
 
+    /// **[Side Effect]**
     /// Run an action once the promise is resolved with success. The action is executed in the order in which transformations are written in the code.
     ///
     /// @param consumer Action to be executed once the promise is resolved with success.
@@ -281,6 +302,7 @@ public interface Promise<T> {
         return fold(result -> Promise.resolved(result.onSuccess(consumer)));
     }
 
+    /// **[Side Effect]**
     /// Run an action once the promise is resolved with success. The action is executed asynchronously.
     ///
     /// @param action Action to be executed once the promise is resolved with success.
@@ -290,6 +312,7 @@ public interface Promise<T> {
         return onResult(result -> result.onFailure(action));
     }
 
+    /// **[Side Effect]**
     /// Run an action asynchronously once the promise is resolved with failure. This is an alias for [#onFailure(Consumer)].
     ///
     /// @param action Action to be executed once the promise is resolved with failure
@@ -299,6 +322,7 @@ public interface Promise<T> {
         return onFailure(action);
     }
 
+    /// **[Side Effect]**
     /// Run an action once the promise is resolved with success. The action is executed asynchronously.
     ///
     /// @param action Action to be executed
@@ -306,6 +330,7 @@ public interface Promise<T> {
         return onResult(result -> result.onFailureRun(action));
     }
 
+    /// **[Side Effect]**
     /// Run an action asynchronously once the promise is resolved with failure. This is an alias for [#onFailureRun(Runnable)].
     ///
     /// @param action Action to be executed once the promise is resolved with failure
@@ -315,6 +340,7 @@ public interface Promise<T> {
         return onFailureRun(action);
     }
 
+    /// **[Pure Transform]**
     /// Filter instance against provided predicate. If the predicate returns `true`, then the instance remains unchanged. If the predicate returns
     /// `false`, then a failure instance is created using given [Cause].
     ///
@@ -327,11 +353,13 @@ public interface Promise<T> {
                                     .async());
     }
 
+    /// **[Pure Transform]**
     /// Asynchronous version of the filtering
     default Promise<T> filter(Cause cause, Promise<Boolean> predicate) {
         return filter(_ -> cause, predicate);
     }
 
+    /// **[Pure Transform]**
     /// Filter instance against provided predicate. If the predicate returns `true`, then the instance remains unchanged. If the predicate returns
     /// `false`, then a failure instance is created using [Cause] created by the provided function.
     ///
@@ -344,6 +372,7 @@ public interface Promise<T> {
                                     .async());
     }
 
+    /// **[Pure Transform]**
     default Promise<T> filter(Fn1<Cause, T> causeMapper, Promise<Boolean> predicate) {
         return fold(result -> result.fold(Promise::failure,
                                           value -> predicate.flatMap(decision -> decision
@@ -352,6 +381,7 @@ public interface Promise<T> {
                                                                                               .promise())));
     }
 
+    /// **[Side Effect]**
     /// Run an action once the promise is resolved with failure. The action is executed in the order in which transformations are written in the code.
     ///
     /// @param consumer Action to be executed once the promise is resolved with failure.
@@ -361,6 +391,7 @@ public interface Promise<T> {
         return fold(result -> Promise.resolved(result.onFailure(consumer)));
     }
 
+    /// **[Resolution]**
     /// Replace current instance with provided promise if current instance is resolved with failure.
     ///
     /// @param promise Promise to replace the current instance with.
@@ -370,6 +401,7 @@ public interface Promise<T> {
         return fold(result -> result.fold(_ -> promise, _ -> this));
     }
 
+    /// **[Resolution]**
     /// Replace the current instance with the promise obtained from provided supplier if current instance is resolved with failure.
     ///
     /// @param supplier Supplier of the promise to replace the current instance with.
@@ -379,11 +411,13 @@ public interface Promise<T> {
         return fold(result -> result.fold(_ -> supplier.get(), _ -> this));
     }
 
+    /// **[Resolution]**
     /// Check if the promise is resolved.
     ///
     /// @return `true` if the promise is resolved, `false` otherwise.
     boolean isResolved();
 
+    /// **[Resolution]**
     /// Resolve the promise with the provided result.
     ///
     /// @param value Value to resolve the promise with.
@@ -391,6 +425,7 @@ public interface Promise<T> {
     /// @return Current promise instance.
     Promise<T> resolve(Result<T> value);
 
+    /// **[Resolution]**
     /// Resolve the promise to success with the provided value.
     ///
     /// @param value Value to resolve the promise with.
@@ -401,6 +436,7 @@ public interface Promise<T> {
         return resolve(Result.success(value));
     }
 
+    /// **[Resolution]**
     /// Resolve the promise to failure with the provided cause.
     ///
     /// @param cause Cause to resolve the promise with.
@@ -410,6 +446,7 @@ public interface Promise<T> {
         return resolve(Result.failure(cause));
     }
 
+    /// **[Resolution]**
     /// Asynchronously resolve the promise to success with the provided value.
     ///
     /// @param supplier Supplier of the value to resolve the promise with.
@@ -419,6 +456,7 @@ public interface Promise<T> {
         return async(promise -> promise.succeed(supplier.get()));
     }
 
+    /// **[Resolution]**
     /// Asynchronously resolve the promise to failure with the provided cause.
     ///
     /// @param supplier Supplier of the cause to resolve the promise with.
@@ -428,6 +466,7 @@ public interface Promise<T> {
         return async(promise -> promise.fail(supplier.get()));
     }
 
+    /// **[Resolution]**
     /// Set timeout for the promise. If promise will remain unresolved after timeout, it will
     /// be forcefully resolved with the [CoreError.Timeout] failure.
     ///
@@ -461,6 +500,7 @@ public interface Promise<T> {
                      promise -> promise.fail(new CoreError.Timeout("Promise timed out after " + timeout.millis() + "ms")));
     }
 
+    /// **[Resolution]**
     /// Cancel the promise.
     ///
     /// @return Current promise instance.
@@ -468,11 +508,13 @@ public interface Promise<T> {
         return fail(PROMISE_CANCELLED);
     }
 
+    /// **[Unsafe Extraction]**
     /// Await the resolution of the promise.
     ///
     /// @return Result of the promise resolution.
     Result<T> await();
 
+    /// **[Unsafe Extraction]**
     /// Await the resolution of the promise with the provided timeout.
     ///
     /// @param timeout Timeout to wait for the resolution.
@@ -480,6 +522,7 @@ public interface Promise<T> {
     /// @return Result of the promise resolution.
     Result<T> await(TimeSpan timeout);
 
+    /// **[Factory]**
     /// This method is necessary to make [Result] and [Promise] API consistent.
     ///
     /// @return current instance
@@ -487,6 +530,7 @@ public interface Promise<T> {
         return this;
     }
 
+    /// **[Side Effect]**
     /// Run the provided consumer asynchronously and pass the current instance as a parameter.
     ///
     /// @param consumer Consumer to execute asynchronously.
@@ -497,6 +541,7 @@ public interface Promise<T> {
         return this;
     }
 
+    /// **[Side Effect]**
     /// Executes the given supplier asynchronously and returns a promise that resolves when the supplier's result is obtained.
     ///
     /// @param supplier a supplier function that provides a result of type Result<T> to be resolved asynchronously
@@ -506,6 +551,7 @@ public interface Promise<T> {
         return async(promise -> promise.resolve(supplier.get()));
     }
 
+    /// **[Side Effect]**
     /// Run the provided consumer asynchronously and pass the current instance as a parameter. The consumer is executed after the specified timeout.
     ///
     /// @param delay  Time to wait before executing the consumer.
@@ -517,6 +563,7 @@ public interface Promise<T> {
         return this;
     }
 
+    /// **[Pure Transform]**
     /// Transform the promise into a promise resolved to [Unit]. This is useful when the promise is used in an "event broker" and the actual value does
     /// not matter.
     ///
@@ -530,6 +577,7 @@ public interface Promise<T> {
     //------------------------------------------------------------------------------------------------------------------
     // Instance all() methods - for-comprehension style composition
     //------------------------------------------------------------------------------------------------------------------
+    /// **[Pure Transform]**
     /// Chain a dependent operation with access to this Promise's value.
     /// Enables for-comprehension style composition without nested flatMaps.
     ///
@@ -542,6 +590,7 @@ public interface Promise<T> {
                                      .map(Tuple::tuple));
     }
 
+    /// **[Pure Transform]**
     /// Chain two dependent operations with access to this Promise's value.
     ///
     /// @param fn1 First function that takes the current value and returns a Promise
@@ -557,6 +606,7 @@ public interface Promise<T> {
                                                        .map(v2 -> Tuple.tuple(v1, v2))));
     }
 
+    /// **[Pure Transform]**
     /// Chain three dependent operations with access to this Promise's value.
     ///
     /// @param fn1 First function that takes the current value and returns a Promise
@@ -576,6 +626,7 @@ public interface Promise<T> {
                                                                          .map(v3 -> Tuple.tuple(v1, v2, v3)))));
     }
 
+    /// **[Pure Transform]**
     /// Chain four dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4> Mapper4<T1, T2, T3, T4> all(Fn1<Promise<T1>, T> fn1,
                                                          Fn1<Promise<T2>, T> fn2,
@@ -591,6 +642,7 @@ public interface Promise<T> {
                                                                                                                   v4))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain five dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5> Mapper5<T1, T2, T3, T4, T5> all(Fn1<Promise<T1>, T> fn1,
                                                                  Fn1<Promise<T2>, T> fn2,
@@ -609,6 +661,7 @@ public interface Promise<T> {
                                                                                                                                     v5)))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain six dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5, T6> Mapper6<T1, T2, T3, T4, T5, T6> all(Fn1<Promise<T1>, T> fn1,
                                                                          Fn1<Promise<T2>, T> fn2,
@@ -630,6 +683,7 @@ public interface Promise<T> {
                                                                                                                                                       v6))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain seven dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5, T6, T7> Mapper7<T1, T2, T3, T4, T5, T6, T7> all(Fn1<Promise<T1>, T> fn1,
                                                                                  Fn1<Promise<T2>, T> fn2,
@@ -654,6 +708,7 @@ public interface Promise<T> {
                                                                                                                                                                         v7)))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain eight dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8> Mapper8<T1, T2, T3, T4, T5, T6, T7, T8> all(Fn1<Promise<T1>, T> fn1,
                                                                                          Fn1<Promise<T2>, T> fn2,
@@ -681,6 +736,7 @@ public interface Promise<T> {
                                                                                                                                                                                           v8))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain nine dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9> Mapper9<T1, T2, T3, T4, T5, T6, T7, T8, T9> all(Fn1<Promise<T1>, T> fn1,
                                                                                                  Fn1<Promise<T2>, T> fn2,
@@ -711,6 +767,7 @@ public interface Promise<T> {
                                                                                                                                                                                                             v9)))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain ten dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> Mapper10<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> all(Fn1<Promise<T1>, T> fn1,
                                                                                                             Fn1<Promise<T2>, T> fn2,
@@ -744,6 +801,7 @@ public interface Promise<T> {
                                                                                                                                                                                                                                 v10))))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain eleven dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> Mapper11<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> all(Fn1<Promise<T1>, T> fn1,
                                                                                                                       Fn1<Promise<T2>, T> fn2,
@@ -780,6 +838,7 @@ public interface Promise<T> {
                                                                                                                                                                                                                                                     v11)))))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain twelve dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12>
     Mapper12<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> all(Fn1<Promise<T1>, T> fn1,
@@ -820,6 +879,7 @@ public interface Promise<T> {
                                                                                                                                                                                                                                                                         v12))))))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain thirteen dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13>
     Mapper13<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13> all(Fn1<Promise<T1>, T> fn1,
@@ -863,6 +923,7 @@ public interface Promise<T> {
                                                                                                                                                                                                                                                                                             v13)))))))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain fourteen dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14>
     Mapper14<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14> all(Fn1<Promise<T1>, T> fn1,
@@ -909,6 +970,7 @@ public interface Promise<T> {
                                                                                                                                                                                                                                                                                                                 v14))))))))))))))));
     }
 
+    /// **[Pure Transform]**
     /// Chain fifteen dependent operations with access to this Promise's value.
     default <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15>
     Mapper15<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15> all(Fn1<Promise<T1>, T> fn1,
@@ -958,6 +1020,7 @@ public interface Promise<T> {
                                                                                                                                                                                                                                                                                                                                     v15)))))))))))))))));
     }
 
+    /// **[Factory]**
     /// Create a new unresolved promise instance.
     ///
     /// @return New promise instance.
@@ -965,6 +1028,7 @@ public interface Promise<T> {
         return new PromiseImpl<>(null);
     }
 
+    /// **[Factory]**
     /// Create a new resolved promise instance resolved with the provided value.
     ///
     /// @param value Value to resolve the promise with.
@@ -974,6 +1038,7 @@ public interface Promise<T> {
         return new PromiseImpl<>(value);
     }
 
+    /// **[Factory]**
     /// Create a new resolved promise instance resolved into success with the provided value.
     ///
     /// @param value Value to resolve the promise with.
@@ -983,6 +1048,7 @@ public interface Promise<T> {
         return new PromiseImpl<>(Result.success(value));
     }
 
+    /// **[Factory]**
     /// Create a new resolved promise instance resolved into success with the provided value.
     ///
     /// @param value Value to resolve the promise with.
@@ -992,6 +1058,7 @@ public interface Promise<T> {
         return success(value);
     }
 
+    /// **[Factory]**
     /// Create a new resolved promise instance resolved into failure with the provided cause.
     ///
     /// @param cause Cause to resolve the promise with.
@@ -1001,6 +1068,7 @@ public interface Promise<T> {
         return new PromiseImpl<>(Result.failure(cause));
     }
 
+    /// **[Factory]**
     /// Create a new resolved promise instance resolved into failure with the provided cause.
     ///
     /// @param cause Cause to resolve the promise with.
@@ -1010,6 +1078,7 @@ public interface Promise<T> {
         return failure(cause);
     }
 
+    /// **[Factory]**
     /// Create a new unresolved promise instance and run the provided consumer asynchronously with the newly created instance.
     ///
     /// @param consumer Consumer to execute asynchronously with the created instance.
@@ -1020,6 +1089,7 @@ public interface Promise<T> {
                       .async(consumer);
     }
 
+    /// **[Factory]**
     /// Creates a promise that resolves with the result provided by the given supplier.
     ///
     /// @param supplier a supplier that provides a result to resolve the promise
@@ -1029,6 +1099,7 @@ public interface Promise<T> {
         return promise(promise -> promise.resolve(supplier.get()));
     }
 
+    /// **[Factory]**
     /// Create a new unresolved promise instance and run the provided consumer asynchronously with the newly created instance after the specified timeout.
     ///
     /// @param delay    delay before execution starts
@@ -1040,6 +1111,7 @@ public interface Promise<T> {
                       .async(delay, consumer);
     }
 
+    /// **[Factory]**
     /// Create a new unresolved promise instance and run the provided supplier asynchronously.
     /// Result returned by the supplier is then used to resolve the promise.
     ///
@@ -1052,6 +1124,7 @@ public interface Promise<T> {
                        promise -> promise.resolve(supplier.get()));
     }
 
+    /// **[Factory]**
     /// Asynchronously run the provided lambda and eventually resolve returned [Promise] with the value returned by lambda if the call succeeds or with
     /// the failure if call throws exception.
     ///
@@ -1063,6 +1136,7 @@ public interface Promise<T> {
         return Promise.promise(() -> Result.lift(exceptionMapper, supplier));
     }
 
+    /// **[Factory]**
     /// Wrap the call to the provided function into success [Result] if the call succeeds of into failure [Result] if call throws exception.
     ///
     /// @param exceptionMapper the function which will transform exception into instance of [Cause]
@@ -1074,6 +1148,7 @@ public interface Promise<T> {
         return value -> Promise.promise(() -> Result.lift(exceptionMapper, () -> function.apply(value)));
     }
 
+    /// **[Factory]**
     /// Convenience method for creating a binary function that wraps a throwing function and returns a Promise.
     /// This is a function factory that creates reusable binary functions for promise-based operations.
     ///
@@ -1090,6 +1165,7 @@ public interface Promise<T> {
                                                                       () -> function.apply(value1, value2)));
     }
 
+    /// **[Factory]**
     /// Convenience method for creating a ternary function that wraps a throwing function and returns a Promise.
     /// This is a function factory that creates reusable ternary functions for promise-based operations.
     ///
@@ -1109,6 +1185,7 @@ public interface Promise<T> {
                                                                                                    value3)));
     }
 
+    /// **[Factory]**
     /// Same as [#liftFn1(Fn1, ThrowingFn1)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function The throwing unary function to wrap
@@ -1120,6 +1197,7 @@ public interface Promise<T> {
         return liftFn1(Causes::fromThrowable, function);
     }
 
+    /// **[Factory]**
     /// Same as [#liftFn2(Fn1, ThrowingFn2)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function The throwing binary function to wrap
@@ -1132,6 +1210,7 @@ public interface Promise<T> {
         return liftFn2(Causes::fromThrowable, function);
     }
 
+    /// **[Factory]**
     /// Same as [#liftFn3(Fn1, ThrowingFn3)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function The throwing ternary function to wrap
@@ -1145,6 +1224,7 @@ public interface Promise<T> {
         return liftFn3(Causes::fromThrowable, function);
     }
 
+    /// **[Factory]**
     /// Convenience method for directly invoking a throwing unary function and wrapping the result in a Promise.
     /// This method provides immediate invocation rather than returning a function factory.
     ///
@@ -1161,6 +1241,7 @@ public interface Promise<T> {
         return Promise.promise(() -> Result.lift(exceptionMapper, () -> function.apply(value1)));
     }
 
+    /// **[Factory]**
     /// Same as [#lift1(Fn1, ThrowingFn1, Object)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function The throwing unary function to invoke
@@ -1173,6 +1254,7 @@ public interface Promise<T> {
         return lift1(Causes::fromThrowable, function, value1);
     }
 
+    /// **[Factory]**
     /// Convenience method for directly invoking a throwing binary function and wrapping the result in a Promise.
     /// This method provides immediate invocation rather than returning a function factory.
     ///
@@ -1192,6 +1274,7 @@ public interface Promise<T> {
         return Promise.promise(() -> Result.lift(exceptionMapper, () -> function.apply(value1, value2)));
     }
 
+    /// **[Factory]**
     /// Same as [#lift2(Fn1, ThrowingFn2, Object, Object)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function The throwing binary function to invoke
@@ -1206,6 +1289,7 @@ public interface Promise<T> {
         return lift2(Causes::fromThrowable, function, value1, value2);
     }
 
+    /// **[Factory]**
     /// Convenience method for directly invoking a throwing ternary function and wrapping the result in a Promise.
     /// This method provides immediate invocation rather than returning a function factory.
     ///
@@ -1228,6 +1312,7 @@ public interface Promise<T> {
         return Promise.promise(() -> Result.lift(exceptionMapper, () -> function.apply(value1, value2, value3)));
     }
 
+    /// **[Factory]**
     /// Same as [#lift3(Fn1, ThrowingFn3, Object, Object, Object)] with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param function The throwing ternary function to invoke
@@ -1244,6 +1329,7 @@ public interface Promise<T> {
         return lift3(Causes::fromThrowable, function, value1, value2, value3);
     }
 
+    /// **[Factory]**
     /// Asynchronously run the provided lambda and eventually resolve returned [Promise] with the [Unit] if the call succeeds or with the failure
     /// if call throws exception.
     ///
@@ -1255,6 +1341,7 @@ public interface Promise<T> {
         return Promise.promise(() -> Result.lift(exceptionMapper, runnable));
     }
 
+    /// **[Factory]**
     /// Asynchronously run the provided lambda and eventually resolve returned [Promise] with the [Unit] if the call succeeds or with the failure
     /// if call throws exception.
     ///
@@ -1266,6 +1353,7 @@ public interface Promise<T> {
         return Promise.promise(() -> Result.lift(cause, supplier));
     }
 
+    /// **[Factory]**
     /// Similar to [#lift(Fn1,ThrowingFn0)] but with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param supplier the call to wrap
@@ -1275,6 +1363,7 @@ public interface Promise<T> {
         return Promise.promise(() -> Result.lift(supplier));
     }
 
+    /// **[Factory]**
     /// Asynchronously run the provided lambda and eventually resolve returned [Promise] with the [Unit] if the call succeeds or with the failure
     /// if call throws exception.
     ///
@@ -1286,6 +1375,7 @@ public interface Promise<T> {
         return Promise.promise(() -> Result.lift(cause, runnable));
     }
 
+    /// **[Factory]**
     /// Similar to [#lift(Fn1,ThrowingRunnable)] but with [Causes#fromThrowable(Throwable)] used for exception mapping.
     ///
     /// @param runnable the call to wrap
@@ -1295,6 +1385,7 @@ public interface Promise<T> {
         return Promise.promise(() -> Result.lift(runnable));
     }
 
+    /// **[Factory]**
     /// Asynchronously run the provided lambda and eventually resolve returned [Promise] with the [Unit] if the call succeeds or with the failure
     ///
     /// @param action the action to run
@@ -1304,6 +1395,7 @@ public interface Promise<T> {
         return Promise.lift(CoreError::exception, action::run);
     }
 
+    /// **[Resolution]**
     /// Fail all provided promises with the provided cause.
     ///
     /// @param cause    Cause to fail the promises with.
@@ -1313,6 +1405,7 @@ public interface Promise<T> {
         failAll(cause, List.of(promises));
     }
 
+    /// **[Resolution]**
     /// Fail all provided promises with the provided cause.
     ///
     /// @param cause    Cause to fail the promises with.
@@ -1321,6 +1414,7 @@ public interface Promise<T> {
         promises.forEach(promise -> promise.fail(cause));
     }
 
+    /// **[Factory]**
     /// Instance of the [Promise] resolved into success with [Unit].
     ///
     /// @return The singleton instance of the [Promise] resolved into success with [Unit].
@@ -1328,6 +1422,7 @@ public interface Promise<T> {
         return UNIT;
     }
 
+    /// **[Factory]**
     /// Return promise which will be resolved once any of the promises provided as parameters are resolved with success. If none of the promises
     /// are resolved with success, then the created instance will be resolved with the provided `failureResult`.
     ///
@@ -1344,6 +1439,7 @@ public interface Promise<T> {
                                                                                 .onResultRun(at::registerEvent)))));
     }
 
+    /// **[Factory]**
     /// Return promise which will be resolved once any of the promises provided as parameters are resolved with success. If none of the promises
     /// are resolved with success, then the created instance will be resolved with the provided `failureResult`.
     ///
@@ -1358,6 +1454,7 @@ public interface Promise<T> {
                                                                                     .onResultRun(at::registerEvent)))));
     }
 
+    /// **[Factory]**
     /// Return promise which will be resolved once any of the promises provided as parameters are resolved with success. If none of the promises
     /// are resolved with success, then the created instance will be resolved with [CoreError.Cancelled].
     ///
@@ -1370,6 +1467,7 @@ public interface Promise<T> {
         return any((Result<T>) OTHER_SUCCEEDED, promises);
     }
 
+    /// **[Factory]**
     /// Return promise which will be resolved once any of the promises provided as parameters are resolved with success. If none of the promises
     /// are resolved with success, then the created instance will be resolved with [CoreError.Cancelled].
     ///
@@ -1381,6 +1479,7 @@ public interface Promise<T> {
         return any((Result<T>) OTHER_SUCCEEDED, promises);
     }
 
+    /// **[Resolution]**
     /// Cancel all provided promises.
     ///
     /// @param promises Input promises.
@@ -1389,6 +1488,7 @@ public interface Promise<T> {
         cancelAll(List.of(promises));
     }
 
+    /// **[Resolution]**
     /// Cancel all provided promises.
     ///
     /// @param promises Input promises.
@@ -1396,6 +1496,7 @@ public interface Promise<T> {
         failAll(PROMISE_CANCELLED, promises);
     }
 
+    /// **[Factory]**
     /// Return a promise which will be resolved with the list containing results from all passed promises.
     ///
     /// @param promises Collection of promises to be resolved.
@@ -1416,6 +1517,7 @@ public interface Promise<T> {
         return promise.map(list -> (List<Result<T>>) list);
     }
 
+    /// **[Factory]**
     /// Return a promise which will be resolved when all promises passed as a parameter are resolved. If any of the provided promises are
     /// resolved with error, then the resulting promise will be also resolved with error.
     ///
@@ -1430,6 +1532,7 @@ public interface Promise<T> {
                              .mapError(causes::append);
     }
 
+    /// **[Factory]**
     /// Return a promise which will be resolved when all promises passed as a parameter are resolved. If any of the provided promises are
     /// resolved with error, then the resulting promise will be also resolved with error.
     ///
@@ -1446,6 +1549,7 @@ public interface Promise<T> {
                                  promise2);
     }
 
+    /// **[Factory]**
     /// Return a promise which will be resolved when all promises passed as a parameter are resolved. If any of the provided promises are
     /// resolved with error, then the resulting promise will be also resolved with error.
     ///
@@ -1465,6 +1569,7 @@ public interface Promise<T> {
                                  promise3);
     }
 
+    /// **[Factory]**
     /// Return a promise which will be resolved when all promises passed as a parameter are resolved. If any of the provided promises are
     /// resolved with error, then the resulting promise will be also resolved with error.
     ///
@@ -1490,6 +1595,7 @@ public interface Promise<T> {
                                  promise4);
     }
 
+    /// **[Factory]**
     /// Return a promise which will be resolved when all promises passed as a parameter are resolved. If any of the provided promises are
     /// resolved with error, then the resulting promise will be also resolved with error.
     ///
@@ -1519,6 +1625,7 @@ public interface Promise<T> {
                                  promise5);
     }
 
+    /// **[Factory]**
     /// Return a promise which will be resolved when all promises passed as a parameter are resolved. If any of the provided promises are
     /// resolved with error, then the resulting promise will be also resolved with error.
     ///
@@ -1552,6 +1659,7 @@ public interface Promise<T> {
                                  promise6);
     }
 
+    /// **[Factory]**
     /// Return a promise which will be resolved when all promises passed as a parameter are resolved. If any of the provided promises are
     /// resolved with error, then the resulting promise will be also resolved with error.
     ///
@@ -1589,6 +1697,7 @@ public interface Promise<T> {
                                  promise7);
     }
 
+    /// **[Factory]**
     /// Return a promise which will be resolved when all promises passed as a parameter are resolved. If any of the provided promises are
     /// resolved with error, then the resulting promise will be also resolved with error.
     ///
@@ -1630,6 +1739,7 @@ public interface Promise<T> {
                                  promise8);
     }
 
+    /// **[Factory]**
     /// Return a promise which will be resolved when all promises passed as a parameter are resolved. If any of the provided promises are
     /// resolved with error, then the resulting promise will be also resolved with error.
     ///
@@ -1675,6 +1785,7 @@ public interface Promise<T> {
                                  promise9);
     }
 
+    /// **[Factory]**
     @SuppressWarnings("unchecked")
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> Mapper10<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> all(Promise<T1> promise1,
                                                                                                            Promise<T2> promise2,
@@ -1709,6 +1820,7 @@ public interface Promise<T> {
                                  promise10);
     }
 
+    /// **[Factory]**
     @SuppressWarnings("unchecked")
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> Mapper11<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> all(Promise<T1> promise1,
                                                                                                                      Promise<T2> promise2,
@@ -1746,6 +1858,7 @@ public interface Promise<T> {
                                  promise11);
     }
 
+    /// **[Factory]**
     @SuppressWarnings("unchecked")
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12>
     Mapper12<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> all(Promise<T1> promise1,
@@ -1787,6 +1900,7 @@ public interface Promise<T> {
                                  promise12);
     }
 
+    /// **[Factory]**
     @SuppressWarnings("unchecked")
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13>
     Mapper13<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13> all(Promise<T1> promise1,
@@ -1831,6 +1945,7 @@ public interface Promise<T> {
                                  promise13);
     }
 
+    /// **[Factory]**
     @SuppressWarnings("unchecked")
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14>
     Mapper14<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14> all(Promise<T1> promise1,
@@ -1878,6 +1993,7 @@ public interface Promise<T> {
                                  promise14);
     }
 
+    /// **[Factory]**
     @SuppressWarnings("unchecked")
     static <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15>
     Mapper15<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13, T14, T15> all(Promise<T1> promise1,

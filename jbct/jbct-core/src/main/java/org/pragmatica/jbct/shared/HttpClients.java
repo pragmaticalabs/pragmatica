@@ -6,9 +6,7 @@ import org.pragmatica.http.JdkHttpOperations;
 import java.net.http.HttpClient;
 import java.time.Duration;
 
-/**
- * Shared HttpClient instances for JBCT operations.
- */
+/// Shared HttpClient instances for JBCT operations.
 public sealed interface HttpClients permits HttpClients.unused {
     record unused() implements HttpClients {}
 
@@ -19,16 +17,12 @@ public sealed interface HttpClients permits HttpClients.unused {
 
     HttpOperations SHARED_HTTP_OPS = JdkHttpOperations.jdkHttpOperations(SHARED_CLIENT);
 
-    /**
-     * Get the shared HttpClient instance.
-     */
+    /// Get the shared HttpClient instance.
     static HttpClient client() {
         return SHARED_CLIENT;
     }
 
-    /**
-     * Get shared HttpOperations instance.
-     */
+    /// Get shared HttpOperations instance.
     static HttpOperations httpOperations() {
         return SHARED_HTTP_OPS;
     }

@@ -16,9 +16,7 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Serves static files from classpath resources.
- */
+/// Serves static files from classpath resources.
 public final class StaticFileHandler {
     private static final Logger log = LoggerFactory.getLogger(StaticFileHandler.class);
 

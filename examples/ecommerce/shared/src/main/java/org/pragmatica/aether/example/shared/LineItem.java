@@ -4,9 +4,7 @@ import org.pragmatica.lang.Result;
 
 import java.util.List;
 
-/**
- * A product with quantity in an order.
- */
+/// A product with quantity in an order.
 public record LineItem(ProductId productId, Quantity quantity) {
     public static Result<LineItem> lineItem(String productId, int quantity) {
         return Result.all(ProductId.productId(productId),
@@ -22,8 +20,6 @@ public record LineItem(ProductId productId, Quantity quantity) {
         return Result.allOf(results);
     }
 
-    /**
-     * Raw input before validation.
-     */
+    /// Raw input before validation.
     public record RawLineItem(String productId, int quantity) {}
 }

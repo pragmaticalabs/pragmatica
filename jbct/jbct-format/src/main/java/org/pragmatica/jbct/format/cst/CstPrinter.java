@@ -12,21 +12,21 @@ import java.util.regex.Pattern;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * CST printer for JBCT formatting.
- *
- * <p>Key formatting rules:
- * <ul>
- *   <li>Chain alignment: {@code .} aligns to end of first method call</li>
- *   <li>Arguments: align to opening {@code (}</li>
- *   <li>Imports: grouped (pragmatica, java/javax, static)</li>
- *   <li>120 char max line length, 4 space indent</li>
- * </ul>
- *
- * <p><b>Thread Safety:</b> Not thread-safe. Each instance maintains mutable state
- * (output buffer, column tracking, alignment context) during printing. Create a new
- * instance per formatting operation or synchronize externally.
- */
+/// CST printer for JBCT formatting.
+///
+///
+/// Key formatting rules:
+///
+///   - Chain alignment: `.` aligns to end of first method call
+///   - Arguments: align to opening `(`
+///   - Imports: grouped (pragmatica, java/javax, static)
+///   - 120 char max line length, 4 space indent
+///
+///
+///
+/// **Thread Safety:** Not thread-safe. Each instance maintains mutable state
+/// (output buffer, column tracking, alignment context) during printing. Create a new
+/// instance per formatting operation or synchronize externally.
 public class CstPrinter {
     private final FormatterConfig config;
     private final String source;
@@ -74,10 +74,8 @@ public class CstPrinter {
     }
 
     // ===== Measurement methods =====
-    /**
-     * Measure the single-line width of a node without printing.
-     * This traverses the node and counts characters as if printed on one line.
-     */
+    /// Measure the single-line width of a node without printing.
+    /// This traverses the node and counts characters as if printed on one line.
     private int measureWidth(CstNode node) {
         boolean wasMeasuring = measuringMode;
         int oldBuffer = measureBuffer;
@@ -96,17 +94,13 @@ public class CstPrinter {
         return width;
     }
 
-    /**
-     * Check if a node would fit on current line.
-     */
+    /// Check if a node would fit on current line.
     private boolean fitsOnLine(CstNode node) {
         int width = measureWidth(node);
         return currentColumn + width <= config.maxLineLength();
     }
 
-    /**
-     * Check if text would fit on current line.
-     */
+    /// Check if text would fit on current line.
     private boolean fitsOnLine(String text) {
         return currentColumn + text.length() <= config.maxLineLength();
     }
@@ -117,15 +111,13 @@ public class CstPrinter {
                      .stripTrailing() + "\n";
     }
 
-    /**
-     * How to handle trivia (whitespace/comments) when printing nodes.
-     */
+    /// How to handle trivia (whitespace/comments) when printing nodes.
     private enum TriviaMode {
-        /** Print all trivia (whitespace and comments) */
+        /// Print all trivia (whitespace and comments) */
         FULL,
-        /** Skip whitespace, keep comments only */
+        /// Skip whitespace, keep comments only */
         COMMENTS_ONLY,
-        /** Skip leading whitespace but print trailing trivia normally */
+        /// Skip leading whitespace but print trailing trivia normally */
         SKIP_LEADING
     }
 
@@ -201,9 +193,7 @@ public class CstPrinter {
         printWithSpacing(text);
     }
 
-    /**
-     * Print text with appropriate spacing based on Java syntax rules.
-     */
+    /// Print text with appropriate spacing based on Java syntax rules.
     private void printWithSpacing(String text) {
         if (!text.isEmpty()) {
             var ctx = SpacingRules.SpacingContext.spacingContext(lastChar, prevChar, lastWord, output.length());
@@ -432,9 +422,7 @@ public class CstPrinter {
                         (child, prev) -> needsBlankLineBefore(child, prev) || hasBlankLineInLeadingTrivia(child));
     }
 
-    /**
-     * Common helper for printing braced bodies (class, annotation, record members).
-     */
+    /// Common helper for printing braced bodies (class, annotation, record members).
     private void printBracedBody(List<CstNode> children,
                                  Class<? extends RuleId> memberRule,
                                  java.util.function.BiPredicate<CstNode, CstNode> needsBlankLine) {
@@ -468,17 +456,13 @@ public class CstPrinter {
         printTerminalFromSkipTrivia(children, "}");
     }
 
-    /**
-     * Find and print the first terminal with given text from a list of children.
-     */
+    /// Find and print the first terminal with given text from a list of children.
     private void printTerminalFrom(List<CstNode> children, String text) {
         printTerminalFrom(children, text, TriviaMode.FULL);
     }
 
-    /**
-     * Find and print the first terminal with given text, skipping whitespace trivia.
-     * Used for closing braces where we control newlines explicitly.
-     */
+    /// Find and print the first terminal with given text, skipping whitespace trivia.
+    /// Used for closing braces where we control newlines explicitly.
     private void printTerminalFromSkipTrivia(List<CstNode> children, String text) {
         printTerminalFrom(children, text, TriviaMode.COMMENTS_ONLY);
     }
@@ -509,10 +493,8 @@ public class CstPrinter {
         return false;
     }
 
-    /**
-     * Check if any child of this node has newlines in its trivia.
-     * Used to detect pre-broken parameter lists that should remain broken.
-     */
+    /// Check if any child of this node has newlines in its trivia.
+    /// Used to detect pre-broken parameter lists that should remain broken.
     private boolean hasNewlinesInTrivia(CstNode node) {
         return switch (node) {
             case CstNode.Terminal _, CstNode.Token _, CstNode.Error _ -> false;
@@ -535,9 +517,7 @@ public class CstPrinter {
         };
     }
 
-    /**
-     * Check if a node has newlines in its immediate leading trivia.
-     */
+    /// Check if a node has newlines in its immediate leading trivia.
     private boolean hasNewlineInLeadingTrivia(CstNode node) {
         for (var trivia : node.leadingTrivia()) {
             if (trivia instanceof Trivia.Whitespace ws && ws.text()
@@ -640,10 +620,8 @@ public class CstPrinter {
         print("}");
     }
 
-    /**
-     * Print a Postfix expression (Primary PostOp*).
-     * This handles method chains with JBCT alignment rules.
-     */
+    /// Print a Postfix expression (Primary PostOp*).
+    /// This handles method chains with JBCT alignment rules.
     private void printPostfix(CstNode.NonTerminal postfix) {
         var children = children(postfix);
         // Find Primary and all PostOp children
@@ -694,10 +672,8 @@ public class CstPrinter {
         }
     }
 
-    /**
-     * Check if a PostOp is a dot-method call (.method() style).
-     * Uses CST structure check instead of text extraction for performance.
-     */
+    /// Check if a PostOp is a dot-method call (.method() style).
+    /// Uses CST structure check instead of text extraction for performance.
     private boolean isDotMethodPostOp(CstNode postOp) {
         // Chain method calls have both '.' and '(' - e.g., .map()
         boolean hasDot = false;
@@ -713,10 +689,8 @@ public class CstPrinter {
         return hasDot && hasParen;
     }
 
-    /**
-     * Check if a PostOp is a bare invocation (just parentheses, no dot).
-     * Used to detect method invocations on Primary: receiver.method()
-     */
+    /// Check if a PostOp is a bare invocation (just parentheses, no dot).
+    /// Used to detect method invocations on Primary: receiver.method()
     private boolean isBareInvocationPostOp(CstNode postOp) {
         boolean hasParen = false;
         boolean hasDot = false;
@@ -731,11 +705,9 @@ public class CstPrinter {
         return hasParen && !hasDot;
     }
 
-    /**
-     * Check if Primary contains a method access pattern (has '.' in QualifiedName).
-     * This indicates the Primary is something like receiver.method which, combined
-     * with a bare () PostOp, forms a method call chain link.
-     */
+    /// Check if Primary contains a method access pattern (has '.' in QualifiedName).
+    /// This indicates the Primary is something like receiver.method which, combined
+    /// with a bare () PostOp, forms a method call chain link.
     private boolean hasMethodAccessInPrimary(CstNode primary) {
         // Look for '.' terminal in the Primary subtree
         return containsDotInIdentifierChain(primary);
@@ -769,12 +741,10 @@ public class CstPrinter {
         };
     }
 
-    /**
-     * Print a PostOp (method call suffix, field access, array access, etc.)
-     * Handles witness type syntax: .<TypeArgs>identifier() without space after >
-     *
-     * PostOp <- '.' TypeArgs? Identifier ('(' Args? ')')? / '.' 'class' / '.' 'this' / ...
-     */
+    /// Print a PostOp (method call suffix, field access, array access, etc.)
+    /// Handles witness type syntax: .<TypeArgs>identifier() without space after >
+    ///
+    /// PostOp <- '.' TypeArgs? Identifier ('(' Args? ')')? / '.' 'class' / '.' 'this' / ...
     private void printPostOp(CstNode.NonTerminal postOp) {
         var children = children(postOp);
         boolean afterTypeArgs = false;
@@ -809,20 +779,18 @@ public class CstPrinter {
         }
     }
 
-    /**
-     * Print a method chain with JBCT alignment.
-     * Chain continuation dots align to the position after the Primary.
-     *
-     * Example:
-     * return input.map(String::trim)
-     *             .map(String::toUpperCase);
-     *        ^--- alignColumn (position of first `.`)
-     *
-     * @param primary the primary expression (receiver)
-     * @param postOps all PostOp nodes in the chain
-     * @param methodCallPostOps pre-filtered list of PostOps that are .method() calls
-     * @param primaryHasInvocation true if Primary contains receiver.method pattern with () PostOp
-     */
+    /// Print a method chain with JBCT alignment.
+    /// Chain continuation dots align to the position after the Primary.
+    ///
+    /// Example:
+    /// return input.map(String::trim)
+    ///             .map(String::toUpperCase);
+    ///        ^--- alignColumn (position of first `.`)
+    ///
+    /// @param primary the primary expression (receiver)
+    /// @param postOps all PostOp nodes in the chain
+    /// @param methodCallPostOps pre-filtered list of PostOps that are .method() calls
+    /// @param primaryHasInvocation true if Primary contains receiver.method pattern with () PostOp
     private void printMethodChainAligned(CstNode primary,
                                          List<CstNode> postOps,
                                          List<CstNode> methodCallPostOps,
@@ -867,10 +835,8 @@ public class CstPrinter {
         }
     }
 
-    /**
-     * Find the character position of the first '.' terminal in a node.
-     * Returns -1 if no dot found. Used for chain alignment.
-     */
+    /// Find the character position of the first '.' terminal in a node.
+    /// Returns -1 if no dot found. Used for chain alignment.
     private int findFirstDotPosition(CstNode node) {
         // Accumulate character count until we find a dot
         return findDotPositionHelper(node, new int[]{0});
@@ -911,10 +877,8 @@ public class CstPrinter {
         };
     }
 
-    /**
-     * Print a node's content without trivia (for controlled layout).
-     * Uses printWithSpacing for proper inter-token spacing.
-     */
+    /// Print a node's content without trivia (for controlled layout).
+    /// Uses printWithSpacing for proper inter-token spacing.
     private void printNodeContent(CstNode node) {
         switch (node) {
             case CstNode.Terminal t -> printWithSpacing(t.text());
@@ -940,9 +904,7 @@ public class CstPrinter {
         }
     }
 
-    /**
-     * Print lambda content with proper arrow spacing (without trivia).
-     */
+    /// Print lambda content with proper arrow spacing (without trivia).
     private void printLambdaContent(CstNode.NonTerminal lambda) {
         var children = children(lambda);
         for (var child : children) {
@@ -983,13 +945,11 @@ public class CstPrinter {
         }
     }
 
-    /**
-     * Check if arguments contain complex expressions that should trigger line breaking.
-     * - Method chains (.foo().bar()) = complex
-     * - Lambda blocks (-> {) = complex
-     * - Inside breaking chain with method call args = complex
-     * - Simple identifiers (a, b, c) = NOT complex even in chains
-     */
+    /// Check if arguments contain complex expressions that should trigger line breaking.
+    /// - Method chains (.foo().bar()) = complex
+    /// - Lambda blocks (-> {) = complex
+    /// - Inside breaking chain with method call args = complex
+    /// - Simple identifiers (a, b, c) = NOT complex even in chains
     private boolean hasComplexArguments(CstNode.NonTerminal args) {
         var exprs = childrenByRule(args, RuleId.Expr.class);
         // Multiple arguments where any contains a method chain or lambda block = complex
@@ -1303,12 +1263,10 @@ public class CstPrinter {
         }
     }
 
-    /**
-     * Print a node while skipping all leading whitespace trivia recursively.
-     * This finds the first terminal in the subtree and skips its leading whitespace.
-     * Unlike printNode, this doesn't apply special NonTerminal formatting rules
-     * to avoid double-processing. It only traverses to skip whitespace.
-     */
+    /// Print a node while skipping all leading whitespace trivia recursively.
+    /// This finds the first terminal in the subtree and skips its leading whitespace.
+    /// Unlike printNode, this doesn't apply special NonTerminal formatting rules
+    /// to avoid double-processing. It only traverses to skip whitespace.
     private void printNodeSkipAllLeadingWhitespace(CstNode node) {
         // Find and print the first terminal with comments-only leading trivia
         printFirstTerminalSkipWhitespace(node);
@@ -1493,11 +1451,9 @@ public class CstPrinter {
         }
     }
 
-    /**
-     * Print additive expression with string concatenation wrapping.
-     * If expression exceeds max line length and contains string literals,
-     * break at each `+ "..."` and align to expression start.
-     */
+    /// Print additive expression with string concatenation wrapping.
+    /// If expression exceeds max line length and contains string literals,
+    /// break at each `+ "..."` and align to expression start.
     private void printAdditive(CstNode.NonTerminal additive) {
         // In measuring mode, just print all children
         if (measuringMode) {

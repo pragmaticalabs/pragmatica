@@ -19,18 +19,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for Management API endpoints.
- *
- * <p>Comprehensive coverage of all HTTP API endpoints exposed by AetherNode.
- * Tests are organized by endpoint category:
- * <ul>
- *   <li>Status endpoints (/health, /status, /nodes, /slices)</li>
- *   <li>Metrics endpoints (/metrics, /metrics/prometheus, /invocation-metrics)</li>
- *   <li>Threshold & Alert endpoints (/thresholds, /alerts)</li>
- *   <li>Controller endpoints (/controller/*)</li>
- * </ul>
- */
+/// Tests for Management API endpoints.
+///
+///
+/// Comprehensive coverage of all HTTP API endpoints exposed by AetherNode.
+/// Tests are organized by endpoint category:
+///
+///   - Status endpoints (/health, /status, /nodes, /slices)
+///   - Metrics endpoints (/metrics, /metrics/prometheus, /invocation-metrics)
+///   - Threshold & Alert endpoints (/thresholds, /alerts)
+///   - Controller endpoints (/controller/*)
+///
 @Execution(ExecutionMode.SAME_THREAD)
 class ManagementApiTest {
     private static final int BASE_PORT = 10000;

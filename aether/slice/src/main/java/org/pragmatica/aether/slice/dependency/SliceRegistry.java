@@ -14,81 +14,65 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
-/**
- * Thread-safe registry for tracking loaded slice instances.
- * <p>
- * Maps artifacts to their loaded slice instances. Supports:
- * - Registration of loaded slices
- * - Lookup by exact artifact
- * - Lookup by class name with version pattern matching
- * - Thread-safe concurrent access
- */
+/// Thread-safe registry for tracking loaded slice instances.
+///
+/// Maps artifacts to their loaded slice instances. Supports:
+/// - Registration of loaded slices
+/// - Lookup by exact artifact
+/// - Lookup by class name with version pattern matching
+/// - Thread-safe concurrent access
 public interface SliceRegistry {
-    /**
-     * Create a new empty registry.
-     */
+    /// Create a new empty registry.
     static SliceRegistry sliceRegistry() {
         return new SliceRegistryImpl(new ConcurrentHashMap<>());
     }
 
-    /**
-     * Register a loaded slice.
-     *
-     * @param artifact The artifact identifier
-     * @param slice    The loaded slice instance
-     *
-     * @return Success with Unit, or failure if artifact already registered
-     */
+    /// Register a loaded slice.
+    ///
+    /// @param artifact The artifact identifier
+    /// @param slice    The loaded slice instance
+    ///
+    /// @return Success with Unit, or failure if artifact already registered
     Result<Unit> register(Artifact artifact, Slice slice);
 
-    /**
-     * Unregister a slice.
-     *
-     * @param artifact The artifact identifier
-     *
-     * @return Success with Unit, or failure if artifact not found
-     */
+    /// Unregister a slice.
+    ///
+    /// @param artifact The artifact identifier
+    ///
+    /// @return Success with Unit, or failure if artifact not found
     Result<Unit> unregister(Artifact artifact);
 
-    /**
-     * Lookup slice by exact artifact.
-     *
-     * @param artifact The artifact identifier
-     *
-     * @return Option containing the slice if found
-     */
+    /// Lookup slice by exact artifact.
+    ///
+    /// @param artifact The artifact identifier
+    ///
+    /// @return Option containing the slice if found
     Option<Slice> lookup(Artifact artifact);
 
-    /**
-     * Find slice by class name and version pattern.
-     * <p>
-     * Searches all registered slices for matching class name,
-     * then filters by version pattern.
-     *
-     * @param className      Fully qualified class name
-     * @param versionPattern Version pattern to match
-     *
-     * @return Option containing the first matching slice
-     */
+    /// Find slice by class name and version pattern.
+    ///
+    /// Searches all registered slices for matching class name,
+    /// then filters by version pattern.
+    ///
+    /// @param className      Fully qualified class name
+    /// @param versionPattern Version pattern to match
+    ///
+    /// @return Option containing the first matching slice
     Option<Slice> find(String className, VersionPattern versionPattern);
 
-    /**
-     * Get all registered artifacts.
-     */
+    /// Get all registered artifacts.
     List<Artifact> allArtifacts();
 
-    /**
-     * Find slice by groupId, artifactId, and version pattern.
-     * <p>
-     * Searches all registered slices for matching groupId and artifactId,
-     * then filters by version pattern.
-     *
-     * @param groupId        Group ID (e.g., "org.example")
-     * @param artifactId     Artifact ID (e.g., "my-lib")
-     * @param versionPattern Version pattern to match
-     *
-     * @return Option containing the first matching slice
-     */
+    /// Find slice by groupId, artifactId, and version pattern.
+    ///
+    /// Searches all registered slices for matching groupId and artifactId,
+    /// then filters by version pattern.
+    ///
+    /// @param groupId        Group ID (e.g., "org.example")
+    /// @param artifactId     Artifact ID (e.g., "my-lib")
+    /// @param versionPattern Version pattern to match
+    ///
+    /// @return Option containing the first matching slice
     Option<Slice> findByArtifactKey(String groupId, String artifactId, VersionPattern versionPattern);
 
     record SliceRegistryImpl(ConcurrentMap<Artifact, Slice> registry) implements SliceRegistry {

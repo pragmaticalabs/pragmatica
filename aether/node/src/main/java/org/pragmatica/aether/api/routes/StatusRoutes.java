@@ -19,9 +19,7 @@ import java.util.List;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
-/**
- * Routes for cluster status: health, status, nodes, events.
- */
+/// Routes for cluster status: health, status, nodes, events.
 public final class StatusRoutes implements RouteSource {
     private final Supplier<AetherNode> nodeSupplier;
 

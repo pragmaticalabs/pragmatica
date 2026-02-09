@@ -16,25 +16,25 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Parser for blueprint DSL files using TOML format (RFC-0005).
- *
- * <p>Blueprints define which slices to deploy and how many instances.
- * Routes are self-registered by slices during activation via RouteRegistry.
- *
- * <p>Example format:
- * <pre>
- * id = "org.example:commerce:1.0.0"
- *
- * [[slices]]
- * artifact = "org.example:user-service:1.0.0"
- * instances = 2
- *
- * [[slices]]
- * artifact = "org.example:order-service:1.0.0"
- * instances = 3
- * </pre>
- */
+/// Parser for blueprint DSL files using TOML format (RFC-0005).
+///
+///
+/// Blueprints define which slices to deploy and how many instances.
+/// Routes are self-registered by slices during activation via RouteRegistry.
+///
+///
+/// Example format:
+/// ```
+/// id = "org.example:commerce:1.0.0"
+///
+/// [[slices]]
+/// artifact = "org.example:user-service:1.0.0"
+/// instances = 2
+///
+/// [[slices]]
+/// artifact = "org.example:order-service:1.0.0"
+/// instances = 3
+/// ```
 public interface BlueprintParser {
     Fn1<Cause, String> FILE_ERROR = Causes.forOneValue("Failed to read file: %s");
     Cause MISSING_ID = Causes.cause("Missing blueprint id");

@@ -11,9 +11,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-STY-02: Prefer constructor references (X::new).
- */
+/// JBCT-STY-02: Prefer constructor references (X::new).
 public class CstConstructorReferenceRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-02";
 

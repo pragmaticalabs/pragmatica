@@ -19,10 +19,8 @@ import org.eclipse.aether.installation.InstallRequest;
 import org.eclipse.aether.installation.InstallationException;
 import org.eclipse.aether.util.artifact.SubArtifact;
 
-/**
- * Installs slice artifacts to local repository with distinct artifactIds.
- * Unlike standard Maven attach, this creates truly separate artifacts.
- */
+/// Installs slice artifacts to local repository with distinct artifactIds.
+/// Unlike standard Maven attach, this creates truly separate artifacts.
 @Mojo(name = "install-slices", defaultPhase = LifecyclePhase.INSTALL)
 public class InstallSlicesMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project}", readonly = true, required = true)

@@ -16,10 +16,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
-/**
- * Inventory management slice.
- * Manages product stock levels, availability checking, and reservations.
- */
+/// Inventory management slice.
+/// Manages product stock levels, availability checking, and reservations.
 @Slice
 public interface InventoryService {
     // === Requests ===

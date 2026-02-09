@@ -8,12 +8,10 @@ import org.pragmatica.aether.infra.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.infra.db.DatabaseConnectorError;
 import org.pragmatica.lang.Promise;
 
-/**
- * SPI factory for creating JDBC DatabaseConnector instances.
- * <p>
- * Creates JdbcDatabaseConnector with HikariCP connection pooling.
- * Register via META-INF/services/org.pragmatica.aether.infra.ResourceFactory
- */
+/// SPI factory for creating JDBC DatabaseConnector instances.
+///
+/// Creates JdbcDatabaseConnector with HikariCP connection pooling.
+/// Register via META-INF/services/org.pragmatica.aether.infra.ResourceFactory
 public final class JdbcDatabaseConnectorFactory implements ResourceFactory<DatabaseConnector, DatabaseConnectorConfig> {
 
     @Override

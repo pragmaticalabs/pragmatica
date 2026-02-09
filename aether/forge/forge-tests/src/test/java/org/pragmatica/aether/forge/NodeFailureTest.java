@@ -17,19 +17,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for node failure and recovery scenarios.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Single node failure with quorum maintained</li>
- *   <li>Double node failure with quorum maintained</li>
- *   <li>Leader failure and re-election</li>
- *   <li>Node recovery (via restartNode)</li>
- *   <li>Rolling restart</li>
- *   <li>Minority partition (quorum lost) and recovery</li>
- * </ul>
- */
+/// Tests for node failure and recovery scenarios.
+///
+///
+/// Tests cover:
+///
+///   - Single node failure with quorum maintained
+///   - Double node failure with quorum maintained
+///   - Leader failure and re-election
+///   - Node recovery (via restartNode)
+///   - Rolling restart
+///   - Minority partition (quorum lost) and recovery
+///
 @Execution(ExecutionMode.SAME_THREAD)
 class NodeFailureTest {
     private static final int BASE_PORT = 7050;

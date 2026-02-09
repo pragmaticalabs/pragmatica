@@ -3,9 +3,7 @@ package org.example;
 import java.util.HashMap;
 import java.util.List;
 
-/**
- * Test class literals for various types including primitive arrays.
- */
+/// Test class literals for various types including primitive arrays.
 public interface ClassLiterals {
     static void configure(java.util.function.Consumer<Class< ?>> consumer) {
         // Primitive class literals

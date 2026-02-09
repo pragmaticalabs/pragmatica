@@ -14,20 +14,20 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for metrics collection and distribution.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Metrics collection at 1-second intervals</li>
- *   <li>Per-node CPU and JVM metrics</li>
- *   <li>Cluster-wide metrics aggregation</li>
- *   <li>Prometheus endpoint format</li>
- *   <li>Metrics snapshot distribution to all nodes</li>
- * </ul>
- *
- * <p>This test class uses a shared cluster (read-only tests).
- */
+/// E2E tests for metrics collection and distribution.
+///
+///
+/// Tests cover:
+///
+///   - Metrics collection at 1-second intervals
+///   - Per-node CPU and JVM metrics
+///   - Cluster-wide metrics aggregation
+///   - Prometheus endpoint format
+///   - Metrics snapshot distribution to all nodes
+///
+///
+///
+/// This test class uses a shared cluster (read-only tests).
 class MetricsE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(30).seconds().duration());

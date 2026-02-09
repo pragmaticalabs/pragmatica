@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-RET-04: Use Unit instead of Void.
- */
+/// JBCT-RET-04: Use Unit instead of Void.
 public class CstVoidTypeRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-04";
 

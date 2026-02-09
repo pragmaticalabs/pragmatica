@@ -8,14 +8,12 @@ import java.net.http.HttpClient.Redirect;
 
 import static org.pragmatica.lang.Result.success;
 
-/**
- * Configuration for HTTP client infrastructure slice.
- *
- * @param baseUrl         Optional base URL prepended to all requests
- * @param connectTimeout  Connection timeout
- * @param requestTimeout  Request timeout
- * @param followRedirects Redirect policy
- */
+/// Configuration for HTTP client infrastructure slice.
+///
+/// @param baseUrl         Optional base URL prepended to all requests
+/// @param connectTimeout  Connection timeout
+/// @param requestTimeout  Request timeout
+/// @param followRedirects Redirect policy
 public record HttpClientConfig(Option<String> baseUrl,
                                TimeSpan connectTimeout,
                                TimeSpan requestTimeout,

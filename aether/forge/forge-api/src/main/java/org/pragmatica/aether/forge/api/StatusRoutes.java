@@ -13,23 +13,19 @@ import java.util.List;
 
 import static org.pragmatica.aether.forge.api.ForgeApiResponses.*;
 
-/**
- * Status-related routes for the Forge API.
- * Provides endpoints for cluster status, node metrics, events, and health checks.
- */
+/// Status-related routes for the Forge API.
+/// Provides endpoints for cluster status, node metrics, events, and health checks.
 public final class StatusRoutes {
     private StatusRoutes() {}
 
-    /**
-     * Create status routes with the given dependencies.
-     *
-     * @param cluster   the Forge cluster instance
-     * @param metrics   the Forge metrics instance
-     * @param events    the event log deque
-     * @param startTime the server start time in milliseconds
-     * @param loadRunner the ConfigurableLoadRunner for load testing
-     * @return RouteSource containing all status-related routes
-     */
+    /// Create status routes with the given dependencies.
+    ///
+    /// @param cluster   the Forge cluster instance
+    /// @param metrics   the Forge metrics instance
+    /// @param events    the event log deque
+    /// @param startTime the server start time in milliseconds
+    /// @param loadRunner the ConfigurableLoadRunner for load testing
+    /// @return RouteSource containing all status-related routes
     public static RouteSource statusRoutes(ForgeCluster cluster,
                                            ForgeMetrics metrics,
                                            Deque<ForgeEvent> events,

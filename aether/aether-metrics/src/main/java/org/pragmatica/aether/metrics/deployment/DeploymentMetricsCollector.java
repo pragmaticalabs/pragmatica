@@ -19,61 +19,45 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Collects and manages deployment timing metrics for slice deployments.
- *
- * <p>Responsibilities:
- * <ul>
- *   <li>Track in-progress deployments with timestamps</li>
- *   <li>Store completed deployment metrics (last N per artifact)</li>
- *   <li>Handle DeploymentMetricsPing/Pong for cluster-wide visibility</li>
- * </ul>
- *
- * <p>Metrics are stored in-memory. Completed deployments retain last N entries per artifact.
- */
+/// Collects and manages deployment timing metrics for slice deployments.
+///
+///
+/// Responsibilities:
+///
+///   - Track in-progress deployments with timestamps
+///   - Store completed deployment metrics (last N per artifact)
+///   - Handle DeploymentMetricsPing/Pong for cluster-wide visibility
+///
+///
+///
+/// Metrics are stored in-memory. Completed deployments retain last N entries per artifact.
 public interface DeploymentMetricsCollector {
-    /**
-     * Default number of completed deployments to retain per artifact.
-     */
+    /// Default number of completed deployments to retain per artifact.
     int DEFAULT_RETENTION_COUNT = 10;
 
-    /**
-     * Handle deployment started event (dispatched via MessageRouter).
-     */
+    /// Handle deployment started event (dispatched via MessageRouter).
     @MessageReceiver
     void onDeploymentStarted(DeploymentStarted event);
 
-    /**
-     * Handle state transition event (dispatched via MessageRouter).
-     */
+    /// Handle state transition event (dispatched via MessageRouter).
     @MessageReceiver
     void onStateTransition(StateTransition event);
 
-    /**
-     * Handle deployment completed event (dispatched via MessageRouter).
-     */
+    /// Handle deployment completed event (dispatched via MessageRouter).
     @MessageReceiver
     void onDeploymentCompleted(DeploymentCompleted event);
 
-    /**
-     * Handle deployment failed event (dispatched via MessageRouter).
-     */
+    /// Handle deployment failed event (dispatched via MessageRouter).
     @MessageReceiver
     void onDeploymentFailed(DeploymentFailed event);
 
-    /**
-     * Get all known deployment metrics (local + remote nodes).
-     */
+    /// Get all known deployment metrics (local + remote nodes).
     Map<Artifact, List<DeploymentMetrics>> allDeploymentMetrics();
 
-    /**
-     * Get deployment metrics for a specific artifact.
-     */
+    /// Get deployment metrics for a specific artifact.
     List<DeploymentMetrics> metricsFor(Artifact artifact);
 
-    /**
-     * Get in-progress deployments.
-     */
+    /// Get in-progress deployments.
     Map<DeploymentKey, DeploymentMetrics> inProgressDeployments();
 
     @MessageReceiver
@@ -82,32 +66,22 @@ public interface DeploymentMetricsCollector {
     @MessageReceiver
     void onDeploymentMetricsPong(DeploymentMetricsPong pong);
 
-    /**
-     * Handle topology changes to clean up metrics from departed nodes.
-     */
+    /// Handle topology changes to clean up metrics from departed nodes.
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
-    /**
-     * Collect local metrics as protocol entries for transmission.
-     */
+    /// Collect local metrics as protocol entries for transmission.
     Map<String, List<DeploymentMetricsEntry>> collectLocalEntries();
 
-    /**
-     * Key for tracking in-progress deployments.
-     */
+    /// Key for tracking in-progress deployments.
     record DeploymentKey(Artifact artifact, NodeId nodeId) {}
 
-    /**
-     * Create a new DeploymentMetricsCollector instance.
-     */
+    /// Create a new DeploymentMetricsCollector instance.
     static DeploymentMetricsCollector deploymentMetricsCollector(NodeId self, ClusterNetwork network) {
         return new DeploymentMetricsCollectorImpl(self, network, DEFAULT_RETENTION_COUNT);
     }
 
-    /**
-     * Create a new DeploymentMetricsCollector with custom retention count.
-     */
+    /// Create a new DeploymentMetricsCollector with custom retention count.
     static DeploymentMetricsCollector deploymentMetricsCollector(NodeId self,
                                                                  ClusterNetwork network,
                                                                  int retentionCount) {
@@ -242,9 +216,7 @@ class DeploymentMetricsCollectorImpl implements DeploymentMetricsCollector {
         return mergeMetricsList(local, remote);
     }
 
-    /**
-     * Merge two metrics lists, sort by startTime descending, and trim to retention count.
-     */
+    /// Merge two metrics lists, sort by startTime descending, and trim to retention count.
     private List<DeploymentMetrics> mergeMetricsList(List<DeploymentMetrics> first, List<DeploymentMetrics> second) {
         var merged = new ArrayList<>(first);
         merged.addAll(second);

@@ -21,10 +21,8 @@ import org.eclipse.aether.deployment.DeploymentException;
 import org.eclipse.aether.repository.RemoteRepository;
 import org.eclipse.aether.util.artifact.SubArtifact;
 
-/**
- * Deploys slice artifacts to remote repository with distinct artifactIds.
- * Unlike standard Maven attach, this creates truly separate artifacts.
- */
+/// Deploys slice artifacts to remote repository with distinct artifactIds.
+/// Unlike standard Maven attach, this creates truly separate artifacts.
 @Mojo(name = "deploy-slices", defaultPhase = LifecyclePhase.DEPLOY)
 public class DeploySlicesMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project}", readonly = true, required = true)

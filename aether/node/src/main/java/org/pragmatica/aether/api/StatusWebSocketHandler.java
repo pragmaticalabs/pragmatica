@@ -9,11 +9,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Reusable WebSocket handler for broadcasting status updates.
- * Instance-based (not static) to support independent session pools
- * across management server and Forge dashboard.
- */
+/// Reusable WebSocket handler for broadcasting status updates.
+/// Instance-based (not static) to support independent session pools
+/// across management server and Forge dashboard.
 public class StatusWebSocketHandler implements WebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(StatusWebSocketHandler.class);
     private final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
@@ -38,9 +36,7 @@ public class StatusWebSocketHandler implements WebSocketHandler {
         log.info("Status client disconnected: {}", session.id());
     }
 
-    /**
-     * Broadcast a message to all connected clients.
-     */
+    /// Broadcast a message to all connected clients.
     public void broadcast(String message) {
         sessions.values()
                 .removeIf(session -> !session.isOpen());
@@ -48,9 +44,7 @@ public class StatusWebSocketHandler implements WebSocketHandler {
                 .forEach(session -> session.send(message));
     }
 
-    /**
-     * Get the number of connected clients.
-     */
+    /// Get the number of connected clients.
     public int connectedClients() {
         sessions.values().removeIf(session -> !session.isOpen());
         return sessions.size();

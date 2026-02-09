@@ -21,10 +21,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * Fulfillment and shipping slice.
- * Manages shipment creation, tracking, and shipping cost calculation.
- */
+/// Fulfillment and shipping slice.
+/// Manages shipment creation, tracking, and shipping cost calculation.
 @Slice
 public interface FulfillmentService {
     // === Requests ===

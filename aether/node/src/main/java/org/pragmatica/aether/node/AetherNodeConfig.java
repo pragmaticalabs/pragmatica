@@ -26,24 +26,22 @@ import java.util.List;
 import static org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider.furySerializerFactoryProvider;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * Configuration for an Aether cluster node.
- *
- * @param topology         Cluster topology configuration
- * @param protocol         Consensus protocol configuration
- * @param sliceAction      Slice lifecycle configuration
- * @param sliceConfig      Slice repository configuration (types to create at runtime)
- * @param managementPort   Port for HTTP management API (0 to disable)
- * @param artifactRepo     DHT configuration for artifact repository (replication factor, 0 = full)
- * @param tls              TLS configuration for secure connections (empty for plain TCP/HTTP)
- * @param ttm              TTM (Tiny Time Mixers) predictive scaling configuration
- * @param rollback         Automatic rollback configuration
- * @param appHttp          Application HTTP server configuration for slice routes
- * @param controllerConfig Controller configuration for scaling thresholds and behavior
- * @param configProvider   Configuration provider for resource provisioning (empty to disable)
- * @param nodeProvider     Node provider for cluster auto-healing (empty to disable)
- * @param autoHeal         Auto-heal retry configuration
- */
+/// Configuration for an Aether cluster node.
+///
+/// @param topology         Cluster topology configuration
+/// @param protocol         Consensus protocol configuration
+/// @param sliceAction      Slice lifecycle configuration
+/// @param sliceConfig      Slice repository configuration (types to create at runtime)
+/// @param managementPort   Port for HTTP management API (0 to disable)
+/// @param artifactRepo     DHT configuration for artifact repository (replication factor, 0 = full)
+/// @param tls              TLS configuration for secure connections (empty for plain TCP/HTTP)
+/// @param ttm              TTM (Tiny Time Mixers) predictive scaling configuration
+/// @param rollback         Automatic rollback configuration
+/// @param appHttp          Application HTTP server configuration for slice routes
+/// @param controllerConfig Controller configuration for scaling thresholds and behavior
+/// @param configProvider   Configuration provider for resource provisioning (empty to disable)
+/// @param nodeProvider     Node provider for cluster auto-healing (empty to disable)
+/// @param autoHeal         Auto-heal retry configuration
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
                                SliceActionConfig sliceAction,
@@ -155,10 +153,8 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     AutoHealConfig.DEFAULT);
     }
 
-    /**
-     * Create a test configuration for Forge simulation environment.
-     * Uses ForgeDefaults scaling config which disables CPU-based scaling.
-     */
+    /// Create a test configuration for Forge simulation environment.
+    /// Uses ForgeDefaults scaling config which disables CPU-based scaling.
     public static AetherNodeConfig forgeConfig(NodeId self, int port, List<NodeInfo> coreNodes) {
         var topology = new TopologyConfig(self,
                                           coreNodes.size(),
@@ -181,9 +177,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     AutoHealConfig.DEFAULT);
     }
 
-    /**
-     * Create a new configuration with TLS enabled for all components (HTTP and cluster).
-     */
+    /// Create a new configuration with TLS enabled for all components (HTTP and cluster).
     public AetherNodeConfig withTls(TlsConfig tlsConfig) {
         var tlsOption = Option.some(tlsConfig);
         // Update TopologyConfig with TLS for cluster communication
@@ -210,9 +204,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal);
     }
 
-    /**
-     * Create a new configuration with TTM enabled.
-     */
+    /// Create a new configuration with TTM enabled.
     public AetherNodeConfig withTTM(TTMConfig ttmConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -230,9 +222,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal);
     }
 
-    /**
-     * Create a new configuration with rollback settings.
-     */
+    /// Create a new configuration with rollback settings.
     public AetherNodeConfig withRollback(RollbackConfig rollbackConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -250,9 +240,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal);
     }
 
-    /**
-     * Create a new configuration with different slice configuration.
-     */
+    /// Create a new configuration with different slice configuration.
     public AetherNodeConfig withSliceConfig(SliceConfig newSliceConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -270,9 +258,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal);
     }
 
-    /**
-     * Create a new configuration with application HTTP server enabled.
-     */
+    /// Create a new configuration with application HTTP server enabled.
     public AetherNodeConfig withAppHttp(AppHttpConfig appHttpConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -290,9 +276,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal);
     }
 
-    /**
-     * Create a new configuration with different controller configuration.
-     */
+    /// Create a new configuration with different controller configuration.
     public AetherNodeConfig withControllerConfig(ControllerConfig newControllerConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -310,9 +294,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal);
     }
 
-    /**
-     * Create a new configuration with a ConfigurationProvider for resource provisioning.
-     */
+    /// Create a new configuration with a ConfigurationProvider for resource provisioning.
     public AetherNodeConfig withConfigProvider(ConfigurationProvider provider) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -330,9 +312,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal);
     }
 
-    /**
-     * Create a new configuration with a NodeProvider for cluster auto-healing.
-     */
+    /// Create a new configuration with a NodeProvider for cluster auto-healing.
     public AetherNodeConfig withNodeProvider(NodeProvider provider) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -350,9 +330,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     autoHeal);
     }
 
-    /**
-     * Create a new configuration with custom auto-heal settings.
-     */
+    /// Create a new configuration with custom auto-heal settings.
     public AetherNodeConfig withAutoHeal(AutoHealConfig autoHealConfig) {
         return new AetherNodeConfig(topology,
                                     protocol,
@@ -374,11 +352,9 @@ public record AetherNodeConfig(TopologyConfig topology,
         return topology.self();
     }
 
-    /**
-     * Validates the configuration.
-     *
-     * @return success if valid, failure with cause otherwise
-     */
+    /// Validates the configuration.
+    ///
+    /// @return success if valid, failure with cause otherwise
     public Result<Unit> validate() {
         if (managementPort < 0 || managementPort > 65535) {
             return Causes.cause("Invalid management port: " + managementPort)

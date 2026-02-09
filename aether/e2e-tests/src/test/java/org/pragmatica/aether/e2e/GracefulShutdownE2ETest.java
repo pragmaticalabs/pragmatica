@@ -14,20 +14,20 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for graceful shutdown scenarios.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Node shutdown leaves cluster in healthy state</li>
- *   <li>Peers detect and respond to node shutdown</li>
- *   <li>Slices are handled appropriately during shutdown</li>
- *   <li>Shutdown during ongoing operations</li>
- * </ul>
- *
- * <p>This test class uses a shared cluster with node restoration between tests.
- * Tests run in order to ensure deterministic behavior.
- */
+/// E2E tests for graceful shutdown scenarios.
+///
+///
+/// Tests cover:
+///
+///   - Node shutdown leaves cluster in healthy state
+///   - Peers detect and respond to node shutdown
+///   - Slices are handled appropriately during shutdown
+///   - Shutdown during ongoing operations
+///
+///
+///
+/// This test class uses a shared cluster with node restoration between tests.
+/// Tests run in order to ensure deterministic behavior.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 class GracefulShutdownE2ETest {

@@ -25,10 +25,8 @@ import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 
-/**
- * Generates Blueprint.toml from slice manifests and their transitive dependencies.
- * The blueprint lists all slices in topological order (dependencies before dependents).
- */
+/// Generates Blueprint.toml from slice manifests and their transitive dependencies.
+/// The blueprint lists all slices in topological order (dependencies before dependents).
 @Mojo(name = "generate-blueprint",
  defaultPhase = LifecyclePhase.PACKAGE,
  requiresDependencyResolution = ResolutionScope.COMPILE)

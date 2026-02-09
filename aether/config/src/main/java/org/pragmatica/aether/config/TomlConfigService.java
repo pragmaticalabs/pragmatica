@@ -12,12 +12,10 @@ import java.lang.reflect.Type;
 import java.nio.file.Path;
 import java.util.Arrays;
 
-/**
- * TOML-based implementation of ConfigService.
- * <p>
- * Loads configuration from aether.toml and provides typed section binding.
- * Supports nested sections using dot notation (e.g., "database.primary").
- */
+/// TOML-based implementation of ConfigService.
+///
+/// Loads configuration from aether.toml and provides typed section binding.
+/// Supports nested sections using dot notation (e.g., "database.primary").
 public final class TomlConfigService implements ConfigService {
     private final TomlDocument document;
 
@@ -25,35 +23,29 @@ public final class TomlConfigService implements ConfigService {
         this.document = document;
     }
 
-    /**
-     * Create a ConfigService from a TOML file path.
-     *
-     * @param path Path to the TOML file
-     * @return Result containing the ConfigService or error
-     */
+    /// Create a ConfigService from a TOML file path.
+    ///
+    /// @param path Path to the TOML file
+    /// @return Result containing the ConfigService or error
     public static Result<ConfigService> tomlConfigService(Path path) {
         return TomlParser.parseFile(path)
                          .mapError(e -> ConfigError.readFailed(path.toString(), new RuntimeException(e.message())))
                          .map(TomlConfigService::new);
     }
 
-    /**
-     * Create a ConfigService from TOML content string.
-     *
-     * @param content TOML content
-     * @return Result containing the ConfigService or error
-     */
+    /// Create a ConfigService from TOML content string.
+    ///
+    /// @param content TOML content
+    /// @return Result containing the ConfigService or error
     public static Result<ConfigService> tomlConfigService(String content) {
         return TomlParser.parse(content)
                          .mapError(e -> ConfigError.parseFailed("root", e.message()))
                          .map(TomlConfigService::new);
     }
 
-    /**
-     * Create a ConfigService from default aether.toml location.
-     *
-     * @return Result containing the ConfigService or error
-     */
+    /// Create a ConfigService from default aether.toml location.
+    ///
+    /// @return Result containing the ConfigService or error
     public static Result<ConfigService> tomlConfigService() {
         return tomlConfigService(Path.of("aether.toml"));
     }

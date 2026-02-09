@@ -10,11 +10,9 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-EX-02: Don't use orElseThrow().
- *
- * Exception-based control flow is forbidden. Use Result/Option composition.
- */
+/// JBCT-EX-02: Don't use orElseThrow().
+///
+/// Exception-based control flow is forbidden. Use Result/Option composition.
 public class CstOrElseThrowRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-EX-02";
 

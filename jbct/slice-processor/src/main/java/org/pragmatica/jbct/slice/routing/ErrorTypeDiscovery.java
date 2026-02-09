@@ -13,19 +13,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Discovers error types implementing {@link Cause} in a package
- * and maps them to HTTP status codes using pattern configuration.
- * <p>
- * Discovery process:
- * <ol>
- *   <li>Find all types in the specified package</li>
- *   <li>Filter to types implementing {@code org.pragmatica.lang.Cause}</li>
- *   <li>Match each type against patterns from configuration</li>
- *   <li>Detect conflicts (type matches multiple patterns with different statuses)</li>
- *   <li>Return mappings or error with conflicts</li>
- * </ol>
- */
+/// Discovers error types implementing {@link Cause} in a package
+/// and maps them to HTTP status codes using pattern configuration.
+///
+/// Discovery process:
+/// <ol>
+///   - Find all types in the specified package
+///   - Filter to types implementing `org.pragmatica.lang.Cause`
+///   - Match each type against patterns from configuration
+///   - Detect conflicts (type matches multiple patterns with different statuses)
+///   - Return mappings or error with conflicts
+/// </ol>
 public final class ErrorTypeDiscovery {
     private static final String CAUSE_QUALIFIED_NAME = "org.pragmatica.lang.Cause";
 
@@ -43,13 +41,11 @@ public final class ErrorTypeDiscovery {
                      .map(TypeElement::asType);
     }
 
-    /**
-     * Discover all error types in the package and map to HTTP status codes.
-     *
-     * @param packageName the package to scan for error types
-     * @param config      the error pattern configuration
-     * @return success with mappings, or failure with conflict details
-     */
+    /// Discover all error types in the package and map to HTTP status codes.
+    ///
+    /// @param packageName the package to scan for error types
+    /// @param config      the error pattern configuration
+    /// @return success with mappings, or failure with conflict details
     public Result<List<ErrorTypeMapping>> discover(String packageName,
                                                    ErrorPatternConfig config) {
         if (causeType.isEmpty()) {

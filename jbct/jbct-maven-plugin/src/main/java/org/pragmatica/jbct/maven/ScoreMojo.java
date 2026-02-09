@@ -17,9 +17,7 @@ import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 
-/**
- * Maven goal for calculating JBCT compliance score.
- */
+/// Maven goal for calculating JBCT compliance score.
 @Mojo(name = "score", defaultPhase = LifecyclePhase.VERIFY)
 public class ScoreMojo extends AbstractJbctMojo {
     @Parameter(property = "jbct.score.baseline")

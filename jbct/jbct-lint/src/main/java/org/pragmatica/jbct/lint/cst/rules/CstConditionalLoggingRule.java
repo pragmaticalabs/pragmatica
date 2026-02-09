@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-LOG-01: No conditional logging.
- */
+/// JBCT-LOG-01: No conditional logging.
 public class CstConditionalLoggingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-LOG-01";
 

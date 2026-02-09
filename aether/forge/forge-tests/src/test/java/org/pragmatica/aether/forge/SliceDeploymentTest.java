@@ -20,19 +20,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for slice deployment and lifecycle operations.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Slice deployment via API</li>
- *   <li>Slice activation and health</li>
- *   <li>Slice scaling</li>
- *   <li>Slice undeployment</li>
- *   <li>Slice replication across nodes</li>
- *   <li>Blueprint deployment</li>
- * </ul>
- */
+/// Tests for slice deployment and lifecycle operations.
+///
+///
+/// Tests cover:
+///
+///   - Slice deployment via API
+///   - Slice activation and health
+///   - Slice scaling
+///   - Slice undeployment
+///   - Slice replication across nodes
+///   - Blueprint deployment
+///
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceDeploymentTest {
     private static final int BASE_PORT = 5500;

@@ -10,12 +10,10 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-SEAL-01: Error interfaces should be sealed.
- *
- * Detects interfaces that extend Cause but are not declared as sealed.
- * Sealed error interfaces enable exhaustive pattern matching.
- */
+/// JBCT-SEAL-01: Error interfaces should be sealed.
+///
+/// Detects interfaces that extend Cause but are not declared as sealed.
+/// Sealed error interfaces enable exhaustive pattern matching.
 public class CstSealedErrorRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-SEAL-01";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-04-error-handling.md";

@@ -13,16 +13,14 @@ import java.util.regex.Pattern;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
-/**
- * Configuration for a single load generation target.
- *
- * @param name     Optional name for this target (auto-generated from target if not specified)
- * @param target   Target specification: "SliceName.method" or "/api/path/{var}"
- * @param rate     Requests per time unit (e.g., "100/s", "1000/m")
- * @param duration How long to run (null or Duration.ZERO = continuous)
- * @param pathVars Pattern templates for path variables
- * @param body     Body template with pattern placeholders
- */
+/// Configuration for a single load generation target.
+///
+/// @param name     Optional name for this target (auto-generated from target if not specified)
+/// @param target   Target specification: "SliceName.method" or "/api/path/{var}"
+/// @param rate     Requests per time unit (e.g., "100/s", "1000/m")
+/// @param duration How long to run (null or Duration.ZERO = continuous)
+/// @param pathVars Pattern templates for path variables
+/// @param body     Body template with pattern placeholders
 public record LoadTarget(Option<String> name,
                          String target,
                          Rate rate,
@@ -33,12 +31,12 @@ public record LoadTarget(Option<String> name,
 
     private static final Fn1<Cause, String> INVALID_RATE = Causes.forOneValue("Invalid rate format: %s");
 
-    /**
-     * Rate specification with value and time unit.
-     *
-     * <p>Use the {@link #rate(String)} factory method to create instances with validation.
-     * <p>Note: Constructor assumes pre-validated inputs from factory method.
-     */
+    /// Rate specification with value and time unit.
+    ///
+    ///
+    /// Use the {@link #rate(String)} factory method to create instances with validation.
+    ///
+    /// Note: Constructor assumes pre-validated inputs from factory method.
     public record Rate(int value, TimeUnit unit) {
         private static final Pattern RATE_PATTERN = Pattern.compile("^(\\d+)/(s|m|h)$");
         private static final Cause NON_POSITIVE_RATE = Causes.cause("Rate value must be positive");
@@ -71,12 +69,10 @@ public record LoadTarget(Option<String> name,
             }
         }
 
-        /**
-         * Factory method to create a Rate from a string specification.
-         *
-         * @param rateStr Rate string in format "value/unit" where unit is s, m, or h
-         * @return Result containing valid Rate or error
-         */
+        /// Factory method to create a Rate from a string specification.
+        ///
+        /// @param rateStr Rate string in format "value/unit" where unit is s, m, or h
+        /// @return Result containing valid Rate or error
         public static Result<Rate> rate(String rateStr) {
             var matcher = RATE_PATTERN.matcher(rateStr.trim());
             if (!matcher.matches()) {
@@ -101,9 +97,7 @@ public record LoadTarget(Option<String> name,
         }
     }
 
-    /**
-     * Creates a LoadTarget with validation.
-     */
+    /// Creates a LoadTarget with validation.
     public static Result<LoadTarget> loadTarget(Option<String> name,
                                                 String target,
                                                 String rateStr,
@@ -135,17 +129,13 @@ public record LoadTarget(Option<String> name,
 
     private static final Pattern HTTP_METHOD_PREFIX = Pattern.compile("^(GET|POST|PUT|DELETE|PATCH)\\s+");
 
-    /**
-     * Returns true if target is an HTTP path (starts with / or HTTP method).
-     */
+    /// Returns true if target is an HTTP path (starts with / or HTTP method).
     public boolean isHttpPath() {
         return target.startsWith("/") || HTTP_METHOD_PREFIX.matcher(target)
                                                            .find();
     }
 
-    /**
-     * Extracts the HTTP method from target if present.
-     */
+    /// Extracts the HTTP method from target if present.
     public Option<String> httpMethod() {
         var matcher = HTTP_METHOD_PREFIX.matcher(target);
         return matcher.find()
@@ -153,17 +143,13 @@ public record LoadTarget(Option<String> name,
                : none();
     }
 
-    /**
-     * Extracts the path from target, stripping HTTP method prefix if present.
-     */
+    /// Extracts the path from target, stripping HTTP method prefix if present.
     public String httpPath() {
         return HTTP_METHOD_PREFIX.matcher(target)
                                  .replaceFirst("");
     }
 
-    /**
-     * Derives a name from target, using path up to first variable or method name.
-     */
+    /// Derives a name from target, using path up to first variable or method name.
     private static String deriveNameFromTarget(String target) {
         // Strip HTTP method prefix if present
         var path = HTTP_METHOD_PREFIX.matcher(target)
@@ -183,17 +169,13 @@ public record LoadTarget(Option<String> name,
         }
     }
 
-    /**
-     * Returns true if this target should run continuously.
-     */
+    /// Returns true if this target should run continuously.
     public boolean isContinuous() {
         return duration.map(Duration::isZero)
                        .or(true);
     }
 
-    /**
-     * Creates a new LoadTarget with the rate scaled by the given multiplier.
-     */
+    /// Creates a new LoadTarget with the rate scaled by the given multiplier.
     public LoadTarget withScaledRate(double multiplier) {
         var newRate = new Rate((int) Math.max(1, rate.requestsPerSecond() * multiplier),
                                Rate.TimeUnit.SECOND);

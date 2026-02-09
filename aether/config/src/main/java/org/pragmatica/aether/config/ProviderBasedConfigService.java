@@ -16,13 +16,11 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
 
-/**
- * ConfigService implementation that delegates to a ConfigurationProvider.
- * <p>
- * Bridges the ConfigurationProvider (layered key-value configuration) to ConfigService
- * (typed section binding). This enables AetherNode to create a ConfigService from
- * a ConfigurationProvider for resource provisioning.
- */
+/// ConfigService implementation that delegates to a ConfigurationProvider.
+///
+/// Bridges the ConfigurationProvider (layered key-value configuration) to ConfigService
+/// (typed section binding). This enables AetherNode to create a ConfigService from
+/// a ConfigurationProvider for resource provisioning.
 public final class ProviderBasedConfigService implements ConfigService {
     private static final Pattern DURATION_PATTERN = Pattern.compile(
         "^(\\d+)\\s*(ms|s|m|h|d)$"
@@ -34,12 +32,10 @@ public final class ProviderBasedConfigService implements ConfigService {
         this.provider = provider;
     }
 
-    /**
-     * Create a ConfigService from a ConfigurationProvider.
-     *
-     * @param provider The configuration provider to delegate to
-     * @return ConfigService implementation
-     */
+    /// Create a ConfigService from a ConfigurationProvider.
+    ///
+    /// @param provider The configuration provider to delegate to
+    /// @return ConfigService implementation
     public static ProviderBasedConfigService providerBasedConfigService(ConfigurationProvider provider) {
         return new ProviderBasedConfigService(provider);
     }
@@ -147,10 +143,8 @@ public final class ProviderBasedConfigService implements ConfigService {
             .or(ConfigError.typeMismatch(fullKey, "supported type", type.getSimpleName()).result());
     }
 
-    /**
-     * Returns a parser function for primitive/simple types, or None if the type is not a primitive.
-     * Parser takes a String and returns Option of the parsed value (type-erased to Object).
-     */
+    /// Returns a parser function for primitive/simple types, or None if the type is not a primitive.
+    /// Parser takes a String and returns Option of the parsed value (type-erased to Object).
     @SuppressWarnings("unchecked")
     static Option<Fn1<Option<Object>, String>> primitiveParser(Class<?> type) {
         if (type == String.class) {
@@ -174,9 +168,7 @@ public final class ProviderBasedConfigService implements ConfigService {
         return Option.none();
     }
 
-    /**
-     * Resolves a primitive type value from config. Returns Some(Result) if type recognized, None otherwise.
-     */
+    /// Resolves a primitive type value from config. Returns Some(Result) if type recognized, None otherwise.
     private Option<Result<Object>> resolvePrimitive(String fullKey, Class<?> type) {
         return primitiveParser(type)
             .map(parser -> provider.getString(fullKey)
@@ -184,9 +176,7 @@ public final class ProviderBasedConfigService implements ConfigService {
                                    .toResult(ConfigError.sectionNotFound(fullKey)));
     }
 
-    /**
-     * Resolves an enum type value from config. Returns Some(Result) if type is enum, None otherwise.
-     */
+    /// Resolves an enum type value from config. Returns Some(Result) if type is enum, None otherwise.
     private Option<Result<Object>> resolveEnum(String fullKey, Class<?> type) {
         if (!type.isEnum()) {
             return Option.none();
@@ -198,9 +188,7 @@ public final class ProviderBasedConfigService implements ConfigService {
         );
     }
 
-    /**
-     * Resolves a nested record type value from config. Returns Some(Result) if type is record, None otherwise.
-     */
+    /// Resolves a nested record type value from config. Returns Some(Result) if type is record, None otherwise.
     @SuppressWarnings("unchecked")
     private Option<Result<Object>> resolveNestedRecord(String section, String key, Class<?> type) {
         if (!type.isRecord()) {

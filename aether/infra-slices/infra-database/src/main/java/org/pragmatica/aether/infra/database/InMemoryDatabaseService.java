@@ -15,10 +15,8 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * In-memory implementation of DatabaseService.
- * Uses ConcurrentHashMap for thread-safe storage.
- */
+/// In-memory implementation of DatabaseService.
+/// Uses ConcurrentHashMap for thread-safe storage.
 final class InMemoryDatabaseService implements DatabaseService {
     private static final String ID_COLUMN = "id";
     private static final DatabaseConfig DEFAULT_CONFIG = new DatabaseConfig("default",

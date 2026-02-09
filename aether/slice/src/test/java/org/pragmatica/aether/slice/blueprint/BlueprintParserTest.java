@@ -10,12 +10,11 @@ import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for BlueprintParser using TOML format.
- *
- * <p>Note: Routing is no longer parsed in blueprints - routes are self-registered
- * by slices during activation via RouteRegistry.
- */
+/// Tests for BlueprintParser using TOML format.
+///
+///
+/// Note: Routing is no longer parsed in blueprints - routes are self-registered
+/// by slices during activation via RouteRegistry.
 class BlueprintParserTest {
 
     @Nested

@@ -36,10 +36,8 @@ import io.netty.handler.codec.http.HttpVersion;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Handles REST API requests for the Forge dashboard.
- * Uses RequestRouter for endpoint routing and delegates to domain-specific route handlers.
- */
+/// Handles REST API requests for the Forge dashboard.
+/// Uses RequestRouter for endpoint routing and delegates to domain-specific route handlers.
 public final class ForgeApiHandler {
     private static final Logger log = LoggerFactory.getLogger(ForgeApiHandler.class);
     private static final int MAX_EVENTS = 100;

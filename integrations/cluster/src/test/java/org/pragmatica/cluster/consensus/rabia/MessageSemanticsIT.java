@@ -22,12 +22,10 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.pragmatica.consensus.rabia.infrastructure.TestCluster.StringKey.key;
 
-/**
- * Test Suite 2: Message Semantics
- * <p>
- * Tests message-level behaviors like duplication, out-of-order delivery,
- * message loss, and stale view numbers.
- */
+/// Test Suite 2: Message Semantics
+///
+/// Tests message-level behaviors like duplication, out-of-order delivery,
+/// message loss, and stale view numbers.
 public class MessageSemanticsIT {
     private static final Logger log = LoggerFactory.getLogger(MessageSemanticsIT.class);
     private static final int CLUSTER_SIZE = 5;
@@ -55,10 +53,8 @@ public class MessageSemanticsIT {
         }
     }
 
-    /**
-     * Test 2.1: Duplicate PROPOSE broadcasts
-     * Assertion: Replicas ignore/coalesce duplicates; continued progress
-     */
+    /// Test 2.1: Duplicate PROPOSE broadcasts
+    /// Assertion: Replicas ignore/coalesce duplicates; continued progress
     @Test
     void duplicateProposeBroadcasts() {
         log.info("Starting duplicate PROPOSE broadcasts test");
@@ -92,10 +88,8 @@ public class MessageSemanticsIT {
         network.getFaultInjector().setFault(LocalNetwork.FaultType.MESSAGE_DUPLICATE, false);
     }
 
-    /**
-     * Test 2.2: Out-of-order delivery (COMMIT before PREPARE) at one node
-     * Assertion: Buffering preserves safety
-     */
+    /// Test 2.2: Out-of-order delivery (COMMIT before PREPARE) at one node
+    /// Assertion: Buffering preserves safety
     @Test
     void outOfOrderDelivery() {
         log.info("Starting out-of-order delivery test");
@@ -131,10 +125,8 @@ public class MessageSemanticsIT {
                                                           false);
     }
 
-    /**
-     * Test 2.3: 10% random message loss for 30s
-     * Assertion: Commits proceed; observe latency increase only
-     */
+    /// Test 2.3: 10% random message loss for 30s
+    /// Assertion: Commits proceed; observe latency increase only
     @Test
     void randomMessageLoss() {
         log.info("Starting random message loss test");
@@ -191,10 +183,8 @@ public class MessageSemanticsIT {
         assertTrue(throughputWithLoss > 0, "System should continue to make progress with message loss");
     }
 
-    /**
-     * Test 2.4: Stale view numbers
-     * Assertion: Messages discarded; no regression
-     */
+    /// Test 2.4: Stale view numbers
+    /// Assertion: Messages discarded; no regression
     @Test
     void staleViewNumbers() {
         log.info("Starting stale view numbers test");

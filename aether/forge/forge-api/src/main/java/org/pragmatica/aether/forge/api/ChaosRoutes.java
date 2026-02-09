@@ -37,26 +37,22 @@ import static org.pragmatica.http.routing.Route.get;
 import static org.pragmatica.http.routing.Route.in;
 import static org.pragmatica.http.routing.Route.post;
 
-/**
- * REST API routes for chaos engineering operations.
- * Provides endpoints for enabling/disabling chaos, injecting events,
- * and managing cluster nodes (add, kill, rolling restart).
- */
+/// REST API routes for chaos engineering operations.
+/// Provides endpoints for enabling/disabling chaos, injecting events,
+/// and managing cluster nodes (add, kill, rolling restart).
 public final class ChaosRoutes {
     private ChaosRoutes() {}
 
     private static final Fn1<Cause, String> UNKNOWN_CHAOS_TYPE = Causes.forOneValue("Unknown chaos type: %s");
 
-    /**
-     * Creates chaos routes for the Forge API.
-     *
-     * @param cluster         the ForgeCluster for node management operations
-     * @param chaosController the ChaosController for chaos injection
-     * @param events          the event log deque
-     * @param inventoryState  state for inventory simulation
-     * @param eventLogger     callback to log events for the dashboard
-     * @return RouteSource containing all chaos-related routes
-     */
+    /// Creates chaos routes for the Forge API.
+    ///
+    /// @param cluster         the ForgeCluster for node management operations
+    /// @param chaosController the ChaosController for chaos injection
+    /// @param events          the event log deque
+    /// @param inventoryState  state for inventory simulation
+    /// @param eventLogger     callback to log events for the dashboard
+    /// @return RouteSource containing all chaos-related routes
     public static RouteSource chaosRoutes(ForgeCluster cluster,
                                           ChaosController chaosController,
                                           Deque<ForgeApiResponses.ForgeEvent> events,
@@ -149,14 +145,10 @@ public final class ChaosRoutes {
     }
 
     // ========== Request Records ==========
-    /**
-     * Request to enable or disable chaos injection.
-     */
+    /// Request to enable or disable chaos injection.
     public record EnableRequest(boolean enabled) {}
 
-    /**
-     * Request to inject a chaos event.
-     */
+    /// Request to inject a chaos event.
     public record InjectRequest(Option<String> type,
                                 Option<String> nodeId,
                                 Option<String> artifact,

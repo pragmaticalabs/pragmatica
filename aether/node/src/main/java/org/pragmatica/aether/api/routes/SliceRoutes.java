@@ -32,9 +32,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.aether.api.ManagementApiResponses.*;
 
-/**
- * Routes for slice management: deploy, undeploy, scale, blueprint.
- */
+/// Routes for slice management: deploy, undeploy, scale, blueprint.
 public final class SliceRoutes implements RouteSource {
     private static final Cause MISSING_ARTIFACT = Causes.cause("Missing 'artifact' field");
     private static final Cause MISSING_ARTIFACT_OR_INSTANCES = Causes.cause("Missing 'artifact' or 'instances' field");

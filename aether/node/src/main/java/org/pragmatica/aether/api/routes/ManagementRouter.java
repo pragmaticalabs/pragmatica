@@ -25,11 +25,9 @@ import io.netty.buffer.Unpooled;
 import io.netty.handler.codec.http.DefaultHttpHeadersFactory;
 import io.netty.handler.codec.http.HttpHeaders;
 
-/**
- * Router that bridges http-server RequestContext/ResponseWriter with http-routing Route DSL.
- * <p>
- * Adapts the pragmatica-lite http-server infrastructure to work with RouteSource-based routes.
- */
+/// Router that bridges http-server RequestContext/ResponseWriter with http-routing Route DSL.
+///
+/// Adapts the pragmatica-lite http-server infrastructure to work with RouteSource-based routes.
 public final class ManagementRouter {
     private final RequestRouter requestRouter;
     private final JsonCodec jsonCodec;
@@ -43,13 +41,11 @@ public final class ManagementRouter {
         return new ManagementRouter(RequestRouter.with(sources), JsonCodecAdapter.defaultCodec());
     }
 
-    /**
-     * Try to handle the request using route-based routing.
-     *
-     * @param ctx      the request context
-     * @param response the response writer
-     * @return true if a matching route was found and handled, false otherwise
-     */
+    /// Try to handle the request using route-based routing.
+    ///
+    /// @param ctx      the request context
+    /// @param response the response writer
+    /// @return true if a matching route was found and handled, false otherwise
     public boolean handle(RequestContext ctx, ResponseWriter response) {
         return parseMethod(ctx.method()
                               .name()).flatMap(method -> requestRouter.findRoute(method,
@@ -120,9 +116,7 @@ public final class ManagementRouter {
         return headerText.startsWith("text/") || headerText.contains("plain");
     }
 
-    /**
-     * Adapter that wraps http-server RequestContext as http-routing RequestContext.
-     */
+    /// Adapter that wraps http-server RequestContext as http-routing RequestContext.
     private record ServerRequestContextAdapter(RequestContext serverCtx,
                                                Route<?> route,
                                                JsonCodec jsonCodec,

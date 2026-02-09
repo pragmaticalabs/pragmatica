@@ -19,9 +19,7 @@ import static org.pragmatica.http.routing.QueryParameter.*;
 
 class RequestContextQueryTest {
 
-    /**
-     * Test implementation of RequestContext for testing query parameter matching.
-     */
+    /// Test implementation of RequestContext for testing query parameter matching.
     static class TestRequestContext implements RequestContext {
         private final Map<String, List<String>> queryParams;
 

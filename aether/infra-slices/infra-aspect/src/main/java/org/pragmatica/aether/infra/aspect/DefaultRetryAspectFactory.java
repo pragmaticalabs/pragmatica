@@ -13,10 +13,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * Default implementation of RetryAspectFactory.
- * Uses JDK dynamic proxies with pragmatica-lite Retry for retry logic.
- */
+/// Default implementation of RetryAspectFactory.
+/// Uses JDK dynamic proxies with pragmatica-lite Retry for retry logic.
 final class DefaultRetryAspectFactory implements RetryAspectFactory {
     private final AtomicBoolean enabled = new AtomicBoolean(true);
 

@@ -29,9 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Tracks global cluster state mirroring Ivy relations for invariant checking.
- */
+/// Tracks global cluster state mirroring Ivy relations for invariant checking.
 public final class ClusterState<C extends Command> {
     private final Map<NodeId, Option<Batch<C>>> proposals = new HashMap<>();
     private final Map<NodeId, Map<Phase, StateValue>> round1Votes = new HashMap<>();

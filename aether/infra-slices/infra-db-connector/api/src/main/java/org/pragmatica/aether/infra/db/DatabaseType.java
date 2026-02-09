@@ -4,9 +4,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-/**
- * Supported database types with their default ports and driver information.
- */
+/// Supported database types with their default ports and driver information.
 public enum DatabaseType {
     POSTGRESQL("postgresql", 5432, "org.postgresql.Driver", "postgresql"),
     MYSQL("mysql", 3306, "com.mysql.cj.jdbc.Driver", "mysql"),
@@ -46,14 +44,12 @@ public enum DatabaseType {
         return jdbcProtocol;
     }
 
-    /**
-     * Builds a JDBC URL for this database type.
-     *
-     * @param host     Database host
-     * @param port     Database port (uses default if <= 0)
-     * @param database Database name
-     * @return JDBC connection URL
-     */
+    /// Builds a JDBC URL for this database type.
+    ///
+    /// @param host     Database host
+    /// @param port     Database port (uses default if <= 0)
+    /// @param database Database name
+    /// @return JDBC connection URL
     public String buildJdbcUrl(String host, int port, String database) {
         var actualPort = port > 0 ? port : defaultPort;
         return switch (this) {
@@ -65,14 +61,12 @@ public enum DatabaseType {
         };
     }
 
-    /**
-     * Builds an R2DBC URL for this database type.
-     *
-     * @param host     Database host
-     * @param port     Database port (uses default if <= 0)
-     * @param database Database name
-     * @return R2DBC connection URL
-     */
+    /// Builds an R2DBC URL for this database type.
+    ///
+    /// @param host     Database host
+    /// @param port     Database port (uses default if <= 0)
+    /// @param database Database name
+    /// @return R2DBC connection URL
     public String buildR2dbcUrl(String host, int port, String database) {
         var actualPort = port > 0 ? port : defaultPort;
         return switch (this) {
@@ -88,12 +82,10 @@ public enum DatabaseType {
         };
     }
 
-    /**
-     * Parse database type from string name.
-     *
-     * @param name Database type name (case-insensitive)
-     * @return Result with DatabaseType or failure
-     */
+    /// Parse database type from string name.
+    ///
+    /// @param name Database type name (case-insensitive)
+    /// @return Result with DatabaseType or failure
     public static Result<DatabaseType> databaseType(String name) {
         return Option.option(name)
                      .filter(s -> !s.isBlank())
@@ -111,12 +103,10 @@ public enum DatabaseType {
         return Causes.cause("Unknown database type: " + name).result();
     }
 
-    /**
-     * Try to detect database type from JDBC URL.
-     *
-     * @param jdbcUrl JDBC connection URL
-     * @return Option with detected type
-     */
+    /// Try to detect database type from JDBC URL.
+    ///
+    /// @param jdbcUrl JDBC connection URL
+    /// @return Option with detected type
     public static Option<DatabaseType> fromJdbcUrl(String jdbcUrl) {
         return Option.option(jdbcUrl)
                      .filter(url -> url.startsWith("jdbc:"))

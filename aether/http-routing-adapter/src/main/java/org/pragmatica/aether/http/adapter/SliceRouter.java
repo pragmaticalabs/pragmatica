@@ -21,48 +21,42 @@ import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Request router that processes HTTP requests using http-routing routes.
- * <p>
- * Bridges http-handler-api types (HttpRequestContext, HttpResponseData) with
- * http-routing DSL (Route, Handler, RequestContext).
- * <p>
- * Usage:
- * <pre>{@code
- * var router = SliceRouter.sliceRouter(
- *     Route.in("/api").serve(
- *         Route.get("/users/{id}")
- *              .withPath(STRING)
- *              .toJson(id -> userService.findById(id))
- *     ),
- *     ErrorMapper.defaultMapper(),
- *     JsonMapper.defaultJsonMapper()
- * );
- *
- * router.handle(httpRequestContext)
- *       .onSuccess(response -> sendResponse(response))
- *       .onFailure(cause -> log.error("Failed", cause));
- * }</pre>
- */
+/// Request router that processes HTTP requests using http-routing routes.
+///
+/// Bridges http-handler-api types (HttpRequestContext, HttpResponseData) with
+/// http-routing DSL (Route, Handler, RequestContext).
+///
+/// Usage:
+/// ```{@code
+/// var router = SliceRouter.sliceRouter(
+///     Route.in("/api").serve(
+///         Route.get("/users/{id}")
+///              .withPath(STRING)
+///              .toJson(id -> userService.findById(id))
+///     ),
+///     ErrorMapper.defaultMapper(),
+///     JsonMapper.defaultJsonMapper()
+/// );
+///
+/// router.handle(httpRequestContext)
+///       .onSuccess(response -> sendResponse(response))
+///       .onFailure(cause -> log.error("Failed", cause));
+/// }```
 public interface SliceRouter {
     Logger log = LoggerFactory.getLogger(SliceRouter.class);
 
-    /**
-     * Process an HTTP request and produce a response.
-     *
-     * @param request the HTTP request context
-     * @return promise of HTTP response data
-     */
+    /// Process an HTTP request and produce a response.
+    ///
+    /// @param request the HTTP request context
+    /// @return promise of HTTP response data
     Promise<HttpResponseData> handle(HttpRequestContext request);
 
-    /**
-     * Create a SliceRouter with the given routes, error mapper, and JSON mapper.
-     *
-     * @param routes      route definitions using http-routing DSL
-     * @param errorMapper mapper for converting errors to HTTP errors
-     * @param jsonMapper  JSON mapper for serialization/deserialization
-     * @return configured SliceRouter instance
-     */
+    /// Create a SliceRouter with the given routes, error mapper, and JSON mapper.
+    ///
+    /// @param routes      route definitions using http-routing DSL
+    /// @param errorMapper mapper for converting errors to HTTP errors
+    /// @param jsonMapper  JSON mapper for serialization/deserialization
+    /// @return configured SliceRouter instance
     static SliceRouter sliceRouter(RouteSource routes,
                                    ErrorMapper errorMapper,
                                    JsonMapper jsonMapper) {

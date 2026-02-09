@@ -8,22 +8,18 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.*;
 
-/**
- * Detects circular dependencies in slice dependency graphs.
- * <p>
- * Uses depth-first search with visited/visiting tracking to detect cycles.
- * A cycle exists if we encounter a node that is currently being visited (in the current DFS path).
- */
+/// Detects circular dependencies in slice dependency graphs.
+///
+/// Uses depth-first search with visited/visiting tracking to detect cycles.
+/// A cycle exists if we encounter a node that is currently being visited (in the current DFS path).
 public interface DependencyCycleDetector {
-    /**
-     * Check for circular dependencies in the dependency graph.
-     * <p>
-     * The graph is represented as a map from slice class name to its dependencies.
-     *
-     * @param dependencies Map from slice class name to list of dependency class names
-     *
-     * @return Success with Unit if no cycles, failure with cycle path if cycle detected
-     */
+    /// Check for circular dependencies in the dependency graph.
+    ///
+    /// The graph is represented as a map from slice class name to its dependencies.
+    ///
+    /// @param dependencies Map from slice class name to list of dependency class names
+    ///
+    /// @return Success with Unit if no cycles, failure with cycle path if cycle detected
     static Result<Unit> checkForCycles(Map<String, List<String>> dependencies) {
         var visited = new HashSet<String>();
         var visiting = new HashSet<String>();

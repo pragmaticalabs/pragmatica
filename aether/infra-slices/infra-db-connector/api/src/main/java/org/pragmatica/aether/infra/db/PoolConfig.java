@@ -4,17 +4,15 @@ import org.pragmatica.lang.Option;
 
 import java.time.Duration;
 
-/**
- * Connection pool configuration for database connectors.
- *
- * @param minConnections       Minimum number of connections to maintain
- * @param maxConnections       Maximum number of connections allowed
- * @param connectionTimeout    Maximum time to wait for a connection
- * @param idleTimeout          Maximum time a connection can be idle before being closed
- * @param maxLifetime          Maximum lifetime of a connection
- * @param validationQuery      SQL query to validate connections (optional)
- * @param leakDetectionTimeout Time after which connection leak warnings are logged
- */
+/// Connection pool configuration for database connectors.
+///
+/// @param minConnections       Minimum number of connections to maintain
+/// @param maxConnections       Maximum number of connections allowed
+/// @param connectionTimeout    Maximum time to wait for a connection
+/// @param idleTimeout          Maximum time a connection can be idle before being closed
+/// @param maxLifetime          Maximum lifetime of a connection
+/// @param validationQuery      SQL query to validate connections (optional)
+/// @param leakDetectionTimeout Time after which connection leak warnings are logged
 public record PoolConfig(
     int minConnections,
     int maxConnections,
@@ -24,9 +22,7 @@ public record PoolConfig(
     Option<String> validationQuery,
     Duration leakDetectionTimeout
 ) {
-    /**
-     * Default pool configuration suitable for most applications.
-     */
+    /// Default pool configuration suitable for most applications.
     public static final PoolConfig DEFAULT = new PoolConfig(
         2,                          // minConnections
         10,                         // maxConnections
@@ -37,22 +33,18 @@ public record PoolConfig(
         Duration.ZERO               // leakDetectionTimeout (disabled)
     );
 
-    /**
-     * Creates a pool config with default values.
-     *
-     * @return Default pool configuration
-     */
+    /// Creates a pool config with default values.
+    ///
+    /// @return Default pool configuration
     public static PoolConfig poolConfig() {
         return DEFAULT;
     }
 
-    /**
-     * Creates a pool config with specified connection limits.
-     *
-     * @param minConnections Minimum connections
-     * @param maxConnections Maximum connections
-     * @return Pool configuration
-     */
+    /// Creates a pool config with specified connection limits.
+    ///
+    /// @param minConnections Minimum connections
+    /// @param maxConnections Maximum connections
+    /// @return Pool configuration
     public static PoolConfig poolConfig(int minConnections, int maxConnections) {
         return new PoolConfig(
             minConnections,
@@ -65,18 +57,14 @@ public record PoolConfig(
         );
     }
 
-    /**
-     * Creates a builder for fluent configuration.
-     *
-     * @return New builder with default values
-     */
+    /// Creates a builder for fluent configuration.
+    ///
+    /// @return New builder with default values
     public static Builder poolConfigBuilder() {
         return new Builder();
     }
 
-    /**
-     * Builder for PoolConfig.
-     */
+    /// Builder for PoolConfig.
     public static final class Builder {
         private int minConnections = DEFAULT.minConnections;
         private int maxConnections = DEFAULT.maxConnections;

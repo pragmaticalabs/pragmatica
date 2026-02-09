@@ -20,18 +20,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Rolling update tests using ForgeCluster.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Two-stage rolling update (deploy then route)</li>
- *   <li>Traffic ratio-based routing</li>
- *   <li>Rollback scenarios</li>
- *   <li>Request continuity during updates</li>
- *   <li>Node failure during update</li>
- * </ul>
- */
+/// Rolling update tests using ForgeCluster.
+///
+///
+/// Tests cover:
+///
+///   - Two-stage rolling update (deploy then route)
+///   - Traffic ratio-based routing
+///   - Rollback scenarios
+///   - Request continuity during updates
+///   - Node failure during update
+///
 @Execution(ExecutionMode.SAME_THREAD)
 class RollingUpdateTest {
     private static final int BASE_PORT = 9000;

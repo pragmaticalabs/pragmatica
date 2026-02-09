@@ -28,11 +28,9 @@ import org.pragmatica.lang.Result;
 import java.util.List;
 import java.util.Set;
 
-/**
- * Deterministic model-checking style simulator for Rabia consensus protocol.
- * Tracks cluster state, validates invariants after each action, and provides
- * query methods matching Ivy spec predicates.
- */
+/// Deterministic model-checking style simulator for Rabia consensus protocol.
+/// Tracks cluster state, validates invariants after each action, and provides
+/// query methods matching Ivy spec predicates.
 public final class SpecClusterSimulator<C extends Command> {
 
     /// Error types for simulator operations

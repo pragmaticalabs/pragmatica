@@ -14,22 +14,22 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for node failure and recovery scenarios.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Single node failure with quorum maintained</li>
- *   <li>Two node failure with quorum maintained</li>
- *   <li>Leader failure and re-election</li>
- *   <li>Node recovery and rejoin</li>
- *   <li>Rolling restart maintaining quorum</li>
- *   <li>Minority partition (quorum lost then recovered)</li>
- * </ul>
- *
- * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
- * Tests run in order and each test restores all stopped nodes before running.
- */
+/// E2E tests for node failure and recovery scenarios.
+///
+///
+/// Tests cover:
+///
+///   - Single node failure with quorum maintained
+///   - Two node failure with quorum maintained
+///   - Leader failure and re-election
+///   - Node recovery and rejoin
+///   - Rolling restart maintaining quorum
+///   - Minority partition (quorum lost then recovered)
+///
+///
+///
+/// This test class uses a shared cluster for all tests to reduce startup overhead.
+/// Tests run in order and each test restores all stopped nodes before running.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 class NodeFailureE2ETest {

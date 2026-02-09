@@ -5,16 +5,15 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-/**
- * Deployment environment with environment-specific defaults.
- *
- * <p>Each environment has sensible defaults based on its typical use case:
- * <ul>
- *   <li>LOCAL - Single machine development (3 nodes, minimal resources)</li>
- *   <li>DOCKER - Production-like Docker Compose (5 nodes, moderate resources)</li>
- *   <li>KUBERNETES - Cloud-native deployment (5 nodes, TLS enabled)</li>
- * </ul>
- */
+/// Deployment environment with environment-specific defaults.
+///
+///
+/// Each environment has sensible defaults based on its typical use case:
+///
+///   - LOCAL - Single machine development (3 nodes, minimal resources)
+///   - DOCKER - Production-like Docker Compose (5 nodes, moderate resources)
+///   - KUBERNETES - Cloud-native deployment (5 nodes, TLS enabled)
+///
 public enum Environment {
     LOCAL("local", 3, "256m", false),
     DOCKER("docker", 5, "512m", false),
@@ -42,11 +41,9 @@ public enum Environment {
     public boolean defaultTls() {
         return defaultTls;
     }
-    /**
-     * Parse environment from string, case-insensitive.
-     *
-     * @return parsed environment, or failure if unknown
-     */
+    /// Parse environment from string, case-insensitive.
+    ///
+    /// @return parsed environment, or failure if unknown
     public static Result<Environment> environment(String value) {
         if (value == null || value.isBlank()) {
             return Result.success(DOCKER);

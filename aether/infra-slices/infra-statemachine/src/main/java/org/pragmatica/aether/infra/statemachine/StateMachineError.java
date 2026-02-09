@@ -3,13 +3,9 @@ package org.pragmatica.aether.infra.statemachine;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
-/**
- * Error types for state machine operations.
- */
+/// Error types for state machine operations.
 public sealed interface StateMachineError extends Cause {
-    /**
-     * Invalid state transition attempted.
-     */
+    /// Invalid state transition attempted.
     record InvalidTransition(String fromState, String toState, String event) implements StateMachineError {
         @Override
         public String message() {
@@ -17,9 +13,7 @@ public sealed interface StateMachineError extends Cause {
         }
     }
 
-    /**
-     * State not found in machine.
-     */
+    /// State not found in machine.
     record StateNotFound(String state) implements StateMachineError {
         @Override
         public String message() {
@@ -27,9 +21,7 @@ public sealed interface StateMachineError extends Cause {
         }
     }
 
-    /**
-     * Event not handled in current state.
-     */
+    /// Event not handled in current state.
     record EventNotHandled(String state, String event) implements StateMachineError {
         @Override
         public String message() {
@@ -37,9 +29,7 @@ public sealed interface StateMachineError extends Cause {
         }
     }
 
-    /**
-     * State machine not started.
-     */
+    /// State machine not started.
     record NotStarted(String machineId) implements StateMachineError {
         @Override
         public String message() {
@@ -47,9 +37,7 @@ public sealed interface StateMachineError extends Cause {
         }
     }
 
-    /**
-     * State machine already started.
-     */
+    /// State machine already started.
     record AlreadyStarted(String machineId, String currentState) implements StateMachineError {
         @Override
         public String message() {
@@ -57,9 +45,7 @@ public sealed interface StateMachineError extends Cause {
         }
     }
 
-    /**
-     * Action execution failed.
-     */
+    /// Action execution failed.
     record ActionFailed(String action, Option<Throwable> cause) implements StateMachineError {
         @Override
         public String message() {
@@ -67,9 +53,7 @@ public sealed interface StateMachineError extends Cause {
         }
     }
 
-    /**
-     * Invalid configuration.
-     */
+    /// Invalid configuration.
     record InvalidConfiguration(String reason) implements StateMachineError {
         @Override
         public String message() {

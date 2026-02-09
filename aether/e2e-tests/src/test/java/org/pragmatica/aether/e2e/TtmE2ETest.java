@@ -15,24 +15,25 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for TTM (Tiny Time Mixers) predictive scaling.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>TTM status API endpoint</li>
- *   <li>TTM disabled state (no model file)</li>
- *   <li>TTM state consistency across cluster</li>
- *   <li>TTM leader-only behavior</li>
- * </ul>
- *
- * <p>Note: These tests verify TTM infrastructure, not prediction accuracy.
- * Prediction accuracy testing requires a trained ONNX model and is better
- * suited for unit tests with mocked predictors.
- *
- * <p>This test class uses a shared cluster with node restoration between tests.
- * Tests run in order to ensure deterministic behavior.
- */
+/// E2E tests for TTM (Tiny Time Mixers) predictive scaling.
+///
+///
+/// Tests cover:
+///
+///   - TTM status API endpoint
+///   - TTM disabled state (no model file)
+///   - TTM state consistency across cluster
+///   - TTM leader-only behavior
+///
+///
+///
+/// Note: These tests verify TTM infrastructure, not prediction accuracy.
+/// Prediction accuracy testing requires a trained ONNX model and is better
+/// suited for unit tests with mocked predictors.
+///
+///
+/// This test class uses a shared cluster with node restoration between tests.
+/// Tests run in order to ensure deterministic behavior.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 class TtmE2ETest {

@@ -20,11 +20,9 @@ import org.pragmatica.r2dbc.ReactiveOperations;
 
 import java.util.List;
 
-/**
- * R2DBC implementation of DatabaseConnector for reactive database access.
- * <p>
- * Uses R2dbcOperations from integrations/db/r2dbc for Promise-based reactive execution.
- */
+/// R2DBC implementation of DatabaseConnector for reactive database access.
+///
+/// Uses R2dbcOperations from integrations/db/r2dbc for Promise-based reactive execution.
 public final class R2dbcDatabaseConnector implements DatabaseConnector {
     private final DatabaseConnectorConfig config;
     private final ConnectionFactory connectionFactory;
@@ -36,31 +34,25 @@ public final class R2dbcDatabaseConnector implements DatabaseConnector {
         this.operations = R2dbcOperations.r2dbcOperations(connectionFactory);
     }
 
-    /**
-     * Creates an R2DBC connector with the given configuration and connection factory.
-     *
-     * @param config            Connector configuration
-     * @param connectionFactory R2DBC ConnectionFactory
-     * @return New R2dbcDatabaseConnector instance
-     */
+    /// Creates an R2DBC connector with the given configuration and connection factory.
+    ///
+    /// @param config            Connector configuration
+    /// @param connectionFactory R2DBC ConnectionFactory
+    /// @return New R2dbcDatabaseConnector instance
     public static R2dbcDatabaseConnector r2dbcDatabaseConnector(DatabaseConnectorConfig config, ConnectionFactory connectionFactory) {
         return new R2dbcDatabaseConnector(config, connectionFactory);
     }
 
-    /**
-     * Returns the underlying ConnectionFactory.
-     *
-     * @return R2DBC ConnectionFactory
-     */
+    /// Returns the underlying ConnectionFactory.
+    ///
+    /// @return R2DBC ConnectionFactory
     public ConnectionFactory connectionFactory() {
         return connectionFactory;
     }
 
-    /**
-     * Returns the underlying R2dbcOperations for advanced use.
-     *
-     * @return R2dbcOperations instance
-     */
+    /// Returns the underlying R2dbcOperations for advanced use.
+    ///
+    /// @return R2dbcOperations instance
     public R2dbcOperations operations() {
         return operations;
     }
@@ -209,9 +201,7 @@ public final class R2dbcDatabaseConnector implements DatabaseConnector {
         return DatabaseConnectorError.databaseFailure(new RuntimeException(cause.message()));
     }
 
-    /**
-     * RowAccessor implementation for R2DBC Row.
-     */
+    /// RowAccessor implementation for R2DBC Row.
     private record R2dbcRowAccessor(Row row) implements RowMapper.RowAccessor {
         @Override
         public Result<String> getString(String column) {
@@ -249,9 +239,7 @@ public final class R2dbcDatabaseConnector implements DatabaseConnector {
         }
     }
 
-    /**
-     * A DatabaseConnector bound to a specific R2DBC Connection for transactional operations.
-     */
+    /// A DatabaseConnector bound to a specific R2DBC Connection for transactional operations.
     private record TransactionalR2dbcConnector(DatabaseConnectorConfig config, Connection connection)
         implements DatabaseConnector {
 

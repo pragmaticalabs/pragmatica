@@ -8,15 +8,14 @@ import org.pragmatica.lang.type.TypeToken;
 
 import java.util.List;
 
-/**
- * Artifact Repository Slice - provides Maven-compatible artifact storage.
- *
- * <p>Endpoints:
- * <ul>
- *   <li>{@code GET /repository/**} - Resolve artifacts</li>
- *   <li>{@code PUT /repository/**} - Deploy artifacts</li>
- * </ul>
- */
+/// Artifact Repository Slice - provides Maven-compatible artifact storage.
+///
+///
+/// Endpoints:
+///
+///   - `GET /repository/**` - Resolve artifacts
+///   - `PUT /repository/**` - Deploy artifacts
+///
 public record ArtifactRepoSlice(MavenProtocolHandler mavenHandler) implements Slice {
     public static ArtifactRepoSlice artifactRepoSlice(ArtifactStore store) {
         return new ArtifactRepoSlice(MavenProtocolHandler.mavenProtocolHandler(store));
@@ -44,9 +43,7 @@ public record ArtifactRepoSlice(MavenProtocolHandler mavenHandler) implements Sl
         return mavenHandler.handlePut("/repository/" + request.path(), request.content());
     }
 
-    /**
-     * Request for repository operations.
-     */
+    /// Request for repository operations.
     public record RepositoryRequest(String path,
                                     byte[] content) {}
 }

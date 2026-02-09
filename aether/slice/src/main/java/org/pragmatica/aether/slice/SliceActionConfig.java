@@ -15,21 +15,19 @@ import java.util.List;
 import static org.pragmatica.aether.slice.repository.maven.LocalRepository.localRepository;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * Configuration for slice loading and lifecycle management.
- *
- * @param loadingTimeout      Timeout for slice loading
- * @param activatingTimeout   Timeout for slice activation
- * @param deactivatingTimeout Timeout for slice deactivation
- * @param unloadingTimeout    Timeout for slice unloading
- * @param startStopTimeout    Timeout for start/stop operations
- * @param repositories        List of repositories to search for slices
- * @param serializerProvider  Provider for serialization (Fury or Kryo)
- * @param frameworkJarsPath   Optional path to framework JARs for classloader isolation.
- *                            If provided, creates a FrameworkClassLoader with isolated
- *                            pragmatica-lite, slice-api, and serialization classes.
- *                            If empty, uses Application ClassLoader (no isolation).
- */
+/// Configuration for slice loading and lifecycle management.
+///
+/// @param loadingTimeout      Timeout for slice loading
+/// @param activatingTimeout   Timeout for slice activation
+/// @param deactivatingTimeout Timeout for slice deactivation
+/// @param unloadingTimeout    Timeout for slice unloading
+/// @param startStopTimeout    Timeout for start/stop operations
+/// @param repositories        List of repositories to search for slices
+/// @param serializerProvider  Provider for serialization (Fury or Kryo)
+/// @param frameworkJarsPath   Optional path to framework JARs for classloader isolation.
+///                            If provided, creates a FrameworkClassLoader with isolated
+///                            pragmatica-lite, slice-api, and serialization classes.
+///                            If empty, uses Application ClassLoader (no isolation).
 public record SliceActionConfig(TimeSpan loadingTimeout,
                                 TimeSpan activatingTimeout,
                                 TimeSpan deactivatingTimeout,
@@ -53,13 +51,11 @@ public record SliceActionConfig(TimeSpan loadingTimeout,
                                      Option.empty());
     }
 
-    /**
-     * Create configuration with framework isolation enabled.
-     *
-     * @param serializerProvider Provider for serialization
-     * @param frameworkJarsPath  Path to directory containing framework JARs
-     * @return Configuration with isolation enabled
-     */
+    /// Create configuration with framework isolation enabled.
+    ///
+    /// @param serializerProvider Provider for serialization
+    /// @param frameworkJarsPath  Path to directory containing framework JARs
+    /// @return Configuration with isolation enabled
     public static SliceActionConfig withIsolation(SerializerFactoryProvider serializerProvider,
                                                   Path frameworkJarsPath) {
         return new SliceActionConfig(timeSpan(2).minutes(),

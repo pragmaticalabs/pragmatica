@@ -18,9 +18,7 @@ import java.util.concurrent.Callable;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
-/**
- * Lint command for JBCT static analysis.
- */
+/// Lint command for JBCT static analysis.
 @Command(
  name = "lint",
  description = "Analyze Java source files for JBCT compliance",

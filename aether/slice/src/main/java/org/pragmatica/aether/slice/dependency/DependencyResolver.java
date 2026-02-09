@@ -32,41 +32,35 @@ import java.util.Set;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Orchestrates dependency resolution for slices.
- * <p>
- * Resolution process:
- * 1. Check registry for already-loaded slice
- * 2. Locate JAR via repository
- * 3. Read manifest to get slice class name and verify artifact
- * 4. Create ClassLoader with JAR URL
- * 5. Load dependencies from META-INF/dependencies/ file
- * 6. Build dependency graph and check for cycles
- * 7. Recursively resolve dependencies (depth-first)
- * 8. Instantiate slice via factory method
- * 9. Register in registry
- * <p>
- * Thread-safe: Uses SliceRegistry for synchronization.
- */
+/// Orchestrates dependency resolution for slices.
+///
+/// Resolution process:
+/// 1. Check registry for already-loaded slice
+/// 2. Locate JAR via repository
+/// 3. Read manifest to get slice class name and verify artifact
+/// 4. Create ClassLoader with JAR URL
+/// 5. Load dependencies from META-INF/dependencies/ file
+/// 6. Build dependency graph and check for cycles
+/// 7. Recursively resolve dependencies (depth-first)
+/// 8. Instantiate slice via factory method
+/// 9. Register in registry
+///
+/// Thread-safe: Uses SliceRegistry for synchronization.
 public interface DependencyResolver {
     Logger log = LoggerFactory.getLogger(DependencyResolver.class);
 
-    /**
-     * Result of resolving a slice, containing both the slice and its loading context.
-     * The loading context is used during activation to eagerly validate dependencies.
-     */
+    /// Result of resolving a slice, containing both the slice and its loading context.
+    /// The loading context is used during activation to eagerly validate dependencies.
     record ResolvedSlice(Slice slice, SliceLoadingContext loadingContext) {}
 
-    /**
-     * Resolve a slice using SharedLibraryClassLoader for shared dependencies.
-     *
-     * @param artifact            The slice artifact to resolve
-     * @param repository          Repository to locate artifacts
-     * @param registry            Registry to track loaded slices
-     * @param sharedLibraryLoader ClassLoader for shared dependencies
-     * @param invokerFacade       Facade for inter-slice invocations
-     * @return Promise of resolved slice
-     */
+    /// Resolve a slice using SharedLibraryClassLoader for shared dependencies.
+    ///
+    /// @param artifact            The slice artifact to resolve
+    /// @param repository          Repository to locate artifacts
+    /// @param registry            Registry to track loaded slices
+    /// @param sharedLibraryLoader ClassLoader for shared dependencies
+    /// @param invokerFacade       Facade for inter-slice invocations
+    /// @return Promise of resolved slice
     static Promise<Slice> resolve(Artifact artifact,
                                   Repository repository,
                                   SliceRegistry registry,
@@ -82,21 +76,19 @@ public interface DependencyResolver {
                                                          new HashSet<>()));
     }
 
-    /**
-     * Resolve a slice and return with its loading context for eager dependency validation.
-     * <p>
-     * The returned {@link ResolvedSlice} contains both the slice and its
-     * {@link SliceLoadingContext} which should be used during activation to
-     * call {@link SliceLoadingContext#materializeAll()} before calling start().
-     *
-     * @param artifact            The slice artifact to resolve
-     * @param repository          Repository to locate artifacts
-     * @param registry            Registry to track loaded slices
-     * @param sharedLibraryLoader ClassLoader for shared dependencies
-     * @param invokerFacade       Facade for inter-slice invocations
-     * @param resourceFacade      Facade for resource provisioning
-     * @return Promise of resolved slice with loading context
-     */
+    /// Resolve a slice and return with its loading context for eager dependency validation.
+    ///
+    /// The returned {@link ResolvedSlice} contains both the slice and its
+    /// {@link SliceLoadingContext} which should be used during activation to
+    /// call {@link SliceLoadingContext#materializeAll()} before calling start().
+    ///
+    /// @param artifact            The slice artifact to resolve
+    /// @param repository          Repository to locate artifacts
+    /// @param registry            Registry to track loaded slices
+    /// @param sharedLibraryLoader ClassLoader for shared dependencies
+    /// @param invokerFacade       Facade for inter-slice invocations
+    /// @param resourceFacade      Facade for resource provisioning
+    /// @return Promise of resolved slice with loading context
     static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
                                                      Repository repository,
                                                      SliceRegistry registry,
@@ -114,17 +106,15 @@ public interface DependencyResolver {
                                                                    new HashSet<>()));
     }
 
-    /**
-     * Resolve a slice and return with its loading context for eager dependency validation.
-     * Uses a no-op resource provider (for backward compatibility).
-     *
-     * @param artifact            The slice artifact to resolve
-     * @param repository          Repository to locate artifacts
-     * @param registry            Registry to track loaded slices
-     * @param sharedLibraryLoader ClassLoader for shared dependencies
-     * @param invokerFacade       Facade for inter-slice invocations
-     * @return Promise of resolved slice with loading context
-     */
+    /// Resolve a slice and return with its loading context for eager dependency validation.
+    /// Uses a no-op resource provider (for backward compatibility).
+    ///
+    /// @param artifact            The slice artifact to resolve
+    /// @param repository          Repository to locate artifacts
+    /// @param registry            Registry to track loaded slices
+    /// @param sharedLibraryLoader ClassLoader for shared dependencies
+    /// @param invokerFacade       Facade for inter-slice invocations
+    /// @return Promise of resolved slice with loading context
     static Promise<ResolvedSlice> resolveWithContext(Artifact artifact,
                                                      Repository repository,
                                                      SliceRegistry registry,
@@ -133,10 +123,8 @@ public interface DependencyResolver {
         return resolveWithContext(artifact, repository, registry, sharedLibraryLoader, invokerFacade, noOpResourceProvider());
     }
 
-    /**
-     * Returns a no-op resource provider for backward compatibility.
-     * This provider fails for any resource request.
-     */
+    /// Returns a no-op resource provider for backward compatibility.
+    /// This provider fails for any resource request.
     private static ResourceProviderFacade noOpResourceProvider() {
         return new ResourceProviderFacade() {
             @Override
@@ -331,20 +319,18 @@ public interface DependencyResolver {
                                    .map(slice -> new ResolvedSlice(slice, loadingContext));
     }
 
-    /**
-     * Resolve a slice and return a SliceBridge for isolated communication.
-     * <p>
-     * This method resolves the slice and wraps it in a SliceBridge that handles
-     * serialization/deserialization at the boundary using byte arrays.
-     *
-     * @param artifact            The slice artifact to resolve
-     * @param repository          Repository to locate artifacts
-     * @param registry            Registry to track loaded slices
-     * @param sharedLibraryLoader ClassLoader for shared dependencies
-     * @param invokerFacade       Facade for inter-slice invocations
-     * @param serializerFactory   Factory for serialization
-     * @return Promise of resolved SliceBridge
-     */
+    /// Resolve a slice and return a SliceBridge for isolated communication.
+    ///
+    /// This method resolves the slice and wraps it in a SliceBridge that handles
+    /// serialization/deserialization at the boundary using byte arrays.
+    ///
+    /// @param artifact            The slice artifact to resolve
+    /// @param repository          Repository to locate artifacts
+    /// @param registry            Registry to track loaded slices
+    /// @param sharedLibraryLoader ClassLoader for shared dependencies
+    /// @param invokerFacade       Facade for inter-slice invocations
+    /// @param serializerFactory   Factory for serialization
+    /// @return Promise of resolved SliceBridge
     static Promise<SliceBridge> resolveBridge(Artifact artifact,
                                               Repository repository,
                                               SliceRegistry registry,
@@ -355,16 +341,14 @@ public interface DependencyResolver {
         .map(slice -> DefaultSliceBridge.defaultSliceBridge(artifact, slice, serializerFactory));
     }
 
-    /**
-     * Resolve a slice and return a SliceBridge using default Fury serialization.
-     *
-     * @param artifact            The slice artifact to resolve
-     * @param repository          Repository to locate artifacts
-     * @param registry            Registry to track loaded slices
-     * @param sharedLibraryLoader ClassLoader for shared dependencies
-     * @param invokerFacade       Facade for inter-slice invocations
-     * @return Promise of resolved SliceBridge
-     */
+    /// Resolve a slice and return a SliceBridge using default Fury serialization.
+    ///
+    /// @param artifact            The slice artifact to resolve
+    /// @param repository          Repository to locate artifacts
+    /// @param registry            Registry to track loaded slices
+    /// @param sharedLibraryLoader ClassLoader for shared dependencies
+    /// @param invokerFacade       Facade for inter-slice invocations
+    /// @return Promise of resolved SliceBridge
     static Promise<SliceBridge> resolveBridge(Artifact artifact,
                                               Repository repository,
                                               SliceRegistry registry,
@@ -496,12 +480,10 @@ public interface DependencyResolver {
                                                                                            resolutionPath));
     }
 
-    /**
-     * Add dependency slice JARs to the SliceClassLoader BEFORE loading the slice class.
-     * <p>
-     * This fixes NoClassDefFoundError when getDeclaredMethods() is called on the slice class
-     * and parameter types from dependency slices need to be resolved.
-     */
+    /// Add dependency slice JARs to the SliceClassLoader BEFORE loading the slice class.
+    ///
+    /// This fixes NoClassDefFoundError when getDeclaredMethods() is called on the slice class
+    /// and parameter types from dependency slices need to be resolved.
     private static Promise<SharedDependencyLoader.SharedDependencyResult> addSliceDependencyJarsToClassLoader(List<ArtifactDependency> sliceDeps,
                                                                                                               SharedDependencyLoader.SharedDependencyResult sharedResult,
                                                                                                               Repository repository) {
@@ -750,9 +732,7 @@ public interface DependencyResolver {
         return SliceFactory.createSlice(sliceClass, creationContext, dependencies, legacyDescriptors);
     }
 
-    /**
-     * Creates a minimal SliceCreationContext from an invoker facade (backward compatibility).
-     */
+    /// Creates a minimal SliceCreationContext from an invoker facade (backward compatibility).
     private static SliceCreationContext toCreationContext(SliceInvokerFacade invokerFacade) {
         return SliceCreationContext.sliceCreationContext(invokerFacade, noOpResourceProvider());
     }

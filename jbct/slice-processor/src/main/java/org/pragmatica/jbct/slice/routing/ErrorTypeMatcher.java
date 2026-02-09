@@ -1,27 +1,23 @@
 package org.pragmatica.jbct.slice.routing;
-/**
- * Matches type names against glob-like patterns for error type discovery.
- * <p>
- * Supported pattern formats:
- * <ul>
- *   <li>{@code *Suffix} - matches types ending with "Suffix" (startsWith when reversed)</li>
- *   <li>{@code Prefix*} - matches types starting with "Prefix"</li>
- *   <li>{@code *Contains*} - matches types containing "Contains"</li>
- *   <li>{@code ExactMatch} - matches types with exact name</li>
- * </ul>
- * <p>
- * Pattern matching is case-sensitive.
- */
+/// Matches type names against glob-like patterns for error type discovery.
+///
+/// Supported pattern formats:
+///
+///   - `*Suffix` - matches types ending with "Suffix" (startsWith when reversed)
+///   - `Prefix*` - matches types starting with "Prefix"
+///   - `*Contains*` - matches types containing "Contains"
+///   - `ExactMatch` - matches types with exact name
+///
+///
+/// Pattern matching is case-sensitive.
 public final class ErrorTypeMatcher {
     private ErrorTypeMatcher() {}
 
-    /**
-     * Check if a type name matches the given pattern.
-     *
-     * @param typeName the simple or qualified type name to match
-     * @param pattern  the glob-like pattern
-     * @return true if the type name matches the pattern
-     */
+    /// Check if a type name matches the given pattern.
+    ///
+    /// @param typeName the simple or qualified type name to match
+    /// @param pattern  the glob-like pattern
+    /// @return true if the type name matches the pattern
     public static boolean matches(String typeName, String pattern) {
         if (typeName == null || pattern == null) {
             return false;
@@ -65,13 +61,11 @@ public final class ErrorTypeMatcher {
         return typeName.equals(pattern);
     }
 
-    /**
-     * Extract the literal portion of a pattern (without wildcards).
-     * Useful for diagnostics and debugging.
-     *
-     * @param pattern the glob-like pattern
-     * @return the literal portion without wildcards
-     */
+    /// Extract the literal portion of a pattern (without wildcards).
+    /// Useful for diagnostics and debugging.
+    ///
+    /// @param pattern the glob-like pattern
+    /// @return the literal portion without wildcards
     public static String extractLiteral(String pattern) {
         if (pattern == null || pattern.isEmpty()) {
             return "";

@@ -18,11 +18,10 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Publishes dashboard metrics via WebSocket at regular intervals.
- *
- * <p>Aggregates metrics from various collectors and broadcasts to all connected clients.
- */
+/// Publishes dashboard metrics via WebSocket at regular intervals.
+///
+///
+/// Aggregates metrics from various collectors and broadcasts to all connected clients.
 public class DashboardMetricsPublisher {
     private static final Logger log = LoggerFactory.getLogger(DashboardMetricsPublisher.class);
     private static final long BROADCAST_INTERVAL_MS = 1000;
@@ -105,9 +104,7 @@ public class DashboardMetricsPublisher {
         }
     }
 
-    /**
-     * Build initial state snapshot for newly connected clients.
-     */
+    /// Build initial state snapshot for newly connected clients.
     public String buildInitialState() {
         var node = nodeSupplier.get();
         var sb = new StringBuilder();
@@ -167,9 +164,7 @@ public class DashboardMetricsPublisher {
         return sb.toString();
     }
 
-    /**
-     * Build periodic metrics update message.
-     */
+    /// Build periodic metrics update message.
     private String buildMetricsUpdate() {
         var sb = new StringBuilder();
         sb.append("{\"type\":\"METRICS_UPDATE\",\"timestamp\":")
@@ -337,9 +332,7 @@ public class DashboardMetricsPublisher {
         sb.append("]");
     }
 
-    /**
-     * Handle threshold configuration from client.
-     */
+    /// Handle threshold configuration from client.
     public void handleSetThreshold(String message) {
         // Parse: {"type":"SET_THRESHOLD","metric":"cpu.usage","warning":0.7,"critical":0.9}
         var metricPattern = Pattern.compile("\"metric\"\\s*:\\s*\"([^\"]+)\"");
@@ -357,9 +350,7 @@ public class DashboardMetricsPublisher {
         }
     }
 
-    /**
-     * Build history response for GET_HISTORY request.
-     */
+    /// Build history response for GET_HISTORY request.
     public String buildHistoryResponse(String message) {
         // Parse: {"type":"GET_HISTORY","timeRange":"1h"}
         var rangePattern = Pattern.compile("\"timeRange\"\\s*:\\s*\"([^\"]+)\"");

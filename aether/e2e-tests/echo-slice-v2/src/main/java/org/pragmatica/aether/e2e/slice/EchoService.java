@@ -13,10 +13,8 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.Set;
 
-/**
- * Pure function test slice for E2E testing - VERSION 2.
- * Responses include version field to distinguish from v1.
- */
+/// Pure function test slice for E2E testing - VERSION 2.
+/// Responses include version field to distinguish from v1.
 @Slice
 public interface EchoService {
     String VERSION = "2.0";

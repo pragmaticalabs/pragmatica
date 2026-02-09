@@ -12,38 +12,36 @@ import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Parsed dependency file with shared, infra, and slice sections.
- * <p>
- * File format:
- * <pre>
- * # Comment line
- *
- * [shared]
- * # Libraries shared across all slices
- * org.pragmatica-lite:core:^0.8.0
- * org.example:order-domain:^1.0.0
- *
- * [infra]
- * # Infrastructure services
- * org.pragmatica-lite.aether:infra-db-connector:^0.7.0
- * org.pragmatica-lite.aether:infra-database:^0.7.0
- *
- * [slices]
- * # Other slices this slice depends on
- * org.example:inventory-service:^1.0.0
- * org.example:pricing-service:^1.0.0
- * </pre>
- * <p>
- * The [infra] section is for infrastructure service dependencies. JARs are loaded
- * into SharedLibraryClassLoader like [shared].
- * <p>
- * For backward compatibility, lines without any section header are treated as slice dependencies.
- *
- * @param shared List of shared library dependencies
- * @param infra  List of infrastructure service dependencies
- * @param slices List of slice dependencies
- */
+/// Parsed dependency file with shared, infra, and slice sections.
+///
+/// File format:
+/// ```
+/// # Comment line
+///
+/// [shared]
+/// # Libraries shared across all slices
+/// org.pragmatica-lite:core:^0.8.0
+/// org.example:order-domain:^1.0.0
+///
+/// [infra]
+/// # Infrastructure services
+/// org.pragmatica-lite.aether:infra-db-connector:^0.7.0
+/// org.pragmatica-lite.aether:infra-database:^0.7.0
+///
+/// [slices]
+/// # Other slices this slice depends on
+/// org.example:inventory-service:^1.0.0
+/// org.example:pricing-service:^1.0.0
+/// ```
+///
+/// The [infra] section is for infrastructure service dependencies. JARs are loaded
+/// into SharedLibraryClassLoader like [shared].
+///
+/// For backward compatibility, lines without any section header are treated as slice dependencies.
+///
+/// @param shared List of shared library dependencies
+/// @param infra  List of infrastructure service dependencies
+/// @param slices List of slice dependencies
 public record DependencyFile(List<ArtifactDependency> shared,
                              List<ArtifactDependency> infra,
                              List<ArtifactDependency> slices) {
@@ -57,12 +55,10 @@ public record DependencyFile(List<ArtifactDependency> shared,
         SLICES
     }
 
-    /**
-     * Parse dependency file content.
-     *
-     * @param content The file content as string
-     * @return Parsed dependency file or error
-     */
+    /// Parse dependency file content.
+    ///
+    /// @param content The file content as string
+    /// @return Parsed dependency file or error
     public static Result<DependencyFile> dependencyFile(String content) {
         var shared = new ArrayList<ArtifactDependency>();
         var infra = new ArrayList<ArtifactDependency>();
@@ -129,10 +125,8 @@ public record DependencyFile(List<ArtifactDependency> shared,
         return result.validateNoFrameworkDependencies();
     }
 
-    /**
-     * Validate that framework dependencies (slice-api, infra-api) are not declared.
-     * These are provided by the runtime and should never be in slice dependency files.
-     */
+    /// Validate that framework dependencies (slice-api, infra-api) are not declared.
+    /// These are provided by the runtime and should never be in slice dependency files.
     private Result<DependencyFile> validateNoFrameworkDependencies() {
         return findFrameworkDependency()
         .fold(() -> Result.success(this),
@@ -165,12 +159,10 @@ public record DependencyFile(List<ArtifactDependency> shared,
     private static final Fn1<Cause, String> FRAMEWORK_DEPENDENCY_ERROR = Causes.forOneValue("Slice incorrectly packaged: framework dependency declared in %s. "
                                                                                             + "slice-api, infra-api, and slice-annotations are provided by the runtime and must not be declared as dependencies");
 
-    /**
-     * Parse dependency file from input stream.
-     *
-     * @param inputStream The input stream to read from
-     * @return Parsed dependency file or error
-     */
+    /// Parse dependency file from input stream.
+    ///
+    /// @param inputStream The input stream to read from
+    /// @return Parsed dependency file or error
     public static Result<DependencyFile> dependencyFile(InputStream inputStream) {
         return Result.lift(Causes::fromThrowable,
                            () -> {
@@ -187,13 +179,11 @@ public record DependencyFile(List<ArtifactDependency> shared,
                      .flatMap(DependencyFile::dependencyFile);
     }
 
-    /**
-     * Load dependency file from classloader resource.
-     *
-     * @param sliceClassName Fully qualified class name of the slice
-     * @param classLoader    ClassLoader to load resource from
-     * @return Parsed dependency file, empty if no file exists
-     */
+    /// Load dependency file from classloader resource.
+    ///
+    /// @param sliceClassName Fully qualified class name of the slice
+    /// @param classLoader    ClassLoader to load resource from
+    /// @return Parsed dependency file, empty if no file exists
     public static Result<DependencyFile> load(String sliceClassName, ClassLoader classLoader) {
         var resourcePath = "META-INF/dependencies/" + sliceClassName;
         var resource = classLoader.getResourceAsStream(resourcePath);
@@ -204,30 +194,22 @@ public record DependencyFile(List<ArtifactDependency> shared,
         return dependencyFile(resource);
     }
 
-    /**
-     * Check if this file has any shared dependencies.
-     */
+    /// Check if this file has any shared dependencies.
     public boolean hasSharedDependencies() {
         return ! shared.isEmpty();
     }
 
-    /**
-     * Check if this file has any infra dependencies.
-     */
+    /// Check if this file has any infra dependencies.
     public boolean hasInfraDependencies() {
         return ! infra.isEmpty();
     }
 
-    /**
-     * Check if this file has any slice dependencies.
-     */
+    /// Check if this file has any slice dependencies.
     public boolean hasSliceDependencies() {
         return ! slices.isEmpty();
     }
 
-    /**
-     * Check if this is an empty dependency file.
-     */
+    /// Check if this is an empty dependency file.
     public boolean isEmpty() {
         return shared.isEmpty() && infra.isEmpty() && slices.isEmpty();
     }

@@ -3,9 +3,7 @@ package org.pragmatica.jbct.format;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
-/**
- * Sealed interface for formatting errors.
- */
+/// Sealed interface for formatting errors.
 public sealed interface FormattingError extends Cause {
     record ParseFailed(String file, int line, int column, String details) implements FormattingError {
         @Override

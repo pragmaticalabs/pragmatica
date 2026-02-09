@@ -8,24 +8,20 @@ import java.util.UUID;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 
-/**
- * Context representing an active transaction.
- * Thread-safe and immutable.
- *
- * @param id            Unique transaction identifier
- * @param config        Transaction configuration
- * @param status        Current transaction status
- * @param startTime     When the transaction started
- * @param parentContext Parent transaction context (for nested transactions)
- */
+/// Context representing an active transaction.
+/// Thread-safe and immutable.
+///
+/// @param id            Unique transaction identifier
+/// @param config        Transaction configuration
+/// @param status        Current transaction status
+/// @param startTime     When the transaction started
+/// @param parentContext Parent transaction context (for nested transactions)
 public record TransactionContext(String id,
                                  TransactionConfig config,
                                  TransactionStatus status,
                                  Instant startTime,
                                  Option<TransactionContext> parentContext) {
-    /**
-     * Transaction status.
-     */
+    /// Transaction status.
     public enum TransactionStatus {
         ACTIVE,
         COMMITTED,
@@ -33,9 +29,7 @@ public record TransactionContext(String id,
         SUSPENDED
     }
 
-    /**
-     * Creates a new transaction context.
-     */
+    /// Creates a new transaction context.
     public static TransactionContext transactionContext(TransactionConfig config) {
         return new TransactionContext(UUID.randomUUID()
                                           .toString(),
@@ -45,9 +39,7 @@ public record TransactionContext(String id,
                                       none());
     }
 
-    /**
-     * Creates a nested transaction context.
-     */
+    /// Creates a nested transaction context.
     public static TransactionContext nestedContext(TransactionConfig config, TransactionContext parent) {
         return new TransactionContext(UUID.randomUUID()
                                           .toString(),
@@ -57,51 +49,37 @@ public record TransactionContext(String id,
                                       option(parent));
     }
 
-    /**
-     * Creates a new context with committed status.
-     */
+    /// Creates a new context with committed status.
     public TransactionContext commit() {
         return new TransactionContext(id, config, TransactionStatus.COMMITTED, startTime, parentContext);
     }
 
-    /**
-     * Creates a new context with rolled back status.
-     */
+    /// Creates a new context with rolled back status.
     public TransactionContext rollback() {
         return new TransactionContext(id, config, TransactionStatus.ROLLED_BACK, startTime, parentContext);
     }
 
-    /**
-     * Creates a new context with suspended status.
-     */
+    /// Creates a new context with suspended status.
     public TransactionContext suspend() {
         return new TransactionContext(id, config, TransactionStatus.SUSPENDED, startTime, parentContext);
     }
 
-    /**
-     * Creates a new context with active status (resume from suspended).
-     */
+    /// Creates a new context with active status (resume from suspended).
     public TransactionContext resume() {
         return new TransactionContext(id, config, TransactionStatus.ACTIVE, startTime, parentContext);
     }
 
-    /**
-     * Checks if the transaction is active.
-     */
+    /// Checks if the transaction is active.
     public boolean isActive() {
         return status == TransactionStatus.ACTIVE;
     }
 
-    /**
-     * Checks if the transaction has a parent (is nested).
-     */
+    /// Checks if the transaction has a parent (is nested).
     public boolean isNested() {
         return parentContext.isPresent();
     }
 
-    /**
-     * Checks if the transaction has timed out.
-     */
+    /// Checks if the transaction has timed out.
     public boolean isTimedOut() {
         return config.timeout()
                      .filter(timeout -> {

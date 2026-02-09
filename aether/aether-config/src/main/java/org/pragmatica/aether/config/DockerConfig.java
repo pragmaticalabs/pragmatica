@@ -1,18 +1,14 @@
 package org.pragmatica.aether.config;
-/**
- * Docker-specific configuration.
- *
- * @param network Docker network name
- * @param image   Docker image to use for nodes
- */
+/// Docker-specific configuration.
+///
+/// @param network Docker network name
+/// @param image   Docker image to use for nodes
 public record DockerConfig(String network,
                            String image) {
     public static final String DEFAULT_NETWORK = "aether-network";
     public static final String DEFAULT_IMAGE = "ghcr.io/siy/aether-node:latest";
 
-    /**
-     * Factory method following JBCT naming convention.
-     */
+    /// Factory method following JBCT naming convention.
     public static DockerConfig dockerConfig(String network, String image) {
         return new DockerConfig(network, image);
     }

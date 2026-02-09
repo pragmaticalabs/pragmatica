@@ -15,21 +15,17 @@ import org.pragmatica.lang.Promise;
 import static org.pragmatica.http.routing.PathParameter.aInteger;
 import static org.pragmatica.http.routing.Route.in;
 
-/**
- * REST API routes for load testing control.
- * <p>
- * Provides endpoints for:
- * <ul>
- *   <li>Configuration management (get/upload TOML config)</li>
- *   <li>Load control (start/stop/pause/resume)</li>
- *   <li>Rate adjustment (set total rate)</li>
- *   <li>Status monitoring (per-target metrics)</li>
- * </ul>
- */
+/// REST API routes for load testing control.
+///
+/// Provides endpoints for:
+///
+///   - Configuration management (get/upload TOML config)
+///   - Load control (start/stop/pause/resume)
+///   - Rate adjustment (set total rate)
+///   - Status monitoring (per-target metrics)
+///
 public sealed interface LoadRoutes {
-    /**
-     * Create route source for all load-related endpoints.
-     */
+    /// Create route source for all load-related endpoints.
     static RouteSource loadRoutes(ConfigurableLoadRunner loadRunner) {
         return in("/api/load")
         .serve(getConfigRoute(loadRunner),

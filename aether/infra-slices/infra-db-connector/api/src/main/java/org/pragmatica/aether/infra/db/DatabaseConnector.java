@@ -8,124 +8,104 @@ import org.pragmatica.lang.Unit;
 
 import java.util.List;
 
-/**
- * Database connector providing query and transaction operations.
- * <p>
- * This is the primary interface for database access in Aether slices.
- * Implementations may use JDBC, R2DBC, or jOOQ depending on requirements.
- * <p>
- * All operations return Promise for async/non-blocking execution.
- * <p>
- * Example usage:
- * <pre>{@code
- * connector.queryOne("SELECT * FROM users WHERE id = ?", userMapper, userId)
- *          .flatMap(user -> updateLastLogin(user))
- *          .flatMap(user -> connector.update(
- *              "UPDATE users SET last_login = ? WHERE id = ?",
- *              Instant.now(), user.id()))
- * }</pre>
- */
+/// Database connector providing query and transaction operations.
+///
+/// This is the primary interface for database access in Aether slices.
+/// Implementations may use JDBC, R2DBC, or jOOQ depending on requirements.
+///
+/// All operations return Promise for async/non-blocking execution.
+///
+/// Example usage:
+/// ```{@code
+/// connector.queryOne("SELECT * FROM users WHERE id = ?", userMapper, userId)
+///          .flatMap(user -> updateLastLogin(user))
+///          .flatMap(user -> connector.update(
+///              "UPDATE users SET last_login = ? WHERE id = ?",
+///              Instant.now(), user.id()))
+/// }```
 public interface DatabaseConnector extends Slice {
 
     // ========== Query Operations ==========
 
-    /**
-     * Executes a query and maps the single result.
-     * <p>
-     * Fails if query returns zero or more than one row.
-     *
-     * @param sql    SQL query with ? placeholders
-     * @param mapper Row mapper to convert result
-     * @param params Query parameters
-     * @param <T>    Result type
-     * @return Promise with mapped result or failure
-     */
+    /// Executes a query and maps the single result.
+    ///
+    /// Fails if query returns zero or more than one row.
+    ///
+    /// @param sql    SQL query with ? placeholders
+    /// @param mapper Row mapper to convert result
+    /// @param params Query parameters
+    /// @param <T>    Result type
+    /// @return Promise with mapped result or failure
     <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params);
 
-    /**
-     * Executes a query and returns optional result.
-     * <p>
-     * Returns None if no rows match, Some with first row otherwise.
-     *
-     * @param sql    SQL query with ? placeholders
-     * @param mapper Row mapper to convert result
-     * @param params Query parameters
-     * @param <T>    Result type
-     * @return Promise with Option containing result
-     */
+    /// Executes a query and returns optional result.
+    ///
+    /// Returns None if no rows match, Some with first row otherwise.
+    ///
+    /// @param sql    SQL query with ? placeholders
+    /// @param mapper Row mapper to convert result
+    /// @param params Query parameters
+    /// @param <T>    Result type
+    /// @return Promise with Option containing result
     <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params);
 
-    /**
-     * Executes a query and maps all results to a list.
-     *
-     * @param sql    SQL query with ? placeholders
-     * @param mapper Row mapper to convert each row
-     * @param params Query parameters
-     * @param <T>    Result element type
-     * @return Promise with list of mapped results
-     */
+    /// Executes a query and maps all results to a list.
+    ///
+    /// @param sql    SQL query with ? placeholders
+    /// @param mapper Row mapper to convert each row
+    /// @param params Query parameters
+    /// @param <T>    Result element type
+    /// @return Promise with list of mapped results
     <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params);
 
     // ========== Update Operations ==========
 
-    /**
-     * Executes an update statement (INSERT, UPDATE, DELETE).
-     *
-     * @param sql    SQL statement with ? placeholders
-     * @param params Statement parameters
-     * @return Promise with number of affected rows
-     */
+    /// Executes an update statement (INSERT, UPDATE, DELETE).
+    ///
+    /// @param sql    SQL statement with ? placeholders
+    /// @param params Statement parameters
+    /// @return Promise with number of affected rows
     Promise<Integer> update(String sql, Object... params);
 
-    /**
-     * Executes a batch of update statements.
-     *
-     * @param sql        SQL statement template
-     * @param paramsList List of parameter arrays for batch
-     * @return Promise with array of update counts
-     */
+    /// Executes a batch of update statements.
+    ///
+    /// @param sql        SQL statement template
+    /// @param paramsList List of parameter arrays for batch
+    /// @return Promise with array of update counts
     Promise<int[]> batch(String sql, List<Object[]> paramsList);
 
     // ========== Transaction Operations ==========
 
-    /**
-     * Executes callback within a transaction.
-     * <p>
-     * The transaction is automatically committed on success or rolled back on failure.
-     *
-     * @param callback Transaction callback
-     * @param <T>      Result type
-     * @return Promise with callback result
-     */
+    /// Executes callback within a transaction.
+    ///
+    /// The transaction is automatically committed on success or rolled back on failure.
+    ///
+    /// @param callback Transaction callback
+    /// @param <T>      Result type
+    /// @return Promise with callback result
     <T> Promise<T> transactional(TransactionCallback<T> callback);
 
     // ========== Lifecycle ==========
 
-    /**
-     * Returns the connector configuration.
-     *
-     * @return Connector configuration
-     */
+    /// Returns the connector configuration.
+    ///
+    /// @return Connector configuration
     DatabaseConnectorConfig config();
 
-    /**
-     * Checks if the connection is healthy.
-     *
-     * @return Promise with true if healthy
-     */
+    /// Checks if the connection is healthy.
+    ///
+    /// @return Promise with true if healthy
     Promise<Boolean> isHealthy();
 
     // ========== Factory Methods ==========
 
-    /**
-     * Creates a new connector instance with the given configuration.
-     * <p>
-     * Default implementation returns a no-op connector.
-     * Actual implementations are provided by jdbc, r2dbc, jooq modules.
-     *
-     * @param config Connector configuration
-     * @return New DatabaseConnector instance
-     */
+    /// Creates a new connector instance with the given configuration.
+    ///
+    /// Default implementation returns a no-op connector.
+    /// Actual implementations are provided by jdbc, r2dbc, jooq modules.
+    ///
+    /// @param config Connector configuration
+    /// @return New DatabaseConnector instance
     static DatabaseConnector databaseConnector(DatabaseConnectorConfig config) {
         return new NoOpDatabaseConnector(config);
     }
@@ -148,9 +128,7 @@ public interface DatabaseConnector extends Slice {
     }
 }
 
-/**
- * No-op implementation returned when no concrete implementation is available.
- */
+/// No-op implementation returned when no concrete implementation is available.
 record NoOpDatabaseConnector(DatabaseConnectorConfig config) implements DatabaseConnector {
 
     @Override

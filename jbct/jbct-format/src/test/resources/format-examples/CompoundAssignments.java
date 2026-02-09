@@ -1,8 +1,6 @@
 package format.examples;
-/**
- * Golden example for compound assignment operators.
- * Tests all compound assignment operators are preserved correctly.
- */
+/// Golden example for compound assignment operators.
+/// Tests all compound assignment operators are preserved correctly.
 public class CompoundAssignments {
     void allCompoundAssignments() {
         int x = 0;

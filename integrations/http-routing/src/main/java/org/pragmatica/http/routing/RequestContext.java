@@ -12,9 +12,7 @@ import io.netty.handler.codec.http.HttpHeaders;
 
 import static org.pragmatica.lang.Result.all;
 
-/**
- * Request context providing access to HTTP request data and path parameter matching.
- */
+/// Request context providing access to HTTP request data and path parameter matching.
 @SuppressWarnings("unused")
 public interface RequestContext {
     Result<String> NOT_FOUND = HttpStatus.NOT_FOUND.with("Unknown request path")
@@ -117,9 +115,7 @@ public interface RequestContext {
                    q5.parse(queryParam(q5.name())));
     }
 
-    /**
-     * Implementation of RequestContext for Netty HTTP requests.
-     */
+    /// Implementation of RequestContext for Netty HTTP requests.
     @SuppressWarnings("unused")
     final class RequestContextImpl implements RequestContext {
         private static final int PATH_PARAM_LIMIT = 1024;

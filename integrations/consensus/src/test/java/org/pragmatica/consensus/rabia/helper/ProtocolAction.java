@@ -22,9 +22,7 @@ import org.pragmatica.consensus.rabia.Batch;
 import org.pragmatica.consensus.rabia.Phase;
 import org.pragmatica.consensus.rabia.StateValue;
 
-/**
- * Sealed interface representing protocol actions from weak_mvc.ivy spec.
- */
+/// Sealed interface representing protocol actions from weak_mvc.ivy spec.
 public sealed interface ProtocolAction<C extends Command> {
     record InitialProposal<C extends Command>(NodeId node, Batch<C> value) implements ProtocolAction<C> {}
 

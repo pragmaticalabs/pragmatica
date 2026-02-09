@@ -4,17 +4,15 @@ import org.pragmatica.jbct.format.cst.CstFormatter;
 import org.pragmatica.jbct.shared.SourceFile;
 import org.pragmatica.lang.Result;
 
-/**
- * JBCT code formatter implementation.
- *
- * Formats Java source code according to JBCT style rules:
- * - Method chains align to receiver end
- * - Multi-line arguments align to opening paren
- * - 120 character max line length
- * - 4 space indentation
- *
- * Uses CST-based formatter for trivia (whitespace/comments) preservation.
- */
+/// JBCT code formatter implementation.
+///
+/// Formats Java source code according to JBCT style rules:
+/// - Method chains align to receiver end
+/// - Multi-line arguments align to opening paren
+/// - 120 character max line length
+/// - 4 space indentation
+///
+/// Uses CST-based formatter for trivia (whitespace/comments) preservation.
 public class JbctFormatter {
     private final CstFormatter delegate;
 
@@ -22,16 +20,12 @@ public class JbctFormatter {
         this.delegate = CstFormatter.cstFormatter(config);
     }
 
-    /**
-     * Factory method for creating a formatter with default config.
-     */
+    /// Factory method for creating a formatter with default config.
     public static JbctFormatter jbctFormatter() {
         return new JbctFormatter(FormatterConfig.defaultConfig());
     }
 
-    /**
-     * Factory method for creating a formatter with custom config.
-     */
+    /// Factory method for creating a formatter with custom config.
     public static JbctFormatter jbctFormatter(FormatterConfig config) {
         return new JbctFormatter(config);
     }

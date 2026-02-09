@@ -12,15 +12,13 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-STY-05: Prefer method references over equivalent lambdas.
- *
- * Detects lambdas that could be simplified to method references:
- * - x -> new Type(x) → Type::new
- * - x -> x.method() → Type::method
- * - x -> Type.method(x) → Type::method
- * - x -> obj.method(x) → obj::method
- */
+/// JBCT-STY-05: Prefer method references over equivalent lambdas.
+///
+/// Detects lambdas that could be simplified to method references:
+/// - x -> new Type(x) → Type::new
+/// - x -> x.method() → Type::method
+/// - x -> Type.method(x) → Type::method
+/// - x -> obj.method(x) → obj::method
 public class CstMethodReferencePreferenceRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-05";
 

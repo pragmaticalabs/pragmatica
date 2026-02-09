@@ -3,9 +3,7 @@ package org.pragmatica.aether.infra;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
-/**
- * Error hierarchy for infrastructure slice failures.
- */
+/// Error hierarchy for infrastructure slice failures.
 public sealed interface InfraSliceError extends Cause {
     record ConfigurationFailed(String detail) implements InfraSliceError {
         @Override

@@ -10,10 +10,8 @@ import java.util.Map;
 
 import static org.pragmatica.lang.Option.option;
 
-/**
- * Startup configuration merged from CLI arguments and environment variables.
- * Priority: environment variables > CLI arguments > defaults.
- */
+/// Startup configuration merged from CLI arguments and environment variables.
+/// Priority: environment variables > CLI arguments > defaults.
 public record StartupConfig(Option<Path> forgeConfig,
                             Option<Path> blueprint,
                             Option<Path> loadConfig,
@@ -25,9 +23,7 @@ public record StartupConfig(Option<Path> forgeConfig,
     private static final int DEFAULT_CLUSTER_SIZE = 5;
     private static final int DEFAULT_LOAD_RATE = 1000;
 
-    /**
-     * Parse startup configuration from CLI args with environment variable overrides.
-     */
+    /// Parse startup configuration from CLI args with environment variable overrides.
     public static Result<StartupConfig> startupConfig(String[] args) {
         var parsed = parseArgs(args);
         // Apply env var overrides (highest priority)
@@ -103,9 +99,7 @@ public record StartupConfig(Option<Path> forgeConfig,
         return Result.success(Option.some(path));
     }
 
-    /**
-     * Startup configuration errors.
-     */
+    /// Startup configuration errors.
     public sealed interface StartupError extends org.pragmatica.lang.Cause {
         record FileNotFound(String configName, Path path) implements StartupError {
             @Override

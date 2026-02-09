@@ -19,16 +19,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Scheduler for deployment metrics broadcast that runs on the leader node.
- *
- * <p>When this node is the leader, periodically sends DeploymentMetricsPing to all nodes.
- * Each node responds with DeploymentMetricsPong containing their deployment metrics.
- */
+/// Scheduler for deployment metrics broadcast that runs on the leader node.
+///
+///
+/// When this node is the leader, periodically sends DeploymentMetricsPing to all nodes.
+/// Each node responds with DeploymentMetricsPong containing their deployment metrics.
 public interface DeploymentMetricsScheduler {
-    /**
-     * Default broadcast interval: 5 seconds.
-     */
+    /// Default broadcast interval: 5 seconds.
     TimeSpan DEFAULT_INTERVAL = TimeSpan.timeSpan(5)
                                        .seconds();
 
@@ -38,29 +35,21 @@ public interface DeploymentMetricsScheduler {
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
-    /**
-     * Handle quorum state changes (stop pinging when quorum disappears).
-     */
+    /// Handle quorum state changes (stop pinging when quorum disappears).
     @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification notification);
 
-    /**
-     * Stop the scheduler (for graceful shutdown).
-     */
+    /// Stop the scheduler (for graceful shutdown).
     void stop();
 
-    /**
-     * Create a new DeploymentMetricsScheduler with default 5-second interval.
-     */
+    /// Create a new DeploymentMetricsScheduler with default 5-second interval.
     static DeploymentMetricsScheduler deploymentMetricsScheduler(NodeId self,
                                                                  ClusterNetwork network,
                                                                  DeploymentMetricsCollector collector) {
         return deploymentMetricsScheduler(self, network, collector, DEFAULT_INTERVAL);
     }
 
-    /**
-     * Create a new DeploymentMetricsScheduler with custom interval.
-     */
+    /// Create a new DeploymentMetricsScheduler with custom interval.
     static DeploymentMetricsScheduler deploymentMetricsScheduler(NodeId self,
                                                                  ClusterNetwork network,
                                                                  DeploymentMetricsCollector collector,

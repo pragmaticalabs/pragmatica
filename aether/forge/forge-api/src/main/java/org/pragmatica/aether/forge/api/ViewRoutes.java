@@ -17,11 +17,9 @@ import java.time.Duration;
 
 import static org.pragmatica.http.routing.Route.in;
 
-/**
- * HTML view endpoints for the dashboard.
- * Returns static shell HTML with placeholder divs that client-side JS populates
- * via a single /api/status fetch.
- */
+/// HTML view endpoints for the dashboard.
+/// Returns static shell HTML with placeholder divs that client-side JS populates
+/// via a single /api/status fetch.
 public sealed interface ViewRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 

@@ -12,35 +12,25 @@ import org.slf4j.LoggerFactory;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * DecisionTreeController enhanced with TTM predictions.
- * <p>
- * Adjusts thresholds based on TTM forecasts for proactive scaling.
- * This creates a two-tier control system:
- * <ul>
- *   <li>Tier 1: Decision tree (reactive, 1-second evaluations)</li>
- *   <li>Tier 2: TTM predictions (proactive, 1-minute evaluations)</li>
- * </ul>
- */
+/// DecisionTreeController enhanced with TTM predictions.
+///
+/// Adjusts thresholds based on TTM forecasts for proactive scaling.
+/// This creates a two-tier control system:
+///
+///   - Tier 1: Decision tree (reactive, 1-second evaluations)
+///   - Tier 2: TTM predictions (proactive, 1-minute evaluations)
+///
 public interface AdaptiveDecisionTree extends ClusterController {
-    /**
-     * Get the underlying decision tree controller.
-     */
+    /// Get the underlying decision tree controller.
     ClusterController baseController();
 
-    /**
-     * Get the TTM manager.
-     */
+    /// Get the TTM manager.
     TTMManager ttmManager();
 
-    /**
-     * Get current effective configuration (with TTM adjustments).
-     */
+    /// Get current effective configuration (with TTM adjustments).
     ControllerConfig effectiveConfig();
 
-    /**
-     * Create adaptive controller.
-     */
+    /// Create adaptive controller.
     static AdaptiveDecisionTree adaptiveDecisionTree(DecisionTreeController baseController, TTMManager ttmManager) {
         record adaptiveDecisionTree(DecisionTreeController baseController, TTMManager ttmManager) implements
                                                                                                   AdaptiveDecisionTree {
@@ -109,12 +99,10 @@ public interface AdaptiveDecisionTree extends ClusterController {
                 }
             }
 
-            /**
-             * Generate preemptive scaling changes based on TTM forecast.
-             * <p>
-             * Current implementation applies scaling to the first scalable blueprint.
-             * Future enhancement: distribute scaling across blueprints based on load contribution.
-             */
+            /// Generate preemptive scaling changes based on TTM forecast.
+            ///
+            /// Current implementation applies scaling to the first scalable blueprint.
+            /// Future enhancement: distribute scaling across blueprints based on load contribution.
             private List<BlueprintChange> getPreemptiveChanges(TTMForecast forecast, ControlContext context) {
                 return switch (forecast.recommendation()) {
                     case ScalingRecommendation.PreemptiveScaleUp scaleUp -> {

@@ -19,17 +19,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for graceful shutdown scenarios.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Node shutdown leaves cluster in healthy state</li>
- *   <li>Peers detect and respond to node shutdown</li>
- *   <li>Slices are handled appropriately during shutdown</li>
- *   <li>Shutdown during ongoing operations</li>
- * </ul>
- */
+/// Tests for graceful shutdown scenarios.
+///
+///
+/// Tests cover:
+///
+///   - Node shutdown leaves cluster in healthy state
+///   - Peers detect and respond to node shutdown
+///   - Slices are handled appropriately during shutdown
+///   - Shutdown during ongoing operations
+///
 @Execution(ExecutionMode.SAME_THREAD)
 class GracefulShutdownTest {
     private static final int BASE_PORT = 12000;

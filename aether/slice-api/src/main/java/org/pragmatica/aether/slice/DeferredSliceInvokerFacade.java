@@ -8,14 +8,12 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.concurrent.atomic.AtomicReference;
 
-/**
- * A deferred SliceInvokerFacade that can be wired after construction.
- * <p>
- * Use this when SliceStore needs to be created before SliceInvoker is available.
- * The actual invoker is set later via {@link #setDelegate(SliceInvokerFacade)}.
- * <p>
- * Invocations before delegate is set will fail with a clear error message.
- */
+/// A deferred SliceInvokerFacade that can be wired after construction.
+///
+/// Use this when SliceStore needs to be created before SliceInvoker is available.
+/// The actual invoker is set later via {@link #setDelegate(SliceInvokerFacade)}.
+///
+/// Invocations before delegate is set will fail with a clear error message.
 public final class DeferredSliceInvokerFacade implements SliceInvokerFacade {
     private final AtomicReference<SliceInvokerFacade> delegate = new AtomicReference<>();
 
@@ -28,12 +26,10 @@ public final class DeferredSliceInvokerFacade implements SliceInvokerFacade {
     private static final org.pragmatica.lang.Cause DELEGATE_ALREADY_SET =
         Causes.cause("Delegate already set");
 
-    /**
-     * Set the actual SliceInvokerFacade delegate.
-     * Must be called before any invocations occur.
-     *
-     * @return Result.success if set, or failure if already set
-     */
+    /// Set the actual SliceInvokerFacade delegate.
+    /// Must be called before any invocations occur.
+    ///
+    /// @return Result.success if set, or failure if already set
     public Result<Unit> setDelegate(SliceInvokerFacade invoker) {
         return delegate.compareAndSet(null, invoker)
                ? Result.success(Unit.unit())

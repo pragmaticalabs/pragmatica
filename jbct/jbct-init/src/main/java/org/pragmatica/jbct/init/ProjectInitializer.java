@@ -11,9 +11,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Initializes a new JBCT project structure.
- */
+/// Initializes a new JBCT project structure.
 public final class ProjectInitializer {
     private static final String TEMPLATES_PATH = "/templates/";
 
@@ -42,17 +40,13 @@ public final class ProjectInitializer {
         this.pragmaticaVersion = pragmaticaVersion;
     }
 
-    /**
-     * Create initializer with project parameters, fetching latest versions from GitHub.
-     */
+    /// Create initializer with project parameters, fetching latest versions from GitHub.
     public static ProjectInitializer projectInitializer(Path projectDir, String groupId, String artifactId) {
         var resolver = GitHubVersionResolver.gitHubVersionResolver();
         return projectInitializer(projectDir, groupId, artifactId, resolver);
     }
 
-    /**
-     * Create initializer with project parameters and version resolver.
-     */
+    /// Create initializer with project parameters and version resolver.
     public static ProjectInitializer projectInitializer(Path projectDir,
                                                         String groupId,
                                                         String artifactId,
@@ -66,9 +60,7 @@ public final class ProjectInitializer {
                                       resolver.pragmaticaLiteVersion());
     }
 
-    /**
-     * Create initializer with project parameters and fallback versions (no network).
-     */
+    /// Create initializer with project parameters and fallback versions (no network).
     public static ProjectInitializer projectInitializerOffline(Path projectDir, String groupId, String artifactId) {
         var basePackage = groupId + "." + artifactId.replace("-", "");
         return new ProjectInitializer(projectDir,
@@ -79,9 +71,7 @@ public final class ProjectInitializer {
                                       DEFAULT_PRAGMATICA_VERSION);
     }
 
-    /**
-     * Create initializer with project parameters and custom versions.
-     */
+    /// Create initializer with project parameters and custom versions.
     public static ProjectInitializer projectInitializer(Path projectDir,
                                                         String groupId,
                                                         String artifactId,
@@ -91,9 +81,7 @@ public final class ProjectInitializer {
         return new ProjectInitializer(projectDir, groupId, artifactId, basePackage, jbctVersion, pragmaticaVersion);
     }
 
-    /**
-     * Create initializer with explicit base package.
-     */
+    /// Create initializer with explicit base package.
     public static ProjectInitializer projectInitializer(Path projectDir,
                                                         String groupId,
                                                         String artifactId,
@@ -106,11 +94,9 @@ public final class ProjectInitializer {
                                       DEFAULT_PRAGMATICA_VERSION);
     }
 
-    /**
-     * Initialize the project structure.
-     *
-     * @return List of created files
-     */
+    /// Initialize the project structure.
+    ///
+    /// @return List of created files
     public Result<List<Path>> initialize() {
         return createDirectories()
         .flatMap(_ -> Result.all(createTemplateFiles(),
@@ -225,30 +211,22 @@ public final class ProjectInitializer {
         return sb.toString();
     }
 
-    /**
-     * Get the project directory.
-     */
+    /// Get the project directory.
     public Path projectDir() {
         return projectDir;
     }
 
-    /**
-     * Get the group ID.
-     */
+    /// Get the group ID.
     public String groupId() {
         return groupId;
     }
 
-    /**
-     * Get the artifact ID.
-     */
+    /// Get the artifact ID.
     public String artifactId() {
         return artifactId;
     }
 
-    /**
-     * Get the base package.
-     */
+    /// Get the base package.
     public String basePackage() {
         return basePackage;
     }

@@ -18,31 +18,27 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * Simple rule-based controller for MVP.
- *
- * <p>Rules (evaluated in order):
- * <ol>
- *   <li>IF avg(cpu) > 0.8 → scale up by 1</li>
- *   <li>IF avg(cpu) < 0.2 AND instances > 1 → scale down by 1</li>
- *   <li>IF method call rate > threshold → scale up</li>
- * </ol>
- *
- * <p>Future versions will support configurable rules via YAML.
- */
+/// Simple rule-based controller for MVP.
+///
+///
+/// Rules (evaluated in order):
+/// <ol>
+///   - IF avg(cpu) > 0.8 → scale up by 1
+///   - IF avg(cpu) < 0.2 AND instances > 1 → scale down by 1
+///   - IF method call rate > threshold → scale up
+/// </ol>
+///
+///
+/// Future versions will support configurable rules via YAML.
 public interface DecisionTreeController extends ClusterController {
-    /**
-     * Create a decision tree controller with default thresholds.
-     */
+    /// Create a decision tree controller with default thresholds.
     static DecisionTreeController decisionTreeController() {
         return decisionTreeController(ControllerConfig.DEFAULT);
     }
 
-    /**
-     * Create a decision tree controller with custom thresholds.
-     *
-     * @return Result containing controller or validation error
-     */
+    /// Create a decision tree controller with custom thresholds.
+    ///
+    /// @return Result containing controller or validation error
     static Result<DecisionTreeController> decisionTreeController(double cpuScaleUpThreshold,
                                                                  double cpuScaleDownThreshold,
                                                                  double callRateScaleUpThreshold) {
@@ -53,27 +49,19 @@ public interface DecisionTreeController extends ClusterController {
                                .map(config -> decisionTreeController(config));
     }
 
-    /**
-     * Create a decision tree controller with full configuration.
-     */
+    /// Create a decision tree controller with full configuration.
     static DecisionTreeController decisionTreeController(ControllerConfig config) {
         return new ControllerState(config, new ConcurrentHashMap<>(), System.currentTimeMillis());
     }
 
-    /**
-     * Get current configuration.
-     */
+    /// Get current configuration.
     ControllerConfig configuration();
 
-    /**
-     * Update configuration at runtime.
-     */
+    /// Update configuration at runtime.
     Unit updateConfiguration(ControllerConfig config);
 
-    /**
-     * Internal mutable state holder for the controller.
-     * Uses a class instead of record to support volatile config field.
-     */
+    /// Internal mutable state holder for the controller.
+    /// Uses a class instead of record to support volatile config field.
     final class ControllerState implements DecisionTreeController {
         private static final Logger log = LoggerFactory.getLogger(DecisionTreeController.class);
 
@@ -201,11 +189,9 @@ public interface DecisionTreeController extends ClusterController {
             return Option.none();
         }
 
-        /**
-         * Check for high call rates and update previous call counts atomically.
-         * Uses ConcurrentHashMap.put() which atomically returns the previous value,
-         * eliminating the non-atomic getOrDefault/put race.
-         */
+        /// Check for high call rates and update previous call counts atomically.
+        /// Uses ConcurrentHashMap.put() which atomically returns the previous value,
+        /// eliminating the non-atomic getOrDefault/put race.
         private boolean checkAndUpdateCallRates(List<Map.Entry<String, Double>> callMetricEntries,
                                                 double elapsedSeconds,
                                                 ControllerConfig currentConfig) {

@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-VO-01: Value objects need factory returning Result<T>.
- */
+/// JBCT-VO-01: Value objects need factory returning Result<T>.
 public class CstValueObjectFactoryRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-VO-01";
 
