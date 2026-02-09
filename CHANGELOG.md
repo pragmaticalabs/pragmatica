@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.15.1] - Unreleased
 
+### Fixed
+- SliceStore.unloadSlice() stuck in UNLOADING state when slice loading had previously failed
+- Shared dependency loading fails for runtime-provided libraries (e.g. `core` embedded in shaded JAR)
+- Orphaned SliceNodeKey entries not cleaned up after undeploy during leader change
+- E2E multi-instance deployment test used hardcoded instance count instead of cluster size
+- E2E BeforeEach cleanup now retries undeploy to handle leader changes during teardown
+- Pre-populate DHT ring with known peers and harden distributed operations
+
+### Changed
+- Disabled TTM E2E tests (trivial checks not worth 90-minute 5-node cluster overhead)
+
 ## [0.15.0] - 2026-02-02
 
 ### Added
