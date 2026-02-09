@@ -273,12 +273,19 @@ public interface SliceStore {
 
         @Override
         public Promise<Unit> unloadSlice(Artifact artifact) {
-            return Option.option(entries.get(artifact))
-                         .map(entryPromise -> entryPromise.flatMap(entry -> unloadEntry(artifact, entry)))
+            return Option.option(entries.remove(artifact))
+                         .map(entryPromise -> entryPromise.fold(result -> result.fold(
+                             cause -> skipFailedUnload(artifact, cause),
+                             entry -> unloadEntry(artifact, entry))))
                          .or(() -> {
                                  log.debug("Slice {} not loaded, nothing to unload", artifact);
                                  return Promise.unitPromise();
                              });
+        }
+
+        private Promise<Unit> skipFailedUnload(Artifact artifact, Cause cause) {
+            log.debug("Slice {} was in failed state ({}), nothing to unload", artifact, cause.message());
+            return Promise.unitPromise();
         }
 
         private Promise<Unit> unloadEntry(Artifact artifact, LoadedSliceEntry entry) {

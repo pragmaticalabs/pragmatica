@@ -89,6 +89,23 @@ public class SharedLibraryClassLoader extends URLClassLoader {
         log.debug("Added shared artifact {}:{} from {}", key, version.withQualifier(), jarUrl);
     }
 
+    /// Register an artifact as provided by the runtime (e.g., embedded in a shaded JAR).
+    ///
+    /// This is used when a shared dependency cannot be found in any repository
+    /// but its classes are already available through the parent classloader.
+    /// The artifact is tracked for version compatibility without adding a JAR URL.
+    ///
+    /// @param groupId    Maven group ID
+    /// @param artifactId Maven artifact ID
+    /// @param version    The version being provided
+    public synchronized void registerRuntimeProvided(String groupId, String artifactId, Version version) {
+        var key = artifactKey(groupId, artifactId);
+        if (!loadedArtifacts.containsKey(key)) {
+            loadedArtifacts.put(key, version);
+            log.debug("Registered runtime-provided artifact {}:{}", key, version.withQualifier());
+        }
+    }
+
     /// Check if an artifact is already loaded.
     ///
     /// @param groupId    Maven group ID

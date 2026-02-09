@@ -180,7 +180,17 @@ public interface SharedDependencyLoader {
                          .flatMap(repository::locate)
                          .map(location -> addToSharedLoader(dependency,
                                                             sharedLibraryLoader,
-                                                            location.url()));
+                                                            location.url()))
+                         .orElse(() -> registerAsRuntimeProvided(dependency, sharedLibraryLoader));
+    }
+
+    private static Promise<Unit> registerAsRuntimeProvided(ArtifactDependency dependency,
+                                                            SharedLibraryClassLoader sharedLibraryLoader) {
+        var version = extractVersion(dependency.versionPattern());
+        sharedLibraryLoader.registerRuntimeProvided(dependency.groupId(), dependency.artifactId(), version);
+        log.info("Shared dependency {} not found in repositories, registered as runtime-provided",
+                 dependency.asString());
+        return Promise.success(unit());
     }
 
     private static Unit addToSharedLoader(ArtifactDependency dependency,

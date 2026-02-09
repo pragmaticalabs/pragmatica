@@ -168,6 +168,8 @@ public interface ClusterDeploymentManager {
                 cleanupStaleHttpRoutes();
                 cleanupStaleSliceEntries();
                 cleanupStaleEndpointEntries();
+                // Clean up orphaned slice entries with no matching blueprint
+                cleanupOrphanedSliceEntries();
             }
 
             /// After state rebuild, check all LOADED slices and trigger activation if dependencies are ready.
@@ -742,6 +744,38 @@ public interface ClusterDeploymentManager {
                 if (!currentNodes.contains(endpointValue.nodeId())) {
                     result.add(endpointKey);
                 }
+            }
+
+            /// Remove slice state entries whose artifact has no matching blueprint.
+            /// These are orphaned entries from incomplete undeploy operations where
+            /// the SliceTargetKey was removed but the SliceNodeKey cleanup didn't complete
+            /// before a leader change.
+            private void cleanupOrphanedSliceEntries() {
+                var orphanedEntries = sliceStates.entrySet()
+                                                 .stream()
+                                                 .filter(entry -> !blueprints.containsKey(entry.getKey()
+                                                                                               .artifact()))
+                                                 .toList();
+                if (orphanedEntries.isEmpty()) {
+                    return;
+                }
+                List<KVCommand<AetherKey>> commands = new ArrayList<>();
+                for (var entry : orphanedEntries) {
+                    var key = entry.getKey();
+                    var state = entry.getValue();
+                    sliceStates.remove(key);
+                    if (state == SliceState.UNLOAD || state == SliceState.UNLOADING) {
+                        // Already in teardown, just remove the KV entry
+                        commands.add(new KVCommand.Remove<>(key));
+                    } else {
+                        // Issue UNLOAD to trigger proper teardown on the node
+                        commands.add(new KVCommand.Put<>(key, new SliceNodeValue(SliceState.UNLOAD)));
+                    }
+                }
+                log.info("Cleaning up {} orphaned slice entries (no matching blueprint)", orphanedEntries.size());
+                cluster.apply(commands)
+                       .onFailure(cause -> log.error("Failed to clean up orphaned slice entries: {}",
+                                                      cause.message()));
             }
 
             /// Allocate instances across cluster nodes using round-robin strategy.

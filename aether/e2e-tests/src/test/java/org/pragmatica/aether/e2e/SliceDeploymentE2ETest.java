@@ -73,16 +73,22 @@ class SliceDeploymentE2ETest {
         // Wait for cluster stability
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
-        // Await leader for stability instead of sleep
         cluster.awaitLeader();
 
-        // Undeploy all slices
-        System.out.println("[DEBUG] BeforeEach: undeploying all slices...");
-        undeployAllSlices();
-
-        // Wait for clean state
-        System.out.println("[DEBUG] BeforeEach: awaiting no slices...");
-        awaitNoSlices();
+        // Retry undeploy until clean — handles undeploy lost during leader changes
+        System.out.println("[DEBUG] BeforeEach: cleanup with retry...");
+        await().atMost(CLEANUP_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .ignoreExceptions()
+               .until(() -> {
+                   var slices = cluster.anyNode().getSlices();
+                   System.out.println("[DEBUG] Cleanup check, local slices: " + slices);
+                   if (slices.contains(TEST_ARTIFACT)) {
+                       tryUndeploy();
+                       return false;
+                   }
+                   return true;
+               });
         System.out.println("[DEBUG] BeforeEach: cleanup complete");
     }
 
@@ -117,12 +123,13 @@ class SliceDeploymentE2ETest {
     @Test
     @Order(2)
     void deploySlice_multipleInstances_distributedAcrossNodes() {
-        var response = deployAndAssert(TEST_ARTIFACT, 3);
+        var instanceCount = cluster.size();
+        var response = deployAndAssert(TEST_ARTIFACT, instanceCount);
 
-        // Wait for slice to become ACTIVE on ALL nodes (multi-instance distribution)
+        // Wait for slice to become ACTIVE on ALL nodes (one instance per node)
         cluster.awaitSliceActiveOnAllNodes(TEST_ARTIFACT, DEPLOY_TIMEOUT);
 
-        // Each node should report the slice
+        // Each node should report the slice locally
         for (var node : cluster.nodes()) {
             var nodeSlices = node.getSlices();
             assertThat(nodeSlices).contains(TEST_ARTIFACT);
@@ -211,35 +218,16 @@ class SliceDeploymentE2ETest {
 
     // ===== Cleanup Helpers =====
 
-    private void undeployAllSlices() {
+    private void tryUndeploy() {
         try {
             var leader = cluster.leader()
                                 .toResult(Causes.cause("No leader"))
                                 .unwrap();
-
-            // Get list of deployed slices
-            var slices = leader.getSlices();
-            System.out.println("[DEBUG] Deployed slices: " + slices);
-
-            // Undeploy the test artifact if present
-            if (slices.contains(TEST_ARTIFACT)) {
-                var result = leader.undeploy(TEST_ARTIFACT);
-                System.out.println("[DEBUG] Undeploy " + TEST_ARTIFACT + ": " + result);
-            }
+            var result = leader.undeploy(TEST_ARTIFACT);
+            System.out.println("[DEBUG] Undeploy attempt: " + result);
         } catch (Exception e) {
-            System.out.println("[DEBUG] Error undeploying slices: " + e.getMessage());
+            System.out.println("[DEBUG] Undeploy error: " + e.getMessage());
         }
-    }
-
-    private void awaitNoSlices() {
-        await().atMost(CLEANUP_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .ignoreExceptions()
-               .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   System.out.println("[DEBUG] Waiting for no slices, current: " + slices);
-                   return !slices.contains(TEST_ARTIFACT);
-               });
     }
 
     // ===== Test Helpers =====
