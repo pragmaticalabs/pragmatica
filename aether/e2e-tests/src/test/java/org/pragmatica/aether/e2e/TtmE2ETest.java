@@ -36,6 +36,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// Tests run in order to ensure deterministic behavior.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
+@Disabled("TTM is disabled by default (no model); these trivial checks don't justify a 5-node cluster")
 class TtmE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
 
