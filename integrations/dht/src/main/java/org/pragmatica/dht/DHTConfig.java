@@ -18,7 +18,10 @@ package org.pragmatica.dht;
 
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Result;
+import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
+
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
 /// Configuration for the distributed hash table.
 ///
@@ -26,26 +29,36 @@ import org.pragmatica.lang.utils.Causes;
 ///                          Use 0 for full replication (all nodes store everything).
 /// @param writeQuorum       minimum number of successful writes for operation to succeed
 /// @param readQuorum        minimum number of successful reads for operation to succeed
-public record DHTConfig(int replicationFactor, int writeQuorum, int readQuorum) {
+/// @param operationTimeout  timeout for individual DHT operations
+public record DHTConfig(int replicationFactor, int writeQuorum, int readQuorum, TimeSpan operationTimeout) {
     /// Full replication marker - all nodes store all data.
     public static final int FULL_REPLICATION = 0;
+
+    /// Default operation timeout.
+    public static final TimeSpan DEFAULT_TIMEOUT = timeSpan(10).seconds();
 
     private static final Cause INVALID_REPLICATION = Causes.cause("replicationFactor must be >= 0 (0 = full replication)");
     private static final Cause INVALID_WRITE_QUORUM = Causes.cause("writeQuorum must be between 1 and replicationFactor");
     private static final Cause INVALID_READ_QUORUM = Causes.cause("readQuorum must be between 1 and replicationFactor");
 
     /// Default configuration: 3 replicas, quorum of 2 for both reads and writes.
-    public static final DHTConfig DEFAULT = new DHTConfig(3, 2, 2);
+    public static final DHTConfig DEFAULT = new DHTConfig(3, 2, 2, DEFAULT_TIMEOUT);
 
     /// Single-node configuration for testing.
-    public static final DHTConfig SINGLE_NODE = new DHTConfig(1, 1, 1);
+    public static final DHTConfig SINGLE_NODE = new DHTConfig(1, 1, 1, DEFAULT_TIMEOUT);
 
     /// Full replication configuration - all nodes store all data.
     /// Read/write quorum of 1 since any node has all data.
-    public static final DHTConfig FULL = new DHTConfig(FULL_REPLICATION, 1, 1);
+    public static final DHTConfig FULL = new DHTConfig(FULL_REPLICATION, 1, 1, DEFAULT_TIMEOUT);
 
     /// Create a DHT configuration with validation.
     public static Result<DHTConfig> dhtConfig(int replicationFactor, int writeQuorum, int readQuorum) {
+        return dhtConfig(replicationFactor, writeQuorum, readQuorum, DEFAULT_TIMEOUT);
+    }
+
+    /// Create a DHT configuration with validation and custom timeout.
+    public static Result<DHTConfig> dhtConfig(int replicationFactor, int writeQuorum, int readQuorum,
+                                              TimeSpan operationTimeout) {
         if (replicationFactor < 0) {
             return INVALID_REPLICATION.result();
         }
@@ -57,7 +70,7 @@ public record DHTConfig(int replicationFactor, int writeQuorum, int readQuorum) 
                 return INVALID_READ_QUORUM.result();
             }
         }
-        return Result.success(new DHTConfig(replicationFactor, writeQuorum, readQuorum));
+        return Result.success(new DHTConfig(replicationFactor, writeQuorum, readQuorum, operationTimeout));
     }
 
     /// Create a config with the given replication factor and majority quorum.
@@ -89,5 +102,17 @@ public record DHTConfig(int replicationFactor, int writeQuorum, int readQuorum) 
         return isFullReplication()
                ? clusterSize
                : Math.min(replicationFactor, clusterSize);
+    }
+
+    /// Get effective write quorum for a given cluster size.
+    /// Caps at effective replication factor to prevent impossible quorum.
+    public int effectiveWriteQuorum(int clusterSize) {
+        return Math.min(writeQuorum, effectiveReplicationFactor(clusterSize));
+    }
+
+    /// Get effective read quorum for a given cluster size.
+    /// Caps at effective replication factor to prevent impossible quorum.
+    public int effectiveReadQuorum(int clusterSize) {
+        return Math.min(readQuorum, effectiveReplicationFactor(clusterSize));
     }
 }

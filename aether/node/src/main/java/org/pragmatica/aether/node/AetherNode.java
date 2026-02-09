@@ -260,6 +260,8 @@ public interface AetherNode {
         var dhtStorage = MemoryStorageEngine.memoryStorageEngine();
         var dhtRing = ConsistentHashRing.<NodeId>consistentHashRing();
         dhtRing.addNode(config.self());
+        // Pre-populate ring with all known peers so DHT is ready before topology events fire
+        config.topology().coreNodes().forEach(peer -> dhtRing.addNode(peer.id()));
         var dhtNode = DHTNode.dhtNode(config.self(),
                                       dhtStorage,
                                       dhtRing,

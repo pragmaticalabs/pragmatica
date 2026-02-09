@@ -157,8 +157,8 @@ public interface SliceStore {
 
         private Promise<LoadedSliceEntry> startLoading(Artifact artifact) {
             log.debug("Loading slice {}", artifact);
-            return locateInRepositories(artifact).flatMap(_ -> loadFromLocation(artifact))
-                                       .onFailure(_ -> CompletableFuture.runAsync(() -> entries.remove(artifact)));
+            return loadFromLocation(artifact)
+                       .onFailure(_ -> CompletableFuture.runAsync(() -> entries.remove(artifact)));
         }
 
         private Promise<LoadedSliceEntry> loadFromLocation(Artifact artifact) {

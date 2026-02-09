@@ -66,7 +66,8 @@ public final class DistributedDHTClient implements DHTClient {
         }
 
         Promise<Option<byte[]>> promise = Promise.promise();
-        var collector = QuorumCollector.<Option<byte[]>>quorumCollector(config.readQuorum(), targets.size(), promise);
+        var quorum = config.effectiveReadQuorum(node.ring().nodeCount());
+        var collector = QuorumCollector.<Option<byte[]>>quorumCollector(quorum, targets.size(), promise);
 
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
@@ -76,7 +77,7 @@ public final class DistributedDHTClient implements DHTClient {
             }
         }
 
-        return promise;
+        return promise.timeout(config.operationTimeout());
     }
 
     @Override
@@ -88,7 +89,8 @@ public final class DistributedDHTClient implements DHTClient {
         }
 
         Promise<Unit> promise = Promise.promise();
-        var collector = QuorumCollector.<Unit>quorumCollector(config.writeQuorum(), targets.size(), promise);
+        var quorum = config.effectiveWriteQuorum(node.ring().nodeCount());
+        var collector = QuorumCollector.<Unit>quorumCollector(quorum, targets.size(), promise);
 
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
@@ -98,7 +100,7 @@ public final class DistributedDHTClient implements DHTClient {
             }
         }
 
-        return promise;
+        return promise.timeout(config.operationTimeout());
     }
 
     @Override
@@ -110,7 +112,8 @@ public final class DistributedDHTClient implements DHTClient {
         }
 
         Promise<Boolean> promise = Promise.promise();
-        var collector = QuorumCollector.<Boolean>quorumCollector(config.writeQuorum(), targets.size(), promise);
+        var quorum = config.effectiveWriteQuorum(node.ring().nodeCount());
+        var collector = QuorumCollector.<Boolean>quorumCollector(quorum, targets.size(), promise);
 
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
@@ -120,7 +123,7 @@ public final class DistributedDHTClient implements DHTClient {
             }
         }
 
-        return promise;
+        return promise.timeout(config.operationTimeout());
     }
 
     @Override
@@ -132,7 +135,8 @@ public final class DistributedDHTClient implements DHTClient {
         }
 
         Promise<Boolean> promise = Promise.promise();
-        var collector = QuorumCollector.<Boolean>quorumCollector(config.readQuorum(), targets.size(), promise);
+        var quorum = config.effectiveReadQuorum(node.ring().nodeCount());
+        var collector = QuorumCollector.<Boolean>quorumCollector(quorum, targets.size(), promise);
 
         for (var target : targets) {
             if (target.equals(node.nodeId())) {
@@ -142,7 +146,7 @@ public final class DistributedDHTClient implements DHTClient {
             }
         }
 
-        return promise;
+        return promise.timeout(config.operationTimeout());
     }
 
     @Override
