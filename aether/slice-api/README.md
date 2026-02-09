@@ -1,46 +1,12 @@
 # Aether Slice API
 
-Core slice interface definitions for [Aether](https://github.com/siy/aether) distributed runtime.
-
-## Installation
-
-```xml
-<dependency>
-    <groupId>org.pragmatica-lite.aether</groupId>
-    <artifactId>slice-api</artifactId>
-    <version>${aether.version}</version>
-</dependency>
-```
+Core slice interface definitions for the Aether distributed runtime.
 
 ## Overview
 
-This module provides the foundational interfaces for building slices - deployable units in the Aether runtime.
+Provides the foundational interfaces for building slices -- deployable units in the Aether runtime. Key interfaces: `Slice` (base with lifecycle methods), `SliceMethod<R, T>` (typed method definition), `MethodName` (type-safe method identifier), `SliceRuntime` (runtime access), `SliceInvokerFacade` (inter-slice invocation), and `Aspect` (method interception).
 
-### Key Interfaces
-
-| Interface | Description |
-|-----------|-------------|
-| `Slice` | Base interface for all deployable units with lifecycle methods |
-| `SliceMethod<R, T>` | Typed method definition with request/response types |
-| `MethodName` | Type-safe method identifier |
-| `SliceRuntime` | Runtime access for slice invocation and configuration |
-| `SliceInvokerFacade` | Inter-slice invocation API |
-| `Aspect` | Cross-cutting concern interface for method interception |
-
-### Slice Interface
-
-```java
-public interface Slice {
-    // Lifecycle
-    default Promise<Unit> start() { return Promise.unitPromise(); }
-    default Promise<Unit> stop() { return Promise.unitPromise(); }
-
-    // Method registry
-    List<SliceMethod<?, ?>> methods();
-}
-```
-
-### Example
+## Usage
 
 ```java
 public record GreetingSlice() implements Slice {
@@ -65,6 +31,16 @@ public record GreetingSlice() implements Slice {
 }
 ```
 
-## License
+### Slice Interface
 
-Apache License 2.0
+```java
+public interface Slice {
+    default Promise<Unit> start() { return Promise.unitPromise(); }
+    default Promise<Unit> stop() { return Promise.unitPromise(); }
+    List<SliceMethod<?, ?>> methods();
+}
+```
+
+## Dependencies
+
+- `pragmatica-lite-core`

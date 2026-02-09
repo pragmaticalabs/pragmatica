@@ -1,12 +1,14 @@
 # Aether Documentation
 
-Welcome to the Aether Distributed Runtime documentation.
+Documentation hub for the Aether distributed runtime.
 
-## Choose Your Path
+## Overview
 
-### Slice Developers
+Organized by audience: slice developers building applications on Aether, core contributors extending the platform, and operators deploying clusters.
 
-Build applications on Aether → [Overview](slice-developers/README.md)
+## Slice Developers
+
+Build applications on Aether. Start here: [Overview](slice-developers/README.md)
 
 1. [Getting Started](slice-developers/getting-started.md) - Your first slice in 5 minutes
 2. [Development Guide](slice-developers/development-guide.md) - Complete development workflow
@@ -19,7 +21,7 @@ Build applications on Aether → [Overview](slice-developers/README.md)
 9. [Migration Guide](slice-developers/migration-guide.md) - Moving from monolith to slices
 10. [Demos](slice-developers/demos.md) - Example applications
 
-### Core Contributors
+## Core Contributors
 
 Extend and maintain Aether:
 
@@ -31,27 +33,19 @@ Extend and maintain Aether:
 6. [Consensus](contributors/consensus.md) - Rabia protocol implementation
 7. [HTTP Routing](contributors/http-routing.md) - Request routing and forwarding
 8. [Metrics and Control](contributors/metrics-control.md) - Observability and AI integration
-9. [Invocation Metrics](contributors/invocation-metrics.md) - Per-method metrics
-10. [TTM Integration](contributors/ttm-integration.md) - Predictive scaling with ONNX
-11. [Node Implementation](contributors/aether-node.md) - AetherNode internals
+9. [Node Implementation](contributors/aether-node.md) - AetherNode internals
 
-### Operators
+## Operators
 
 Deploy and run Aether clusters:
 
 1. [Scaling](operators/scaling.md) - Auto-scaling configuration and behavior
-2. [TTM Guide](ttm-guide.md) - Predictive auto-scaling with Tiny Time Mixers
+2. [TTM Guide](ttm-guide.md) - Predictive auto-scaling
 3. [Monitoring](operators/monitoring.md) - Alerts and thresholds
 4. [Docker Deployment](operators/docker-deployment.md) - Container-based deployment
 5. [Rolling Updates](operators/rolling-updates.md) - Zero-downtime deployments
 6. [Artifact Repository](operators/artifact-repository.md) - Slice artifact management
-7. [Infrastructure Design](operators/infrastructure-design.md) - Production architecture
-
-**Runbooks:**
-- [Deployment Runbook](operators/runbooks/deployment.md)
-- [Scaling Runbook](operators/runbooks/scaling.md)
-- [Incident Response](operators/runbooks/incident-response.md)
-- [Troubleshooting](operators/runbooks/troubleshooting.md)
+7. [Runbooks](operators/runbooks/README.md) - Operational procedures
 
 ## Quick Reference
 
@@ -61,18 +55,3 @@ Deploy and run Aether clusters:
 | [CLI Reference](reference/cli.md) | Command-line tools |
 | [Management API](reference/management-api.md) | HTTP API for cluster management |
 | [Configuration](reference/configuration.md) | All configuration options |
-
-## Other Resources
-
-- [Articles](articles/) - Blog posts and external content
-- [Archive](archive/) - Historical documentation
-- [Internal](internal/) - Development progress tracking
-
-## Version
-
-This documentation is for **Aether v0.8.2**.
-
-## Getting Help
-
-- [Troubleshooting Guide](operators/runbooks/troubleshooting.md)
-- [GitHub Issues](https://github.com/siy/aether/issues)

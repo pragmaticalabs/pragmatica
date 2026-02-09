@@ -1,6 +1,10 @@
-# Aether Operational Runbooks
+# Operational Runbooks
 
 Operational procedures for managing Aether clusters in production.
+
+## Overview
+
+Step-by-step runbooks for common operational tasks including incident response, scaling, troubleshooting, and deployment.
 
 ## Runbooks
 
@@ -15,43 +19,13 @@ Operational procedures for managing Aether clusters in production.
 
 ### Health Check Endpoints
 
-Each node exposes a management API (default port 8080):
-
 ```bash
-# Health status
-curl http://node:8080/health
-
-# Node metrics
-curl http://node:8080/metrics
-
-# Cluster status
-curl http://node:8080/cluster/status
+curl http://node:8080/health          # Health status
+curl http://node:8080/metrics         # Node metrics
+curl http://node:8080/cluster/status  # Cluster status
 ```
 
-### CLI Commands
-
-```bash
-# Connect to cluster
-aether-cli --host node1:8080
-
-# Check cluster health
-aether> status
-
-# List deployed slices
-aether> slices list
-
-# Deploy a slice
-aether> deploy org.example:my-slice:1.0.0
-```
-
-### Key Metrics to Monitor
-
-- `cpu.usage` - Node CPU utilization (0.0-1.0)
-- `heap.usage` - Heap memory utilization (0.0-1.0)
-- `method.*.calls` - Request count per method
-- `method.*.duration.avg` - Average response time per method
-
-### Alert Thresholds
+### Key Metrics
 
 | Metric | Warning | Critical |
 |--------|---------|----------|
