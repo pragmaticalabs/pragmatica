@@ -85,7 +85,7 @@ class NetworkPartitionE2ETest {
         cluster.awaitLeader();
 
         // Simulate minority partition by stopping one node
-        // Majority (2 nodes) should continue operating
+        // Majority (4 nodes) should continue operating
         cluster.killNode("node-3");
 
         // Wait for cluster to detect partition
@@ -93,7 +93,7 @@ class NetworkPartitionE2ETest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var health = cluster.anyNode().getHealth();
-                   return health.contains("\"connectedPeers\":1");
+                   return health.contains("\"connectedPeers\":3");
                });
 
         // Majority should still have quorum
@@ -102,7 +102,7 @@ class NetworkPartitionE2ETest {
         // Management API should still work
         var health = cluster.anyNode().getHealth();
         assertThat(health).doesNotContain("\"error\"");
-        assertThat(health).contains("\"nodeCount\":2");
+        assertThat(health).contains("\"nodeCount\":4");
     }
 
     @Test
@@ -110,9 +110,11 @@ class NetworkPartitionE2ETest {
     void lostQuorum_detectedAndReported() {
         cluster.awaitLeader();
 
-        // Stop 2 nodes - remaining 1 node loses quorum
+        // Stop 4 nodes - remaining 1 node loses quorum
         cluster.killNode("node-2");
         cluster.killNode("node-3");
+        cluster.killNode("node-4");
+        cluster.killNode("node-5");
 
         // Wait for partition detection
         await().atMost(DEFAULT_TIMEOUT)
@@ -137,6 +139,8 @@ class NetworkPartitionE2ETest {
         // Create simulated partition
         cluster.killNode("node-2");
         cluster.killNode("node-3");
+        cluster.killNode("node-4");
+        cluster.killNode("node-5");
 
         await().atMost(DEFAULT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -145,11 +149,13 @@ class NetworkPartitionE2ETest {
         // Heal partition - restart nodes
         cluster.node("node-2").start();
         cluster.node("node-3").start();
+        cluster.node("node-4").start();
+        cluster.node("node-5").start();
 
         // Cluster should reconverge
         await().atMost(DEFAULT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.runningNodeCount() == 3);
+               .until(() -> cluster.runningNodeCount() == 5);
         cluster.awaitQuorum();
         cluster.awaitLeader();
 
@@ -157,8 +163,8 @@ class NetworkPartitionE2ETest {
         cluster.awaitAllHealthy();
 
         var health = cluster.anyNode().getHealth();
-        assertThat(health).contains("\"connectedPeers\":2");
-        assertThat(health).contains("\"nodeCount\":3");
+        assertThat(health).contains("\"connectedPeers\":4");
+        assertThat(health).contains("\"nodeCount\":5");
     }
 
     @Test
@@ -182,7 +188,7 @@ class NetworkPartitionE2ETest {
         cluster.node("node-3").start();
         await().atMost(DEFAULT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.runningNodeCount() == 3);
+               .until(() -> cluster.runningNodeCount() == 5);
         cluster.awaitQuorum();
 
         // State should still be consistent

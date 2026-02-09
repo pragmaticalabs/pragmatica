@@ -45,10 +45,10 @@ class ClusterFormationE2ETest {
     }
 
     @Test
-    void threeNodeCluster_formsQuorum_andElectsLeader() {
+    void fiveNodeCluster_formsQuorum_andElectsLeader() {
         // All nodes should be healthy
         cluster.awaitAllHealthy();
-        assertThat(cluster.runningNodeCount()).isEqualTo(3);
+        assertThat(cluster.runningNodeCount()).isEqualTo(5);
 
         // Health endpoint should report healthy with quorum
         var health = cluster.anyNode().getHealth();
@@ -62,11 +62,11 @@ class ClusterFormationE2ETest {
 
     @Test
     void cluster_nodesVisibleToAllMembers() {
-        // Each node should report 2 connected peers via /health endpoint
+        // Each node should report 4 connected peers via /health endpoint
         for (var node : cluster.nodes()) {
             var health = node.getHealth();
-            assertThat(health).contains("\"connectedPeers\":2");
-            assertThat(health).contains("\"nodeCount\":3");
+            assertThat(health).contains("\"connectedPeers\":4");
+            assertThat(health).contains("\"nodeCount\":5");
         }
     }
 

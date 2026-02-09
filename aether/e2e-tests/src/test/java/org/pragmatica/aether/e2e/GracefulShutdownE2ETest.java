@@ -75,7 +75,7 @@ class GracefulShutdownE2ETest {
         await().atMost(RECOVERY_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
-               .until(() -> cluster.runningNodeCount() == 3);
+               .until(() -> cluster.runningNodeCount() == 5);
 
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
@@ -88,7 +88,7 @@ class GracefulShutdownE2ETest {
 
         // Get initial peer count
         var initialHealth = cluster.nodes().get(0).getHealth();
-        assertThat(initialHealth).contains("\"connectedPeers\":2");
+        assertThat(initialHealth).contains("\"connectedPeers\":4");
 
         // Shutdown node-3
         cluster.killNode("node-3");
@@ -98,10 +98,10 @@ class GracefulShutdownE2ETest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var health = cluster.nodes().get(0).getHealth();
-                   return health.contains("\"connectedPeers\":1");
+                   return health.contains("\"connectedPeers\":3");
                });
 
-        // Cluster still has quorum with 2 nodes
+        // Cluster still has quorum with 4 nodes
         cluster.awaitQuorum();
     }
 
@@ -131,7 +131,7 @@ class GracefulShutdownE2ETest {
         // Management API should still work
         var health = cluster.anyNode().getHealth();
         assertThat(health).doesNotContain("\"error\"");
-        assertThat(health).contains("\"nodeCount\":2");
+        assertThat(health).contains("\"nodeCount\":4");
 
         // Slice should still be accessible
         var slices = cluster.anyNode().getSlices();

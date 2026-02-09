@@ -77,7 +77,7 @@ class TtmE2ETest {
         await().atMost(RECOVERY_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .ignoreExceptions()
-               .until(() -> cluster.runningNodeCount() == 3);
+               .until(() -> cluster.runningNodeCount() == 5);
 
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();

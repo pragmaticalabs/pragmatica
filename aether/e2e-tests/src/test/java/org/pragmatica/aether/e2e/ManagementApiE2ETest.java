@@ -84,7 +84,7 @@ class ManagementApiE2ETest {
 
             assertThat(health).contains("\"status\"");
             assertThat(health).contains("\"connectedPeers\"");
-            assertThat(health).contains("\"nodeCount\":3");
+            assertThat(health).contains("\"nodeCount\":5");
             assertThat(health).doesNotContain("\"error\"");
         }
 
@@ -106,13 +106,16 @@ class ManagementApiE2ETest {
                    .pollInterval(POLL_INTERVAL)
                    .until(() -> {
                        var nodes = cluster.anyNode().getNodes();
-                       return nodes.contains("node-1") && nodes.contains("node-2") && nodes.contains("node-3");
+                       return nodes.contains("node-1") && nodes.contains("node-2") && nodes.contains("node-3")
+                              && nodes.contains("node-4") && nodes.contains("node-5");
                    });
 
             var nodes = cluster.anyNode().getNodes();
             assertThat(nodes).contains("node-1");
             assertThat(nodes).contains("node-2");
             assertThat(nodes).contains("node-3");
+            assertThat(nodes).contains("node-4");
+            assertThat(nodes).contains("node-5");
         }
 
         @Test

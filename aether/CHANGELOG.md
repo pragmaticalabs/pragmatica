@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Deferred `ArtifactStore`/`SliceStore` creation to `assembleNode()` where `ClusterNetwork` is available
 - **Stale KV entry cleanup** - `ClusterDeploymentManager` now removes stale slice and endpoint entries on leader state rebuild for nodes no longer in topology
 - **Artifact repository E2E test stability** - Added `@BeforeEach` to restore stopped nodes and re-upload artifacts between tests; wrapped leader failover download in awaitility for DHT ring propagation
+- **E2E hardcoded 3-node assertions** - Updated all E2E test assertions (connectedPeers, nodeCount, runningNodeCount, quorum-loss kills) to match 5-node cluster configuration
 
 ### Changed
 - **E2E cluster size** - Standardized all E2E test classes to 5-node clusters (was 3 for some)
