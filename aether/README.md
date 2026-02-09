@@ -63,7 +63,7 @@ cd aether && mvn package -DskipTests
 
 | Category | Documents |
 |----------|-----------|
-| **Start Here** | [Introduction](docs/guide/introduction.md), [Getting Started](docs/guide/getting-started.md), [Migration Guide](docs/guide/migration-guide.md) |
+| **Start Here** | [What is Aether?](docs/aether-overview.md), [Introduction](docs/guide/introduction.md), [Getting Started](docs/guide/getting-started.md), [Migration Guide](docs/guide/migration-guide.md) |
 | **Core Concepts** | [Scaling](docs/guide/scaling.md), [Slice Lifecycle](docs/slice-lifecycle.md), [Architecture](docs/architecture-overview.md) |
 | **Reference** | [CLI Reference](docs/guide/cli-reference.md), [Forge Guide](docs/guide/forge-guide.md), [Configuration](docs/guide/configuration-reference.md), [Management API](docs/api/management-api.md) |
 | **Operations** | [Rolling Updates](docs/guide/rolling-updates.md), [Alerts](docs/guide/alerts-and-thresholds.md), [Docker](docs/guide/docker-deployment.md) |
