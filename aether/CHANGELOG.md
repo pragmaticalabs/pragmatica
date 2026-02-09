@@ -73,9 +73,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `SliceInvokerFacade.methodHandle()` factory method
   - Eliminates per-call parsing overhead (4 regex + 5 allocations)
   - Old `invoke(String, String, Object, Class)` method deprecated
-- **RFC 7807 Problem Details** - Standardized HTTP error responses
-  - `ProblemDetail` record with type, title, status, detail, instance fields
-  - Mandatory `requestId` extension for request tracing
+- **RFC 9457 Problem Details** - Standardized HTTP error responses (supersedes RFC 7807)
+  - `ProblemDetail` record with all five standard members: type, title, status, detail, instance
+  - Mandatory `requestId` extension member for request tracing
   - `application/problem+json` content type for all error responses
   - Covers handler errors, HttpError failures, and 404 not found
 

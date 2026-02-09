@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -86,6 +87,10 @@ public interface AppHttpServer {
 
     /// Trigger router rebuild (called when local slices deploy/undeploy).
     void rebuildRouter();
+
+    /// Whether this server has received initial route synchronization from the KV store.
+    /// Returns true if at least one route update has been processed, or if running in standalone mode.
+    boolean isRouteReady();
 
     /// Handle node removal for immediate retry of pending forwards.
     @MessageReceiver
@@ -147,6 +152,7 @@ class AppHttpServerImpl implements AppHttpServer {
     private final Option<TlsConfig> tls;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
     private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
+    private final AtomicBoolean routeSyncReceived = new AtomicBoolean(false);
 
     // Pending HTTP forward requests awaiting responses
     private final Map<String, PendingForward> pendingForwards = new ConcurrentHashMap<>();
@@ -241,9 +247,15 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     @Override
+    public boolean isRouteReady() {
+        return routeSyncReceived.get() || httpRoutePublisher.isEmpty();
+    }
+
+    @Override
     public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
         if (valuePut.cause()
                     .key() instanceof HttpRouteKey) {
+            routeSyncReceived.set(true);
             log.debug("HttpRouteKey added, rebuilding router");
             rebuildRouter();
         }
@@ -253,6 +265,7 @@ class AppHttpServerImpl implements AppHttpServer {
     public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
         if (valueRemove.cause()
                        .key() instanceof HttpRouteKey) {
+            routeSyncReceived.set(true);
             log.debug("HttpRouteKey removed, rebuilding router");
             rebuildRouter();
         }
@@ -286,9 +299,16 @@ class AppHttpServerImpl implements AppHttpServer {
             handleRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
             return;
         }
-        // No route found
-        log.warn("No route found for {} {} [{}]", method, path, requestId);
-        sendProblem(response, HttpStatus.NOT_FOUND, "No route found for " + method + " " + path, path, requestId);
+        // No route found — distinguish between "not synced yet" and "genuinely missing"
+        if (!routeSyncReceived.get() && httpRoutePublisher.isPresent()) {
+            log.info("Route not yet available for {} {} [{}] — node starting, routes not synchronized",
+                     method, path, requestId);
+            sendProblem(response, HttpStatus.SERVICE_UNAVAILABLE,
+                        "Node starting, routes not yet synchronized", path, requestId);
+        } else {
+            log.warn("No route found for {} {} [{}]", method, path, requestId);
+            sendProblem(response, HttpStatus.NOT_FOUND, "No route found for " + method + " " + path, path, requestId);
+        }
     }
 
     private Option<HttpRouteKey> findMatchingLocalRoute(Set<HttpRouteKey> localRoutes,

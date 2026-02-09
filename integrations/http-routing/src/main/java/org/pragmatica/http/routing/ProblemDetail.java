@@ -3,19 +3,20 @@ package org.pragmatica.http.routing;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
-/// RFC 7807 Problem Details for HTTP APIs.
+/// RFC 9457 Problem Details for HTTP APIs.
 ///
 /// Provides a standardized format for returning error information in HTTP responses.
-/// See <a href="https://www.rfc-editor.org/rfc/rfc7807">RFC 7807</a>.
+/// See [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) (supersedes RFC 7807, fully backward-compatible).
 ///
-/// Extension: `requestId` is mandatory for request tracing.
+/// Serialized as `application/problem+json`. All five standard members are supported.
+/// Extension member `requestId` is mandatory for request tracing per Aether conventions.
 ///
 /// @param type      URI reference identifying the problem type (default: "about:blank")
 /// @param title     Short human-readable summary of the problem type
 /// @param status    HTTP status code
-/// @param detail    Human-readable explanation specific to this occurrence (MAY be present per RFC 7807)
-/// @param instance  URI reference identifying the specific occurrence (MAY be present per RFC 7807)
-/// @param requestId Unique identifier for the request (mandatory extension)
+/// @param detail    Human-readable explanation specific to this occurrence (Section 3.1.4)
+/// @param instance  URI reference identifying the specific occurrence (Section 3.1.5)
+/// @param requestId Unique identifier for the request (extension member per Section 3.2)
 public record ProblemDetail(String type,
                             String title,
                             int status,

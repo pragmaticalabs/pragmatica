@@ -185,6 +185,20 @@ Release 0.15.1 continues production hardening with bug fixes and documentation u
     - Cluster-aware: distributed counters via consensus or per-node local limits
     - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
+16. **Resource Provisioning Framework**
+    - Generalize DB connector pattern to all external infrastructure (caches, queues, secrets stores)
+    - Aether manages connection lifecycle as cluster resources
+    - Mix of Aether-native resources (e.g. cluster-wide pubsub) and external connections (Kafka, Redis, PostgreSQL)
+    - Annotation processor foundation exists; needs Aether-side provisioning implementations
+    - Many current infra-slices (cache, pubsub, lock, scheduler, config, secrets) transition from in-memory implementations to external resource provisioning
+    - Recommended priority: HIGH (answers "what happens to my data?" and eliminates need to reimplement external systems)
+
+17. **OpenTelemetry Integration**
+    - Span export for distributed tracing across slice invocations (Jaeger/Zipkin compatible)
+    - Parent-child span hierarchy for inter-slice calls
+    - Foundation exists: request ID propagation via `ScopedValue`
+    - Recommended priority: P1 (enterprise evaluators expect trace visualization)
+
 ### FUTURE
 
 16. **LLM Integration (Layer 3)**

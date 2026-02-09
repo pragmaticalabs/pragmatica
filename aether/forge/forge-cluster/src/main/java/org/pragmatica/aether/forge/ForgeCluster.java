@@ -458,14 +458,20 @@ public final class ForgeCluster {
         return baseAppHttpPort;
     }
 
-    /// Get the app HTTP ports of all currently active nodes.
-    /// Used for load balancing across available nodes.
+    /// Get the app HTTP ports of all currently active and route-ready nodes.
+    /// Filters out nodes that haven't completed initial route synchronization
+    /// to prevent load balancers from sending requests to nodes not yet serving routes.
     public List<Integer> getAvailableAppHttpPorts() {
-        return slotsByNodeId.values()
-                            .stream()
-                            .map(slot -> baseAppHttpPort + slot)
-                            .sorted()
-                            .toList();
+        return nodes.entrySet()
+                    .stream()
+                    .filter(entry -> entry.getValue()
+                                          .appHttpServer()
+                                          .isRouteReady())
+                    .map(entry -> slotsByNodeId.get(entry.getKey()))
+                    .filter(slot -> slot != null)
+                    .map(slot -> baseAppHttpPort + slot)
+                    .sorted()
+                    .toList();
     }
 
     private AetherNode createNode(NodeId nodeId, int port, int mgmtPort, int appHttpPort, List<NodeInfo> coreNodes) {
