@@ -22,14 +22,17 @@ import java.util.stream.Stream;
 
 /// Basic interface for failure cause types.
 public interface Cause {
+    /// **[Pure Transform]**
     /// Message associated with the failure.
     String message();
 
+    /// **[Pure Transform]**
     /// The original cause (if any) of the error.
     default Option<Cause> source() {
         return Option.empty();
     }
 
+    /// **[Factory]**
     /// Represent cause as a failure [Result] instance.
     ///
     /// @return cause converted into [Result] with the necessary type.
@@ -37,6 +40,7 @@ public interface Cause {
         return Result.failure(this);
     }
 
+    /// **[Factory]**
     /// Represent cause as a failure [Promise] instance.
     ///
     /// @return cause converted into [Promise] with the necessary type.
@@ -44,6 +48,7 @@ public interface Cause {
         return Promise.failure(this);
     }
 
+    /// **[Pure Transform]**
     /// Iterate over the cause chain, starting from this cause.
     ///
     /// @param action action to be applied to each cause in the chain.
@@ -54,6 +59,7 @@ public interface Cause {
         return source().fold(() -> value, src -> src.iterate(action));
     }
 
+    /// **[Pure Transform]**
     /// Stream of causes starting from this cause. For the single cause it will be a stream of one element. For composite cause, it will be a stream of all
     /// causes stored in this cause.
     ///
