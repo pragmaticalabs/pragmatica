@@ -175,9 +175,19 @@ Release 0.15.1 continues production hardening with bug fixes and documentation u
     - Per-endpoint authorization rules
     - Audit logging for sensitive operations
 
+### UNPRIORITIZED
+
+15. **Configurable Rate Limiting per HTTP Route**
+    - Per-route rate limiting configuration in blueprint or management API
+    - Token bucket or sliding window algorithm
+    - Configurable limits: requests/second, burst size
+    - 429 Too Many Requests response with Retry-After header
+    - Cluster-aware: distributed counters via consensus or per-node local limits
+    - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
+
 ### FUTURE
 
-15. **LLM Integration (Layer 3)**
+16. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
