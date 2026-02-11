@@ -1,6 +1,8 @@
 package org.pragmatica.aether.node;
 
 import org.pragmatica.aether.api.AlertManager;
+import org.pragmatica.aether.api.ClusterEventAggregator;
+import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
 import org.pragmatica.aether.api.DynamicAspectRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.config.ConfigService;
@@ -56,6 +58,7 @@ import org.pragmatica.cluster.state.kvstore.*;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.leader.LeaderManager;
 import org.pragmatica.consensus.leader.LeaderNotification;
+import org.pragmatica.consensus.net.NetworkServiceMessage;
 import org.pragmatica.consensus.net.NodeInfo;
 import org.pragmatica.consensus.topology.QuorumStateNotification;
 import org.pragmatica.consensus.topology.TopologyChangeNotification;
@@ -155,6 +158,9 @@ public interface AetherNode {
 
     /// Get the deployment map for event-driven slice-node indexing.
     DeploymentMap deploymentMap();
+
+    /// Get the cluster event aggregator for structured event collection.
+    ClusterEventAggregator eventAggregator();
 
     /// Get the number of currently connected peer nodes in the cluster.
     /// This is a network-level count, not based on metrics exchange.
@@ -308,6 +314,7 @@ public interface AetherNode {
                           ComprehensiveSnapshotCollector snapshotCollector,
                           ArtifactMetricsCollector artifactMetricsCollector,
                           DeploymentMap deploymentMap,
+                          ClusterEventAggregator eventAggregator,
                           EventLoopMetricsCollector eventLoopMetricsCollector,
                           Option<ManagementServer> managementServer,
                           long startTimeMs) implements AetherNode {
@@ -339,21 +346,26 @@ public interface AetherNode {
                 router.route(QuorumStateNotification.DISAPPEARED);
                 // 2. Stop message delivery (no new messages will be routed)
                 router.quiesce();
-                // 3. Stop components (they've already stopped their activities via quorum notification)
-                controlLoop.stop();
-                metricsScheduler.stop();
-                deploymentMetricsScheduler.stop();
-                ttmManager.stop();
-                snapshotCollector.stop();
-                SliceRuntime.clear();
-                // 4. Stop servers and network
-                return managementServer.map(ManagementServer::stop)
-                                       .or(Promise.unitPromise())
-                                       .flatMap(_ -> appHttpServer.stop())
-                                       .flatMap(_ -> sliceInvoker.stop())
-                                       .flatMap(_ -> clusterNode.stop())
-                                       .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                                self()));
+                // 3. Stop cluster node FIRST — closes network channels immediately so surviving
+                //    nodes detect departure and can elect a new leader without waiting for
+                //    HTTP server shutdown (which can take up to 15s due to Netty graceful shutdown)
+                return clusterNode.stop()
+                                  .flatMap(_ -> {
+                                               // 4. Stop components (already inactive via quorum notification)
+                                               controlLoop.stop();
+                                               metricsScheduler.stop();
+                                               deploymentMetricsScheduler.stop();
+                                               ttmManager.stop();
+                                               snapshotCollector.stop();
+                                               SliceRuntime.clear();
+                                               // 5. Stop remaining servers
+                                               return managementServer.map(ManagementServer::stop)
+                                                                      .or(Promise.unitPromise());
+                                           })
+                                  .flatMap(_ -> appHttpServer.stop())
+                                  .flatMap(_ -> sliceInvoker.stop())
+                                  .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                           self()));
             }
 
             private Promise<Unit> startClusterAsync() {
@@ -541,6 +553,9 @@ public interface AetherNode {
         var httpRouteRegistry = HttpRouteRegistry.httpRouteRegistry();
         // Create metrics components
         var metricsCollector = MetricsCollector.metricsCollector(config.self(), clusterNode.network());
+        // Wire invocation metrics and management port into MetricsCollector for cluster-wide gossip
+        metricsCollector.setInvocationMetricsProvider(invocationMetrics);
+        metricsCollector.recordCustom("mgmt.port", config.managementPort());
         var metricsScheduler = MetricsScheduler.metricsScheduler(config.self(), clusterNode.network(), metricsCollector);
         // Create base decision tree controller
         var controller = DecisionTreeController.decisionTreeController();
@@ -569,6 +584,8 @@ public interface AetherNode {
         var artifactMetricsCollector = ArtifactMetricsCollector.artifactMetricsCollector(artifactStore);
         // Create deployment map for event-driven slice-node indexing
         var deploymentMap = DeploymentMap.deploymentMap();
+        // Create cluster event aggregator for structured event collection
+        var eventAggregator = ClusterEventAggregator.clusterEventAggregator(ClusterEventAggregatorConfig.defaultConfig());
         // Create TTM manager (returns no-op if disabled in config)
         var ttmManager = TTMManager.ttmManager(config.ttm(),
                                                minuteAggregator,
@@ -622,6 +639,7 @@ public interface AetherNode {
                                                         Option.some(clusterNode.network()),
                                                         Option.some(serializer),
                                                         Option.some(deserializer),
+                                                        Option.some(invocationMetrics),
                                                         config.tls());
         // Collect all route entries from RabiaNode and AetherNode components
         var aetherEntries = collectRouteEntries(kvStore,
@@ -644,6 +662,7 @@ public interface AetherNode {
                                                 rollbackManager,
                                                 artifactMetricsCollector,
                                                 deploymentMap,
+                                                eventAggregator,
                                                 clusterNode.leaderManager(),
                                                 appHttpServer);
         // DHT message routes for distributed operations
@@ -721,6 +740,7 @@ public interface AetherNode {
                                   snapshotCollector,
                                   artifactMetricsCollector,
                                   deploymentMap,
+                                  eventAggregator,
                                   eventLoopMetricsCollector,
                                   Option.empty(),
                                   startTimeMs);
@@ -765,6 +785,7 @@ public interface AetherNode {
                                                            snapshotCollector,
                                                            artifactMetricsCollector,
                                                            deploymentMap,
+                                                           eventAggregator,
                                                            eventLoopMetricsCollector,
                                                            Option.some(managementServer),
                                                            startTimeMs);
@@ -793,6 +814,7 @@ public interface AetherNode {
                                                                     RollbackManager rollbackManager,
                                                                     ArtifactMetricsCollector artifactMetricsCollector,
                                                                     DeploymentMap deploymentMap,
+                                                                    ClusterEventAggregator eventAggregator,
                                                                     LeaderManager leaderManager,
                                                                     AppHttpServer appHttpServer) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
@@ -899,6 +921,11 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
                                               controlLoop::onTopologyChange));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, controlLoop::onTopologyChange));
+        // MetricsCollector topology change — remove dead nodes from metrics
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              metricsCollector::onTopologyChange));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
+                                              metricsCollector::onTopologyChange));
         // Metrics messages
         entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPing.class, metricsCollector::onMetricsPing));
         entries.add(MessageRouter.Entry.route(MetricsMessage.MetricsPong.class, metricsCollector::onMetricsPong));
@@ -934,6 +961,18 @@ public interface AetherNode {
         // AppHttpServer topology change notifications (for immediate retry on node departure)
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class, appHttpServer::onNodeRemoved));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, appHttpServer::onNodeDown));
+        // Cluster event aggregator — fan-out handlers for structured event collection
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, eventAggregator::onNodeAdded));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class, eventAggregator::onNodeRemoved));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, eventAggregator::onNodeDown));
+        entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
+        entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentStarted.class, eventAggregator::onDeploymentStarted));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentCompleted.class, eventAggregator::onDeploymentCompleted));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, eventAggregator::onDeploymentFailed));
+        entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class, eventAggregator::onSliceFailure));
+        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class, eventAggregator::onConnectionEstablished));
+        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class, eventAggregator::onConnectionFailed));
         // Invocation messages
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
