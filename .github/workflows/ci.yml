@@ -43,6 +43,10 @@ jobs:
     needs: build-and-test
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release-') || startsWith(github.ref, 'refs/tags/v')
 
+    env:
+      DOCKER_HOST: unix:///var/run/docker.sock
+      TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE: /var/run/docker.sock
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -54,8 +58,14 @@ jobs:
           distribution: 'zulu'
           cache: 'maven'
 
+      - name: Verify Docker
+        run: docker info
+
+      - name: Bootstrap jbct-maven-plugin and slice-processor
+        run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
+
       - name: Install all artifacts
-        run: mvn install -B -DskipTests
+        run: mvn install -B -DskipTests -Djbct.skip=true
 
       - name: Run E2E tests
         run: mvn verify -B -Pwith-e2e -pl aether/e2e-tests -DskipE2ETests=false
