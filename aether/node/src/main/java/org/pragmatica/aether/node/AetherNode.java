@@ -346,26 +346,21 @@ public interface AetherNode {
                 router.route(QuorumStateNotification.DISAPPEARED);
                 // 2. Stop message delivery (no new messages will be routed)
                 router.quiesce();
-                // 3. Stop cluster node FIRST — closes network channels immediately so surviving
-                //    nodes detect departure and can elect a new leader without waiting for
-                //    HTTP server shutdown (which can take up to 15s due to Netty graceful shutdown)
-                return clusterNode.stop()
-                                  .flatMap(_ -> {
-                                               // 4. Stop components (already inactive via quorum notification)
-                                               controlLoop.stop();
-                                               metricsScheduler.stop();
-                                               deploymentMetricsScheduler.stop();
-                                               ttmManager.stop();
-                                               snapshotCollector.stop();
-                                               SliceRuntime.clear();
-                                               // 5. Stop remaining servers
-                                               return managementServer.map(ManagementServer::stop)
-                                                                      .or(Promise.unitPromise());
-                                           })
-                                  .flatMap(_ -> appHttpServer.stop())
-                                  .flatMap(_ -> sliceInvoker.stop())
-                                  .onSuccess(_ -> log.info("Aether node {} stopped",
-                                                           self()));
+                // 3. Stop components (they've already stopped their activities via quorum notification)
+                controlLoop.stop();
+                metricsScheduler.stop();
+                deploymentMetricsScheduler.stop();
+                ttmManager.stop();
+                snapshotCollector.stop();
+                SliceRuntime.clear();
+                // 4. Stop servers and network
+                return managementServer.map(ManagementServer::stop)
+                                       .or(Promise.unitPromise())
+                                       .flatMap(_ -> appHttpServer.stop())
+                                       .flatMap(_ -> sliceInvoker.stop())
+                                       .flatMap(_ -> clusterNode.stop())
+                                       .onSuccess(_ -> log.info("Aether node {} stopped",
+                                                                self()));
             }
 
             private Promise<Unit> startClusterAsync() {
@@ -639,7 +634,6 @@ public interface AetherNode {
                                                         Option.some(clusterNode.network()),
                                                         Option.some(serializer),
                                                         Option.some(deserializer),
-                                                        Option.some(invocationMetrics),
                                                         config.tls());
         // Collect all route entries from RabiaNode and AetherNode components
         var aetherEntries = collectRouteEntries(kvStore,
