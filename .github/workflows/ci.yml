@@ -65,7 +65,7 @@ jobs:
         run: mvn install -B -DskipTests -pl jbct/jbct-maven-plugin,jbct/slice-processor -am
 
       - name: Install all artifacts
-        run: mvn install -B -DskipTests -Djbct.skip=true
+        run: mvn install -B -DskipTests
 
       - name: Run E2E tests
         run: mvn verify -B -Pwith-e2e -pl aether/e2e-tests -DskipE2ETests=false
