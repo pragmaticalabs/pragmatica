@@ -1,10 +1,12 @@
 package org.pragmatica.aether.metrics;
 
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPong;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
 
@@ -47,6 +49,10 @@ public interface MetricsCollector {
     /// Record a custom metric value from a slice.
     void recordCustom(String name, double value);
 
+    /// Set the invocation metrics provider for cluster-wide aggregation.
+    /// Invocation snapshots are encoded as flat map entries and exchanged via gossip.
+    void setInvocationMetricsProvider(InvocationMetricsCollector provider);
+
     /// Get all known metrics (local + remote nodes).
     Map<NodeId, Map<String, Double>> allMetrics();
 
@@ -60,6 +66,14 @@ public interface MetricsCollector {
 
     /// Immutable metrics snapshot with timestamp.
     record MetricsSnapshot(long timestamp, Map<String, Double> metrics) {}
+
+    /// Remove a node from remote metrics and history.
+    /// Called when a node leaves the cluster or is detected as down.
+    void removeNode(NodeId nodeId);
+
+    /// Handle topology changes to clean up metrics for departed nodes.
+    @MessageReceiver
+    void onTopologyChange(TopologyChangeNotification topologyChange);
 
     @MessageReceiver
     void onMetricsPing(MetricsPing ping);
@@ -93,6 +107,9 @@ class MetricsCollectorImpl implements MetricsCollector {
 
     // Custom metrics from slices
     private final ConcurrentHashMap<String, Double> customMetrics = new ConcurrentHashMap<>();
+
+    // Invocation metrics provider for cluster-wide aggregation
+    private volatile InvocationMetricsCollector invocationMetricsProvider;
 
     // Metrics received from other nodes
     private final ConcurrentHashMap<NodeId, Map<String, Double>> remoteMetrics = new ConcurrentHashMap<>();
@@ -137,6 +154,20 @@ class MetricsCollectorImpl implements MetricsCollector {
                           });
         // Add custom metrics
         metrics.putAll(customMetrics);
+        // Add invocation metrics for cluster-wide aggregation via gossip
+        var invMetrics = invocationMetricsProvider;
+        if (invMetrics != null) {
+            for (var snapshot : invMetrics.snapshot()) {
+                var prefix = "inv|" + snapshot.artifact().asString() + "|" + snapshot.methodName().name() + "|";
+                var m = snapshot.metrics();
+                metrics.put(prefix + "count", (double) m.count());
+                metrics.put(prefix + "success", (double) m.successCount());
+                metrics.put(prefix + "failure", (double) m.failureCount());
+                metrics.put(prefix + "totalNs", (double) m.totalDurationNs());
+                metrics.put(prefix + "p50ns", (double) m.estimatePercentileNs(50));
+                metrics.put(prefix + "p95ns", (double) m.estimatePercentileNs(95));
+            }
+        }
         return metrics;
     }
 
@@ -150,6 +181,11 @@ class MetricsCollectorImpl implements MetricsCollector {
     @Override
     public void recordCustom(String name, double value) {
         customMetrics.put(name, value);
+    }
+
+    @Override
+    public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {
+        this.invocationMetricsProvider = provider;
     }
 
     @Override
@@ -181,6 +217,21 @@ class MetricsCollectorImpl implements MetricsCollector {
                                          }
                                      });
         return result;
+    }
+
+    @Override
+    public void removeNode(NodeId nodeId) {
+        remoteMetrics.remove(nodeId);
+        historicalMetricsMap.remove(nodeId);
+    }
+
+    @Override
+    public void onTopologyChange(TopologyChangeNotification topologyChange) {
+        switch (topologyChange) {
+            case TopologyChangeNotification.NodeRemoved(var removedNode, _) -> removeNode(removedNode);
+            case TopologyChangeNotification.NodeDown(var downNode, _) -> removeNode(downNode);
+            default -> {}
+        }
     }
 
     @Override
