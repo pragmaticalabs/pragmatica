@@ -62,12 +62,14 @@ public final class ForgeMetrics {
         var successDelta = currentSuccess - lastSuccessSnapshot;
         var failureDelta = currentFailure - lastFailureSnapshot;
         var totalDelta = successDelta + failureDelta;
-        // Calculate rates
-        requestsPerSecond = (totalDelta * 1000.0) / elapsed;
+        // Calculate rates with EMA smoothing (~5s effective window)
+        var instantRps = (totalDelta * 1000.0) / elapsed;
+        requestsPerSecond = requestsPerSecond == 0
+            ? instantRps
+            : EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * requestsPerSecond;
         if (totalDelta > 0) {
-            successRate = (successDelta * 100.0) / totalDelta;
-        } else {
-            successRate = 100.0;
+            var instantSuccessRate = (successDelta * 100.0) / totalDelta;
+            successRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * successRate;
         }
         // Calculate average latency with EMA smoothing
         var count = requestCount.sumThenReset();

@@ -70,4 +70,3 @@ Historical changelogs for individual projects:
 
 - [Pragmatica Lite CHANGELOG](core/CHANGELOG.md)
 - [JBCT CHANGELOG](jbct/CHANGELOG.md)
-- [Aether CHANGELOG](aether/CHANGELOG.md)
