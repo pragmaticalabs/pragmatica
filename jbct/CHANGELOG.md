@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.6.1] - Unreleased
+## [0.6.1] - 2026-02-12
 
 ### Changed
 - Slice init: updated default JBCT version to 0.6.1
