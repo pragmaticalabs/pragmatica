@@ -593,7 +593,9 @@ body {
 }
 
 .page.active {
-    display: block;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
 }
 
 /* Config Grid */

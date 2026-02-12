@@ -60,7 +60,8 @@ import picocli.CommandLine.Parameters;
  AetherCli.InvocationMetricsCommand.class,
  AetherCli.ControllerCommand.class,
  AetherCli.AlertsCommand.class,
- AetherCli.ThresholdsCommand.class})
+ AetherCli.ThresholdsCommand.class,
+ AetherCli.AspectsCommand.class})
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
@@ -1537,6 +1538,138 @@ public class AetherCli implements Runnable {
                 var response = thresholdsParent.parent.deleteFromNode("/thresholds/" + metric);
                 System.out.println(formatJson(response));
                 return 0;
+            }
+        }
+    }
+
+    // ===== Aspects Commands =====
+    @Command(name = "aspects",
+    description = "Dynamic aspect management",
+    subcommands = {AspectsCommand.ListCommand.class,
+    AspectsCommand.SetCommand.class,
+    AspectsCommand.RemoveCommand.class})
+    static class AspectsCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            // Default: show all aspects as table
+            var response = parent.fetchFromNode("/api/aspects");
+            printAspectsTable(response);
+        }
+
+        @Command(name = "list", description = "List all configured aspects")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private AspectsCommand aspectsParent;
+
+            @Override
+            public Integer call() {
+                var response = aspectsParent.parent.fetchFromNode("/api/aspects");
+                printAspectsTable(response);
+                return 0;
+            }
+        }
+
+        @Command(name = "set", description = "Set aspect mode on a method")
+        static class SetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private AspectsCommand aspectsParent;
+
+            @Parameters(index = "0", description = "Target (artifact#method)")
+            private String target;
+
+            @Parameters(index = "1", description = "Mode (NONE, LOG, METRICS, LOG_AND_METRICS)")
+            private String mode;
+
+            @Override
+            public Integer call() {
+                var hashIndex = target.indexOf('#');
+                if (hashIndex == -1) {
+                    System.err.println("Invalid target format. Expected: artifact#method");
+                    return 1;
+                }
+                var artifact = target.substring(0, hashIndex);
+                var method = target.substring(hashIndex + 1);
+                var normalizedMode = mode.toUpperCase();
+                var body = "{\"artifact\":\"" + artifact + "\",\"method\":\"" + method + "\",\"mode\":\"" + normalizedMode + "\"}";
+                var response = aspectsParent.parent.postToNode("/api/aspects", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "remove", description = "Remove aspect configuration")
+        static class RemoveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private AspectsCommand aspectsParent;
+
+            @Parameters(index = "0", description = "Target (artifact#method)")
+            private String target;
+
+            @Override
+            public Integer call() {
+                var hashIndex = target.indexOf('#');
+                if (hashIndex == -1) {
+                    System.err.println("Invalid target format. Expected: artifact#method");
+                    return 1;
+                }
+                var artifact = target.substring(0, hashIndex);
+                var method = target.substring(hashIndex + 1);
+                var response = aspectsParent.parent.deleteFromNode("/api/aspects/" + artifact + "/" + method);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        private static void printAspectsTable(String json) {
+            // Parse JSON map: {"key::mode", ...}
+            if (json == null || json.trim().equals("{}") || json.contains("\"error\":")) {
+                if (json != null && json.contains("\"error\":")) {
+                    System.out.println(formatJson(json));
+                } else {
+                    System.out.println("No active aspects");
+                }
+                return;
+            }
+            System.out.printf("%-40s %-20s %s%n", "ARTIFACT", "METHOD", "MODE");
+            System.out.println("\u2500".repeat(75));
+            // Simple JSON map parsing: {"artifactBase/method":"MODE", ...}
+            var content = json.trim();
+            if (content.startsWith("{")) content = content.substring(1);
+            if (content.endsWith("}")) content = content.substring(0, content.length() - 1);
+            if (content.trim().isEmpty()) {
+                System.out.println("No active aspects");
+                return;
+            }
+            // Parse key-value pairs
+            var inString = false;
+            var tokenStart = -1;
+            var key = "";
+            var expectValue = false;
+            for (int i = 0; i < content.length(); i++) {
+                var c = content.charAt(i);
+                if (c == '"' && (i == 0 || content.charAt(i - 1) != '\\')) {
+                    if (!inString) {
+                        inString = true;
+                        tokenStart = i + 1;
+                    } else {
+                        inString = false;
+                        var token = content.substring(tokenStart, i);
+                        if (!expectValue) {
+                            key = token;
+                            expectValue = true;
+                        } else {
+                            // key = "artifactBase/method", token = mode
+                            var slashIndex = key.indexOf('/');
+                            var artifact = slashIndex != -1 ? key.substring(0, slashIndex) : key;
+                            var method = slashIndex != -1 ? key.substring(slashIndex + 1) : "";
+                            System.out.printf("%-40s %-20s %s%n", artifact, method, token);
+                            expectValue = false;
+                        }
+                    }
+                }
             }
         }
     }
