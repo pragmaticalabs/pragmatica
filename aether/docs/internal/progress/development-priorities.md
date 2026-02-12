@@ -32,6 +32,7 @@ Release 0.15.1 continues production hardening with bug fixes and documentation u
 - **TTM Predictive Scaling** - ONNX-based traffic prediction and scaling recommendations
 - **DeploymentMap** - Event-driven slice-to-node index with cluster-wide deployment visibility
 - **EMA Latency Smoothing** - 5-second effective window for stable dashboard metrics
+- **Zero-Loss Forwarding** - Fresh re-routing on retry, proactive disconnection detection, and backoff retry with delayed re-query for route table healing during node transitions
 - **Dynamic Aspects** - Runtime-togglable per-method LOG/METRICS/LOG_AND_METRICS modes via `DynamicAspectRegistry`, REST API (`/api/aspects`), KV-store consensus sync, and `DynamicAspectInterceptor` wired into both local and remote invocation paths. Dashboard UI pending.
 
 ### Dashboard & Real-Time
@@ -115,13 +116,20 @@ Release 0.15.1 continues production hardening with bug fixes and documentation u
    - AWS Secrets Manager / Azure Key Vault support
    - Current: in-memory `infra-secrets` implementation exists
 
-6. **Cloud Provider Adapters (NodeLifecycleManager)**
+6. **Cloud Integration (NodeLifecycleManager + Load Balancing)**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
    - Cloud provider adapters: AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
    - Node auto-discovery and registration
    - Node pool support: core (on-demand) vs elastic (spot) pools
    - Instance type parameter for spot/on-demand selection
+   - **Cloud Load Balancer Configuration:**
+     - Automatic target group registration/deregistration on node join/leave
+     - Health check endpoint configuration (path, interval, thresholds)
+     - AWS ALB/NLB, GCP Cloud Load Balancing, Azure Load Balancer adapters
+     - Weighted routing sync: Aether rolling update weights → cloud LB weights
+     - Drain connections before node removal (graceful deregistration delay)
+     - TLS termination configuration (certificate ARN/ID passthrough)
    - **Enables:** Spot Instance Support (#17), Expense Tracking (#18)
 
 ### MEDIUM PRIORITY - Infrastructure Services
