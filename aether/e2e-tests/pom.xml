@@ -14,7 +14,7 @@
     <description>End-to-end tests for Aether distributed runtime using Testcontainers</description>
 
     <properties>
-        <testcontainers.version>1.20.4</testcontainers.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
         <awaitility.version>4.2.2</awaitility.version>
         <skipE2ETests>true</skipE2ETests>
     </properties>
