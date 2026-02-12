@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.3] - Unreleased
 
 ### Added
 - **Artifact Repository E2E tests** - 6 tests covering distributed artifact operations
@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Artifact survival after single node failure and leader failover
   - Maven metadata listing uploaded versions
   - `AetherNodeContainer`: `getBinary()`, `getArtifactInfo()`, `downloadArtifact()` helpers
+- **ClusterEventAggregator** - Structured event collection for dashboard and diagnostics
+  - Bounded ring buffer (configurable, default 1000 events)
+  - Captures topology changes, leader elections, quorum state, deployments, connection events
+  - 11 fan-out handlers wired into MessageRouter
+- **MetricsCollector enhancements**
+  - Invocation metrics included in cluster-wide gossip (artifact/method/count/latency/percentiles)
+  - Topology change handlers to clean up metrics for departed nodes
 
 ### Fixed
 - **Distributed DHT wiring** - Replaced `LocalDHTClient` with `DistributedDHTClient` in `AetherNode`
