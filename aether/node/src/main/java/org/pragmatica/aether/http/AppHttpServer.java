@@ -140,6 +140,7 @@ public interface AppHttpServer {
 class AppHttpServerImpl implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
     private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
+    private static final long RETRY_DELAY_MS = 200;
 
     private final AppHttpConfig config;
     private final NodeId selfNodeId;
@@ -462,6 +463,16 @@ class AppHttpServerImpl implements AppHttpServer {
                     .toList();
     }
 
+    private List<NodeId> freshCandidatesForRoute(HttpRouteKey routeKey) {
+        return routeRegistry.allRoutes()
+                            .stream()
+                            .filter(r -> r.toKey()
+                                          .equals(routeKey))
+                            .findFirst()
+                            .map(r -> filterConnectedNodes(r.nodes()))
+                            .orElse(List.of());
+    }
+
     private NodeId selectNodeRoundRobin(HttpRouteKey routeKey, List<NodeId> nodes) {
         var counter = roundRobinCounters.computeIfAbsent(routeKey, _ -> new AtomicInteger(0));
         var index = Math.abs(counter.getAndIncrement() % nodes.size());
@@ -487,11 +498,32 @@ class AppHttpServerImpl implements AppHttpServer {
                                        .filter(n -> !triedNodes.contains(n))
                                        .toList();
         if (candidates.isEmpty()) {
-            log.error("No more nodes to try for {} {} [{}] after {} attempts",
+            if (retriesRemaining > 0) {
+                // No candidates now — wait briefly for route table to heal, then re-query
+                log.info("No candidates for {} {} [{}], waiting {}ms before re-query ({} retries remaining)",
+                         routeKey.httpMethod(),
+                         routeKey.pathPrefix(),
+                         requestId,
+                         RETRY_DELAY_MS,
+                         retriesRemaining);
+                Promise.<Unit>promise()
+                       .timeout(timeSpan(RETRY_DELAY_MS).millis())
+                       .onResult(_ -> {
+                                    var freshNodes = freshCandidatesForRoute(routeKey);
+                                    forwardRequestWithRetry(request,
+                                                            response,
+                                                            freshNodes,
+                                                            Set.of(),
+                                                            routeKey,
+                                                            requestId,
+                                                            retriesRemaining - 1);
+                                });
+                return;
+            }
+            log.error("No more nodes to try for {} {} [{}] after all retries exhausted",
                       routeKey.httpMethod(),
                       routeKey.pathPrefix(),
-                      requestId,
-                      config.forwardMaxRetries() + 1 - retriesRemaining);
+                      requestId);
             sendProblem(response,
                         HttpStatus.GATEWAY_TIMEOUT,
                         "All nodes failed or unavailable",
@@ -510,12 +542,13 @@ class AppHttpServerImpl implements AppHttpServer {
                                requestId,
                                () -> {
                                    if (retriesRemaining > 0) {
-                                       log.info("Retrying request [{}], {} retries remaining",
+                                       log.info("Retrying request [{}], {} retries remaining, re-querying route",
                                                 requestId,
                                                 retriesRemaining);
+                                       var freshNodes = freshCandidatesForRoute(routeKey);
                                        forwardRequestWithRetry(request,
                                                                response,
-                                                               availableNodes,
+                                                               freshNodes,
                                                                newTriedNodes,
                                                                routeKey,
                                                                requestId,
@@ -537,6 +570,13 @@ class AppHttpServerImpl implements AppHttpServer {
                                         String requestId,
                                         Runnable onFailure) {
         var network = clusterNetwork.unwrap();
+        // Fast path: if the target is already known to be disconnected, fail immediately
+        if (!network.connectedPeers()
+                    .contains(targetNode)) {
+            log.info("Target node {} already disconnected, immediate retry [{}]", targetNode, requestId);
+            onFailure.run();
+            return;
+        }
         var ser = serializer.unwrap();
         var correlationId = KSUID.ksuid()
                                  .toString();
