@@ -70,7 +70,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     // Test artifact paths relative to Maven repository
     // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.16.0");
     private static final String[] TEST_ARTIFACTS = {
         "echo-slice-echo-service/" + TEST_ARTIFACT_VERSION + "/echo-slice-echo-service-" + TEST_ARTIFACT_VERSION + ".jar",
         "echo-slice-echo-service/0.16.0/echo-slice-echo-service-0.16.0.jar"

@@ -29,6 +29,9 @@ CLAUDE.md
 .claude/
 PUBLISHING.md
 
+### NDX Search Index ###
+.ndx/
+
 ### LSP ###
 .jdtls-data/
 .jdt.ls/

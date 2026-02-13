@@ -37,7 +37,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 class ArtifactRepositoryE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
-    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.16.0");
     private static final String TEST_ARTIFACT_ID = "echo-slice-echo-service";
 
     // Common timeouts (CI gets 2x via adapt())
