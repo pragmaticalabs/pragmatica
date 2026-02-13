@@ -501,6 +501,159 @@ curl -X DELETE http://localhost:8080/thresholds/cpu.usage
 
 ---
 
+## Dynamic Aspects
+
+### GET /api/aspects
+
+Get all configured dynamic aspects.
+
+**Response:**
+```json
+{
+  "org.example:my-slice:1.0.0/processOrder": "LOG_AND_METRICS",
+  "org.example:my-slice:1.0.0/getStatus": "METRICS"
+}
+```
+
+### POST /api/aspects
+
+Set aspect mode on a method.
+
+**Request:**
+```json
+{
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder",
+  "mode": "LOG_AND_METRICS"
+}
+```
+
+Available modes: `NONE`, `LOG`, `METRICS`, `LOG_AND_METRICS`
+
+**Response:**
+```json
+{
+  "status": "aspect_set",
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder",
+  "mode": "LOG_AND_METRICS"
+}
+```
+
+### DELETE /api/aspects/{artifact}/{method}
+
+Remove aspect configuration for a method.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/aspects/org.example:my-slice:1.0.0/processOrder
+```
+
+**Response:**
+```json
+{
+  "status": "aspect_removed",
+  "artifact": "org.example:my-slice:1.0.0",
+  "method": "processOrder"
+}
+```
+
+---
+
+## Dynamic Configuration
+
+Configuration overrides are persisted to the KV-Store and replicated across all cluster nodes. Overrides take precedence over base configuration from TOML/environment/system properties.
+
+### GET /api/config
+
+Get all configuration values (base + overrides merged).
+
+**Response:**
+```json
+{
+  "database.host": "localhost",
+  "database.port": "5432",
+  "server.port": "8080"
+}
+```
+
+### GET /api/config/overrides
+
+Get only dynamic overrides from the KV store.
+
+**Response:**
+```json
+{
+  "database.port": "5433"
+}
+```
+
+### POST /api/config
+
+Set a configuration override. Omit `nodeId` for cluster-wide, include it for node-specific.
+
+**Request (cluster-wide):**
+```json
+{
+  "key": "database.port",
+  "value": "5433"
+}
+```
+
+**Request (node-specific):**
+```json
+{
+  "key": "server.port",
+  "value": "9090",
+  "nodeId": "node-2"
+}
+```
+
+**Response:**
+```json
+{
+  "status": "config_set",
+  "key": "database.port",
+  "value": "5433"
+}
+```
+
+### DELETE /api/config/{key}
+
+Remove a cluster-wide configuration override. The base value from TOML/env/system properties is restored.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/config/database.port
+```
+
+**Response:**
+```json
+{
+  "status": "config_removed",
+  "key": "database.port"
+}
+```
+
+### DELETE /api/config/node/{nodeId}/{key}
+
+Remove a node-specific configuration override.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/config/node/node-2/server.port
+```
+
+**Response:**
+```json
+{
+  "status": "config_removed",
+  "key": "server.port"
+}
+```
+
+---
+
 ## Rolling Updates
 
 ### POST /rolling-update/start

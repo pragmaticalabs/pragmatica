@@ -61,7 +61,8 @@ import picocli.CommandLine.Parameters;
  AetherCli.ControllerCommand.class,
  AetherCli.AlertsCommand.class,
  AetherCli.ThresholdsCommand.class,
- AetherCli.AspectsCommand.class})
+ AetherCli.AspectsCommand.class,
+ AetherCli.ConfigCommand.class})
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
 
@@ -1670,6 +1671,103 @@ public class AetherCli implements Runnable {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // ===== Config Commands =====
+    @Command(name = "config",
+    description = "Dynamic configuration management",
+    subcommands = {ConfigCommand.ListCommand.class,
+    ConfigCommand.OverridesCommand.class,
+    ConfigCommand.SetCommand.class,
+    ConfigCommand.RemoveCommand.class})
+    static class ConfigCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            // Default: show all config
+            var response = parent.fetchFromNode("/api/config");
+            System.out.println(formatJson(response));
+        }
+
+        @Command(name = "list", description = "Show all configuration (base + overrides)")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ConfigCommand configParent;
+
+            @Override
+            public Integer call() {
+                var response = configParent.parent.fetchFromNode("/api/config");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "overrides", description = "Show only dynamic overrides from KV store")
+        static class OverridesCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ConfigCommand configParent;
+
+            @Override
+            public Integer call() {
+                var response = configParent.parent.fetchFromNode("/api/config/overrides");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "set", description = "Set a configuration override")
+        static class SetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ConfigCommand configParent;
+
+            @Parameters(index = "0", description = "Configuration key (dot.notation)")
+            private String key;
+
+            @Parameters(index = "1", description = "Configuration value")
+            private String value;
+
+            @Option(names = {"--node"}, description = "Target node ID (omit for cluster-wide)")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                var body = new StringBuilder("{\"key\":\"").append(key)
+                    .append("\",\"value\":\"").append(value).append("\"");
+                if (nodeId != null) {
+                    body.append(",\"nodeId\":\"").append(nodeId).append("\"");
+                }
+                body.append("}");
+                var response = configParent.parent.postToNode("/api/config", body.toString());
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "remove", description = "Remove a configuration override")
+        static class RemoveCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private ConfigCommand configParent;
+
+            @Parameters(index = "0", description = "Configuration key (dot.notation)")
+            private String key;
+
+            @Option(names = {"--node"}, description = "Target node ID (omit for cluster-wide)")
+            private String nodeId;
+
+            @Override
+            public Integer call() {
+                String response;
+                if (nodeId != null) {
+                    response = configParent.parent.deleteFromNode("/api/config/node/" + nodeId + "/" + key);
+                } else {
+                    response = configParent.parent.deleteFromNode("/api/config/" + key);
+                }
+                System.out.println(formatJson(response));
+                return 0;
             }
         }
     }

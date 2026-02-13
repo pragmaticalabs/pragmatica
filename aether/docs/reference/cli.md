@@ -337,6 +337,47 @@ aether thresholds set cpu -w 0.7 -c 0.9
 aether thresholds remove cpu
 ```
 
+#### aspects
+
+Manage dynamic aspects on slice methods:
+
+```bash
+# List all configured aspects
+aether aspects list
+
+# Set aspect mode on a method
+aether aspects set org.example:my-slice:1.0.0#processOrder LOG_AND_METRICS
+
+# Remove aspect configuration
+aether aspects remove org.example:my-slice:1.0.0#processOrder
+```
+
+Available modes: `NONE`, `LOG`, `METRICS`, `LOG_AND_METRICS`
+
+#### config
+
+Manage dynamic configuration overrides:
+
+```bash
+# Show all configuration (base + overrides merged)
+aether config list
+
+# Show only dynamic overrides from KV store
+aether config overrides
+
+# Set a cluster-wide override
+aether config set database.pool.max_size 20
+
+# Set a node-specific override
+aether config set server.port 9090 --node node-2
+
+# Remove a cluster-wide override (base value restored)
+aether config remove database.pool.max_size
+
+# Remove a node-specific override
+aether config remove server.port --node node-2
+```
+
 ### REPL Mode
 
 Start interactive mode by omitting the command:
