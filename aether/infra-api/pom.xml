@@ -31,12 +31,6 @@
             <artifactId>config</artifactId>
             <version>${project.version}</version>
         </dependency>
-        <dependency>
-            <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>environment-integration</artifactId>
-            <version>${project.version}</version>
-        </dependency>
-
         <!-- Test dependencies -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

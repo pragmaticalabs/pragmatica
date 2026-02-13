@@ -5,7 +5,9 @@ import org.pragmatica.aether.config.source.EnvironmentConfigSource;
 import org.pragmatica.aether.config.source.MapConfigSource;
 import org.pragmatica.aether.config.source.SystemPropertyConfigSource;
 import org.pragmatica.aether.config.source.TomlConfigSource;
+import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Option;
+import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 
 import java.nio.file.Path;
@@ -60,6 +62,20 @@ public interface ConfigurationProvider extends ConfigSource {
     /// @return ConfigurationProvider wrapping the source
     static ConfigurationProvider configurationProvider(ConfigSource source) {
         return builder().withSource(source).build();
+    }
+
+    /// Resolve ${secrets:path} placeholders in all config values.
+    ///
+    /// Scans all merged values for ${secrets:path} patterns and resolves them
+    /// using the provided resolver function. Resolution is eager (at call time).
+    ///
+    /// @param provider       The configuration provider with unresolved values
+    /// @param secretResolver Function that resolves secret paths to values
+    /// @return New ConfigurationProvider with all secrets resolved, or failure
+    static Result<ConfigurationProvider> withSecretResolution(
+        ConfigurationProvider provider,
+        Fn1<Promise<String>, String> secretResolver) {
+        return SecretResolvingConfigurationProvider.resolve(provider, secretResolver);
     }
 
     /// Builder for creating layered ConfigurationProvider instances.

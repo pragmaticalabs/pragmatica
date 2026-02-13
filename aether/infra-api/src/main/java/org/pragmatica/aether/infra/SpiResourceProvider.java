@@ -1,7 +1,6 @@
 package org.pragmatica.aether.infra;
 
 import org.pragmatica.aether.config.ConfigService;
-import org.pragmatica.aether.environment.SecretsProvider;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
@@ -23,12 +22,10 @@ public final class SpiResourceProvider implements ResourceProvider {
     private final Map<Class<?>, ResourceFactory<?, ?>> factories;
     private final Map<CacheKey, Promise<?>> promiseCache;
     private final Fn2<Result<?>, String, Class<?>> configLoader;
-    private final Option<SecretsProvider> secretsProvider;
 
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private SpiResourceProvider(Option<SecretsProvider> secretsProvider, Fn2<Result<?>, String, Class<?>> configLoader) {
+    private SpiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader) {
         this.configLoader = configLoader;
-        this.secretsProvider = secretsProvider;
         this.promiseCache = new ConcurrentHashMap<>();
         Map<Class<?>, ResourceFactory<?, ?>> factoryMap = new ConcurrentHashMap<>();
         ServiceLoader.load(ResourceFactory.class)
@@ -42,15 +39,7 @@ public final class SpiResourceProvider implements ResourceProvider {
     ///
     /// @return New SpiResourceProvider
     public static SpiResourceProvider spiResourceProvider() {
-        return spiResourceProvider(Option.empty());
-    }
-
-    /// Create an SpiResourceProvider with secrets support and ConfigService-based loading.
-    ///
-    /// @param secretsProvider Secrets provider for resolving secret placeholders (empty to disable)
-    /// @return New SpiResourceProvider
-    public static SpiResourceProvider spiResourceProvider(Option<SecretsProvider> secretsProvider) {
-        return new SpiResourceProvider(secretsProvider, (section, configClass) ->
+        return new SpiResourceProvider((section, configClass) ->
             ConfigService.instance()
                          .toResult(ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE)
                          .flatMap(configService -> configService.config(section, configClass))
@@ -64,7 +53,7 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// @param configLoader Function that loads config sections with (section, configClass)
     /// @return New SpiResourceProvider
     public static SpiResourceProvider spiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader) {
-        return new SpiResourceProvider(Option.empty(), configLoader);
+        return new SpiResourceProvider(configLoader);
     }
 
     /// Create an SpiResourceProvider with a simple config loader (section only).
@@ -74,7 +63,7 @@ public final class SpiResourceProvider implements ResourceProvider {
     /// @param configLoader Function that loads config sections by name
     /// @return New SpiResourceProvider
     public static SpiResourceProvider spiResourceProvider(Function<String, Result<?>> configLoader) {
-        return new SpiResourceProvider(Option.empty(), (section, configClass) -> configLoader.apply(section));
+        return new SpiResourceProvider((section, configClass) -> configLoader.apply(section));
     }
 
     @Override

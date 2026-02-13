@@ -104,4 +104,26 @@ public sealed interface ConfigError extends Cause {
     static ReadFailed readFailed(String path, Throwable cause) {
         return ReadFailed.readFailed(path, cause);
     }
+
+    /// Failed to resolve a secret placeholder in configuration.
+    record SecretResolutionFailed(String key, String secretPath, Cause underlying) implements ConfigError {
+        public static SecretResolutionFailed secretResolutionFailed(String key, String secretPath, Cause underlying) {
+            return new SecretResolutionFailed(key, secretPath, underlying);
+        }
+
+        @Override
+        public String message() {
+            return "Failed to resolve secret '${secrets:" + secretPath + "}' in config key '" + key + "': "
+                   + underlying.message();
+        }
+
+        @Override
+        public Option<Cause> source() {
+            return Option.some(underlying);
+        }
+    }
+
+    static SecretResolutionFailed secretResolutionFailed(String key, String secretPath, Cause underlying) {
+        return SecretResolutionFailed.secretResolutionFailed(key, secretPath, underlying);
+    }
 }

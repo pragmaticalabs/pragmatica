@@ -6,6 +6,7 @@ import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
 import org.pragmatica.aether.api.DynamicAspectRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.config.ConfigService;
+import org.pragmatica.aether.config.ConfigurationProvider;
 import org.pragmatica.aether.config.ProviderBasedConfigService;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
@@ -1042,18 +1043,32 @@ public interface AetherNode {
                          },
                          configProvider -> {
                              log.info("Creating ConfigService and ResourceProvider from configuration provider");
-                             var configService = ProviderBasedConfigService.providerBasedConfigService(configProvider);
-                             ConfigService.setInstance(configService);
-                             var secretsProvider = config.environment().flatMap(EnvironmentIntegration::secrets);
-                             var resourceProvider = SpiResourceProvider.spiResourceProvider(secretsProvider);
-                             ResourceProvider.setInstance(resourceProvider);
-                             log.info("ConfigService and ResourceProvider initialized");
-                             return new ResourceProviderFacade() {
-                                 @Override
-                                 public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                                     return resourceProvider.provide(resourceType, configSection);
+                             var resolvedProvider = config.environment()
+                                                         .flatMap(EnvironmentIntegration::secrets)
+                                                         .fold(
+                                                             () -> Result.success(configProvider),
+                                                             sp -> ConfigurationProvider.withSecretResolution(configProvider, sp::resolveSecret)
+                                                         );
+
+                             return resolvedProvider.fold(
+                                 cause -> {
+                                     log.error("Failed to resolve secrets in configuration: {}", cause.message());
+                                     return noOpResourceProviderFacade();
+                                 },
+                                 provider -> {
+                                     var configService = ProviderBasedConfigService.providerBasedConfigService(provider);
+                                     ConfigService.setInstance(configService);
+                                     var resourceProvider = SpiResourceProvider.spiResourceProvider();
+                                     ResourceProvider.setInstance(resourceProvider);
+                                     log.info("ConfigService and ResourceProvider initialized");
+                                     return new ResourceProviderFacade() {
+                                         @Override
+                                         public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+                                             return resourceProvider.provide(resourceType, configSection);
+                                         }
+                                     };
                                  }
-                             };
+                             );
                          }
                      );
     }
