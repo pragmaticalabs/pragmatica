@@ -72,6 +72,7 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
+import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.lang.utils.Causes;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.messaging.Message;
@@ -92,7 +93,7 @@ import static org.pragmatica.serialization.fury.FurySerializer.furySerializer;
 /// Main entry point for an Aether cluster node.
 /// Assembles all components: consensus, KV-store, slice management, deployment managers.
 public interface AetherNode {
-    String VERSION = "0.15.1";
+    String VERSION = "0.16.0";
     NodeId self();
 
     Promise<Unit> start();
@@ -540,7 +541,7 @@ public interface AetherNode {
                                                                                          delegateRouter,
                                                                                          initialTopology,
                                                                                          clusterNode.topologyManager(),
-                                                                                         config.nodeProvider(),
+                                                                                         config.environment().flatMap(EnvironmentIntegration::compute),
                                                                                          config.autoHeal());
         // Create endpoint registry
         var endpointRegistry = EndpointRegistry.endpointRegistry();
@@ -1043,7 +1044,8 @@ public interface AetherNode {
                              log.info("Creating ConfigService and ResourceProvider from configuration provider");
                              var configService = ProviderBasedConfigService.providerBasedConfigService(configProvider);
                              ConfigService.setInstance(configService);
-                             var resourceProvider = SpiResourceProvider.spiResourceProvider();
+                             var secretsProvider = config.environment().flatMap(EnvironmentIntegration::secrets);
+                             var resourceProvider = SpiResourceProvider.spiResourceProvider(secretsProvider);
                              ResourceProvider.setInstance(resourceProvider);
                              log.info("ConfigService and ResourceProvider initialized");
                              return new ResourceProviderFacade() {

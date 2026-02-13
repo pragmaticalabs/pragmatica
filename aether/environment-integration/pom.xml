@@ -6,12 +6,12 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.15.1</version>
+        <version>0.16.0</version>
     </parent>
 
-    <artifactId>node-provider</artifactId>
-    <name>Aether Node Provider</name>
-    <description>Node provisioning SPI for cluster auto-healing</description>
+    <artifactId>environment-integration</artifactId>
+    <name>Aether Environment Integration</name>
+    <description>Faceted SPI for deployment environment interactions (compute, secrets, network, cost)</description>
 
     <dependencies>
         <dependency>

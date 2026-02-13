@@ -1,8 +1,8 @@
 # Development Priorities
 
-## Current Status (v0.15.1)
+## Current Status (v0.16.0)
 
-Release 0.15.1 continues production hardening with bug fixes and documentation updates.
+Release 0.16.0 continues production hardening with bug fixes and documentation updates.
 
 ## Completed ✅
 
@@ -60,7 +60,6 @@ Release 0.15.1 continues production hardening with bug fixes and documentation u
 - **State Machine** - `infra-statemachine` for local state transitions
 - **Artifact Repository** - Maven protocol subset, deploy/resolve operations
 - **Database** - `infra-database` abstraction
-- **Secrets** - `infra-secrets` management (in-memory)
 - **Rate Limiter** - `infra-ratelimit` for throttling (in-memory)
 - **Distributed Lock** - `infra-lock` for coordination (in-memory)
 - **Scheduler** - `infra-scheduler` for timed tasks (in-memory)
@@ -114,7 +113,7 @@ Release 0.15.1 continues production hardening with bug fixes and documentation u
 5. **External Secrets Management Integration**
    - HashiCorp Vault integration
    - AWS Secrets Manager / Azure Key Vault support
-   - Current: in-memory `infra-secrets` implementation exists
+   - Secrets resolved through ResourceProvider config pipeline; no standalone SecretsManager
 
 6. **Cloud Integration (NodeLifecycleManager + Load Balancing)**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
@@ -198,7 +197,7 @@ Release 0.15.1 continues production hardening with bug fixes and documentation u
     - Aether manages connection lifecycle as cluster resources
     - Mix of Aether-native resources (e.g. cluster-wide pubsub) and external connections (Kafka, Redis, PostgreSQL)
     - Annotation processor foundation exists; needs Aether-side provisioning implementations
-    - Many current infra-slices (cache, pubsub, lock, scheduler, config, secrets) transition from in-memory implementations to external resource provisioning
+    - Many current infra-slices (cache, pubsub, lock, scheduler, config) transition from in-memory implementations to external resource provisioning
     - Recommended priority: HIGH (answers "what happens to my data?" and eliminates need to reimplement external systems)
 
 17. **OpenTelemetry Integration**
@@ -346,7 +345,6 @@ Infrastructure slices requiring distributed implementations:
 | infra-statemachine | ✅ | ❌ | Consensus state transitions |
 | infra-lock | ✅ | ❌ | Consensus-backed locking |
 | infra-ratelimit | ✅ | ❌ | Shared counters across nodes |
-| infra-secrets | ✅ | ❌ | → External Secrets (#5) |
 | infra-config | ✅ | ❌ | → Dynamic Config (#2) |
 | infra-database | ✅ | N/A | → DB Connector (#4) |
 | infra-http | ✅ | N/A | HTTP client, no distributed needed |

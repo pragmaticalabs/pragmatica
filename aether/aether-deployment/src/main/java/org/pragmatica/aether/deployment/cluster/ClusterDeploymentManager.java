@@ -28,9 +28,9 @@ import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeAdded;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeDown;
 import org.pragmatica.consensus.topology.TopologyChangeNotification.NodeRemoved;
 import org.pragmatica.aether.metrics.deployment.DeploymentEvent.DeploymentStarted;
-import org.pragmatica.aether.provider.AutoHealConfig;
-import org.pragmatica.aether.provider.InstanceType;
-import org.pragmatica.aether.provider.NodeProvider;
+import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.consensus.topology.TopologyManager;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
@@ -116,7 +116,7 @@ public interface ClusterDeploymentManager {
                       KVStore<AetherKey, AetherValue> kvStore,
                       MessageRouter router,
                       TopologyManager topologyManager,
-                      Option<NodeProvider> nodeProvider,
+                      Option<ComputeProvider> computeProvider,
                       AutoHealConfig autoHealConfig,
                       Map<Artifact, Blueprint> blueprints,
                       Map<SliceNodeKey, SliceState> sliceStates,
@@ -318,9 +318,9 @@ public interface ClusterDeploymentManager {
                 return topologyManager.clusterSize() - activeNodes.get().size();
             }
 
-            /// Provision replacement nodes for the given deficit via NodeProvider.
+            /// Provision replacement nodes for the given deficit via ComputeProvider.
             private void provisionReplacements(int deficit) {
-                nodeProvider.onPresent(provider -> {
+                computeProvider.onPresent(provider -> {
                     for (int i = 0; i < deficit; i++) {
                         provider.provision(InstanceType.ON_DEMAND)
                                 .onFailure(cause -> log.warn("AUTO-HEAL: Provisioning failed: {}", cause.message()));
@@ -338,10 +338,10 @@ public interface ClusterDeploymentManager {
                 }
             }
 
-            /// Check if cluster is below target size and schedule auto-healing if a NodeProvider is present.
+            /// Check if cluster is below target size and schedule auto-healing if a ComputeProvider is present.
             /// Cancels periodic recheck when cluster reaches target size.
             void checkAndScheduleAutoHeal() {
-                if (nodeProvider.isEmpty()) {
+                if (computeProvider.isEmpty()) {
                     return;
                 }
                 var deficit = computeAutoHealDeficit();
@@ -1045,7 +1045,7 @@ public interface ClusterDeploymentManager {
     /// @param router          The message router for events
     /// @param initialTopology Initial cluster topology (nodes that should exist)
     /// @param topologyManager Topology manager for cluster size information
-    /// @param nodeProvider    Node provider for auto-healing (empty to disable)
+    /// @param computeProvider Compute provider for auto-healing (empty to disable)
     /// @param autoHealConfig  Auto-heal retry configuration
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
                                                              ClusterNode<KVCommand<AetherKey>> cluster,
@@ -1053,14 +1053,14 @@ public interface ClusterDeploymentManager {
                                                              MessageRouter router,
                                                              List<NodeId> initialTopology,
                                                              TopologyManager topologyManager,
-                                                             Option<NodeProvider> nodeProvider,
+                                                             Option<ComputeProvider> computeProvider,
                                                              AutoHealConfig autoHealConfig) {
         record clusterDeploymentManager(NodeId self,
                                         ClusterNode<KVCommand<AetherKey>> cluster,
                                         KVStore<AetherKey, AetherValue> kvStore,
                                         MessageRouter router,
                                         TopologyManager topologyManager,
-                                        Option<NodeProvider> nodeProvider,
+                                        Option<ComputeProvider> computeProvider,
                                         AutoHealConfig autoHealConfig,
                                         AtomicReference<ClusterDeploymentState> state,
                                         AtomicReference<List<NodeId>> topologyRef) implements ClusterDeploymentManager {
@@ -1082,7 +1082,7 @@ public interface ClusterDeploymentManager {
                                                                         kvStore,
                                                                         router,
                                                                         topologyManager,
-                                                                        nodeProvider,
+                                                                        computeProvider,
                                                                         autoHealConfig,
                                                                         new ConcurrentHashMap<>(),
                                                                         new ConcurrentHashMap<>(),
@@ -1153,7 +1153,7 @@ public interface ClusterDeploymentManager {
                                             kvStore,
                                             router,
                                             topologyManager,
-                                            nodeProvider,
+                                            computeProvider,
                                             autoHealConfig,
                                             new AtomicReference<>(new ClusterDeploymentState.Dormant()),
                                             new AtomicReference<>(List.copyOf(initialTopology)));

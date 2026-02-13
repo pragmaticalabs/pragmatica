@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>pragmatica</artifactId>
-        <version>0.15.1</version>
+        <version>0.16.0</version>
     </parent>
 
     <groupId>org.pragmatica-lite.aether</groupId>
@@ -49,7 +49,7 @@
         <module>aether-setup</module>
         <module>dashboard</module>
         <module>slice-api</module>
-        <module>node-provider</module>
+        <module>environment-integration</module>
         <module>infra-api</module>
         <module>infra-slices</module>
         <module>slice</module>
@@ -181,7 +181,7 @@
 
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
-                <artifactId>node-provider</artifactId>
+                <artifactId>environment-integration</artifactId>
                 <version>${project.version}</version>
             </dependency>
 

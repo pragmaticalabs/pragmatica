@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.15.1</version>
+        <version>0.16.0</version>
     </parent>
 
     <artifactId>infra-slices</artifactId>
@@ -23,7 +23,6 @@
         <module>infra-pubsub</module>
         <module>infra-ratelimit</module>
         <module>infra-scheduler</module>
-        <module>infra-secrets</module>
         <module>infra-statemachine</module>
     </modules>
 

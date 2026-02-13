@@ -1,4 +1,4 @@
-package org.pragmatica.aether.provider;
+package org.pragmatica.aether.environment;
 
 import org.pragmatica.lang.io.TimeSpan;
 

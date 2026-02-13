@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>forge</artifactId>
-        <version>0.15.1</version>
+        <version>0.16.0</version>
     </parent>
 
     <artifactId>forge-cluster</artifactId>
@@ -26,7 +26,7 @@
         </dependency>
         <dependency>
             <groupId>org.pragmatica-lite.aether</groupId>
-            <artifactId>node-provider</artifactId>
+            <artifactId>environment-integration</artifactId>
         </dependency>
 
         <!-- Pragmatica -->

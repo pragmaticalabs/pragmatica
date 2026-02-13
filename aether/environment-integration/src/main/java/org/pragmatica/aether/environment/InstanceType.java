@@ -1,4 +1,4 @@
-package org.pragmatica.aether.provider;
+package org.pragmatica.aether.environment;
 
 /// Type of instance to provision. Supports on-demand and spot instance models.
 public sealed interface InstanceType {

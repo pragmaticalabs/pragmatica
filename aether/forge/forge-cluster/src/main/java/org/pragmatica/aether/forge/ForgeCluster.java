@@ -4,9 +4,10 @@ import org.pragmatica.aether.config.ConfigurationProvider;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
-import org.pragmatica.aether.provider.AutoHealConfig;
-import org.pragmatica.aether.provider.InstanceType;
-import org.pragmatica.aether.provider.NodeProvider;
+import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.consensus.net.NodeInfo;
@@ -80,11 +81,11 @@ public final class ForgeCluster {
     // Configuration provider for nodes
     private final Option<ConfigurationProvider> configProvider;
 
-    // Node provider for auto-healing (CDM provisions replacements via this)
-    private final NodeProvider forgeNodeProvider;
+    // Environment integration for auto-healing (CDM provisions replacements via compute facet)
+    private final EnvironmentIntegration forgeEnvironment;
 
-    /// NodeProvider implementation that provisions nodes via ForgeCluster.addNode().
-    private final class ForgeNodeProvider implements NodeProvider {
+    /// ComputeProvider implementation that provisions nodes via ForgeCluster.addNode().
+    private final class ForgeComputeProvider implements ComputeProvider {
         @Override
         public Promise<Unit> provision(InstanceType instanceType) {
             return addNode().mapToUnit();
@@ -105,7 +106,7 @@ public final class ForgeCluster {
         this.targetClusterSize = initialClusterSize;
         this.effectiveSize = new AtomicInteger(initialClusterSize);
         this.configProvider = configProvider;
-        this.forgeNodeProvider = new ForgeNodeProvider();
+        this.forgeEnvironment = EnvironmentIntegration.withCompute(new ForgeComputeProvider());
     }
 
     public static ForgeCluster forgeCluster() {
@@ -493,7 +494,7 @@ public final class ForgeCluster {
                                           AppHttpConfig.enabledOnPort(appHttpPort),
                                           ControllerConfig.forgeDefaults(),
                                           configProvider,
-                                          Option.some(forgeNodeProvider),
+                                          Option.some(forgeEnvironment),
                                           AutoHealConfig.DEFAULT);
         return AetherNode.aetherNode(config)
                          .unwrap();
@@ -629,7 +630,7 @@ public final class ForgeCluster {
         var targetNodeId = nodeIds.get(random.nextInt(nodeIds.size()));
         log.info("Rolling restart: killing node {}", targetNodeId);
         eventLogger.accept(new EventLogEntry("ROLLING_RESTART", "Killing node " + targetNodeId));
-        // CDM auto-heal handles replacement via NodeProvider, wait 2x delay to maintain pace
+        // CDM auto-heal handles replacement via ComputeProvider, wait 2x delay to maintain pace
         killNode(targetNodeId).onSuccess(_ -> {
                                              eventLogger.accept(new EventLogEntry("ROLLING_RESTART",
                                                                                   "CDM auto-heal will replace node"));

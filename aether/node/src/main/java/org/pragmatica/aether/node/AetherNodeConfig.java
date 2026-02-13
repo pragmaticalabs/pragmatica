@@ -6,8 +6,8 @@ import org.pragmatica.aether.config.RollbackConfig;
 import org.pragmatica.aether.config.SliceConfig;
 import org.pragmatica.aether.config.TTMConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
-import org.pragmatica.aether.provider.AutoHealConfig;
-import org.pragmatica.aether.provider.NodeProvider;
+import org.pragmatica.aether.environment.AutoHealConfig;
+import org.pragmatica.aether.environment.EnvironmentIntegration;
 import org.pragmatica.aether.slice.SliceActionConfig;
 import org.pragmatica.aether.slice.serialization.FurySerializerFactoryProvider;
 import org.pragmatica.consensus.NodeId;
@@ -40,7 +40,7 @@ import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 /// @param appHttp          Application HTTP server configuration for slice routes
 /// @param controllerConfig Controller configuration for scaling thresholds and behavior
 /// @param configProvider   Configuration provider for resource provisioning (empty to disable)
-/// @param nodeProvider     Node provider for cluster auto-healing (empty to disable)
+/// @param environment      Environment integration for compute/secrets (empty to disable)
 /// @param autoHeal         Auto-heal retry configuration
 public record AetherNodeConfig(TopologyConfig topology,
                                ProtocolConfig protocol,
@@ -54,7 +54,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                AppHttpConfig appHttp,
                                ControllerConfig controllerConfig,
                                Option<ConfigurationProvider> configProvider,
-                               Option<NodeProvider> nodeProvider,
+                               Option<EnvironmentIntegration> environment,
                                AutoHealConfig autoHeal) {
     public static final int DEFAULT_MANAGEMENT_PORT = 8080;
     public static final int MANAGEMENT_DISABLED = 0;
@@ -200,7 +200,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -218,7 +218,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -236,7 +236,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -254,7 +254,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -272,7 +272,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttpConfig,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -290,7 +290,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     newControllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
@@ -308,12 +308,12 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     Option.some(provider),
-                                    nodeProvider,
+                                    environment,
                                     autoHeal);
     }
 
-    /// Create a new configuration with a NodeProvider for cluster auto-healing.
-    public AetherNodeConfig withNodeProvider(NodeProvider provider) {
+    /// Create a new configuration with an EnvironmentIntegration for compute/secrets.
+    public AetherNodeConfig withEnvironment(EnvironmentIntegration env) {
         return new AetherNodeConfig(topology,
                                     protocol,
                                     sliceAction,
@@ -326,7 +326,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    Option.some(provider),
+                                    Option.some(env),
                                     autoHeal);
     }
 
@@ -344,7 +344,7 @@ public record AetherNodeConfig(TopologyConfig topology,
                                     appHttp,
                                     controllerConfig,
                                     configProvider,
-                                    nodeProvider,
+                                    environment,
                                     autoHealConfig);
     }
 
