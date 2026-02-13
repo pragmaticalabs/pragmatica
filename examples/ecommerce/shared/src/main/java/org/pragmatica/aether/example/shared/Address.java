@@ -6,9 +6,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
-/**
- * Shipping address with validation.
- */
+/// Shipping address with validation.
 public record Address(String street,
                       String city,
                       String state,

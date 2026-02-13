@@ -14,17 +14,16 @@ import java.util.stream.IntStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Generates shell scripts for local (single-machine) Aether cluster.
- *
- * <p>Generates:
- * <ul>
- *   <li>start.sh - Starts all nodes as background processes</li>
- *   <li>stop.sh - Stops all running nodes</li>
- *   <li>status.sh - Shows status of all nodes</li>
- *   <li>logs/ - Directory for node logs</li>
- * </ul>
- */
+/// Generates shell scripts for local (single-machine) Aether cluster.
+///
+///
+/// Generates:
+///
+///   - start.sh - Starts all nodes as background processes
+///   - stop.sh - Stops all running nodes
+///   - status.sh - Shows status of all nodes
+///   - logs/ - Directory for node logs
+///
 public final class LocalGenerator implements Generator {
     private static final Logger log = LoggerFactory.getLogger(LocalGenerator.class);
 

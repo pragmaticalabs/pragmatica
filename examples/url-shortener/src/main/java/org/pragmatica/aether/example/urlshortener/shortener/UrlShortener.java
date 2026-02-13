@@ -14,15 +14,13 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.regex.Pattern;
 
-/**
- * URL Shortener slice - creates and resolves short URLs.
- * <p>
- * Uses database storage with two tables:
- * <ul>
- *   <li>{@code urls} - maps short code to original URL</li>
- *   <li>{@code clicks} - tracks click analytics</li>
- * </ul>
- */
+/// URL Shortener slice - creates and resolves short URLs.
+///
+/// Uses database storage with two tables:
+///
+///   - `urls` - maps short code to original URL
+///   - `clicks` - tracks click analytics
+///
 @Slice
 public interface UrlShortener {
     String BASE62_CHARS = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";

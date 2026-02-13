@@ -10,21 +10,19 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-/**
- * Parsed route DSL specification.
- * <p>
- * DSL format: {@code "METHOD /path/{param:Type}?query1&query2:Type"}
- * <ul>
- *   <li>Method: GET, POST, PUT, DELETE, PATCH</li>
- *   <li>Path params: {@code {name}} or {@code {name:Type}} (Type defaults to String)</li>
- *   <li>Query params: {@code name} or {@code name:Type} after {@code ?}, separated by {@code &}</li>
- * </ul>
- *
- * @param method       HTTP method (GET, POST, PUT, DELETE, PATCH)
- * @param pathTemplate path template with placeholders (e.g., "/users/{id}")
- * @param pathParams   extracted path parameters
- * @param queryParams  extracted query parameters
- */
+/// Parsed route DSL specification.
+///
+/// DSL format: `"METHOD /path/{param:Type`?query1&query2:Type"}
+///
+///   - Method: GET, POST, PUT, DELETE, PATCH
+///   - Path params: `{name`} or `{name:Type`} (Type defaults to String)
+///   - Query params: `name` or `name:Type` after `?`, separated by `&`
+///
+///
+/// @param method       HTTP method (GET, POST, PUT, DELETE, PATCH)
+/// @param pathTemplate path template with placeholders (e.g., "/users/{id}")
+/// @param pathParams   extracted path parameters
+/// @param queryParams  extracted query parameters
 public record RouteDsl(String method,
                        String pathTemplate,
                        List<PathParam> pathParams,
@@ -131,31 +129,23 @@ public record RouteDsl(String method,
         return Result.success(new String[]{name, "String"});
     }
 
-    /**
-     * Check if route has any path parameters.
-     */
+    /// Check if route has any path parameters.
     public boolean hasPathParams() {
         return ! pathParams.isEmpty();
     }
 
-    /**
-     * Check if route has any query parameters.
-     */
+    /// Check if route has any query parameters.
     public boolean hasQueryParams() {
         return ! queryParams.isEmpty();
     }
 
-    /**
-     * Check if route has any parameters (path or query).
-     */
+    /// Check if route has any parameters (path or query).
     public boolean hasParams() {
         return hasPathParams() || hasQueryParams();
     }
 
-    /**
-     * Returns the path template with type annotations stripped from path parameters.
-     * E.g., "/{id:Long}/items/{itemId:Integer}" becomes "/{id}/items/{itemId}".
-     */
+    /// Returns the path template with type annotations stripped from path parameters.
+    /// E.g., "/{id:Long}/items/{itemId:Integer}" becomes "/{id}/items/{itemId}".
     public String cleanPath() {
         return PATH_PARAM_PATTERN.matcher(pathTemplate)
                                  .replaceAll(mr -> {

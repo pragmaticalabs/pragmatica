@@ -19,21 +19,21 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for TTM (Tiny Time Mixers) predictive scaling.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>TTM status API endpoint</li>
- *   <li>TTM disabled state (no model file)</li>
- *   <li>TTM state consistency across cluster</li>
- *   <li>TTM leader-only behavior</li>
- * </ul>
- *
- * <p>Note: These tests verify TTM infrastructure, not prediction accuracy.
- * Prediction accuracy testing requires a trained ONNX model and is better
- * suited for unit tests with mocked predictors.
- */
+/// Tests for TTM (Tiny Time Mixers) predictive scaling.
+///
+///
+/// Tests cover:
+///
+///   - TTM status API endpoint
+///   - TTM disabled state (no model file)
+///   - TTM state consistency across cluster
+///   - TTM leader-only behavior
+///
+///
+///
+/// Note: These tests verify TTM infrastructure, not prediction accuracy.
+/// Prediction accuracy testing requires a trained ONNX model and is better
+/// suited for unit tests with mocked predictors.
 @Execution(ExecutionMode.SAME_THREAD)
 class TtmTest {
     private static final int BASE_PORT = 11500;

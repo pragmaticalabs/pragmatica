@@ -7,17 +7,15 @@ import org.pragmatica.lang.Result;
 
 import java.nio.file.Path;
 
-/**
- * Forge cluster configuration loaded from TOML file.
- * <p>
- * Example configuration:
- * <pre>
- * [cluster]
- * nodes = 5
- * management_port = 5150
- * dashboard_port = 8888
- * </pre>
- */
+/// Forge cluster configuration loaded from TOML file.
+///
+/// Example configuration:
+/// ```
+/// [cluster]
+/// nodes = 5
+/// management_port = 5150
+/// dashboard_port = 8888
+/// ```
 public record ForgeConfig(int nodes,
                           int managementPort,
                           int dashboardPort,
@@ -28,32 +26,24 @@ public record ForgeConfig(int nodes,
     public static final int DEFAULT_DASHBOARD_PORT = 8888;
     public static final int DEFAULT_APP_HTTP_PORT = 8070;
 
-    /**
-     * Default configuration.
-     */
+    /// Default configuration.
     public static final ForgeConfig DEFAULT = new ForgeConfig(DEFAULT_NODES,
                                                                DEFAULT_MANAGEMENT_PORT,
                                                                DEFAULT_DASHBOARD_PORT,
                                                                DEFAULT_APP_HTTP_PORT,
                                                                ForgeH2Config.disabled());
 
-    /**
-     * Create configuration with specified values and validation.
-     */
+    /// Create configuration with specified values and validation.
     public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort) {
         return forgeConfig(nodes, managementPort, dashboardPort, DEFAULT_APP_HTTP_PORT, ForgeH2Config.disabled());
     }
 
-    /**
-     * Create configuration with specified values and validation.
-     */
+    /// Create configuration with specified values and validation.
     public static Result<ForgeConfig> forgeConfig(int nodes, int managementPort, int dashboardPort, int appHttpPort) {
         return forgeConfig(nodes, managementPort, dashboardPort, appHttpPort, ForgeH2Config.disabled());
     }
 
-    /**
-     * Create configuration with specified values and validation.
-     */
+    /// Create configuration with specified values and validation.
     public static Result<ForgeConfig> forgeConfig(int nodes,
                                                   int managementPort,
                                                   int dashboardPort,
@@ -86,19 +76,15 @@ public record ForgeConfig(int nodes,
         return Result.success(new ForgeConfig(nodes, managementPort, dashboardPort, appHttpPort, h2Config));
     }
 
-    /**
-     * Load configuration from file path.
-     * Relative paths in the config (e.g., init_script) are resolved relative to the config file's directory.
-     */
+    /// Load configuration from file path.
+    /// Relative paths in the config (e.g., init_script) are resolved relative to the config file's directory.
     public static Result<ForgeConfig> load(Path path) {
         var baseDir = path.toAbsolutePath().getParent();
         return TomlParser.parseFile(path)
                          .flatMap(doc -> fromDocument(doc, baseDir));
     }
 
-    /**
-     * Load configuration from TOML string content.
-     */
+    /// Load configuration from TOML string content.
     public static Result<ForgeConfig> loadFromString(String content) {
         return TomlParser.parse(content)
                          .flatMap(ForgeConfig::fromDocument);
@@ -151,9 +137,7 @@ public record ForgeConfig(int nodes,
                       .or(path);
     }
 
-    /**
-     * Forge configuration errors.
-     */
+    /// Forge configuration errors.
     public sealed interface ForgeConfigError extends Cause {
         record InvalidValue(String field, int value, String reason) implements ForgeConfigError {
             @Override

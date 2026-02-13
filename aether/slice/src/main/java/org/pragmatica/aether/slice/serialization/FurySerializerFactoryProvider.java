@@ -10,12 +10,10 @@ import org.pragmatica.serialization.fury.FurySerializer;
 
 import java.util.List;
 
-/**
- * Fury-based serializer factory provider using singleton pattern.
- * <p>
- * Uses Apache Fury's ThreadSafeFury which is thread-safe and can be safely
- * shared across concurrent method invocations. No pooling required.
- */
+/// Fury-based serializer factory provider using singleton pattern.
+///
+/// Uses Apache Fury's ThreadSafeFury which is thread-safe and can be safely
+/// shared across concurrent method invocations. No pooling required.
 public interface FurySerializerFactoryProvider extends SerializerFactoryProvider {
     static FurySerializerFactoryProvider furySerializerFactoryProvider(ClassRegistrator... registrators) {
         return typeTokens -> {

@@ -23,7 +23,6 @@ Two container images are available:
 
 ```bash
 # Build from project root
-cd aetherx
 
 # Build JARs first
 mvn package -DskipTests

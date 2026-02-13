@@ -2,19 +2,17 @@ package org.pragmatica.aether.forge.load.pattern;
 
 import java.util.concurrent.ThreadLocalRandom;
 
-/**
- * Generates random strings based on a pattern.
- * <p>
- * Pattern: {@code ${random:TEMPLATE}} where TEMPLATE contains:
- * <ul>
- *   <li>{@code #} - Random digit (0-9)</li>
- *   <li>{@code ?} - Random lowercase letter (a-z)</li>
- *   <li>{@code *} - Random alphanumeric (a-z, 0-9)</li>
- *   <li>Any other character - Literal</li>
- * </ul>
- * <p>
- * Example: {@code ${random:SKU-#####}} generates "SKU-48291"
- */
+/// Generates random strings based on a pattern.
+///
+/// Pattern: `${random:TEMPLATE`} where TEMPLATE contains:
+///
+///   - `#` - Random digit (0-9)
+///   - `?` - Random lowercase letter (a-z)
+///   - `*` - Random alphanumeric (a-z, 0-9)
+///   - Any other character - Literal
+///
+///
+/// Example: `${random:SKU-#####`} generates "SKU-48291"
 public record RandomGenerator(String template) implements PatternGenerator {
     public static final String TYPE = "random";
 

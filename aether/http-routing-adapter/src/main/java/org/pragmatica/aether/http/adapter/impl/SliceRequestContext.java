@@ -22,12 +22,10 @@ import io.netty.handler.codec.http.HttpHeaders;
 import static org.pragmatica.http.routing.Utils.lazy;
 import static org.pragmatica.http.routing.Utils.value;
 
-/**
- * RequestContext implementation that wraps HttpRequestContext.
- * <p>
- * Provides path parameter extraction, JSON deserialization, and other
- * RequestContext features without requiring a Netty FullHttpRequest.
- */
+/// RequestContext implementation that wraps HttpRequestContext.
+///
+/// Provides path parameter extraction, JSON deserialization, and other
+/// RequestContext features without requiring a Netty FullHttpRequest.
 public final class SliceRequestContext implements RequestContext {
     private static final int PATH_PARAM_LIMIT = 1024;
 
@@ -58,16 +56,12 @@ public final class SliceRequestContext implements RequestContext {
         return new SliceRequestContext(httpContext, route, jsonMapper);
     }
 
-    /**
-     * Access the original HttpRequestContext for security checks.
-     */
+    /// Access the original HttpRequestContext for security checks.
     public HttpRequestContext original() {
         return httpContext;
     }
 
-    /**
-     * Convenience method to access security context.
-     */
+    /// Convenience method to access security context.
     public SecurityContext security() {
         return httpContext.security();
     }

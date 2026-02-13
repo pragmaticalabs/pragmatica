@@ -4,19 +4,15 @@ import org.pragmatica.lang.Result;
 
 import java.nio.file.Path;
 
-/**
- * Path validation utilities for preventing path traversal attacks.
- */
+/// Path validation utilities for preventing path traversal attacks.
 public sealed interface PathValidation permits PathValidation.unused {
     record unused() implements PathValidation {}
 
-    /**
-     * Validate a relative path is safe and resolves within the base directory.
-     *
-     * @param relativePath The relative path string to validate
-     * @param baseDir      The base directory that the path must stay within
-     * @return Result containing the resolved absolute path, or failure if path is unsafe
-     */
+    /// Validate a relative path is safe and resolves within the base directory.
+    ///
+    /// @param relativePath The relative path string to validate
+    /// @param baseDir      The base directory that the path must stay within
+    /// @return Result containing the resolved absolute path, or failure if path is unsafe
     static Result<Path> validateRelativePath(String relativePath, Path baseDir) {
         if (relativePath == null || relativePath.isBlank()) {
             return SecurityError.PathTraversalDetected.pathTraversalDetected(relativePath, "path is null or blank")

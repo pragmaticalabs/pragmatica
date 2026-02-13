@@ -13,9 +13,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-VO-02: Direct constructor calls bypass factory validation.
- */
+/// JBCT-VO-02: Direct constructor calls bypass factory validation.
 public class CstConstructorBypassRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-VO-02";
     private static final Pattern NEW_PATTERN = Pattern.compile("new\\s+(\\w+)\\s*\\(");

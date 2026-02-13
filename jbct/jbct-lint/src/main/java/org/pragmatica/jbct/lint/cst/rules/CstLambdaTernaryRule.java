@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-LAM-03: No ternary in lambdas.
- */
+/// JBCT-LAM-03: No ternary in lambdas.
 public class CstLambdaTernaryRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-LAM-03";
 

@@ -32,9 +32,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for multi-phase protocol behavior and failure scenarios.
- */
+/// Tests for multi-phase protocol behavior and failure scenarios.
 class RabiaMultiPhaseTest {
 
     record TestCommand(String value) implements Command {}

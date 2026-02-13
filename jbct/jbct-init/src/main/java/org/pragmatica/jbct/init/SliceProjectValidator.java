@@ -13,9 +13,7 @@ import java.util.List;
 import java.util.Properties;
 import java.util.jar.Manifest;
 
-/**
- * Validates slice project configuration.
- */
+/// Validates slice project configuration.
 public final class SliceProjectValidator {
     private final Path projectDir;
 
@@ -27,11 +25,9 @@ public final class SliceProjectValidator {
         return new SliceProjectValidator(projectDir);
     }
 
-    /**
-     * Validate the slice project.
-     *
-     * @return Validation result
-     */
+    /// Validate the slice project.
+    ///
+    /// @return Validation result
     public ValidationResult validate() {
         return combinePartialResults(checkPomFile(), checkSliceManifests(), checkManifestEntries());
     }
@@ -186,9 +182,7 @@ public final class SliceProjectValidator {
         }
     }
 
-    /**
-     * Validation result containing errors and warnings.
-     */
+    /// Validation result containing errors and warnings.
     public record ValidationResult(List<String> errors, List<String> warnings) {
         public ValidationResult {
             errors = List.copyOf(errors);

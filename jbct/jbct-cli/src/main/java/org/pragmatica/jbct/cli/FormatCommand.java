@@ -15,9 +15,7 @@ import java.util.concurrent.Callable;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
-/**
- * Format command for JBCT code formatting.
- */
+/// Format command for JBCT code formatting.
 @Command(
  name = "format",
  description = "Format Java source files according to JBCT style",

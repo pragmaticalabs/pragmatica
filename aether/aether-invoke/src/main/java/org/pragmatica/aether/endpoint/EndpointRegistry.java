@@ -25,20 +25,20 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Passive KV-Store watcher that maintains a local cache of all cluster endpoints.
- *
- * <p>Key responsibilities:
- * <ul>
- *   <li>Watch endpoint key events (ValuePut/ValueRemove)</li>
- *   <li>Maintain local cache of endpoints grouped by artifact and method</li>
- *   <li>Provide endpoint discovery for remote slice calls</li>
- *   <li>Support round-robin load balancing for endpoint selection</li>
- * </ul>
- *
- * <p>This is a pure event-driven component - no active synchronization needed.
- * Slices automatically publish/unpublish endpoints via consensus.
- */
+/// Passive KV-Store watcher that maintains a local cache of all cluster endpoints.
+///
+///
+/// Key responsibilities:
+///
+///   - Watch endpoint key events (ValuePut/ValueRemove)
+///   - Maintain local cache of endpoints grouped by artifact and method
+///   - Provide endpoint discovery for remote slice calls
+///   - Support round-robin load balancing for endpoint selection
+///
+///
+///
+/// This is a pure event-driven component - no active synchronization needed.
+/// Slices automatically publish/unpublish endpoints via consensus.
 public interface EndpointRegistry {
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
@@ -46,70 +46,58 @@ public interface EndpointRegistry {
     @MessageReceiver
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
-    /**
-     * Find all endpoints for a given artifact and method.
-     */
+    /// Find all endpoints for a given artifact and method.
     List<Endpoint> findEndpoints(Artifact artifact, MethodName methodName);
 
-    /**
-     * Select a single endpoint using round-robin load balancing.
-     * Returns empty if no endpoints available.
-     */
+    /// Select a single endpoint using round-robin load balancing.
+    /// Returns empty if no endpoints available.
     Option<Endpoint> selectEndpoint(Artifact artifact, MethodName methodName);
 
-    /**
-     * Select an endpoint excluding specified nodes.
-     * Used for failover when previous endpoints have failed.
-     *
-     * @param artifact the slice artifact
-     * @param methodName the method to invoke
-     * @param excludeNodes nodes to exclude from selection
-     * @return selected endpoint, or empty if none available after exclusions
-     */
+    /// Select an endpoint excluding specified nodes.
+    /// Used for failover when previous endpoints have failed.
+    ///
+    /// @param artifact the slice artifact
+    /// @param methodName the method to invoke
+    /// @param excludeNodes nodes to exclude from selection
+    /// @return selected endpoint, or empty if none available after exclusions
     Option<Endpoint> selectEndpointExcluding(Artifact artifact,
                                              MethodName methodName,
                                              java.util.Set<NodeId> excludeNodes);
 
-    /**
-     * Select an endpoint with version-aware weighted routing.
-     *
-     * <p>Used during rolling updates to route traffic according to the
-     * configured ratio between old and new versions.
-     *
-     * <p>Algorithm:
-     * <ol>
-     *   <li>Find all endpoints for the artifact base (any version)</li>
-     *   <li>Group by version (old vs new)</li>
-     *   <li>Scale routing ratio to available instance counts</li>
-     *   <li>Use weighted round-robin to select endpoint</li>
-     * </ol>
-     *
-     * @param artifactBase the artifact (version-agnostic)
-     * @param methodName the method to invoke
-     * @param routing the version routing configuration
-     * @param oldVersion the old version
-     * @param newVersion the new version
-     * @return selected endpoint, or empty if none available
-     */
+    /// Select an endpoint with version-aware weighted routing.
+    ///
+    ///
+    /// Used during rolling updates to route traffic according to the
+    /// configured ratio between old and new versions.
+    ///
+    ///
+    /// Algorithm:
+    /// <ol>
+    ///   - Find all endpoints for the artifact base (any version)
+    ///   - Group by version (old vs new)
+    ///   - Scale routing ratio to available instance counts
+    ///   - Use weighted round-robin to select endpoint
+    /// </ol>
+    ///
+    /// @param artifactBase the artifact (version-agnostic)
+    /// @param methodName the method to invoke
+    /// @param routing the version routing configuration
+    /// @param oldVersion the old version
+    /// @param newVersion the new version
+    /// @return selected endpoint, or empty if none available
     Option<Endpoint> selectEndpointWithRouting(ArtifactBase artifactBase,
                                                MethodName methodName,
                                                VersionRouting routing,
                                                Version oldVersion,
                                                Version newVersion);
 
-    /**
-     * Find all endpoints for a given artifact base (any version).
-     */
+    /// Find all endpoints for a given artifact base (any version).
     List<Endpoint> findEndpointsForBase(ArtifactBase artifactBase, MethodName methodName);
 
-    /**
-     * Get all registered endpoints (for monitoring/debugging).
-     */
+    /// Get all registered endpoints (for monitoring/debugging).
     List<Endpoint> allEndpoints();
 
-    /**
-     * Endpoint representation with location information.
-     */
+    /// Endpoint representation with location information.
     record Endpoint(Artifact artifact,
                     MethodName methodName,
                     int instanceNumber,
@@ -119,9 +107,7 @@ public interface EndpointRegistry {
         }
     }
 
-    /**
-     * Create a new endpoint registry.
-     */
+    /// Create a new endpoint registry.
     static EndpointRegistry endpointRegistry() {
         record endpointRegistry(Map<EndpointKey, Endpoint> endpoints,
                                 Map<String, AtomicInteger> roundRobinCounters) implements EndpointRegistry {

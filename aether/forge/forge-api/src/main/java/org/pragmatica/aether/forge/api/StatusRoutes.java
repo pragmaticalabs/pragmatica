@@ -3,7 +3,6 @@ package org.pragmatica.aether.forge.api;
 import org.pragmatica.aether.forge.ForgeCluster;
 import org.pragmatica.aether.forge.ForgeMetrics;
 import org.pragmatica.aether.forge.ForgeMetrics.MetricsSnapshot;
-import org.pragmatica.aether.forge.LoadGenerator;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
@@ -14,42 +13,36 @@ import java.util.List;
 
 import static org.pragmatica.aether.forge.api.ForgeApiResponses.*;
 
-/**
- * Status-related routes for the Forge API.
- * Provides endpoints for cluster status, node metrics, events, and health checks.
- */
+/// Status-related routes for the Forge API.
+/// Provides endpoints for cluster status, node metrics, events, and health checks.
 public final class StatusRoutes {
     private StatusRoutes() {}
 
-    /**
-     * Create status routes with the given dependencies.
-     *
-     * @param cluster       the Forge cluster instance
-     * @param loadGenerator the load generator instance
-     * @param metrics       the Forge metrics instance
-     * @param events        the event log deque
-     * @param startTime     the server start time in milliseconds
-     * @return RouteSource containing all status-related routes
-     */
+    /// Create status routes with the given dependencies.
+    ///
+    /// @param cluster   the Forge cluster instance
+    /// @param metrics   the Forge metrics instance
+    /// @param events    the event log deque
+    /// @param startTime the server start time in milliseconds
+    /// @param loadRunner the ConfigurableLoadRunner for load testing
+    /// @return RouteSource containing all status-related routes
     public static RouteSource statusRoutes(ForgeCluster cluster,
-                                           LoadGenerator loadGenerator,
                                            ForgeMetrics metrics,
                                            Deque<ForgeEvent> events,
                                            long startTime,
                                            ConfigurableLoadRunner loadRunner) {
-        return RouteSource.of(statusRoute(cluster, loadGenerator, metrics, startTime, loadRunner),
+        return RouteSource.of(statusRoute(cluster, metrics, startTime, loadRunner),
                               nodeMetricsRoute(cluster),
                               eventsRoute(events),
                               healthRoute());
     }
 
     private static Route<FullStatusResponse> statusRoute(ForgeCluster cluster,
-                                                         LoadGenerator loadGenerator,
                                                          ForgeMetrics metrics,
                                                          long startTime,
                                                          ConfigurableLoadRunner loadRunner) {
         return Route.<FullStatusResponse> get("/api/status")
-                    .toJson(() -> buildFullStatus(cluster, loadGenerator, metrics, startTime, loadRunner));
+                    .toJson(() -> buildFullStatus(cluster, metrics, startTime, loadRunner));
     }
 
     private static Route<List<NodeMetricsResponse>> nodeMetricsRoute(ForgeCluster cluster) {
@@ -69,7 +62,6 @@ public final class StatusRoutes {
 
     // ==================== Handler Methods ====================
     public static FullStatusResponse buildFullStatus(ForgeCluster cluster,
-                                                      LoadGenerator loadGenerator,
                                                       ForgeMetrics metrics,
                                                       long startTime,
                                                       ConfigurableLoadRunner loadRunner) {
@@ -78,7 +70,7 @@ public final class StatusRoutes {
         var nodeInfos = buildNodeInfos(clusterStatus);
         var clusterInfo = new ClusterInfo(nodeInfos, clusterStatus.leaderId(), nodeInfos.size());
         var metricsInfo = buildMetricsInfo(metricsSnapshot);
-        var loadInfo = buildLoadInfo(loadGenerator);
+        var loadInfo = buildLoadInfo(loadRunner);
         var uptimeSeconds = uptimeSeconds(startTime);
         var sliceCount = countSlices(cluster);
         var targetClusterSize = cluster.effectiveClusterSize();
@@ -107,8 +99,10 @@ public final class StatusRoutes {
                                snapshot.totalFailures());
     }
 
-    private static LoadInfo buildLoadInfo(LoadGenerator loadGenerator) {
-        return new LoadInfo(loadGenerator.currentRate(), loadGenerator.targetRate(), loadGenerator.isRunning());
+    private static LoadInfo buildLoadInfo(ConfigurableLoadRunner loadRunner) {
+        return new LoadInfo(loadRunner.state().name(),
+                            loadRunner.config().totalRequestsPerSecond(),
+                            loadRunner.config().targets().size());
     }
 
     private static int countSlices(ForgeCluster cluster) {

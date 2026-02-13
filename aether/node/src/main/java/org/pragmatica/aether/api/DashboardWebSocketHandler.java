@@ -9,12 +9,11 @@ import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * WebSocket handler for dashboard real-time updates.
- *
- * <p>Manages connected dashboard clients and broadcasts metrics updates.
- * Uses pragmatica-lite's WebSocket API.
- */
+/// WebSocket handler for dashboard real-time updates.
+///
+///
+/// Manages connected dashboard clients and broadcasts metrics updates.
+/// Uses pragmatica-lite's WebSocket API.
 public class DashboardWebSocketHandler implements WebSocketHandler {
     private static final Logger log = LoggerFactory.getLogger(DashboardWebSocketHandler.class);
     private static final ConcurrentHashMap<String, WebSocketSession> sessions = new ConcurrentHashMap<>();
@@ -61,9 +60,7 @@ public class DashboardWebSocketHandler implements WebSocketHandler {
         log.info("Dashboard client disconnected: {}", session.id());
     }
 
-    /**
-     * Broadcast a message to all connected dashboard clients.
-     */
+    /// Broadcast a message to all connected dashboard clients.
     public static void broadcast(String message) {
         sessions.values()
                 .forEach(session -> {
@@ -73,9 +70,7 @@ public class DashboardWebSocketHandler implements WebSocketHandler {
                 });
     }
 
-    /**
-     * Get the number of connected dashboard clients.
-     */
+    /// Get the number of connected dashboard clients.
     public static int connectedClients() {
         return (int) sessions.values()
                             .stream()

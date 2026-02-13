@@ -15,26 +15,27 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for slice deployment and lifecycle.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Slice deployment via API</li>
- *   <li>Slice activation and health</li>
- *   <li>Slice scaling</li>
- *   <li>Slice undeployment</li>
- *   <li>Slice replication across nodes</li>
- * </ul>
- *
- * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
- * Tests run in order and each test cleans up previous state before running.
- */
+/// E2E tests for slice deployment and lifecycle.
+///
+///
+/// Tests cover:
+///
+///   - Slice deployment via API
+///   - Slice activation and health
+///   - Slice scaling
+///   - Slice undeployment
+///   - Slice replication across nodes
+///
+///
+///
+/// This test class uses a shared cluster for all tests to reduce startup overhead.
+/// Tests run in order and each test cleans up previous state before running.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 class SliceDeploymentE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEPLOY_TIMEOUT = adapt(timeSpan(3).minutes().duration());
@@ -72,16 +73,22 @@ class SliceDeploymentE2ETest {
         // Wait for cluster stability
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
-        System.out.println("[DEBUG] BeforeEach: sleeping 2s for stability...");
-        sleep(timeSpan(2).seconds());
+        cluster.awaitLeader();
 
-        // Undeploy all slices
-        System.out.println("[DEBUG] BeforeEach: undeploying all slices...");
-        undeployAllSlices();
-
-        // Wait for clean state
-        System.out.println("[DEBUG] BeforeEach: awaiting no slices...");
-        awaitNoSlices();
+        // Retry undeploy until clean — handles undeploy lost during leader changes
+        System.out.println("[DEBUG] BeforeEach: cleanup with retry...");
+        await().atMost(CLEANUP_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .ignoreExceptions()
+               .until(() -> {
+                   var slices = cluster.anyNode().getSlices();
+                   System.out.println("[DEBUG] Cleanup check, local slices: " + slices);
+                   if (slices.contains(TEST_ARTIFACT)) {
+                       tryUndeploy();
+                       return false;
+                   }
+                   return true;
+               });
         System.out.println("[DEBUG] BeforeEach: cleanup complete");
     }
 
@@ -116,12 +123,13 @@ class SliceDeploymentE2ETest {
     @Test
     @Order(2)
     void deploySlice_multipleInstances_distributedAcrossNodes() {
-        var response = deployAndAssert(TEST_ARTIFACT, 3);
+        var instanceCount = cluster.size();
+        var response = deployAndAssert(TEST_ARTIFACT, instanceCount);
 
-        // Wait for slice to become ACTIVE on ALL nodes (multi-instance distribution)
+        // Wait for slice to become ACTIVE on ALL nodes (one instance per node)
         cluster.awaitSliceActiveOnAllNodes(TEST_ARTIFACT, DEPLOY_TIMEOUT);
 
-        // Each node should report the slice
+        // Each node should report the slice locally
         for (var node : cluster.nodes()) {
             var nodeSlices = node.getSlices();
             assertThat(nodeSlices).contains(TEST_ARTIFACT);
@@ -135,8 +143,9 @@ class SliceDeploymentE2ETest {
         deployAndAssert(TEST_ARTIFACT, 1);
         awaitSliceActive(TEST_ARTIFACT);
 
-        // Scale to 3 instances
-        var scaleResponse = cluster.anyNode().scale(TEST_ARTIFACT, 3);
+        // Scale to 3 instances via leader
+        var scaleLeader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var scaleResponse = scaleLeader.scale(TEST_ARTIFACT, 3);
         assertThat(scaleResponse).doesNotContain("\"error\"");
 
         // Wait for scale operation to complete
@@ -160,8 +169,9 @@ class SliceDeploymentE2ETest {
         deployAndAssert(TEST_ARTIFACT, 1);
         awaitSliceActive(TEST_ARTIFACT);
 
-        // Undeploy
-        var undeployResponse = cluster.anyNode().undeploy(TEST_ARTIFACT);
+        // Undeploy via leader
+        var undeployLeader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var undeployResponse = undeployLeader.undeploy(TEST_ARTIFACT);
         assertThat(undeployResponse).doesNotContain("\"error\"");
 
         // Wait for slice to be removed
@@ -195,11 +205,12 @@ class SliceDeploymentE2ETest {
             id = "org.test:e2e-blueprint:1.0.0"
 
             [[slices]]
-            artifact = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0"
+            artifact = "%s"
             instances = 1
-            """;
+            """.formatted(TEST_ARTIFACT);
 
-        var response = cluster.anyNode().applyBlueprint(blueprint);
+        var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var response = leader.applyBlueprint(blueprint);
         assertThat(response).doesNotContain("\"error\"");
 
         awaitSliceActive(TEST_ARTIFACT);
@@ -207,41 +218,23 @@ class SliceDeploymentE2ETest {
 
     // ===== Cleanup Helpers =====
 
-    private void undeployAllSlices() {
+    private void tryUndeploy() {
         try {
             var leader = cluster.leader()
                                 .toResult(Causes.cause("No leader"))
                                 .unwrap();
-
-            // Get list of deployed slices
-            var slices = leader.getSlices();
-            System.out.println("[DEBUG] Deployed slices: " + slices);
-
-            // Undeploy the test artifact if present
-            if (slices.contains(TEST_ARTIFACT)) {
-                var result = leader.undeploy(TEST_ARTIFACT);
-                System.out.println("[DEBUG] Undeploy " + TEST_ARTIFACT + ": " + result);
-            }
+            var result = leader.undeploy(TEST_ARTIFACT);
+            System.out.println("[DEBUG] Undeploy attempt: " + result);
         } catch (Exception e) {
-            System.out.println("[DEBUG] Error undeploying slices: " + e.getMessage());
+            System.out.println("[DEBUG] Undeploy error: " + e.getMessage());
         }
-    }
-
-    private void awaitNoSlices() {
-        await().atMost(CLEANUP_TIMEOUT)
-               .pollInterval(POLL_INTERVAL)
-               .ignoreExceptions()
-               .until(() -> {
-                   var slices = cluster.anyNode().getSlices();
-                   System.out.println("[DEBUG] Waiting for no slices, current: " + slices);
-                   return !slices.contains(TEST_ARTIFACT);
-               });
     }
 
     // ===== Test Helpers =====
 
     private String deployAndAssert(String artifact, int instances) {
-        var response = cluster.anyNode().deploy(artifact, instances);
+        var leader = cluster.leader().toResult(Causes.cause("No leader")).unwrap();
+        var response = leader.deploy(artifact, instances);
         assertThat(response)
             .describedAs("Deployment of %s should succeed", artifact)
             .doesNotContain("\"error\"");

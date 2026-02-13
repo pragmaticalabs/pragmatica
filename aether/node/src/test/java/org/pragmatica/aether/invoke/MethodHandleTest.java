@@ -161,9 +161,7 @@ class MethodHandleTest {
         }
     }
 
-    /**
-     * Stub implementation of SliceInvoker for testing MethodHandle.
-     */
+    /// Stub implementation of SliceInvoker for testing MethodHandle.
     static class StubSliceInvoker implements SliceInvoker {
         Artifact lastArtifact;
         MethodName lastMethodName;

@@ -20,9 +20,7 @@ public record DependencyModel(String parameterName,
                               Option<String> version,
                               Option<ResourceQualifierModel> resourceQualifier) {
 
-    /**
-     * Backward-compatible constructor without resourceQualifier.
-     */
+    /// Backward-compatible constructor without resourceQualifier.
     public DependencyModel(String parameterName,
                            TypeMirror interfaceType,
                            String interfaceQualifiedName,
@@ -68,9 +66,7 @@ public record DependencyModel(String parameterName,
                                                   resourceQualifier));
     }
 
-    /**
-     * Check if this dependency is a resource (has @ResourceQualifier).
-     */
+    /// Check if this dependency is a resource (has @ResourceQualifier).
     public boolean isResource() {
         return resourceQualifier.isPresent();
     }
@@ -91,22 +87,18 @@ public record DependencyModel(String parameterName,
                      .map((artifact, ver) -> artifact + ":" + ver);
     }
 
-    /**
-     * Checks if this dependency is an infrastructure dependency.
-     * Infrastructure dependencies:
-     * - Live under org.pragmatica.aether.infra.* package
-     * - NOT proxied via SliceInvokerFacade
-     *
-     * Examples: DatabaseConnector
-     */
+    /// Checks if this dependency is an infrastructure dependency.
+    /// Infrastructure dependencies:
+    /// - Live under org.pragmatica.aether.infra.* package
+    /// - NOT proxied via SliceInvokerFacade
+    ///
+    /// Examples: DatabaseConnector
     public boolean isInfrastructure() {
         return interfaceQualifiedName.startsWith("org.pragmatica.aether.infra.");
     }
 
-    /**
-     * Get lowercase name for local proxy record (JBCT naming convention).
-     * Handles acronyms properly: "HTTPService" -> "httpService"
-     */
+    /// Get lowercase name for local proxy record (JBCT naming convention).
+    /// Handles acronyms properly: "HTTPService" -> "httpService"
     public String localRecordName() {
         if (interfaceSimpleName.isEmpty()) {
             return "";

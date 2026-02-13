@@ -12,12 +12,10 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-UTIL-02: Use Verify.Is predicates for validation.
- *
- * Detects manual validation patterns that could use Verify.ensure() with
- * built-in predicates from Verify.Is for cleaner, more expressive code.
- */
+/// JBCT-UTIL-02: Use Verify.Is predicates for validation.
+///
+/// Detects manual validation patterns that could use Verify.ensure() with
+/// built-in predicates from Verify.Is for cleaner, more expressive code.
 public class CstVerifyPredicatesRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-UTIL-02";
 

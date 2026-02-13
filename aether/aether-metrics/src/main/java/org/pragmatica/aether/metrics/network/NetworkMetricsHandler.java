@@ -10,14 +10,12 @@ import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPromise;
 
-/**
- * Sharable Netty handler that tracks network I/O metrics.
- * <p>
- * Thread-safe: uses atomic operations for all counters.
- * <p>
- * Add to pipeline after codec handlers to track application-level messages,
- * or before codec handlers to track raw bytes.
- */
+/// Sharable Netty handler that tracks network I/O metrics.
+///
+/// Thread-safe: uses atomic operations for all counters.
+///
+/// Add to pipeline after codec handlers to track application-level messages,
+/// or before codec handlers to track raw bytes.
 @Sharable
 public final class NetworkMetricsHandler extends ChannelDuplexHandler {
     private final LongAdder bytesRead = new LongAdder();
@@ -75,9 +73,7 @@ public final class NetworkMetricsHandler extends ChannelDuplexHandler {
         super.channelWritabilityChanged(ctx);
     }
 
-    /**
-     * Take a snapshot of current metrics.
-     */
+    /// Take a snapshot of current metrics.
     public NetworkMetrics snapshot() {
         return new NetworkMetrics(bytesRead.sum(),
                                   bytesWritten.sum(),
@@ -88,9 +84,7 @@ public final class NetworkMetricsHandler extends ChannelDuplexHandler {
                                   lastBackpressureTimestamp.get());
     }
 
-    /**
-     * Take a snapshot and reset counters (for delta-based reporting).
-     */
+    /// Take a snapshot and reset counters (for delta-based reporting).
     public NetworkMetrics snapshotAndReset() {
         return new NetworkMetrics(bytesRead.sumThenReset(),
                                   bytesWritten.sumThenReset(),

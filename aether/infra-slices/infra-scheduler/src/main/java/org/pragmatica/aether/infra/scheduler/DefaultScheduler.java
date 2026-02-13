@@ -20,9 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Default implementation of Scheduler using ScheduledExecutorService.
- */
+/// Default implementation of Scheduler using ScheduledExecutorService.
 final class DefaultScheduler implements Scheduler {
     private static final Logger log = LoggerFactory.getLogger(DefaultScheduler.class);
 

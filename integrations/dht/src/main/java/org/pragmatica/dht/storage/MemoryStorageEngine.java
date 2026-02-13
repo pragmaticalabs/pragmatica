@@ -16,11 +16,15 @@
 
 package org.pragmatica.dht.storage;
 
+import org.pragmatica.dht.ConsistentHashRing;
+import org.pragmatica.dht.DHTMessage;
+import org.pragmatica.dht.Partition;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
 /// In-memory storage engine backed by ConcurrentHashMap.
@@ -73,6 +77,32 @@ public final class MemoryStorageEngine implements StorageEngine {
     public Promise<Unit> shutdown() {
         data.clear();
         return Promise.success(Unit.unit());
+    }
+
+    @Override
+    public Promise<List<byte[]>> keys() {
+        return Promise.success(data.keySet()
+                                   .stream()
+                                   .map(ByteArrayKey::data)
+                                   .map(byte[]::clone)
+                                   .toList());
+    }
+
+    @Override
+    public Promise<List<DHTMessage.KeyValue>> entries() {
+        return Promise.success(data.entrySet()
+                                   .stream()
+                                   .map(e -> new DHTMessage.KeyValue(e.getKey().data(), e.getValue()))
+                                   .toList());
+    }
+
+    @Override
+    public Promise<List<DHTMessage.KeyValue>> entriesForPartition(ConsistentHashRing<?> ring, Partition partition) {
+        return Promise.success(data.entrySet()
+                                   .stream()
+                                   .filter(e -> ring.partitionFor(e.getKey().data()).equals(partition))
+                                   .map(e -> new DHTMessage.KeyValue(e.getKey().data(), e.getValue()))
+                                   .toList());
     }
 
     /// Wrapper for byte[] to use as HashMap key with proper equals/hashCode.

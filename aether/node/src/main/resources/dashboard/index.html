@@ -44,12 +44,28 @@
         <button class="tab" :class="{ active: tab === 'slices' }" @click="tab = 'slices'">Slices</button>
         <button class="tab" :class="{ active: tab === 'history' }" @click="tab = 'history'; loadHistory()">History</button>
         <button class="tab" :class="{ active: tab === 'alerts' }" @click="tab = 'alerts'">Alerts</button>
+        <button class="tab" :class="{ active: tab === 'aspects' }" @click="tab = 'aspects'">Aspects</button>
     </nav>
 
     <!-- Tab Content -->
     <main class="content">
         <!-- Metrics Tab -->
         <div x-show="tab === 'metrics'" x-transition class="tab-content">
+            <!-- Cluster Aggregates -->
+            <div class="aggregates-bar" x-show="metrics.aggregates">
+                <div class="aggregate-item">
+                    <span class="aggregate-label">Cluster RPS</span>
+                    <span class="aggregate-value" x-text="metrics.aggregates ? metrics.aggregates.rps.toFixed(1) : '0'"></span>
+                </div>
+                <div class="aggregate-item">
+                    <span class="aggregate-label">Success Rate</span>
+                    <span class="aggregate-value" x-text="metrics.aggregates ? (metrics.aggregates.successRate * 100).toFixed(1) + '%' : '100%'"></span>
+                </div>
+                <div class="aggregate-item">
+                    <span class="aggregate-label">Avg Latency</span>
+                    <span class="aggregate-value" x-text="metrics.aggregates ? metrics.aggregates.avgLatencyMs.toFixed(1) + ' ms' : '0 ms'"></span>
+                </div>
+            </div>
             <div class="metrics-grid">
                 <!-- Per-node metrics cards -->
                 <template x-for="(nodeMetrics, nodeId) in metrics.load" :key="nodeId">
@@ -192,6 +208,45 @@
                 </div>
             </div>
         </div>
+
+        <!-- Aspects Tab -->
+        <div x-show="tab === 'aspects'" x-transition class="tab-content">
+            <h2>Dynamic Aspects</h2>
+            <div class="aspect-controls">
+                <input type="text" x-model="aspectArtifact" placeholder="Artifact" class="aspect-input">
+                <input type="text" x-model="aspectMethod" placeholder="Method" class="aspect-input">
+                <select x-model="aspectMode" class="aspect-select">
+                    <option value="LOG">LOG</option>
+                    <option value="METRICS">METRICS</option>
+                    <option value="TRACE">TRACE</option>
+                    <option value="DISABLED">DISABLED</option>
+                </select>
+                <button class="aspect-set-btn" @click="setAspect()">Set</button>
+            </div>
+            <table class="aspect-table" x-show="aspectEntries.length > 0">
+                <thead>
+                    <tr>
+                        <th>Artifact</th>
+                        <th>Method</th>
+                        <th>Mode</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <template x-for="entry in aspectEntries" :key="entry.key">
+                        <tr>
+                            <td x-text="entry.artifact"></td>
+                            <td x-text="entry.method"></td>
+                            <td><span class="aspect-mode-badge" :class="entry.mode.toLowerCase()" x-text="entry.mode"></span></td>
+                            <td><button class="aspect-remove-btn" @click="removeAspect(entry.key)">Remove</button></td>
+                        </tr>
+                    </template>
+                </tbody>
+            </table>
+            <div x-show="aspectEntries.length === 0" class="empty-state">
+                No active aspects
+            </div>
+        </div>
     </main>
 
     <script>
@@ -214,6 +269,9 @@
                 ws: null,
                 reconnectTimer: null,
                 historyChart: null,
+                aspectArtifact: '',
+                aspectMethod: '',
+                aspectMode: 'LOG',
 
                 init() {
                     this.connect();
@@ -417,6 +475,28 @@
                     if (value >= threshold.critical) return 'critical';
                     if (value >= threshold.warning) return 'warning';
                     return 'normal';
+                },
+
+                get aspectEntries() {
+                    var aspects = this.metrics.aspects;
+                    if (!aspects || typeof aspects !== 'object') return [];
+                    return Object.entries(aspects).map(([key, mode]) => {
+                        var parts = key.split('::');
+                        return { key: key, artifact: parts[0] || '', method: parts[1] || '', mode: mode };
+                    });
+                },
+
+                setAspect() {
+                    if (!this.aspectArtifact || !this.aspectMethod) return;
+                    fetch('/api/aspects', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ artifact: this.aspectArtifact, method: this.aspectMethod, mode: this.aspectMode })
+                    });
+                },
+
+                removeAspect(key) {
+                    fetch('/api/aspects/' + encodeURIComponent(key), { method: 'DELETE' });
                 }
             };
         }

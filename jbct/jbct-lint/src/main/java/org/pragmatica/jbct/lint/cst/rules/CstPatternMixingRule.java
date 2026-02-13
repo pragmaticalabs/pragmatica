@@ -11,12 +11,10 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-PAT-02: No pattern mixing in chains.
- *
- * Detects Fork-Join patterns (Result.all, Promise.all) nested inside
- * Sequencer patterns (flatMap chains). These should be restructured.
- */
+/// JBCT-PAT-02: No pattern mixing in chains.
+///
+/// Detects Fork-Join patterns (Result.all, Promise.all) nested inside
+/// Sequencer patterns (flatMap chains). These should be restructured.
 public class CstPatternMixingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-PAT-02";
 

@@ -98,7 +98,7 @@ var fromOption3 = Option.option("Some other value").async(() -> Promise.promise(
 
 // Convert Result into resolved Promise
 var fromResult1 = Result.success("Some value").async();
- 
+
 ```
 All such conversions produce already resolved Promise instance except the last conversion from `Option<T>`.
 It will produce resolved `Promise<T>` instance for present `Option<T>`, but the state of the `Promise<T>` created by
@@ -109,9 +109,9 @@ Transform `Promise<T>` into `Result<T>` (see note above about waiting `Promise<T
 var promise = ...;
 
 // Wait indefinitely for Promise resolution
-var result = promise.await();  
+var result = promise.await();
 
-// Wait for resolution for 10 seconds and if Promise is still not resolved 
+// Wait for resolution for 10 seconds and if Promise is still not resolved
 // return failure Result with CoreError.Timeout() as a cause.
 var result = promise.await(TimeSpan.timeSpan(10).seconds());
 ```
@@ -226,7 +226,7 @@ Promise<Invoice> processUserOrders(UserId userId) {
 The asynchronous nature of `Promise<T>` in some cases enables transformation of sequential execution into parallel one.
 The main condition (which is quite frequently satisfied in practice) - independence of each operation. This is a very
 natural and effortless approach for speeding-up processing, especially for I/O operations. Usually, this pattern is
-called “Fan-Out-Fan-In” or “Fork-Join”. The first step is to launch several operations in parallel. Each operation is
+called "Fan-Out-Fan-In" or "Fork-Join". The first step is to launch several operations in parallel. Each operation is
 represented by the `Promise<T>` instance. The next step is to collect and process all the results. There are several
 possible use cases, each is covered by a dedicated `Promise<T>` predicate.
 
@@ -360,10 +360,13 @@ interface PaymentService {
 }
 
 // Repeat attempts at most 5 times, retry every 2 seconds
-private Retry retry = Retry.create(5, fixed(timeSpan(2).seconds()));
+private final Retry retry = Retry.retry()
+                                 .attempts(5)
+                                 .strategy(BackoffStrategy.fixed()
+                                                          .interval(timeSpan(2).seconds()));
 
 Promise<PaymentConfirmation> processPayment(Payment payment) {
-    return retry.execute(() -> paymentService.processPayment());
+    return retry.execute(() -> paymentService.processPayment(payment));
 }
 
 ```
@@ -371,17 +374,21 @@ Promise<PaymentConfirmation> processPayment(Payment payment) {
 `Retry` has support for several different backoff strategies - linear, exponential and fixed:
 ```java
 // Linear
-var linear = linear().initialDelay(timeSpan(50).millis())
-                     .increment(timeSpan(100).millis())
-                     .maxDelay(timeSpan(1).seconds());
+var linear = BackoffStrategy.linear()
+                            .initialDelay(timeSpan(50).millis())
+                            .increment(timeSpan(100).millis())
+                            .maxDelay(timeSpan(1).seconds());
 
 // Exponential
-var strategy2 = exponential().initialDelay(timeSpan(50).millis())
-                             .maxDelay(timeSpan(1).seconds())
-                             .factor(2.0)
-                             .withoutJitter();
-// Fixed 
-var strategy3 = fixed().interval(timeSpan(50).millis());
+var exponential = BackoffStrategy.exponential()
+                                 .initialDelay(timeSpan(50).millis())
+                                 .maxDelay(timeSpan(1).seconds())
+                                 .factor(2.0)
+                                 .withoutJitter();
+
+// Fixed
+var fixed = BackoffStrategy.fixed()
+                           .interval(timeSpan(50).millis());
 ```
 
 `CircuitBreaker` (obviously) implements a classic pattern with the same name. The API is very similar to the `Retry`:
@@ -395,7 +402,7 @@ var breaker = CircuitBreaker.builder()
                             .withDefaultTimeSource();
 
 // Use to protect endpoint
-return circuitBreaker.execute(() -> service.processOrder(order));
+return breaker.execute(() -> service.processOrder(order));
 
 ```
 
@@ -406,28 +413,13 @@ each external endpoint must have a dedicated `CircuitBreaker` instance.
 
 ## Pragmatica Lite Core Library
 The **Pragmatica Lite Core Library** contains implementation of all three core monads, as well as several utility classes.
-To use it in a Maven project, one needs to include the following repository description:
-```xml
-    <repositories>
-        <repository>
-            <id>github</id>
-            <url>https://maven.pkg.github.com/siy/pragmatica-lite</url>
-            <snapshots>
-                <enabled>true</enabled>
-            </snapshots>
-            <releases>
-                <enabled>true</enabled>
-            </releases>
-        </repository>
-    </repositories>
-```
-And then add the following dependency (most recent version at the time of writing):
+The library is published to Maven Central. Add the following dependency:
 
 ```xml
     <dependency>
         <groupId>org.pragmatica-lite</groupId>
         <artifactId>core</artifactId>
-        <version>0.7.6</version>
+        <version>0.15.1</version>
     </dependency>
 ```
 
@@ -436,4 +428,4 @@ And then add the following dependency (most recent version at the time of writin
 Functional style `Promise<T>` is a powerful yet easy to use tool. Code written with `Promise<T>` is easy to reason about
 and understand, although keeping code at a single level of abstraction is highly recommended, to preserve clarity.
 Simple mental model and very few technical details leaking into the user code, making `Promise<T>` the best tool for
-implementing highly scalable business logic.  
+implementing highly scalable business logic.

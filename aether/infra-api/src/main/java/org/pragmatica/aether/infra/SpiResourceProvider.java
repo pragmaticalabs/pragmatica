@@ -12,14 +12,12 @@ import java.util.ServiceLoader;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
 
-/**
- * SPI-based implementation of ResourceProvider.
- * <p>
- * Discovers {@link ResourceFactory} implementations via ServiceLoader
- * and caches created instances by (resourceType, configSection) key.
- * <p>
- * Thread-safe: Uses ConcurrentHashMap.computeIfAbsent for atomic caching.
- */
+/// SPI-based implementation of ResourceProvider.
+///
+/// Discovers {@link ResourceFactory} implementations via ServiceLoader
+/// and caches created instances by (resourceType, configSection) key.
+///
+/// Thread-safe: Uses ConcurrentHashMap.computeIfAbsent for atomic caching.
 public final class SpiResourceProvider implements ResourceProvider {
     private final Map<Class<?>, ResourceFactory<?, ?>> factories;
     private final Map<CacheKey, Promise<?>> promiseCache;
@@ -37,11 +35,9 @@ public final class SpiResourceProvider implements ResourceProvider {
         this.factories = Map.copyOf(factoryMap);
     }
 
-    /**
-     * Create an SpiResourceProvider that uses the ConfigService instance for loading.
-     *
-     * @return New SpiResourceProvider
-     */
+    /// Create an SpiResourceProvider that uses the ConfigService instance for loading.
+    ///
+    /// @return New SpiResourceProvider
     public static SpiResourceProvider spiResourceProvider() {
         return new SpiResourceProvider((section, configClass) ->
             ConfigService.instance()
@@ -50,26 +46,22 @@ public final class SpiResourceProvider implements ResourceProvider {
         );
     }
 
-    /**
-     * Create an SpiResourceProvider with a custom config loader.
-     * <p>
-     * Useful for testing or custom configuration sources.
-     *
-     * @param configLoader Function that loads config sections with (section, configClass)
-     * @return New SpiResourceProvider
-     */
+    /// Create an SpiResourceProvider with a custom config loader.
+    ///
+    /// Useful for testing or custom configuration sources.
+    ///
+    /// @param configLoader Function that loads config sections with (section, configClass)
+    /// @return New SpiResourceProvider
     public static SpiResourceProvider spiResourceProvider(Fn2<Result<?>, String, Class<?>> configLoader) {
         return new SpiResourceProvider(configLoader);
     }
 
-    /**
-     * Create an SpiResourceProvider with a simple config loader (section only).
-     * <p>
-     * Backwards-compatible factory for testing scenarios where config type is not needed.
-     *
-     * @param configLoader Function that loads config sections by name
-     * @return New SpiResourceProvider
-     */
+    /// Create an SpiResourceProvider with a simple config loader (section only).
+    ///
+    /// Backwards-compatible factory for testing scenarios where config type is not needed.
+    ///
+    /// @param configLoader Function that loads config sections by name
+    /// @return New SpiResourceProvider
     public static SpiResourceProvider spiResourceProvider(Function<String, Result<?>> configLoader) {
         return new SpiResourceProvider((section, configClass) -> configLoader.apply(section));
     }
@@ -119,8 +111,6 @@ public final class SpiResourceProvider implements ResourceProvider {
                       .mapError(cause -> ResourceProvisioningError.creationFailed(resourceType, configSection, cause));
     }
 
-    /**
-     * Cache key for (resourceType, configSection) pairs.
-     */
+    /// Cache key for (resourceType, configSection) pairs.
     private record CacheKey(Class<?> resourceType, String configSection) {}
 }

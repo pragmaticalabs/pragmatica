@@ -5,11 +5,9 @@ import org.pragmatica.utility.RingBuffer;
 
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-/**
- * Calculates derived metrics from raw comprehensive snapshots.
- * <p>
- * Uses a sliding window of recent samples to compute rates, percentiles, and trends.
- */
+/// Calculates derived metrics from raw comprehensive snapshots.
+///
+/// Uses a sliding window of recent samples to compute rates, percentiles, and trends.
 public final class DerivedMetricsCalculator {
     private static final int DEFAULT_WINDOW_SIZE = 60;
 
@@ -35,9 +33,7 @@ public final class DerivedMetricsCalculator {
         return new DerivedMetricsCalculator(windowSize);
     }
 
-    /**
-     * Add a sample and recalculate derived metrics.
-     */
+    /// Add a sample and recalculate derived metrics.
     public void addSample(ComprehensiveSnapshot snapshot) {
         lock.writeLock()
             .lock();
@@ -50,9 +46,7 @@ public final class DerivedMetricsCalculator {
         }
     }
 
-    /**
-     * Get current derived metrics.
-     */
+    /// Get current derived metrics.
     public DerivedMetrics current() {
         lock.readLock()
             .lock();

@@ -63,10 +63,8 @@ public final class RequestRouter {
                                                             inputPath));
     }
 
-    /**
-     * Select the best matching route from a list of routes with the same base path.
-     * This handles routes that differ only in their spacer parameters.
-     */
+    /// Select the best matching route from a list of routes with the same base path.
+    /// This handles routes that differ only in their spacer parameters.
     private Option<Route<?>> selectBestRoute(List<Route<?>> candidates, String inputPath) {
         if (candidates.size() == 1) {
             return Option.some(candidates.getFirst());
@@ -94,9 +92,7 @@ public final class RequestRouter {
         return Option.some(noSpacerRoute.orElse(candidates.getFirst()));
     }
 
-    /**
-     * Check if a route matches the input path by verifying all spacers are present.
-     */
+    /// Check if a route matches the input path by verifying all spacers are present.
     private boolean routeMatchesPath(Route<?> route, String inputPath) {
         var basePath = route.path();
         if (inputPath.length() <= basePath.length()) {

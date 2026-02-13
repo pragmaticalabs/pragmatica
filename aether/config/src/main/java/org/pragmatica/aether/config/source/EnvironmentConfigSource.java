@@ -7,18 +7,16 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Configuration source backed by environment variables.
- * <p>
- * Environment variables are filtered by prefix and converted from
- * SCREAMING_SNAKE_CASE to dot.notation.
- * <p>
- * Example with prefix "AETHER_":
- * <ul>
- *   <li>AETHER_DATABASE_HOST -> database.host</li>
- *   <li>AETHER_SERVER_PORT -> server.port</li>
- * </ul>
- */
+/// Configuration source backed by environment variables.
+///
+/// Environment variables are filtered by prefix and converted from
+/// SCREAMING_SNAKE_CASE to dot.notation.
+///
+/// Example with prefix "AETHER_":
+///
+///   - AETHER_DATABASE_HOST -> database.host
+///   - AETHER_SERVER_PORT -> server.port
+///
 public final class EnvironmentConfigSource implements ConfigSource {
     private static final int DEFAULT_PRIORITY = 100;
 
@@ -32,23 +30,19 @@ public final class EnvironmentConfigSource implements ConfigSource {
         this.values = Map.copyOf(values);
     }
 
-    /**
-     * Create an EnvironmentConfigSource with the specified prefix.
-     *
-     * @param prefix Prefix to filter environment variables (e.g., "AETHER_")
-     * @return New EnvironmentConfigSource
-     */
+    /// Create an EnvironmentConfigSource with the specified prefix.
+    ///
+    /// @param prefix Prefix to filter environment variables (e.g., "AETHER_")
+    /// @return New EnvironmentConfigSource
     public static EnvironmentConfigSource environmentConfigSource(String prefix) {
         return environmentConfigSource(prefix, DEFAULT_PRIORITY);
     }
 
-    /**
-     * Create an EnvironmentConfigSource with specified prefix and priority.
-     *
-     * @param prefix   Prefix to filter environment variables
-     * @param priority Source priority
-     * @return New EnvironmentConfigSource
-     */
+    /// Create an EnvironmentConfigSource with specified prefix and priority.
+    ///
+    /// @param prefix   Prefix to filter environment variables
+    /// @param priority Source priority
+    /// @return New EnvironmentConfigSource
     public static EnvironmentConfigSource environmentConfigSource(String prefix, int priority) {
         var values = loadFromEnvironment(prefix);
         return new EnvironmentConfigSource(prefix, priority, values);
@@ -94,9 +88,7 @@ public final class EnvironmentConfigSource implements ConfigSource {
         return result;
     }
 
-    /**
-     * Convert SCREAMING_SNAKE_CASE to dot.notation.lowercase.
-     */
+    /// Convert SCREAMING_SNAKE_CASE to dot.notation.lowercase.
     private static String normalizeKey(String key) {
         return key.toLowerCase().replace('_', '.');
     }

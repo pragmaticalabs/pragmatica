@@ -14,9 +14,7 @@ import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.project.MavenProject;
 
-/**
- * Base class for JBCT Maven mojos with common configuration parameters.
- */
+/// Base class for JBCT Maven mojos with common configuration parameters.
 public abstract class AbstractJbctMojo extends AbstractMojo {
     @Parameter(defaultValue = "${project}", readonly = true, required = true)
     protected MavenProject project;
@@ -33,25 +31,19 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
     @Parameter(property = "jbct.includeTests", defaultValue = "false")
     protected boolean includeTests;
 
-    /**
-     * Load JBCT configuration from project directory.
-     */
+    /// Load JBCT configuration from project directory.
     protected JbctConfig loadConfig() {
         var projectDir = project.getBasedir()
                                 .toPath();
         return ConfigLoader.load(Option.none(), Option.option(projectDir));
     }
 
-    /**
-     * Create lint context from configuration.
-     */
+    /// Create lint context from configuration.
     protected LintContext createLintContext(JbctConfig config) {
         return LintContext.fromConfig(config);
     }
 
-    /**
-     * Collect Java files from source directories.
-     */
+    /// Collect Java files from source directories.
     protected List<Path> collectJavaFiles() {
         return FileCollector.collectFromDirectories(Option.option(sourceDirectory)
                                                           .map(File::toPath),
@@ -61,9 +53,7 @@ public abstract class AbstractJbctMojo extends AbstractMojo {
                                                     msg -> getLog().warn(msg));
     }
 
-    /**
-     * Check if this mojo should be skipped.
-     */
+    /// Check if this mojo should be skipped.
     protected boolean shouldSkip(String goalName) {
         if (skip) {
             getLog().info("Skipping JBCT " + goalName);

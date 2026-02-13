@@ -20,17 +20,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for cluster bootstrap and recovery scenarios.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Single node restart and recovery</li>
- *   <li>State persistence across restarts</li>
- *   <li>Rolling restart behavior</li>
- *   <li>Multiple node restarts</li>
- * </ul>
- */
+/// Tests for cluster bootstrap and recovery scenarios.
+///
+///
+/// Tests cover:
+///
+///   - Single node restart and recovery
+///   - State persistence across restarts
+///   - Rolling restart behavior
+///   - Multiple node restarts
+///
 @Execution(ExecutionMode.SAME_THREAD)
 class BootstrapTest {
     private static final int BASE_PORT = 7500;

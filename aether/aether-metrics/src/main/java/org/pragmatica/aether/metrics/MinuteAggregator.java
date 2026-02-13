@@ -6,17 +6,15 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-/**
- * Aggregates {@link ComprehensiveSnapshot} samples into minute-level summaries.
- * <p>
- * Features:
- * <ul>
- *   <li>Stores last 120 minutes (2-hour window)</li>
- *   <li>Automatic minute boundary alignment</li>
- *   <li>Percentile calculation from samples</li>
- *   <li>TTM-ready float[][] output</li>
- * </ul>
- */
+/// Aggregates {@link ComprehensiveSnapshot} samples into minute-level summaries.
+///
+/// Features:
+///
+///   - Stores last 120 minutes (2-hour window)
+///   - Automatic minute boundary alignment
+///   - Percentile calculation from samples
+///   - TTM-ready float[][] output
+///
 public final class MinuteAggregator {
     private static final int DEFAULT_CAPACITY = 120;
 
@@ -41,9 +39,7 @@ public final class MinuteAggregator {
         return new MinuteAggregator(capacity);
     }
 
-    /**
-     * Add a snapshot sample. Automatically rolls over on minute boundaries.
-     */
+    /// Add a snapshot sample. Automatically rolls over on minute boundaries.
     public void addSample(ComprehensiveSnapshot snapshot) {
         lock.writeLock()
             .lock();
@@ -64,9 +60,7 @@ public final class MinuteAggregator {
         }
     }
 
-    /**
-     * Force finalization of current minute (useful at shutdown).
-     */
+    /// Force finalization of current minute (useful at shutdown).
     public void flush() {
         lock.writeLock()
             .lock();
@@ -80,9 +74,7 @@ public final class MinuteAggregator {
         }
     }
 
-    /**
-     * Get all minute aggregates.
-     */
+    /// Get all minute aggregates.
     public List<MinuteAggregate> all() {
         lock.readLock()
             .lock();
@@ -94,9 +86,7 @@ public final class MinuteAggregator {
         }
     }
 
-    /**
-     * Get recent N minute aggregates.
-     */
+    /// Get recent N minute aggregates.
     public List<MinuteAggregate> recent(int count) {
         lock.readLock()
             .lock();
@@ -112,9 +102,7 @@ public final class MinuteAggregator {
         }
     }
 
-    /**
-     * Get aggregates since timestamp.
-     */
+    /// Get aggregates since timestamp.
     public List<MinuteAggregate> since(long timestamp) {
         lock.readLock()
             .lock();
@@ -126,12 +114,10 @@ public final class MinuteAggregator {
         }
     }
 
-    /**
-     * Convert to TTM input matrix.
-     *
-     * @param windowMinutes Number of minutes to include
-     * @return float[windowMinutes][features] matrix, zero-padded if insufficient data
-     */
+    /// Convert to TTM input matrix.
+    ///
+    /// @param windowMinutes Number of minutes to include
+    /// @return float[windowMinutes][features] matrix, zero-padded if insufficient data
     public float[][] toTTMInput(int windowMinutes) {
         lock.readLock()
             .lock();
@@ -155,9 +141,7 @@ public final class MinuteAggregator {
         }
     }
 
-    /**
-     * Get current sample count in accumulator.
-     */
+    /// Get current sample count in accumulator.
     public int currentSampleCount() {
         lock.readLock()
             .lock();
@@ -169,9 +153,7 @@ public final class MinuteAggregator {
         }
     }
 
-    /**
-     * Get total aggregate count.
-     */
+    /// Get total aggregate count.
     public int aggregateCount() {
         lock.readLock()
             .lock();

@@ -29,134 +29,119 @@ import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Manages rolling update operations across the cluster.
- *
- * <p>Implements a two-stage rolling update model:
- * <ol>
- *   <li><b>Deploy stage</b>: New version instances deployed with 0% traffic</li>
- *   <li><b>Route stage</b>: Traffic gradually shifted to new version</li>
- * </ol>
- *
- * <p>Rolling updates are orchestrated by the leader node via consensus.
- * All state is stored in the KV-Store for persistence and visibility.
- *
- * <p>Usage:
- * <pre>{@code
- * // Start rolling update (deploys new version with 0% traffic)
- * manager.startUpdate(artifactBase, newVersion, 3, HealthThresholds.DEFAULT, CleanupPolicy.GRACE_PERIOD)
- *     .await()
- *     .onSuccess(update -> {
- *         // Gradually shift traffic
- *         manager.adjustRouting(update.updateId(), VersionRouting.versionRouting("1:3")).await();
- *         manager.adjustRouting(update.updateId(), VersionRouting.versionRouting("1:1")).await();
- *         manager.adjustRouting(update.updateId(), VersionRouting.versionRouting("1:0")).await();
- *
- *         // Complete and cleanup
- *         manager.completeUpdate(update.updateId()).await();
- *     });
- * }</pre>
- */
+/// Manages rolling update operations across the cluster.
+///
+///
+/// Implements a two-stage rolling update model:
+/// <ol>
+///   - **Deploy stage**: New version instances deployed with 0% traffic
+///   - **Route stage**: Traffic gradually shifted to new version
+/// </ol>
+///
+///
+/// Rolling updates are orchestrated by the leader node via consensus.
+/// All state is stored in the KV-Store for persistence and visibility.
+///
+///
+/// Usage:
+/// ```{@code
+/// // Start rolling update (deploys new version with 0% traffic)
+/// manager.startUpdate(artifactBase, newVersion, 3, HealthThresholds.DEFAULT, CleanupPolicy.GRACE_PERIOD)
+///     .await()
+///     .onSuccess(update -> {
+///         // Gradually shift traffic
+///         manager.adjustRouting(update.updateId(), VersionRouting.versionRouting("1:3")).await();
+///         manager.adjustRouting(update.updateId(), VersionRouting.versionRouting("1:1")).await();
+///         manager.adjustRouting(update.updateId(), VersionRouting.versionRouting("1:0")).await();
+///
+///         // Complete and cleanup
+///         manager.completeUpdate(update.updateId()).await();
+///     });
+/// }```
 public interface RollingUpdateManager {
-    /**
-     * Starts a new rolling update.
-     *
-     * <p>This initiates the deploy stage:
-     * <ul>
-     *   <li>Creates update record in KV-Store</li>
-     *   <li>Deploys new version instances (0% traffic)</li>
-     *   <li>Waits for new instances to become healthy</li>
-     *   <li>Transitions to DEPLOYED state</li>
-     * </ul>
-     *
-     * @param artifactBase the artifact to update (version-agnostic)
-     * @param newVersion the new version to deploy
-     * @param instances number of new version instances
-     * @param thresholds health thresholds for auto-progression
-     * @param cleanupPolicy how to handle old version cleanup
-     * @return the created rolling update
-     */
+    /// Starts a new rolling update.
+    ///
+    ///
+    /// This initiates the deploy stage:
+    ///
+    ///   - Creates update record in KV-Store
+    ///   - Deploys new version instances (0% traffic)
+    ///   - Waits for new instances to become healthy
+    ///   - Transitions to DEPLOYED state
+    ///
+    ///
+    /// @param artifactBase the artifact to update (version-agnostic)
+    /// @param newVersion the new version to deploy
+    /// @param instances number of new version instances
+    /// @param thresholds health thresholds for auto-progression
+    /// @param cleanupPolicy how to handle old version cleanup
+    /// @return the created rolling update
     Promise<RollingUpdate> startUpdate(ArtifactBase artifactBase,
                                        Version newVersion,
                                        int instances,
                                        HealthThresholds thresholds,
                                        CleanupPolicy cleanupPolicy);
 
-    /**
-     * Adjusts traffic routing between versions.
-     *
-     * <p>Can only be called when update is in DEPLOYED or ROUTING state.
-     * The routing ratio is scaled to available instances.
-     *
-     * @param updateId the update to adjust
-     * @param newRouting the new routing configuration
-     * @return updated rolling update
-     */
+    /// Adjusts traffic routing between versions.
+    ///
+    ///
+    /// Can only be called when update is in DEPLOYED or ROUTING state.
+    /// The routing ratio is scaled to available instances.
+    ///
+    /// @param updateId the update to adjust
+    /// @param newRouting the new routing configuration
+    /// @return updated rolling update
     Promise<RollingUpdate> adjustRouting(String updateId, VersionRouting newRouting);
 
-    /**
-     * Completes the rolling update.
-     *
-     * <p>Should only be called when all traffic is routed to new version (1:0).
-     * Initiates cleanup of old version according to cleanup policy.
-     *
-     * @param updateId the update to complete
-     * @return updated rolling update
-     */
+    /// Completes the rolling update.
+    ///
+    ///
+    /// Should only be called when all traffic is routed to new version (1:0).
+    /// Initiates cleanup of old version according to cleanup policy.
+    ///
+    /// @param updateId the update to complete
+    /// @return updated rolling update
     Promise<RollingUpdate> completeUpdate(String updateId);
 
-    /**
-     * Rolls back the update to the old version.
-     *
-     * <p>Can be called at any non-terminal state. Routes all traffic back to
-     * old version and removes new version instances.
-     *
-     * @param updateId the update to rollback
-     * @return updated rolling update
-     */
+    /// Rolls back the update to the old version.
+    ///
+    ///
+    /// Can be called at any non-terminal state. Routes all traffic back to
+    /// old version and removes new version instances.
+    ///
+    /// @param updateId the update to rollback
+    /// @return updated rolling update
     Promise<RollingUpdate> rollback(String updateId);
 
-    /**
-     * Gets the current state of a rolling update.
-     *
-     * @param updateId the update to query
-     * @return the update if found
-     */
+    /// Gets the current state of a rolling update.
+    ///
+    /// @param updateId the update to query
+    /// @return the update if found
     Option<RollingUpdate> getUpdate(String updateId);
 
-    /**
-     * Gets the active update for an artifact (if any).
-     *
-     * @param artifactBase the artifact to query
-     * @return the active update if found
-     */
+    /// Gets the active update for an artifact (if any).
+    ///
+    /// @param artifactBase the artifact to query
+    /// @return the active update if found
     Option<RollingUpdate> getActiveUpdate(ArtifactBase artifactBase);
 
-    /**
-     * Lists all active (non-terminal) rolling updates.
-     *
-     * @return list of active updates
-     */
+    /// Lists all active (non-terminal) rolling updates.
+    ///
+    /// @return list of active updates
     List<RollingUpdate> activeUpdates();
 
-    /**
-     * Lists all rolling updates (including completed ones).
-     *
-     * @return list of all updates
-     */
+    /// Lists all rolling updates (including completed ones).
+    ///
+    /// @return list of all updates
     List<RollingUpdate> allUpdates();
 
-    /**
-     * Gets health metrics for an update's versions.
-     *
-     * @param updateId the update to query
-     * @return health metrics for old and new versions
-     */
+    /// Gets health metrics for an update's versions.
+    ///
+    /// @param updateId the update to query
+    /// @return health metrics for old and new versions
     Promise<VersionHealthMetrics> getHealthMetrics(String updateId);
 
-    /**
-     * Health metrics for comparing old and new version performance.
-     */
+    /// Health metrics for comparing old and new version performance.
     record VersionHealthMetrics(String updateId,
                                 VersionMetrics oldVersion,
                                 VersionMetrics newVersion,
@@ -166,9 +151,7 @@ public interface RollingUpdateManager {
         }
     }
 
-    /**
-     * Metrics for a single version.
-     */
+    /// Metrics for a single version.
     record VersionMetrics(Version version,
                           long requestCount,
                           long errorCount,
@@ -176,15 +159,11 @@ public interface RollingUpdateManager {
                           long p99LatencyMs,
                           long avgLatencyMs) {}
 
-    /**
-     * Handle leader change notifications.
-     */
+    /// Handle leader change notifications.
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);
 
-    /**
-     * Factory method following JBCT naming convention.
-     */
+    /// Factory method following JBCT naming convention.
     static RollingUpdateManager rollingUpdateManager(RabiaNode<KVCommand<AetherKey>> clusterNode,
                                                      KVStore<AetherKey, AetherValue> kvStore,
                                                      InvocationMetricsCollector metricsCollector) {
@@ -195,10 +174,8 @@ public interface RollingUpdateManager {
             private static final Logger log = LoggerFactory.getLogger(RollingUpdateManager.class);
             private static final TimeSpan KV_OPERATION_TIMEOUT = TimeSpan.timeSpan(30)
                                                                         .seconds();
-            /**
-             * Retention period for terminal-state updates before pruning from in-memory map.
-             * Updates in COMPLETED, ROLLED_BACK, or FAILED state are pruned after this period.
-             */
+            /// Retention period for terminal-state updates before pruning from in-memory map.
+            /// Updates in COMPLETED, ROLLED_BACK, or FAILED state are pruned after this period.
             private static final long TERMINAL_RETENTION_MS = TimeUnit.HOURS.toMillis(1);
 
             @Override
@@ -478,10 +455,8 @@ public interface RollingUpdateManager {
                                   .map(_ -> transitioned);
             }
 
-            /**
-             * Prune terminal-state updates that have exceeded the retention period.
-             * This prevents unbounded growth of the in-memory updates map.
-             */
+            /// Prune terminal-state updates that have exceeded the retention period.
+            /// This prevents unbounded growth of the in-memory updates map.
             private void pruneTerminalUpdates() {
                 var cutoff = System.currentTimeMillis() - TERMINAL_RETENTION_MS;
                 var pruned = updates.entrySet()
@@ -589,9 +564,7 @@ public interface RollingUpdateManager {
         return new rollingUpdateManager(clusterNode, kvStore, metricsCollector, new ConcurrentHashMap<>());
     }
 
-    /**
-     * Helper record for accumulating metrics across snapshots.
-     */
+    /// Helper record for accumulating metrics across snapshots.
     record AccumulatedMetrics(long requests, long errors, long totalLatencyMs, long maxP99Ms) {
         static AccumulatedMetrics empty() {
             return new AccumulatedMetrics(0, 0, 0, 0);

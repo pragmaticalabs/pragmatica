@@ -6,7 +6,7 @@
     <parent>
         <groupId>org.pragmatica-lite.aether</groupId>
         <artifactId>aether</artifactId>
-        <version>0.15.0</version>
+        <version>0.15.1</version>
     </parent>
 
     <artifactId>e2e-tests</artifactId>
@@ -14,7 +14,7 @@
     <description>End-to-end tests for Aether distributed runtime using Testcontainers</description>
 
     <properties>
-        <testcontainers.version>1.20.4</testcontainers.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
         <awaitility.version>4.2.2</awaitility.version>
         <skipE2ETests>true</skipE2ETests>
     </properties>
@@ -236,6 +236,7 @@ Slice-Class: org.pragmatica.aether.example.inventory.InventoryServiceFactory
                     <reuseForks>false</reuseForks>
                     <systemPropertyVariables>
                         <project.basedir>${maven.multiModuleProjectDirectory}</project.basedir>
+                        <project.version>${project.version}</project.version>
                     </systemPropertyVariables>
                 </configuration>
                 <executions>

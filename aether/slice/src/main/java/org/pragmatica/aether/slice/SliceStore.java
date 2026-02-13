@@ -22,17 +22,15 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public interface SliceStore {
-    /**
-     * Create a new SliceStore instance with shared library classloader.
-     *
-     * @param registry            Registry for tracking loaded slices
-     * @param repositories        Repositories to search for slice JARs
-     * @param sharedLibraryLoader ClassLoader for shared dependencies across slices
-     * @param invokerFacade       Facade for inter-slice invocation (used by generated factories)
-     * @param config              Configuration for slice lifecycle timeouts
-     *
-     * @return SliceStore implementation
-     */
+    /// Create a new SliceStore instance with shared library classloader.
+    ///
+    /// @param registry            Registry for tracking loaded slices
+    /// @param repositories        Repositories to search for slice JARs
+    /// @param sharedLibraryLoader ClassLoader for shared dependencies across slices
+    /// @param invokerFacade       Facade for inter-slice invocation (used by generated factories)
+    /// @param config              Configuration for slice lifecycle timeouts
+    ///
+    /// @return SliceStore implementation
     static SliceStore sliceStore(SliceRegistry registry,
                                  List<Repository> repositories,
                                  SharedLibraryClassLoader sharedLibraryLoader,
@@ -41,18 +39,16 @@ public interface SliceStore {
         return sliceStore(registry, repositories, sharedLibraryLoader, invokerFacade, noOpResourceProvider(), config);
     }
 
-    /**
-     * Create a new SliceStore instance with shared library classloader and resource provider.
-     *
-     * @param registry            Registry for tracking loaded slices
-     * @param repositories        Repositories to search for slice JARs
-     * @param sharedLibraryLoader ClassLoader for shared dependencies across slices
-     * @param invokerFacade       Facade for inter-slice invocation (used by generated factories)
-     * @param resourceFacade      Facade for resource provisioning (used by generated factories)
-     * @param config              Configuration for slice lifecycle timeouts
-     *
-     * @return SliceStore implementation
-     */
+    /// Create a new SliceStore instance with shared library classloader and resource provider.
+    ///
+    /// @param registry            Registry for tracking loaded slices
+    /// @param repositories        Repositories to search for slice JARs
+    /// @param sharedLibraryLoader ClassLoader for shared dependencies across slices
+    /// @param invokerFacade       Facade for inter-slice invocation (used by generated factories)
+    /// @param resourceFacade      Facade for resource provisioning (used by generated factories)
+    /// @param config              Configuration for slice lifecycle timeouts
+    ///
+    /// @return SliceStore implementation
     static SliceStore sliceStore(SliceRegistry registry,
                                  List<Repository> repositories,
                                  SharedLibraryClassLoader sharedLibraryLoader,
@@ -86,28 +82,20 @@ public interface SliceStore {
 
     List<LoadedSlice> loaded();
 
-    /**
-     * Load a slice into memory but do not activate it.
-     * This corresponds to the LOADING → LOADED state transition.
-     */
+    /// Load a slice into memory but do not activate it.
+    /// This corresponds to the LOADING → LOADED state transition.
     Promise<LoadedSlice> loadSlice(Artifact artifact);
 
-    /**
-     * Activate a previously loaded slice, making it ready to serve requests.
-     * This corresponds to the ACTIVATING → ACTIVE state transition.
-     */
+    /// Activate a previously loaded slice, making it ready to serve requests.
+    /// This corresponds to the ACTIVATING → ACTIVE state transition.
     Promise<LoadedSlice> activateSlice(Artifact artifact);
 
-    /**
-     * Deactivate an active slice, but keep it loaded in memory.
-     * This corresponds to the DEACTIVATING → LOADED state transition.
-     */
+    /// Deactivate an active slice, but keep it loaded in memory.
+    /// This corresponds to the DEACTIVATING → LOADED state transition.
     Promise<LoadedSlice> deactivateSlice(Artifact artifact);
 
-    /**
-     * Unload a slice from memory completely.
-     * This corresponds to the UNLOADING → (removed) state transition.
-     */
+    /// Unload a slice from memory completely.
+    /// This corresponds to the UNLOADING → (removed) state transition.
     Promise<Unit> unloadSlice(Artifact artifact);
 
     enum EntryState {
@@ -134,12 +122,10 @@ public interface SliceStore {
         }
     }
 
-    /**
-     * Thread-safe slice store using ConcurrentHashMap with Promise values.
-     * Storing Promise<LoadedSliceEntry> allows computeIfAbsent to atomically start loading
-     * and return the same Promise to concurrent callers. Operations that need the entry
-     * simply flatMap on the Promise.
-     */
+    /// Thread-safe slice store using ConcurrentHashMap with Promise values.
+    /// Storing Promise<LoadedSliceEntry> allows computeIfAbsent to atomically start loading
+    /// and return the same Promise to concurrent callers. Operations that need the entry
+    /// simply flatMap on the Promise.
     record sliceStore(SliceRegistry registry,
                       List<Repository> repositories,
                       SharedLibraryClassLoader sharedLibraryLoader,
@@ -157,8 +143,8 @@ public interface SliceStore {
 
         private Promise<LoadedSliceEntry> startLoading(Artifact artifact) {
             log.debug("Loading slice {}", artifact);
-            return locateInRepositories(artifact).flatMap(_ -> loadFromLocation(artifact))
-                                       .onFailure(_ -> CompletableFuture.runAsync(() -> entries.remove(artifact)));
+            return loadFromLocation(artifact)
+                       .onFailure(_ -> CompletableFuture.runAsync(() -> entries.remove(artifact)));
         }
 
         private Promise<LoadedSliceEntry> loadFromLocation(Artifact artifact) {
@@ -287,12 +273,19 @@ public interface SliceStore {
 
         @Override
         public Promise<Unit> unloadSlice(Artifact artifact) {
-            return Option.option(entries.get(artifact))
-                         .map(entryPromise -> entryPromise.flatMap(entry -> unloadEntry(artifact, entry)))
+            return Option.option(entries.remove(artifact))
+                         .map(entryPromise -> entryPromise.fold(result -> result.fold(
+                             cause -> skipFailedUnload(artifact, cause),
+                             entry -> unloadEntry(artifact, entry))))
                          .or(() -> {
                                  log.debug("Slice {} not loaded, nothing to unload", artifact);
                                  return Promise.unitPromise();
                              });
+        }
+
+        private Promise<Unit> skipFailedUnload(Artifact artifact, Cause cause) {
+            log.debug("Slice {} was in failed state ({}), nothing to unload", artifact, cause.message());
+            return Promise.unitPromise();
         }
 
         private Promise<Unit> unloadEntry(Artifact artifact, LoadedSliceEntry entry) {

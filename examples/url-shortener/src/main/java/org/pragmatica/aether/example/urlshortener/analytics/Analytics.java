@@ -10,11 +10,9 @@ import org.pragmatica.lang.Verify;
 
 import java.util.regex.Pattern;
 
-/**
- * Analytics slice - tracks URL access statistics.
- * <p>
- * Uses database storage with clicks table to track click counts per short code.
- */
+/// Analytics slice - tracks URL access statistics.
+///
+/// Uses database storage with clicks table to track click counts per short code.
 @Slice
 public interface Analytics {
     // === Requests ===

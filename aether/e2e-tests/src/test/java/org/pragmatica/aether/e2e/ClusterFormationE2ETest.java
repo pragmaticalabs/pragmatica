@@ -1,34 +1,54 @@
 package org.pragmatica.aether.e2e;
 
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.pragmatica.aether.e2e.containers.AetherCluster;
 import org.pragmatica.aether.e2e.containers.AetherNodeContainer;
 import org.pragmatica.lang.utils.Causes;
 
+import java.nio.file.Path;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * E2E tests for cluster formation and quorum behavior.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>3-node cluster formation</li>
- *   <li>Quorum establishment</li>
- *   <li>Leader election</li>
- *   <li>Node visibility across cluster</li>
- * </ul>
- */
-class ClusterFormationE2ETest extends AbstractE2ETest {
+/// E2E tests for cluster formation and quorum behavior.
+///
+///
+/// Tests cover:
+///
+///   - 5-node cluster formation
+///   - Quorum establishment
+///   - Leader election
+///   - Node visibility across cluster
+///
+///
+///
+/// This test class uses a shared cluster (read-only tests).
+class ClusterFormationE2ETest {
+    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
+    private static AetherCluster cluster;
 
-    @Override
-    protected int clusterSize() {
-        return 3;
+    @BeforeAll
+    static void createCluster() {
+        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
+        cluster.start();
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
+        cluster.uploadTestArtifacts();
+    }
+
+    @AfterAll
+    static void destroyCluster() {
+        if (cluster != null) {
+            cluster.close();
+        }
     }
 
     @Test
-    void threeNodeCluster_formsQuorum_andElectsLeader() {
+    void fiveNodeCluster_formsQuorum_andElectsLeader() {
         // All nodes should be healthy
         cluster.awaitAllHealthy();
-        assertThat(cluster.runningNodeCount()).isEqualTo(3);
+        assertThat(cluster.runningNodeCount()).isEqualTo(5);
 
         // Health endpoint should report healthy with quorum
         var health = cluster.anyNode().getHealth();
@@ -42,11 +62,11 @@ class ClusterFormationE2ETest extends AbstractE2ETest {
 
     @Test
     void cluster_nodesVisibleToAllMembers() {
-        // Each node should report 2 connected peers via /health endpoint
+        // Each node should report 4 connected peers via /health endpoint
         for (var node : cluster.nodes()) {
             var health = node.getHealth();
-            assertThat(health).contains("\"connectedPeers\":2");
-            assertThat(health).contains("\"nodeCount\":3");
+            assertThat(health).contains("\"connectedPeers\":4");
+            assertThat(health).contains("\"nodeCount\":5");
         }
     }
 

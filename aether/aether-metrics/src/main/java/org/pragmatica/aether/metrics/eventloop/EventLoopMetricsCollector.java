@@ -19,14 +19,12 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
-/**
- * Collects event loop metrics by injecting probe tasks.
- * <p>
- * Measures event loop lag by scheduling a task and measuring the time
- * from scheduling to execution. This captures how backlogged the event loop is.
- * <p>
- * Thread-safe: uses atomic operations for all metrics.
- */
+/// Collects event loop metrics by injecting probe tasks.
+///
+/// Measures event loop lag by scheduling a task and measuring the time
+/// from scheduling to execution. This captures how backlogged the event loop is.
+///
+/// Thread-safe: uses atomic operations for all metrics.
 public final class EventLoopMetricsCollector {
     private static final Logger log = LoggerFactory.getLogger(EventLoopMetricsCollector.class);
 
@@ -50,11 +48,9 @@ public final class EventLoopMetricsCollector {
         return new EventLoopMetricsCollector();
     }
 
-    /**
-     * Register an EventLoopGroup to monitor.
-     *
-     * @param group the event loop group, must not be null
-     */
+    /// Register an EventLoopGroup to monitor.
+    ///
+    /// @param group the event loop group, must not be null
     public void register(EventLoopGroup group) {
         if (eventLoopGroups.addIfAbsent(group)) {
             log.debug("Registered EventLoopGroup for monitoring: {}",
@@ -63,9 +59,7 @@ public final class EventLoopMetricsCollector {
         }
     }
 
-    /**
-     * Start collecting metrics with external scheduler.
-     */
+    /// Start collecting metrics with external scheduler.
     public void start(ScheduledExecutorService scheduler) {
         if (started) {
             return;
@@ -79,9 +73,7 @@ public final class EventLoopMetricsCollector {
         log.info("Event loop metrics collection started");
     }
 
-    /**
-     * Stop collecting metrics.
-     */
+    /// Stop collecting metrics.
     public void stop() {
         if (!started) {
             return;
@@ -135,17 +127,13 @@ public final class EventLoopMetricsCollector {
         } while (!maxLagNanos.compareAndSet(current, lag));
     }
 
-    /**
-     * Take a snapshot of current metrics.
-     */
+    /// Take a snapshot of current metrics.
     public EventLoopMetrics snapshot() {
         long lag = maxLagNanos.get();
         return new EventLoopMetrics(lag, totalPendingTasks.get(), totalActiveChannels.get(), lag < HEALTH_THRESHOLD_NS);
     }
 
-    /**
-     * Take a snapshot and reset max lag (for per-interval reporting).
-     */
+    /// Take a snapshot and reset max lag (for per-interval reporting).
     public EventLoopMetrics snapshotAndReset() {
         long lag = maxLagNanos.getAndSet(0);
         return new EventLoopMetrics(lag, totalPendingTasks.get(), totalActiveChannels.get(), lag < HEALTH_THRESHOLD_NS);

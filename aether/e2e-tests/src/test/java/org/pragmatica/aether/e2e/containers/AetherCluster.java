@@ -17,31 +17,31 @@ import java.util.stream.IntStream;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 
-/**
- * Helper for managing multi-node Aether clusters in E2E tests.
- *
- * <p>Provides cluster lifecycle management:
- * <ul>
- *   <li>Create and start N-node clusters</li>
- *   <li>Wait for quorum formation</li>
- *   <li>Kill and restart individual nodes</li>
- *   <li>Access any node for API operations</li>
- * </ul>
- *
- * <p>Usage:
- * <pre>{@code
- * try (var cluster = AetherCluster.aetherCluster(3, projectRoot)) {
- *     cluster.start();
- *     cluster.awaitQuorum();
- *
- *     var response = cluster.anyNode().getStatus();
- *     // ... assertions
- *
- *     cluster.killNode("node-2");
- *     cluster.awaitQuorum();
- * }
- * }</pre>
- */
+/// Helper for managing multi-node Aether clusters in E2E tests.
+///
+///
+/// Provides cluster lifecycle management:
+///
+///   - Create and start N-node clusters
+///   - Wait for quorum formation
+///   - Kill and restart individual nodes
+///   - Access any node for API operations
+///
+///
+///
+/// Usage:
+/// ```{@code
+/// try (var cluster = AetherCluster.aetherCluster(5, projectRoot)) {
+///     cluster.start();
+///     cluster.awaitQuorum();
+///
+///     var response = cluster.anyNode().getStatus();
+///     // ... assertions
+///
+///     cluster.killNode("node-2");
+///     cluster.awaitQuorum();
+/// }
+/// }```
 public class AetherCluster implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(AetherCluster.class);
     private static final Duration QUORUM_TIMEOUT = adapt(Duration.ofSeconds(120));
@@ -51,8 +51,9 @@ public class AetherCluster implements AutoCloseable {
     private static final Path M2_REPO_PATH = Path.of(System.getProperty("user.home"), ".m2", "repository");
     private static final String TEST_GROUP_PATH = "org/pragmatica-lite/aether/test";
     // Note: Uses slice artifact IDs (echo-slice-echo-service), not module artifact IDs (echo-slice)
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
     private static final String[][] TEST_ARTIFACTS = {
-        {"echo-slice-echo-service", "0.15.0"},
+        {"echo-slice-echo-service", TEST_ARTIFACT_VERSION},
         {"echo-slice-echo-service", "0.16.0"}
     };
 
@@ -109,13 +110,11 @@ public class AetherCluster implements AutoCloseable {
         }
     }
 
-    /**
-     * Creates a new cluster with the specified number of nodes.
-     *
-     * @param size number of nodes (typically 3 or 5 for quorum)
-     * @param projectRoot path to project root (for Dockerfile context)
-     * @return cluster instance (not yet started)
-     */
+    /// Creates a new cluster with the specified number of nodes.
+    ///
+    /// @param size number of nodes (typically 3 or 5 for quorum)
+    /// @param projectRoot path to project root (for Dockerfile context)
+    /// @return cluster instance (not yet started)
     public static AetherCluster aetherCluster(int size, Path projectRoot) {
         if (size < 1) {
             throw new IllegalArgumentException("Cluster size must be at least 1");
@@ -123,10 +122,8 @@ public class AetherCluster implements AutoCloseable {
         return new AetherCluster(size, projectRoot);
     }
 
-    /**
-     * Starts all nodes in the cluster in parallel for faster startup.
-     * Uses hostname-based peer configuration since containers share a Docker network.
-     */
+    /// Starts all nodes in the cluster in parallel for faster startup.
+    /// Uses hostname-based peer configuration since containers share a Docker network.
     public void start() {
         System.out.println("[DEBUG] Starting cluster with " + nodes.size() + " nodes in parallel...");
 
@@ -142,11 +139,9 @@ public class AetherCluster implements AutoCloseable {
         System.out.println("[DEBUG] All nodes started. Waiting for cluster formation...");
     }
 
-    /**
-     * Uploads test artifacts to DHT via Maven protocol.
-     * This must be called AFTER the cluster is healthy (leader elected, consensus working).
-     * Artifacts must be in DHT for slice deployment to work.
-     */
+    /// Uploads test artifacts to DHT via Maven protocol.
+    /// This must be called AFTER the cluster is healthy (leader elected, consensus working).
+    /// Artifacts must be in DHT for slice deployment to work.
     public void uploadTestArtifacts() {
         System.out.println("[DEBUG] Uploading test artifacts to DHT...");
         var leaderNode = leader().or(this::anyNode);
@@ -186,57 +181,47 @@ public class AetherCluster implements AutoCloseable {
     }
 
 
-    /**
-     * Waits for the cluster to reach quorum.
-     *
-     * @throws org.awaitility.core.ConditionTimeoutException if quorum not reached
-     */
+    /// Waits for the cluster to reach quorum.
+    ///
+    /// @throws org.awaitility.core.ConditionTimeoutException if quorum not reached
     public void awaitQuorum() {
         await().atMost(QUORUM_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::hasQuorum);
     }
 
-    /**
-     * Waits for all nodes to be healthy.
-     */
+    /// Waits for all nodes to be healthy.
     public void awaitAllHealthy() {
         await().atMost(QUORUM_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(this::allNodesHealthy);
     }
 
-    /**
-     * Waits for a slice to become ACTIVE, failing fast if it reaches FAILED state.
-     *
-     * @param artifact artifact to wait for (can be partial match)
-     * @param timeout  maximum time to wait
-     * @throws SliceDeploymentException if slice transitions to FAILED state
-     * @throws org.awaitility.core.ConditionTimeoutException if timeout reached
-     */
+    /// Waits for a slice to become ACTIVE, failing fast if it reaches FAILED state.
+    ///
+    /// @param artifact artifact to wait for (can be partial match)
+    /// @param timeout  maximum time to wait
+    /// @throws SliceDeploymentException if slice transitions to FAILED state
+    /// @throws org.awaitility.core.ConditionTimeoutException if timeout reached
     public void awaitSliceActive(String artifact, Duration timeout) {
         await().atMost(timeout)
                .pollInterval(POLL_INTERVAL)
                .until(() -> checkSliceState(artifact));
     }
 
-    /**
-     * Waits for a slice to become ACTIVE on ALL nodes.
-     * Use this for multi-instance deployments where the slice should be distributed.
-     *
-     * @param artifact artifact to wait for (can be partial match)
-     * @param timeout  maximum time to wait
-     * @throws SliceDeploymentException if slice transitions to FAILED state on any node
-     */
+    /// Waits for a slice to become ACTIVE on ALL nodes.
+    /// Use this for multi-instance deployments where the slice should be distributed.
+    ///
+    /// @param artifact artifact to wait for (can be partial match)
+    /// @param timeout  maximum time to wait
+    /// @throws SliceDeploymentException if slice transitions to FAILED state on any node
     public void awaitSliceActiveOnAllNodes(String artifact, Duration timeout) {
         await().atMost(timeout)
                .pollInterval(POLL_INTERVAL)
                .until(() -> checkSliceStateOnAllNodes(artifact));
     }
 
-    /**
-     * Checks slice state on ALL nodes, throwing exception on FAILED, returning true when ALL are ACTIVE.
-     */
+    /// Checks slice state on ALL nodes, throwing exception on FAILED, returning true when ALL are ACTIVE.
     private boolean checkSliceStateOnAllNodes(String artifact) {
         for (var node : nodes) {
             if (!node.isRunning()) {
@@ -270,10 +255,8 @@ public class AetherCluster implements AutoCloseable {
     private final Map<String, Long> stuckStateStartTime = new java.util.concurrent.ConcurrentHashMap<>();
     private static final Duration STUCK_STATE_THRESHOLD = adapt(Duration.ofSeconds(60));
 
-    /**
-     * Checks slice state, throwing exception on FAILED, returning true on ACTIVE.
-     * Also detects when a slice is stuck in an intermediate or NOT_FOUND state for too long.
-     */
+    /// Checks slice state, throwing exception on FAILED, returning true on ACTIVE.
+    /// Also detects when a slice is stuck in an intermediate or NOT_FOUND state for too long.
     private boolean checkSliceState(String artifact) {
         try {
             var node = anyNode();
@@ -326,9 +309,7 @@ public class AetherCluster implements AutoCloseable {
         return isIntermediateState(state) || "NOT_FOUND".equals(state);
     }
 
-    /**
-     * Gets the container logs, filtering for ERROR, WARN, and slice-related entries.
-     */
+    /// Gets the container logs, filtering for ERROR, WARN, and slice-related entries.
     private String getContainerLogs(AetherNodeContainer node) {
         try {
             var allLogs = node.getLogs();
@@ -349,9 +330,7 @@ public class AetherCluster implements AutoCloseable {
         }
     }
 
-    /**
-     * Dumps deployment-related logs from all containers for debugging stuck slices.
-     */
+    /// Dumps deployment-related logs from all containers for debugging stuck slices.
     public void dumpAllDeploymentLogs() {
         for (var node : nodes) {
             if (!node.isRunning()) {
@@ -411,20 +390,16 @@ public class AetherCluster implements AutoCloseable {
         }
     }
 
-    /**
-     * Exception thrown when slice deployment fails.
-     */
+    /// Exception thrown when slice deployment fails.
     public static class SliceDeploymentException extends RuntimeException {
         public SliceDeploymentException(String message) {
             super(message);
         }
     }
 
-    /**
-     * Waits for a leader to be elected.
-     *
-     * @throws org.awaitility.core.ConditionTimeoutException if leader not elected
-     */
+    /// Waits for a leader to be elected.
+    ///
+    /// @throws org.awaitility.core.ConditionTimeoutException if leader not elected
     public void awaitLeader() {
         System.out.println("[DEBUG] Waiting for leader election...");
         try {
@@ -458,9 +433,7 @@ public class AetherCluster implements AutoCloseable {
         }
     }
 
-    /**
-     * Dumps full logs from all running containers for debugging.
-     */
+    /// Dumps full logs from all running containers for debugging.
     public void dumpAllContainerLogs() {
         for (var node : nodes) {
             if (!node.isRunning()) {
@@ -491,23 +464,19 @@ public class AetherCluster implements AutoCloseable {
         }
     }
 
-    /**
-     * Waits for a specific node count in the cluster.
-     *
-     * @param expectedCount expected number of active nodes
-     */
+    /// Waits for a specific node count in the cluster.
+    ///
+    /// @param expectedCount expected number of active nodes
     public void awaitNodeCount(int expectedCount) {
         await().atMost(QUORUM_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
                .until(() -> activeNodeCount() == expectedCount);
     }
 
-    /**
-     * Returns any running node (for API operations).
-     *
-     * @return a running node
-     * @throws IllegalStateException if no nodes are running
-     */
+    /// Returns any running node (for API operations).
+    ///
+    /// @return a running node
+    /// @throws IllegalStateException if no nodes are running
     public AetherNodeContainer anyNode() {
         return nodes.stream()
                     .filter(AetherNodeContainer::isRunning)
@@ -515,13 +484,11 @@ public class AetherCluster implements AutoCloseable {
                     .orElseThrow(() -> new IllegalStateException("No running nodes"));
     }
 
-    /**
-     * Returns a specific node by ID.
-     *
-     * @param nodeId node identifier
-     * @return the node container
-     * @throws NoSuchElementException if node not found
-     */
+    /// Returns a specific node by ID.
+    ///
+    /// @param nodeId node identifier
+    /// @return the node container
+    /// @throws NoSuchElementException if node not found
     public AetherNodeContainer node(String nodeId) {
         var node = nodeMap.get(nodeId);
         if (node == null) {
@@ -530,18 +497,14 @@ public class AetherCluster implements AutoCloseable {
         return node;
     }
 
-    /**
-     * Returns all nodes in the cluster.
-     */
+    /// Returns all nodes in the cluster.
     public List<AetherNodeContainer> nodes() {
         return Collections.unmodifiableList(nodes);
     }
 
-    /**
-     * Returns the current leader node (if determinable).
-     *
-     * @return leader node, or empty if not determinable
-     */
+    /// Returns the current leader node (if determinable).
+    ///
+    /// @return leader node, or empty if not determinable
     public Option<AetherNodeContainer> leader() {
         return Option.from(nodes.stream()
                     .filter(AetherNodeContainer::isRunning)
@@ -549,27 +512,21 @@ public class AetherCluster implements AutoCloseable {
                     .findFirst());
     }
 
-    /**
-     * Kills a specific node.
-     *
-     * @param nodeId node to kill
-     */
+    /// Kills a specific node.
+    ///
+    /// @param nodeId node to kill
     public void killNode(String nodeId) {
         node(nodeId).stop();
     }
 
-    /**
-     * Returns the number of running nodes.
-     */
+    /// Returns the number of running nodes.
     public int runningNodeCount() {
         return (int) nodes.stream()
                           .filter(AetherNodeContainer::isRunning)
                           .count();
     }
 
-    /**
-     * Returns the cluster size (total nodes, running or not).
-     */
+    /// Returns the cluster size (total nodes, running or not).
     public int size() {
         return nodes.size();
     }

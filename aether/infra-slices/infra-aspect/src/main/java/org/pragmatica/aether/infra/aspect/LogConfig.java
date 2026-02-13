@@ -5,9 +5,7 @@ import org.pragmatica.lang.Verify;
 
 import static org.pragmatica.lang.Verify.ensure;
 
-/**
- * Configuration for logging aspect.
- */
+/// Configuration for logging aspect.
 public record LogConfig(String name,
                         LogLevel level,
                         boolean logArgs,

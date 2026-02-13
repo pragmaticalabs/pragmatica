@@ -11,9 +11,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-MIX-01: No I/O operations in domain packages.
- */
+/// JBCT-MIX-01: No I/O operations in domain packages.
 public class CstDomainIoRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-MIX-01";
 

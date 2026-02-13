@@ -2,11 +2,9 @@ package org.pragmatica.aether.forge.load.pattern;
 
 import java.util.UUID;
 
-/**
- * Generates random UUIDs.
- * <p>
- * Pattern: {@code ${uuid}}
- */
+/// Generates random UUIDs.
+///
+/// Pattern: `${uuid`}
 public record UuidGenerator() implements PatternGenerator {
     public static final String TYPE = "uuid";
 

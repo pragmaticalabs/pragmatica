@@ -11,11 +11,9 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-STY-03: No fully qualified class names in code.
- * <p>
- * Use {@code @SuppressWarnings("JBCT-STY-03")} for unavoidable cases.
- */
+/// JBCT-STY-03: No fully qualified class names in code.
+///
+/// Use `@SuppressWarnings("JBCT-STY-03")` for unavoidable cases.
 public class CstFullyQualifiedNameRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-03";
 

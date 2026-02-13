@@ -2,10 +2,8 @@ package org.pragmatica.jbct.format.cst;
 
 import java.util.Set;
 
-/**
- * Encapsulates Java syntax-aware spacing rules for the CST printer.
- * Determines when spaces are needed between tokens.
- */
+/// Encapsulates Java syntax-aware spacing rules for the CST printer.
+/// Determines when spaces are needed between tokens.
 final class SpacingRules {
     // Control flow keywords that need space before (
     private static final Set<String> SPACE_BEFORE_PAREN_KEYWORDS = Set.of("if",
@@ -62,9 +60,7 @@ final class SpacingRules {
 
     private SpacingRules() {}
 
-    /**
-     * Determine if a space is needed before the given text based on Java syntax rules.
-     */
+    /// Determine if a space is needed before the given text based on Java syntax rules.
     static boolean needsSpaceBefore(SpacingContext ctx, String text) {
         if (ctx.lastChar() == 0 || ctx.lastChar() == '\n' || ctx.lastChar() == ' ' || ctx.lastChar() == '\t') {
             return false;
@@ -92,11 +88,9 @@ final class SpacingRules {
                                                                                                                                                                                                                                                                                                                                                                                                                                             firstChar);
     }
 
-    /**
-     * Veto rules that prevent spaces regardless of other rules.
-     * These handle cases where tokens like ++ before ) would otherwise get a space
-     * due to binary operator rules.
-     */
+    /// Veto rules that prevent spaces regardless of other rules.
+    /// These handle cases where tokens like ++ before ) would otherwise get a space
+    /// due to binary operator rules.
     private static boolean mustNotHaveSpaceBefore(SpacingContext ctx, String text, char firstChar) {
         // No space before ) regardless of previous token (fixes i++ ) issue)
         if (firstChar == ')') {
@@ -309,9 +303,7 @@ final class SpacingRules {
         return true;
     }
 
-    /**
-     * Context needed for spacing decisions.
-     */
+    /// Context needed for spacing decisions.
     record SpacingContext(char lastChar, char prevChar, String lastWord, int outputLength) {
         static SpacingContext spacingContext(char lastChar, char prevChar, String lastWord, int outputLength) {
             return new SpacingContext(lastChar, prevChar, lastWord, outputLength);

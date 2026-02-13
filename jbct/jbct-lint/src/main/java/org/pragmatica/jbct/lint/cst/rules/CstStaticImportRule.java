@@ -14,12 +14,10 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-STATIC-01: Prefer static imports for Pragmatica factory methods.
- *
- * Detects qualified calls like Result.success(), Option.some(), Causes.cause()
- * that should use static imports for cleaner, more readable code.
- */
+/// JBCT-STATIC-01: Prefer static imports for Pragmatica factory methods.
+///
+/// Detects qualified calls like Result.success(), Option.some(), Causes.cause()
+/// that should use static imports for cleaner, more readable code.
 public class CstStaticImportRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STATIC-01";
 

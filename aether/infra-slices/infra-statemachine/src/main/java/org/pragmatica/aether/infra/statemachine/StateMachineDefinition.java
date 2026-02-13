@@ -10,27 +10,21 @@ import java.util.Set;
 
 import static org.pragmatica.lang.Option.option;
 
-/**
- * Defines the structure of a state machine.
- *
- * @param <S> State type
- * @param <E> Event type
- * @param <C> Context type
- */
+/// Defines the structure of a state machine.
+///
+/// @param <S> State type
+/// @param <E> Event type
+/// @param <C> Context type
 public record StateMachineDefinition<S, E, C>(String name,
                                               S initialState,
                                               Set<S> finalStates,
                                               List<Transition<S, E, C>> transitions) {
-    /**
-     * Builder for creating state machine definitions.
-     */
+    /// Builder for creating state machine definitions.
     public static <S, E, C> Builder<S, E, C> builder(String name) {
         return new Builder<>(name);
     }
 
-    /**
-     * Finds a transition for the given state and event.
-     */
+    /// Finds a transition for the given state and event.
     public Option<Transition<S, E, C>> findTransition(S currentState, E event) {
         return option(transitions.stream()
                                  .filter(t -> t.matches(currentState, event))
@@ -38,16 +32,12 @@ public record StateMachineDefinition<S, E, C>(String name,
                                  .orElse(null));
     }
 
-    /**
-     * Checks if a state is a final state.
-     */
+    /// Checks if a state is a final state.
     public boolean isFinalState(S state) {
         return finalStates.contains(state);
     }
 
-    /**
-     * Gets all possible events from a given state.
-     */
+    /// Gets all possible events from a given state.
     public Set<E> getEventsFrom(S state) {
         var events = new HashSet<E>();
         for (var transition : transitions) {
@@ -59,9 +49,7 @@ public record StateMachineDefinition<S, E, C>(String name,
         return Set.copyOf(events);
     }
 
-    /**
-     * Gets all possible target states from a given state.
-     */
+    /// Gets all possible target states from a given state.
     public Set<S> getTargetStatesFrom(S state) {
         var targets = new HashSet<S>();
         for (var transition : transitions) {
@@ -73,9 +61,7 @@ public record StateMachineDefinition<S, E, C>(String name,
         return Set.copyOf(targets);
     }
 
-    /**
-     * Builder for state machine definitions.
-     */
+    /// Builder for state machine definitions.
     public static class Builder<S, E, C> {
         private final String name;
         private S initialState;

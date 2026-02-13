@@ -19,12 +19,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Scheduler for metrics collection that runs on the leader node.
- *
- * <p>When this node is the leader, periodically sends MetricsPing to all nodes.
- * Each node responds with MetricsPong containing their metrics.
- */
+/// Scheduler for metrics collection that runs on the leader node.
+///
+///
+/// When this node is the leader, periodically sends MetricsPing to all nodes.
+/// Each node responds with MetricsPong containing their metrics.
 public interface MetricsScheduler {
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);
@@ -32,25 +31,19 @@ public interface MetricsScheduler {
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
-    /**
-     * Handle quorum state changes (stop pinging when quorum disappears).
-     */
+    /// Handle quorum state changes (stop pinging when quorum disappears).
     @MessageReceiver
     void onQuorumStateChange(QuorumStateNotification notification);
 
-    /**
-     * Stop the scheduler (for graceful shutdown).
-     */
+    /// Stop the scheduler (for graceful shutdown).
     void stop();
 
-    /**
-     * Create a new MetricsScheduler.
-     *
-     * @param self             This node's ID
-     * @param network          Network for sending messages
-     * @param metricsCollector Collector for local metrics
-     * @param interval         Ping interval
-     */
+    /// Create a new MetricsScheduler.
+    ///
+    /// @param self             This node's ID
+    /// @param network          Network for sending messages
+    /// @param metricsCollector Collector for local metrics
+    /// @param interval         Ping interval
     static MetricsScheduler metricsScheduler(NodeId self,
                                              ClusterNetwork network,
                                              MetricsCollector metricsCollector,
@@ -58,9 +51,7 @@ public interface MetricsScheduler {
         return new MetricsSchedulerImpl(self, network, metricsCollector, interval);
     }
 
-    /**
-     * Create with default 1-second interval.
-     */
+    /// Create with default 1-second interval.
     static MetricsScheduler metricsScheduler(NodeId self,
                                              ClusterNetwork network,
                                              MetricsCollector metricsCollector) {

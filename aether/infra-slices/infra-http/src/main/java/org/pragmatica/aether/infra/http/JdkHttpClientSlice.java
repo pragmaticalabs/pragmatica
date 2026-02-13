@@ -12,10 +12,8 @@ import java.net.http.HttpRequest.BodyPublishers;
 import java.time.Duration;
 import java.util.Map;
 
-/**
- * JDK HttpClient-based implementation of HttpClientSlice.
- * Delegates to pragmatica-lite's JdkHttpOperations.
- */
+/// JDK HttpClient-based implementation of HttpClientSlice.
+/// Delegates to pragmatica-lite's JdkHttpOperations.
 final class JdkHttpClientSlice implements HttpClientSlice {
     private final HttpClientConfig config;
     private final HttpOperations operations;

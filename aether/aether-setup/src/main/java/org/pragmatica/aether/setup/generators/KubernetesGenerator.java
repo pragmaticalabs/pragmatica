@@ -15,20 +15,19 @@ import java.util.stream.IntStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Generates Kubernetes manifests for Aether cluster deployment.
- *
- * <p>Generates:
- * <ul>
- *   <li>namespace.yaml - Namespace definition</li>
- *   <li>configmap.yaml - Cluster configuration</li>
- *   <li>statefulset.yaml - StatefulSet for ordered node deployment</li>
- *   <li>service.yaml - LoadBalancer/ClusterIP service</li>
- *   <li>service-headless.yaml - Headless service for pod discovery</li>
- *   <li>pdb.yaml - PodDisruptionBudget for availability</li>
- *   <li>apply.sh - Script to apply all manifests</li>
- * </ul>
- */
+/// Generates Kubernetes manifests for Aether cluster deployment.
+///
+///
+/// Generates:
+///
+///   - namespace.yaml - Namespace definition
+///   - configmap.yaml - Cluster configuration
+///   - statefulset.yaml - StatefulSet for ordered node deployment
+///   - service.yaml - LoadBalancer/ClusterIP service
+///   - service-headless.yaml - Headless service for pod discovery
+///   - pdb.yaml - PodDisruptionBudget for availability
+///   - apply.sh - Script to apply all manifests
+///
 public final class KubernetesGenerator implements Generator {
     private static final Logger log = LoggerFactory.getLogger(KubernetesGenerator.class);
 

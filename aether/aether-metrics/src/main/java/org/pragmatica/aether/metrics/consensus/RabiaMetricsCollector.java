@@ -13,11 +13,9 @@ import java.util.concurrent.atomic.LongAdder;
 
 import static org.pragmatica.lang.Option.option;
 
-/**
- * Implementation of ConsensusMetrics that collects Rabia consensus statistics.
- * <p>
- * Thread-safe: uses atomic operations for all counters.
- */
+/// Implementation of ConsensusMetrics that collects Rabia consensus statistics.
+///
+/// Thread-safe: uses atomic operations for all counters.
 public final class RabiaMetricsCollector implements ConsensusMetrics {
     private final AtomicLong decisionsCount = new AtomicLong();
     private final AtomicLong proposalsCount = new AtomicLong();
@@ -68,9 +66,7 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
         pendingBatches.set(count);
     }
 
-    /**
-     * Update the current role (called externally when leader changes).
-     */
+    /// Update the current role (called externally when leader changes).
     public void updateRole(boolean isLeader, Option<String> currentLeaderId) {
         role.set(isLeader
                  ? "LEADER"
@@ -78,9 +74,7 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
         leaderId.set(currentLeaderId);
     }
 
-    /**
-     * Take a snapshot of current metrics.
-     */
+    /// Take a snapshot of current metrics.
     public RabiaMetrics snapshot() {
         return new RabiaMetrics(role.get(),
                                 leaderId.get(),
@@ -92,9 +86,7 @@ public final class RabiaMetricsCollector implements ConsensusMetrics {
                                 totalDecisionLatencyNs.sum());
     }
 
-    /**
-     * Take a snapshot and reset counters (for delta-based reporting).
-     */
+    /// Take a snapshot and reset counters (for delta-based reporting).
     public RabiaMetrics snapshotAndReset() {
         return new RabiaMetrics(role.get(),
                                 leaderId.get(),

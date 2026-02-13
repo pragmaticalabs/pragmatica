@@ -17,9 +17,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Integration tests for ForgeCluster startup, blueprint deployment, and shutdown.
- */
+/// Integration tests for ForgeCluster startup, blueprint deployment, and shutdown.
 class ForgeClusterIntegrationTest {
     private static final Duration WAIT_TIMEOUT = Duration.ofSeconds(180);
     private static final Duration POLL_INTERVAL = Duration.ofMillis(500);

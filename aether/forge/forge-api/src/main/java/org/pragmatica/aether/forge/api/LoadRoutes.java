@@ -1,46 +1,32 @@
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.aether.forge.LoadGenerator;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.LoadConfigResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.LoadConfigUploadResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.LoadControlResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.LoadRunnerStatusResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.LoadRunnerTargetInfo;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.LoadTargetInfo;
-import org.pragmatica.aether.forge.api.ForgeApiResponses.RampLoadResponse;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.RateSetResponse;
 import org.pragmatica.aether.forge.load.ConfigurableLoadRunner;
 import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.lang.Promise;
-import org.pragmatica.lang.type.TypeToken;
 
 import static org.pragmatica.http.routing.PathParameter.aInteger;
-import static org.pragmatica.http.routing.Route.get;
 import static org.pragmatica.http.routing.Route.in;
-import static org.pragmatica.http.routing.Route.post;
 
-/**
- * REST API routes for load testing control.
- * <p>
- * Provides endpoints for:
- * <ul>
- *   <li>Configuration management (get/upload TOML config)</li>
- *   <li>Load control (start/stop/pause/resume)</li>
- *   <li>Rate adjustment (ramp, set rate)</li>
- *   <li>Status monitoring (per-target metrics)</li>
- * </ul>
- */
+/// REST API routes for load testing control.
+///
+/// Provides endpoints for:
+///
+///   - Configuration management (get/upload TOML config)
+///   - Load control (start/stop/pause/resume)
+///   - Rate adjustment (set total rate)
+///   - Status monitoring (per-target metrics)
+///
 public sealed interface LoadRoutes {
-    /**
-     * Request body for ramp operation.
-     */
-    record RampRequest(int targetRate, long durationMs) {}
-
-    /**
-     * Create route source for all load-related endpoints.
-     */
-    static RouteSource loadRoutes(LoadGenerator loadGenerator, ConfigurableLoadRunner loadRunner) {
+    /// Create route source for all load-related endpoints.
+    static RouteSource loadRoutes(ConfigurableLoadRunner loadRunner) {
         return in("/api/load")
         .serve(getConfigRoute(loadRunner),
                postConfigRoute(loadRunner),
@@ -49,8 +35,6 @@ public sealed interface LoadRoutes {
                stopRoute(loadRunner),
                pauseRoute(loadRunner),
                resumeRoute(loadRunner),
-               rampRoute(loadGenerator),
-               setRateRoute(loadGenerator),
                setTotalRateRoute(loadRunner));
     }
 
@@ -90,19 +74,6 @@ public sealed interface LoadRoutes {
     private static Route<LoadControlResponse> resumeRoute(ConfigurableLoadRunner runner) {
         return Route.<LoadControlResponse> post("/resume")
                     .toJson(_ -> resume(runner));
-    }
-
-    private static Route<RampLoadResponse> rampRoute(LoadGenerator loadGenerator) {
-        return Route.<RampLoadResponse> post("/ramp")
-                    .withBody(TypeToken.typeToken(RampRequest.class))
-                    .toJson(req -> ramp(loadGenerator, req));
-    }
-
-    private static Route<RateSetResponse> setRateRoute(LoadGenerator loadGenerator) {
-        return Route.<RateSetResponse> post("/set")
-                    .withPath(aInteger())
-                    .to(rate -> setRate(loadGenerator, rate))
-                    .asJson();
     }
 
     // ========== Handler Methods ==========
@@ -182,16 +153,6 @@ public sealed interface LoadRoutes {
         return Promise.success(new LoadControlResponse(true,
                                                        runner.state()
                                                              .name()));
-    }
-
-    private static Promise<RampLoadResponse> ramp(LoadGenerator loadGenerator, RampRequest request) {
-        loadGenerator.rampUp(request.targetRate(), request.durationMs());
-        return Promise.success(new RampLoadResponse(true, request.targetRate(), request.durationMs()));
-    }
-
-    private static Promise<RateSetResponse> setRate(LoadGenerator loadGenerator, int rate) {
-        loadGenerator.setRate(rate);
-        return Promise.success(new RateSetResponse(true, rate));
     }
 
     private static Route<RateSetResponse> setTotalRateRoute(ConfigurableLoadRunner loadRunner) {

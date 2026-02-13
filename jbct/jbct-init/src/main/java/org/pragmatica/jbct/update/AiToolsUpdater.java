@@ -17,10 +17,8 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Updates AI tools from the coding-technology GitHub repository.
- * Uses GitHub Tree API to dynamically discover files under ai-tools/.
- */
+/// Updates AI tools from the coding-technology GitHub repository.
+/// Uses GitHub Tree API to dynamically discover files under ai-tools/.
 public final class AiToolsUpdater {
     private static final Logger LOG = LoggerFactory.getLogger(AiToolsUpdater.class);
     private static final String REPO = "siy/coding-technology";
@@ -36,19 +34,15 @@ public final class AiToolsUpdater {
         this.claudeDir = claudeDir;
     }
 
-    /**
-     * Create updater for project directory.
-     * AI tools will be updated in projectDir/.claude/
-     */
+    /// Create updater for project directory.
+    /// AI tools will be updated in projectDir/.claude/
     public static AiToolsUpdater aiToolsUpdater(Path projectDir) {
         return new AiToolsUpdater(HttpClients.httpOperations(), projectDir.resolve(".claude"));
     }
 
-    /**
-     * Check for updates without installing.
-     *
-     * @return Latest commit SHA if update available
-     */
+    /// Check for updates without installing.
+    ///
+    /// @return Latest commit SHA if update available
     public Result<Option<String>> checkForUpdate() {
         return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH)
                                    .map(this::checkIfUpdateNeeded);
@@ -63,21 +57,17 @@ public final class AiToolsUpdater {
                : Option.some(latestSha);
     }
 
-    /**
-     * Update AI tools from GitHub.
-     *
-     * @return List of updated files
-     */
+    /// Update AI tools from GitHub.
+    ///
+    /// @return List of updated files
     public Result<List<Path>> update() {
         return update(false);
     }
 
-    /**
-     * Update AI tools from GitHub.
-     *
-     * @param force Force update even if already up to date
-     * @return List of updated files
-     */
+    /// Update AI tools from GitHub.
+    ///
+    /// @param force Force update even if already up to date
+    /// @return List of updated files
     public Result<List<Path>> update(boolean force) {
         return GitHubContentFetcher.getLatestCommitSha(http, REPO, BRANCH)
                                    .flatMap(latestSha -> performUpdate(latestSha, force));
@@ -141,9 +131,7 @@ public final class AiToolsUpdater {
         }
     }
 
-    /**
-     * Get the Claude directory.
-     */
+    /// Get the Claude directory.
     public Path claudeDir() {
         return claudeDir;
     }

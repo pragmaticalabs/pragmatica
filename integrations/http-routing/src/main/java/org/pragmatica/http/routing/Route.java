@@ -13,44 +13,42 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.HttpMethod.*;
 
-/**
- * Type-safe HTTP route definition with support for path parameters, query parameters, and request body.
- * <p>
- * Routes are built using a fluent builder API that ensures compile-time type safety for all parameter
- * combinations. The total number of parameters (path + query + body) is limited to 5.
- * <p>
- * Example usage:
- * <pre>{@code
- * // Path parameters only
- * Route.get("/users/{id}")
- *      .withPath(aLong())
- *      .to(userId -> fetchUser(userId))
- *      .asJson();
- *
- * // Path + query parameters
- * Route.get("/users/{id}/orders")
- *      .withPath(aLong())
- *      .withQuery(aInteger("page"), aInteger("size"))
- *      .to((userId, page, size) -> fetchOrders(userId, page, size))
- *      .asJson();
- *
- * // Path + body
- * Route.post("/users/{id}")
- *      .withPath(aLong())
- *      .withBody(UpdateUserRequest.class)
- *      .to((userId, body) -> updateUser(userId, body))
- *      .asJson();
- *
- * // Query + body
- * Route.post("/search")
- *      .withQuery(aBoolean("includeDeleted"))
- *      .withBody(SearchRequest.class)
- *      .to((includeDeleted, body) -> search(includeDeleted, body))
- *      .asJson();
- * }</pre>
- *
- * @param <T> the response type
- */
+/// Type-safe HTTP route definition with support for path parameters, query parameters, and request body.
+///
+/// Routes are built using a fluent builder API that ensures compile-time type safety for all parameter
+/// combinations. The total number of parameters (path + query + body) is limited to 5.
+///
+/// Example usage:
+/// ```{@code
+/// // Path parameters only
+/// Route.get("/users/{id}")
+///      .withPath(aLong())
+///      .to(userId -> fetchUser(userId))
+///      .asJson();
+///
+/// // Path + query parameters
+/// Route.get("/users/{id}/orders")
+///      .withPath(aLong())
+///      .withQuery(aInteger("page"), aInteger("size"))
+///      .to((userId, page, size) -> fetchOrders(userId, page, size))
+///      .asJson();
+///
+/// // Path + body
+/// Route.post("/users/{id}")
+///      .withPath(aLong())
+///      .withBody(UpdateUserRequest.class)
+///      .to((userId, body) -> updateUser(userId, body))
+///      .asJson();
+///
+/// // Query + body
+/// Route.post("/search")
+///      .withQuery(aBoolean("includeDeleted"))
+///      .withBody(SearchRequest.class)
+///      .to((includeDeleted, body) -> search(includeDeleted, body))
+///      .asJson();
+/// }```
+///
+/// @param <T> the response type
 @SuppressWarnings("unused")
 public interface Route<T> extends RouteSource {
     HttpMethod method();
@@ -61,21 +59,17 @@ public interface Route<T> extends RouteSource {
 
     ContentType contentType();
 
-    /**
-     * Returns the spacer patterns for this route.
-     * Spacers are literal path segments that must appear in the URL.
-     * Used for distinguishing routes with the same base path but different trailing segments.
-     */
+    /// Returns the spacer patterns for this route.
+    /// Spacers are literal path segments that must appear in the URL.
+    /// Used for distinguishing routes with the same base path but different trailing segments.
     default List<String> spacers() {
         return List.of();
     }
 
-    /**
-     * Returns the optional name/identifier for this route.
-     * Used for service discovery and remote invocation.
-     *
-     * @return the route name, or empty string if not specified
-     */
+    /// Returns the optional name/identifier for this route.
+    /// Used for service discovery and remote invocation.
+    ///
+    /// @return the route name, or empty string if not specified
     default String name() {
         return "";
     }
@@ -135,13 +129,11 @@ public interface Route<T> extends RouteSource {
         return () -> path;
     }
 
-    /**
-     * Creates a route source for serving static files from the classpath.
-     *
-     * @param urlPrefix       the URL prefix to match (e.g., "/static")
-     * @param classpathPrefix the classpath prefix where files are located (e.g., "/web")
-     * @return a route source that serves static files
-     */
+    /// Creates a route source for serving static files from the classpath.
+    ///
+    /// @param urlPrefix       the URL prefix to match (e.g., "/static")
+    /// @param classpathPrefix the classpath prefix where files are located (e.g., "/web")
+    /// @return a route source that serves static files
     static RouteSource staticFiles(String urlPrefix, String classpathPrefix) {
         return StaticFileRouteSource.staticFiles(urlPrefix, classpathPrefix);
     }
@@ -200,9 +192,7 @@ public interface Route<T> extends RouteSource {
     // ===================================================================================
     // Entry Point Builder
     // ===================================================================================
-    /**
-     * Entry point builder - provides access to all parameter configuration options.
-     */
+    /// Entry point builder - provides access to all parameter configuration options.
     interface ParameterBuilder<R> {
         ContentTypeBuilder<R> to(Handler<R> handler);
 
@@ -798,13 +788,11 @@ public interface Route<T> extends RouteSource {
     interface ContentTypeBuilder<T> {
         Route<T> as(ContentType contentType);
 
-        /**
-         * Sets a name/identifier for this route.
-         * Used for service discovery and remote invocation.
-         *
-         * @param name the route name
-         * @return a new builder with the name set
-         */
+        /// Sets a name/identifier for this route.
+        /// Used for service discovery and remote invocation.
+        ///
+        /// @param name the route name
+        /// @return a new builder with the name set
         ContentTypeBuilder<T> named(String name);
 
         default Route<T> asText() {

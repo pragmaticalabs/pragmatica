@@ -20,19 +20,19 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Passive KV-Store watcher that maintains a local cache of HTTP route definitions.
- *
- * <p>Key responsibilities:
- * <ul>
- *   <li>Watch HTTP route key events (ValuePut/ValueRemove)</li>
- *   <li>Maintain TreeMap per HTTP method for prefix-based route matching</li>
- *   <li>Provide route discovery for incoming HTTP requests</li>
- * </ul>
- *
- * <p>Uses TreeMap with floor-entry lookup for efficient prefix matching.
- * Same algorithm as RequestRouter in http-routing module.
- */
+/// Passive KV-Store watcher that maintains a local cache of HTTP route definitions.
+///
+///
+/// Key responsibilities:
+///
+///   - Watch HTTP route key events (ValuePut/ValueRemove)
+///   - Maintain TreeMap per HTTP method for prefix-based route matching
+///   - Provide route discovery for incoming HTTP requests
+///
+///
+///
+/// Uses TreeMap with floor-entry lookup for efficient prefix matching.
+/// Same algorithm as RequestRouter in http-routing module.
 public interface HttpRouteRegistry {
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
@@ -40,29 +40,24 @@ public interface HttpRouteRegistry {
     @MessageReceiver
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
-    /**
-     * Find route for HTTP method and path.
-     *
-     * <p>Uses TreeMap floor-entry lookup to find the longest matching prefix.
-     *
-     * @param httpMethod HTTP method (GET, POST, etc.)
-     * @param path request path (e.g., "/users/123")
-     * @return matching route info, or empty if no route matches
-     */
+    /// Find route for HTTP method and path.
+    ///
+    ///
+    /// Uses TreeMap floor-entry lookup to find the longest matching prefix.
+    ///
+    /// @param httpMethod HTTP method (GET, POST, etc.)
+    /// @param path request path (e.g., "/users/123")
+    /// @return matching route info, or empty if no route matches
     Option<RouteInfo> findRoute(String httpMethod, String path);
 
-    /**
-     * Get all registered routes (for monitoring/debugging and router building).
-     */
+    /// Get all registered routes (for monitoring/debugging and router building).
     List<RouteInfo> allRoutes();
 
-    /**
-     * Route information with set of nodes that can handle the route.
-     *
-     * @param httpMethod HTTP method
-     * @param pathPrefix path prefix that matched
-     * @param nodes set of node IDs that have this route available
-     */
+    /// Route information with set of nodes that can handle the route.
+    ///
+    /// @param httpMethod HTTP method
+    /// @param pathPrefix path prefix that matched
+    /// @param nodes set of node IDs that have this route available
     record RouteInfo(String httpMethod,
                      String pathPrefix,
                      Set<NodeId> nodes) {
@@ -75,9 +70,7 @@ public interface HttpRouteRegistry {
         }
     }
 
-    /**
-     * Create a new HTTP route registry.
-     */
+    /// Create a new HTTP route registry.
     static HttpRouteRegistry httpRouteRegistry() {
         record httpRouteRegistry(Map<String, AtomicReference<TreeMap<String, RouteInfo>>> routesByMethod) implements HttpRouteRegistry {
             private static final Logger log = LoggerFactory.getLogger(httpRouteRegistry.class);
@@ -183,10 +176,8 @@ public interface HttpRouteRegistry {
                 return normalized;
             }
 
-            /**
-             * Check if inputPath matches routePath (same or starts with).
-             * Same algorithm as RequestRouter.
-             */
+            /// Check if inputPath matches routePath (same or starts with).
+            /// Same algorithm as RequestRouter.
             private boolean isSameOrStartOfPath(String inputPath, String routePath) {
                 return (inputPath.length() == routePath.length() && inputPath.equals(routePath)) || (inputPath.length() > routePath.length() && inputPath.startsWith(routePath) && inputPath.charAt(routePath.length() - 1) == '/');
             }

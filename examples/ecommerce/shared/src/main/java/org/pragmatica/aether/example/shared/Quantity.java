@@ -5,9 +5,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
-/**
- * Non-negative quantity value (0 to MAX_QUANTITY).
- */
+/// Non-negative quantity value (0 to MAX_QUANTITY).
 public record Quantity(int value) {
     public sealed interface QuantityError extends Cause {
         record Negative(int value) implements QuantityError {

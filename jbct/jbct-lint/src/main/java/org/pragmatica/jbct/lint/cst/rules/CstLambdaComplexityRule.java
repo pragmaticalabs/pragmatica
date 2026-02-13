@@ -10,15 +10,13 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-LAM-01: No complex logic in lambdas.
- * <p>
- * Flags lambdas that contain:
- * <ul>
- *   <li>Control flow statements (if, switch, try)</li>
- *   <li>Multiple statements in block body (2+ semicolons)</li>
- * </ul>
- */
+/// JBCT-LAM-01: No complex logic in lambdas.
+///
+/// Flags lambdas that contain:
+///
+///   - Control flow statements (if, switch, try)
+///   - Multiple statements in block body (2+ semicolons)
+///
 public class CstLambdaComplexityRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-LAM-01";
     private static final int MAX_STATEMENTS = 1;

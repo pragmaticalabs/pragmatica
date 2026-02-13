@@ -10,35 +10,27 @@ import java.util.List;
 
 import static org.pragmatica.http.routing.ParameterError.InvalidParameter;
 
-/**
- * Type-safe query parameter parser.
- * <p>
- * Query parameters are optional by nature - missing parameters return {@code Option.none()}.
- * Invalid values return {@code Result.failure()}.
- *
- * @param <T> the type of the parsed parameter value
- */
+/// Type-safe query parameter parser.
+///
+/// Query parameters are optional by nature - missing parameters return `Option.none()`.
+/// Invalid values return `Result.failure()`.
+///
+/// @param <T> the type of the parsed parameter value
 @SuppressWarnings("unused")
 public interface QueryParameter<T> {
-    /**
-     * Get the parameter name.
-     */
+    /// Get the parameter name.
     String name();
 
-    /**
-     * Parse query parameter values.
-     * Returns {@code Option.none()} if parameter is missing.
-     *
-     * @param values the list of values for this parameter (null or empty if missing)
-     * @return success with optional value, or failure if parsing fails
-     */
+    /// Parse query parameter values.
+    /// Returns `Option.none()` if parameter is missing.
+    ///
+    /// @param values the list of values for this parameter (null or empty if missing)
+    /// @return success with optional value, or failure if parsing fails
     Result<Option<T>> parse(List<String> values);
 
-    /**
-     * String query parameter - accepts any string value.
-     *
-     * @param name the parameter name
-     */
+    /// String query parameter - accepts any string value.
+    ///
+    /// @param name the parameter name
     static QueryParameter<String> aString(String name) {
         return new QueryParameter<>() {
             @Override
@@ -53,11 +45,9 @@ public interface QueryParameter<T> {
         };
     }
 
-    /**
-     * Integer query parameter - parses signed 32-bit integer.
-     *
-     * @param name the parameter name
-     */
+    /// Integer query parameter - parses signed 32-bit integer.
+    ///
+    /// @param name the parameter name
     static QueryParameter<Integer> aInteger(String name) {
         return new QueryParameter<>() {
             @Override
@@ -76,11 +66,9 @@ public interface QueryParameter<T> {
         };
     }
 
-    /**
-     * Long query parameter - parses signed 64-bit integer.
-     *
-     * @param name the parameter name
-     */
+    /// Long query parameter - parses signed 64-bit integer.
+    ///
+    /// @param name the parameter name
     static QueryParameter<Long> aLong(String name) {
         return new QueryParameter<>() {
             @Override
@@ -99,12 +87,10 @@ public interface QueryParameter<T> {
         };
     }
 
-    /**
-     * Boolean query parameter - parses boolean value.
-     * Accepts "true"/"false" and "yes"/"no" (case-insensitive).
-     *
-     * @param name the parameter name
-     */
+    /// Boolean query parameter - parses boolean value.
+    /// Accepts "true"/"false" and "yes"/"no" (case-insensitive).
+    ///
+    /// @param name the parameter name
     static QueryParameter<Boolean> aBoolean(String name) {
         return new QueryParameter<>() {
             @Override
@@ -132,11 +118,9 @@ public interface QueryParameter<T> {
                                     + " (expected true/false or yes/no)").result();
     }
 
-    /**
-     * Double query parameter - parses 64-bit floating point number.
-     *
-     * @param name the parameter name
-     */
+    /// Double query parameter - parses 64-bit floating point number.
+    ///
+    /// @param name the parameter name
     static QueryParameter<Double> aDouble(String name) {
         return new QueryParameter<>() {
             @Override
@@ -155,11 +139,9 @@ public interface QueryParameter<T> {
         };
     }
 
-    /**
-     * BigDecimal query parameter - parses arbitrary precision decimal.
-     *
-     * @param name the parameter name
-     */
+    /// BigDecimal query parameter - parses arbitrary precision decimal.
+    ///
+    /// @param name the parameter name
     static QueryParameter<BigDecimal> aDecimal(String name) {
         return new QueryParameter<>() {
             @Override
@@ -178,12 +160,10 @@ public interface QueryParameter<T> {
         };
     }
 
-    /**
-     * LocalDate query parameter - parses ISO-8601 date.
-     * Example: "2023-12-15"
-     *
-     * @param name the parameter name
-     */
+    /// LocalDate query parameter - parses ISO-8601 date.
+    /// Example: "2023-12-15"
+    ///
+    /// @param name the parameter name
     static QueryParameter<LocalDate> aLocalDate(String name) {
         return new QueryParameter<>() {
             @Override
@@ -202,12 +182,10 @@ public interface QueryParameter<T> {
         };
     }
 
-    /**
-     * LocalDateTime query parameter - parses ISO-8601 date-time without offset.
-     * Example: "2023-12-15T10:30:00"
-     *
-     * @param name the parameter name
-     */
+    /// LocalDateTime query parameter - parses ISO-8601 date-time without offset.
+    /// Example: "2023-12-15T10:30:00"
+    ///
+    /// @param name the parameter name
     static QueryParameter<LocalDateTime> aLocalDateTime(String name) {
         return new QueryParameter<>() {
             @Override
@@ -226,9 +204,7 @@ public interface QueryParameter<T> {
         };
     }
 
-    /**
-     * Extract first value from parameter list, if present.
-     */
+    /// Extract first value from parameter list, if present.
     private static Option<String> firstValue(List<String> values) {
         return values == null || values.isEmpty()
                ? Option.none()

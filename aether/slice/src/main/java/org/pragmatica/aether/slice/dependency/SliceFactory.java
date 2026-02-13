@@ -17,29 +17,25 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Creates slice instances via reflection using static factory methods.
- * <p>
- * RFC-0001 Factory method convention:
- * - Static method
- * - Name: lowercase-first version of class name (e.g., UserService.userService(...))
- * - Returns: Promise<SliceType>
- * - First parameter: Aspect<SliceType>
- * - Second parameter: SliceCreationContext
- * - Remaining parameters: resolved dependency slices in declaration order
- */
+/// Creates slice instances via reflection using static factory methods.
+///
+/// RFC-0001 Factory method convention:
+/// - Static method
+/// - Name: lowercase-first version of class name (e.g., UserService.userService(...))
+/// - Returns: Promise<SliceType>
+/// - First parameter: Aspect<SliceType>
+/// - Second parameter: SliceCreationContext
+/// - Remaining parameters: resolved dependency slices in declaration order
 public interface SliceFactory {
     Logger log = LoggerFactory.getLogger(SliceFactory.class);
 
-    /**
-     * Create slice instance using static factory method.
-     *
-     * @param sliceClass      The slice class to instantiate
-     * @param creationContext The slice creation context for resource and slice dependencies
-     * @param dependencies    Resolved dependency instances in declaration order
-     * @param descriptors     Dependency descriptors from META-INF/dependencies (for verification)
-     * @return Promise of created slice instance
-     */
+    /// Create slice instance using static factory method.
+    ///
+    /// @param sliceClass      The slice class to instantiate
+    /// @param creationContext The slice creation context for resource and slice dependencies
+    /// @param dependencies    Resolved dependency instances in declaration order
+    /// @param descriptors     Dependency descriptors from META-INF/dependencies (for verification)
+    /// @return Promise of created slice instance
     static Promise<Slice> createSlice(Class<?> sliceClass,
                                       SliceCreationContext creationContext,
                                       List<Slice> dependencies,

@@ -19,16 +19,15 @@ import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Forwards alerts to external webhook endpoints.
- *
- * <p>Supports:
- * <ul>
- *   <li>Multiple webhook URLs</li>
- *   <li>Configurable retries</li>
- *   <li>Configurable timeout</li>
- * </ul>
- */
+/// Forwards alerts to external webhook endpoints.
+///
+///
+/// Supports:
+///
+///   - Multiple webhook URLs
+///   - Configurable retries
+///   - Configurable timeout
+///
 public class AlertForwarder {
     private static final Logger log = LoggerFactory.getLogger(AlertForwarder.class);
 
@@ -53,16 +52,12 @@ public class AlertForwarder {
         }
     }
 
-    /**
-     * Factory method following JBCT naming convention.
-     */
+    /// Factory method following JBCT naming convention.
     public static AlertForwarder alertForwarder(AlertConfig config) {
         return new AlertForwarder(config);
     }
 
-    /**
-     * Forward an alert to all configured webhooks.
-     */
+    /// Forward an alert to all configured webhooks.
     public Promise<Unit> forward(AlertEvent event) {
         if (!enabled || httpClient.isEmpty()) {
             return Promise.success(Unit.unit());
@@ -79,17 +74,13 @@ public class AlertForwarder {
                       .map(_ -> Unit.unit());
     }
 
-    /**
-     * Handle slice failure alert event via MessageRouter.
-     */
+    /// Handle slice failure alert event via MessageRouter.
     @MessageReceiver
     public void onSliceFailureAlert(AlertEvent.SliceFailureAlert alert) {
         forward(alert).onFailure(cause -> log.error("Failed to forward slice failure alert: {}", cause.message()));
     }
 
-    /**
-     * Handle threshold alert event via MessageRouter.
-     */
+    /// Handle threshold alert event via MessageRouter.
     @MessageReceiver
     public void onThresholdAlert(AlertEvent.ThresholdAlert alert) {
         forward(alert).onFailure(cause -> log.error("Failed to forward threshold alert: {}", cause.message()));
@@ -220,20 +211,14 @@ public class AlertForwarder {
                      .or("");
     }
 
-    /**
-     * Shutdown the forwarder.
-     */
+    /// Shutdown the forwarder.
     public void shutdown() {
         log.info("AlertForwarder shutdown");
     }
 
-    /**
-     * Error hierarchy for AlertForwarder failures.
-     */
+    /// Error hierarchy for AlertForwarder failures.
     public sealed interface AlertForwarderError extends Cause {
-        /**
-         * Error for webhook failures.
-         */
+        /// Error for webhook failures.
         record WebhookError(String url, String error) implements AlertForwarderError {
             public static WebhookError webhookError(String url, String error) {
                 return new WebhookError(url, error);

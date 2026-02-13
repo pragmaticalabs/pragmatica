@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-EX-01: No business exceptions.
- */
+/// JBCT-EX-01: No business exceptions.
 public class CstNoBusinessExceptionsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-EX-01";
 

@@ -1,7 +1,5 @@
 package org.pragmatica.jbct.format;
-/**
- * Configuration for the JBCT formatter.
- */
+/// Configuration for the JBCT formatter.
 public record FormatterConfig(int maxLineLength,
                               int indentSize,
                               boolean useTabs,
@@ -9,14 +7,10 @@ public record FormatterConfig(int maxLineLength,
                               boolean alignArguments,
                               boolean alignParameters,
                               boolean organizeImports) {
-    /**
-     * Default JBCT formatting configuration.
-     */
+    /// Default JBCT formatting configuration.
     public static final FormatterConfig DEFAULT = formatterConfig(120, 4, false, true, true, true, true);
 
-    /**
-     * Factory method for creating FormatterConfig.
-     */
+    /// Factory method for creating FormatterConfig.
     public static FormatterConfig formatterConfig(int maxLineLength,
                                                   int indentSize,
                                                   boolean useTabs,
@@ -33,16 +27,12 @@ public record FormatterConfig(int maxLineLength,
                                    organizeImports);
     }
 
-    /**
-     * Factory method for default config.
-     */
+    /// Factory method for default config.
     public static FormatterConfig defaultConfig() {
         return DEFAULT;
     }
 
-    /**
-     * Builder-style methods for customization.
-     */
+    /// Builder-style methods for customization.
     public FormatterConfig withMaxLineLength(int maxLineLength) {
         return formatterConfig(maxLineLength,
                                indentSize,
@@ -113,9 +103,7 @@ public record FormatterConfig(int maxLineLength,
                                organizeImports);
     }
 
-    /**
-     * Get the indent string (spaces or tab).
-     */
+    /// Get the indent string (spaces or tab).
     public String indentString() {
         return useTabs
                ? "\t"

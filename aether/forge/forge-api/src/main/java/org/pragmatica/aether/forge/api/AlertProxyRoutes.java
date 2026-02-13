@@ -13,10 +13,8 @@ import java.time.Duration;
 
 import static org.pragmatica.http.routing.Route.in;
 
-/**
- * Proxy routes for alert endpoints.
- * Forwards alert requests from the dashboard port to the leader's management port.
- */
+/// Proxy routes for alert endpoints.
+/// Forwards alert requests from the dashboard port to the leader's management port.
 public sealed interface AlertProxyRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 

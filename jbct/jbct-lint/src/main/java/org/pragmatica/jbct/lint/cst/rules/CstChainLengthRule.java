@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-SEQ-01: Chain length limit (2-5 steps).
- */
+/// JBCT-SEQ-01: Chain length limit (2-5 steps).
 public class CstChainLengthRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-SEQ-01";
     private static final int MAX_CHAIN_LENGTH = 5;

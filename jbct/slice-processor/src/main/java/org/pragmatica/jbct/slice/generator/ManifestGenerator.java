@@ -51,18 +51,14 @@ public class ManifestGenerator {
                : "dev";
     }
 
-    /**
-     * Generate per-slice manifest with class listings for multi-artifact packaging.
-     * Written to META-INF/slice/{SliceName}.manifest
-     */
+    /// Generate per-slice manifest with class listings for multi-artifact packaging.
+    /// Written to META-INF/slice/{SliceName}.manifest
     public Result<Unit> generateSliceManifest(SliceModel model) {
         return generateSliceManifest(model, Option.none());
     }
 
-    /**
-     * Generate per-slice manifest with optional Routes class.
-     * Written to META-INF/slice/{SliceName}.manifest
-     */
+    /// Generate per-slice manifest with optional Routes class.
+    /// Written to META-INF/slice/{SliceName}.manifest
     public Result<Unit> generateSliceManifest(SliceModel model, Option<String> routesClass) {
         try{
             var props = new Properties();
@@ -184,10 +180,8 @@ public class ManifestGenerator {
         return options.getOrDefault("slice.artifactId", "unknown");
     }
 
-    /**
-     * Convert PascalCase to kebab-case.
-     * Examples: OrderService -> order-service, PlaceOrder -> place-order
-     */
+    /// Convert PascalCase to kebab-case.
+    /// Examples: OrderService -> order-service, PlaceOrder -> place-order
     private String toKebabCase(String pascalCase) {
         if (pascalCase == null || pascalCase.isEmpty()) {
             return pascalCase;

@@ -4,7 +4,6 @@ import org.junit.jupiter.api.*;
 import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 import org.pragmatica.aether.e2e.containers.AetherCluster;
-import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.lang.utils.Causes;
 
 import java.nio.file.Path;
@@ -15,29 +14,31 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for network partition and split-brain scenarios.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Majority partition continues operating</li>
- *   <li>Minority partition behavior (no quorum)</li>
- *   <li>Partition healing and cluster reconvergence</li>
- *   <li>Quorum behavior under various failure scenarios</li>
- * </ul>
- *
- * <p>Note: True network partitioning (isolating nodes at network level) is complex
- * to implement in Testcontainers. These tests simulate partition-like behavior
- * by stopping nodes, which achieves similar quorum effects.
- *
- * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
- * Tests run in order and each test cleans up previous state before running.
- */
+/// E2E tests for network partition and split-brain scenarios.
+///
+///
+/// Tests cover:
+///
+///   - Majority partition continues operating
+///   - Minority partition behavior (no quorum)
+///   - Partition healing and cluster reconvergence
+///   - Quorum behavior under various failure scenarios
+///
+///
+///
+/// Note: True network partitioning (isolating nodes at network level) is complex
+/// to implement in Testcontainers. These tests simulate partition-like behavior
+/// by stopping nodes, which achieves similar quorum effects.
+///
+///
+/// This test class uses a shared cluster for all tests to reduce startup overhead.
+/// Tests run in order and each test cleans up previous state before running.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 class NetworkPartitionE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String TEST_ARTIFACT = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
 
     // Common timeouts (CI gets 2x via adapt())
     private static final Duration DEFAULT_TIMEOUT = adapt(timeSpan(2).minutes().duration());
@@ -48,7 +49,7 @@ class NetworkPartitionE2ETest {
 
     @BeforeAll
     static void createCluster() {
-        cluster = AetherCluster.aetherCluster(3, PROJECT_ROOT);
+        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
         cluster.start();
         cluster.awaitQuorum();
         cluster.awaitAllHealthy();
@@ -71,7 +72,6 @@ class NetworkPartitionE2ETest {
         // Wait for cluster stability
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
-        sleep(timeSpan(2).seconds());
 
         // Undeploy all slices
         undeployAllSlices();
@@ -86,7 +86,7 @@ class NetworkPartitionE2ETest {
         cluster.awaitLeader();
 
         // Simulate minority partition by stopping one node
-        // Majority (2 nodes) should continue operating
+        // Majority (4 nodes) should continue operating
         cluster.killNode("node-3");
 
         // Wait for cluster to detect partition
@@ -94,7 +94,7 @@ class NetworkPartitionE2ETest {
                .pollInterval(POLL_INTERVAL)
                .until(() -> {
                    var health = cluster.anyNode().getHealth();
-                   return health.contains("\"connectedPeers\":1");
+                   return health.contains("\"connectedPeers\":3");
                });
 
         // Majority should still have quorum
@@ -103,7 +103,7 @@ class NetworkPartitionE2ETest {
         // Management API should still work
         var health = cluster.anyNode().getHealth();
         assertThat(health).doesNotContain("\"error\"");
-        assertThat(health).contains("\"nodeCount\":2");
+        assertThat(health).contains("\"nodeCount\":4");
     }
 
     @Test
@@ -111,9 +111,11 @@ class NetworkPartitionE2ETest {
     void lostQuorum_detectedAndReported() {
         cluster.awaitLeader();
 
-        // Stop 2 nodes - remaining 1 node loses quorum
+        // Stop 4 nodes - remaining 1 node loses quorum
         cluster.killNode("node-2");
         cluster.killNode("node-3");
+        cluster.killNode("node-4");
+        cluster.killNode("node-5");
 
         // Wait for partition detection
         await().atMost(DEFAULT_TIMEOUT)
@@ -138,6 +140,8 @@ class NetworkPartitionE2ETest {
         // Create simulated partition
         cluster.killNode("node-2");
         cluster.killNode("node-3");
+        cluster.killNode("node-4");
+        cluster.killNode("node-5");
 
         await().atMost(DEFAULT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
@@ -146,11 +150,13 @@ class NetworkPartitionE2ETest {
         // Heal partition - restart nodes
         cluster.node("node-2").start();
         cluster.node("node-3").start();
+        cluster.node("node-4").start();
+        cluster.node("node-5").start();
 
         // Cluster should reconverge
         await().atMost(DEFAULT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.runningNodeCount() == 3);
+               .until(() -> cluster.runningNodeCount() == 5);
         cluster.awaitQuorum();
         cluster.awaitLeader();
 
@@ -158,8 +164,8 @@ class NetworkPartitionE2ETest {
         cluster.awaitAllHealthy();
 
         var health = cluster.anyNode().getHealth();
-        assertThat(health).contains("\"connectedPeers\":2");
-        assertThat(health).contains("\"nodeCount\":3");
+        assertThat(health).contains("\"connectedPeers\":4");
+        assertThat(health).contains("\"nodeCount\":5");
     }
 
     @Test
@@ -183,7 +189,7 @@ class NetworkPartitionE2ETest {
         cluster.node("node-3").start();
         await().atMost(DEFAULT_TIMEOUT)
                .pollInterval(POLL_INTERVAL)
-               .until(() -> cluster.runningNodeCount() == 3);
+               .until(() -> cluster.runningNodeCount() == 5);
         cluster.awaitQuorum();
 
         // State should still be consistent
@@ -291,13 +297,4 @@ class NetworkPartitionE2ETest {
         }
     }
 
-    // ===== Utility Helpers =====
-
-    private void sleep(TimeSpan duration) {
-        try {
-            Thread.sleep(duration.duration().toMillis());
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-    }
 }

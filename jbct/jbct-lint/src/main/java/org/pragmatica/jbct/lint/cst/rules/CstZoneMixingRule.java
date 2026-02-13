@@ -16,13 +16,11 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-ZONE-03: No zone mixing in sequencer chains.
- *
- * Sequencer chains (flatMap/map sequences) should maintain consistent
- * abstraction at Zone 2 level. Zone 3 operations should be wrapped
- * in Zone 2 step interfaces, not called directly in chains.
- */
+/// JBCT-ZONE-03: No zone mixing in sequencer chains.
+///
+/// Sequencer chains (flatMap/map sequences) should maintain consistent
+/// abstraction at Zone 2 level. Zone 3 operations should be wrapped
+/// in Zone 2 step interfaces, not called directly in chains.
 public class CstZoneMixingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ZONE-03";
 

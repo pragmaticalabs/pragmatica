@@ -1,6 +1,10 @@
 # RFC Proposals
 
-Request for Comments (RFC) documents for cross-project design decisions.
+Request for Comments documents for cross-project design decisions.
+
+## Overview
+
+RFCs document design decisions affecting multiple projects in the Pragmatica ecosystem. Each RFC follows a lifecycle: Draft -> Review -> Approved -> Implemented. Superseded RFCs remain for historical reference.
 
 ## Index
 
@@ -15,30 +19,14 @@ Request for Comments (RFC) documents for cross-project design decisions.
 | [RFC-0006](RFC-0006-slice-runtime-config.md) | Slice Runtime Config | Draft | jbct-cli, aether |
 | [RFC-0007](RFC-0007-dependency-sections.md) | Dependency Sections | Draft | jbct-cli, aether |
 
-## Workflow
-
-```
-Draft → Review → Approved → Implemented
-                    ↓
-              Superseded (if replaced)
-```
-
-### States
-
-- **Draft**: Initial proposal, open for feedback
-- **Review**: Multi-agent consensus in progress
-- **Approved**: Both implementation PRs merged
-- **Implemented**: Fully integrated into codebase
-- **Superseded**: Replaced by newer RFC (link provided)
-
-### Process
+## Process
 
 1. Author creates RFC as Draft
 2. Affected project agents review and propose changes
 3. Multi-agent consensus reached (all affected agents approve)
-4. PRs created in affected projects implementing/acknowledging RFC
+4. PRs created in affected projects
 5. User reviews and approves PRs
-6. Only when **both PRs merged** → RFC status becomes "Approved"
+6. Both PRs merged -> RFC status becomes "Approved"
 
 ## Naming Convention
 
@@ -46,16 +34,4 @@ Draft → Review → Approved → Implemented
 RFC-NNNN-short-title.md
 ```
 
-- 4-digit zero-padded number
-- Lowercase hyphenated title
-- Example: `RFC-0042-async-slice-invocation.md`
-
-## Supersession
-
-When an RFC is superseded:
-1. Add `Superseded-By: RFC-XXXX` to front matter
-2. Update status to `Superseded`
-3. Old RFC remains for historical reference
-4. New RFC links back to what it supersedes
-
-No versioning within RFCs (e.g., no `RFC-0001-v2`). Create new RFC instead.
+4-digit zero-padded number, lowercase hyphenated title. No versioning within RFCs -- create a new RFC instead of updating.

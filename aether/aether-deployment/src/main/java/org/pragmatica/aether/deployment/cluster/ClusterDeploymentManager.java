@@ -56,25 +56,25 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * Cluster-wide orchestration component that manages slice deployments across the cluster.
- * Only active on the leader node.
- *
- * <p>Key responsibilities:
- * <ul>
- *   <li>Watch for blueprint changes (desired state)</li>
- *   <li>Allocate slice instances across nodes (round-robin)</li>
- *   <li>Write LOAD commands directly to slice-node-keys</li>
- *   <li>Perform reconciliation to ensure actual state matches desired state</li>
- * </ul>
- *
- * <p>Design notes:
- * <ul>
- *   <li>NO separate allocations key - writes directly to slice-node-keys</li>
- *   <li>NO separate AllocationEngine - allocation logic embedded here</li>
- *   <li>Reconciliation handles topology changes and leader failover</li>
- * </ul>
- */
+/// Cluster-wide orchestration component that manages slice deployments across the cluster.
+/// Only active on the leader node.
+///
+///
+/// Key responsibilities:
+///
+///   - Watch for blueprint changes (desired state)
+///   - Allocate slice instances across nodes (round-robin)
+///   - Write LOAD commands directly to slice-node-keys
+///   - Perform reconciliation to ensure actual state matches desired state
+///
+///
+///
+/// Design notes:
+///
+///   - NO separate allocations key - writes directly to slice-node-keys
+///   - NO separate AllocationEngine - allocation logic embedded here
+///   - Reconciliation handles topology changes and leader failover
+///
 public interface ClusterDeploymentManager {
     @MessageReceiver
     void onLeaderChange(LeaderChange leaderChange);
@@ -88,9 +88,7 @@ public interface ClusterDeploymentManager {
     @MessageReceiver
     void onTopologyChange(TopologyChangeNotification topologyChange);
 
-    /**
-     * State of the cluster deployment manager.
-     */
+    /// State of the cluster deployment manager.
     sealed interface ClusterDeploymentState {
         default void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {}
 
@@ -98,24 +96,21 @@ public interface ClusterDeploymentManager {
 
         default void onTopologyChange(TopologyChangeNotification topologyChange) {}
 
-        /**
-         * Dormant state when node is NOT the leader.
-         */
+        /// Dormant state when node is NOT the leader.
         record Dormant() implements ClusterDeploymentState {}
 
-        /**
-         * Active state when node IS the leader.
-         *
-         * <p>Note: The Map fields ({@code blueprints}, {@code sliceStates}, {@code sliceDependencies})
-         * are intentionally mutable ConcurrentHashMaps. While records typically hold immutable data,
-         * this state object is long-lived and requires thread-safe mutation for:
-         * <ul>
-         *   <li>Tracking blueprint changes as they arrive via KV-Store notifications</li>
-         *   <li>Maintaining slice state transitions during deployment lifecycle</li>
-         *   <li>Building dependency graphs during app blueprint expansion</li>
-         * </ul>
-         * The ConcurrentHashMap provides thread-safe operations without external synchronization.
-         */
+        /// Active state when node IS the leader.
+        ///
+        ///
+        /// Note: The Map fields (`blueprints`, `sliceStates`, `sliceDependencies`)
+        /// are intentionally mutable ConcurrentHashMaps. While records typically hold immutable data,
+        /// this state object is long-lived and requires thread-safe mutation for:
+        ///
+        ///   - Tracking blueprint changes as they arrive via KV-Store notifications
+        ///   - Maintaining slice state transitions during deployment lifecycle
+        ///   - Building dependency graphs during app blueprint expansion
+        ///
+        /// The ConcurrentHashMap provides thread-safe operations without external synchronization.
         record Active(NodeId self,
                       ClusterNode<KVCommand<AetherKey>> cluster,
                       KVStore<AetherKey, AetherValue> kvStore,
@@ -134,10 +129,8 @@ public interface ClusterDeploymentManager {
                       AtomicBoolean cooldownActive) implements ClusterDeploymentState {
             private static final Logger log = LoggerFactory.getLogger(Active.class);
 
-            /**
-             * Mark this Active state as deactivated, preventing stale scheduled callbacks
-             * from executing after the node has transitioned to Dormant.
-             */
+            /// Mark this Active state as deactivated, preventing stale scheduled callbacks
+            /// from executing after the node has transitioned to Dormant.
             void deactivate() {
                 deactivated.set(true);
                 cooldownActive.set(false);
@@ -145,10 +138,8 @@ public interface ClusterDeploymentManager {
                 log.debug("Active state deactivated, stale callbacks will be suppressed");
             }
 
-            /**
-             * Start auto-heal cooldown for initial cluster formation.
-             * During cooldown, provisioning is suppressed to allow all nodes time to join.
-             */
+            /// Start auto-heal cooldown for initial cluster formation.
+            /// During cooldown, provisioning is suppressed to allow all nodes time to join.
             void startAutoHealCooldown() {
                 cooldownActive.set(true);
                 log.info("AUTO-HEAL: Starting {}ms cooldown for initial cluster formation",
@@ -163,10 +154,8 @@ public interface ClusterDeploymentManager {
                 }, autoHealConfig.startupCooldown());
             }
 
-            /**
-             * Rebuild state from KVStore snapshot on leader activation.
-             * This ensures the new leader has complete knowledge of desired and actual state.
-             */
+            /// Rebuild state from KVStore snapshot on leader activation.
+            /// This ensures the new leader has complete knowledge of desired and actual state.
             void rebuildStateFromKVStore() {
                 log.info("Rebuilding cluster deployment state from KVStore");
                 kvStore.forEach(AetherKey.class, AetherValue.class, this::processKVEntry);
@@ -175,14 +164,16 @@ public interface ClusterDeploymentManager {
                          sliceStates.size());
                 // Trigger activation for any slices stuck in LOADED state
                 triggerLoadedSliceActivation();
-                // Clean up stale HTTP routes (routes pointing to nodes not in topology)
+                // Clean up stale entries pointing to nodes not in topology
                 cleanupStaleHttpRoutes();
+                cleanupStaleSliceEntries();
+                cleanupStaleEndpointEntries();
+                // Clean up orphaned slice entries with no matching blueprint
+                cleanupOrphanedSliceEntries();
             }
 
-            /**
-             * After state rebuild, check all LOADED slices and trigger activation if dependencies are ready.
-             * This handles slices that were LOADED when the previous leader died.
-             */
+            /// After state rebuild, check all LOADED slices and trigger activation if dependencies are ready.
+            /// This handles slices that were LOADED when the previous leader died.
             private void triggerLoadedSliceActivation() {
                 var loadedSlices = sliceStates.entrySet()
                                               .stream()
@@ -322,16 +313,12 @@ public interface ClusterDeploymentManager {
                 activeNodes.set(List.copyOf(topology));
             }
 
-            /**
-             * Compute cluster deficit: target size minus current active nodes.
-             */
+            /// Compute cluster deficit: target size minus current active nodes.
             private int computeAutoHealDeficit() {
                 return topologyManager.clusterSize() - activeNodes.get().size();
             }
 
-            /**
-             * Provision replacement nodes for the given deficit via NodeProvider.
-             */
+            /// Provision replacement nodes for the given deficit via NodeProvider.
             private void provisionReplacements(int deficit) {
                 nodeProvider.onPresent(provider -> {
                     for (int i = 0; i < deficit; i++) {
@@ -341,10 +328,8 @@ public interface ClusterDeploymentManager {
                 });
             }
 
-            /**
-             * Schedule periodic auto-heal recheck if not already scheduled.
-             * Uses compareAndSet to avoid race conditions.
-             */
+            /// Schedule periodic auto-heal recheck if not already scheduled.
+            /// Uses compareAndSet to avoid race conditions.
             private void scheduleAutoHealRecheck() {
                 var future = SharedScheduler.scheduleAtFixedRate(
                     this::autoHealRecheck, autoHealConfig.retryInterval());
@@ -353,10 +338,8 @@ public interface ClusterDeploymentManager {
                 }
             }
 
-            /**
-             * Check if cluster is below target size and schedule auto-healing if a NodeProvider is present.
-             * Cancels periodic recheck when cluster reaches target size.
-             */
+            /// Check if cluster is below target size and schedule auto-healing if a NodeProvider is present.
+            /// Cancels periodic recheck when cluster reaches target size.
             void checkAndScheduleAutoHeal() {
                 if (nodeProvider.isEmpty()) {
                     return;
@@ -449,10 +432,8 @@ public interface ClusterDeploymentManager {
                 }
             }
 
-            /**
-             * Build dependency map from ExpandedBlueprint's ResolvedSlice dependencies.
-             * Each slice has its actual dependencies from the blueprint expansion.
-             */
+            /// Build dependency map from ExpandedBlueprint's ResolvedSlice dependencies.
+            /// Each slice has its actual dependencies from the blueprint expansion.
             private void buildDependencyMap(ExpandedBlueprint expanded) {
                 for (var slice : expanded.loadOrder()) {
                     var artifact = slice.artifact();
@@ -533,9 +514,7 @@ public interface ClusterDeploymentManager {
                 }
             }
 
-            /**
-             * Try to activate a slice if all its dependencies are ACTIVE.
-             */
+            /// Try to activate a slice if all its dependencies are ACTIVE.
             private void tryActivateIfDependenciesReady(SliceNodeKey sliceKey) {
                 var artifact = sliceKey.artifact();
                 var dependencies = sliceDependencies.getOrDefault(artifact, Set.of());
@@ -556,17 +535,13 @@ public interface ClusterDeploymentManager {
                 }
             }
 
-            /**
-             * Check if all dependencies are ACTIVE (at least one instance).
-             */
+            /// Check if all dependencies are ACTIVE (at least one instance).
             private boolean allDependenciesActive(Set<Artifact> dependencies) {
                 return dependencies.stream()
                                    .allMatch(this::isDependencyActive);
             }
 
-            /**
-             * Check if a dependency has at least one ACTIVE instance.
-             */
+            /// Check if a dependency has at least one ACTIVE instance.
             private boolean isDependencyActive(Artifact dependency) {
                 return sliceStates.entrySet()
                                   .stream()
@@ -575,9 +550,7 @@ public interface ClusterDeploymentManager {
                                                           .equals(dependency) && entry.getValue() == SliceState.ACTIVE);
             }
 
-            /**
-             * When a slice becomes ACTIVE, check if any LOADED slices that depend on it can now be activated.
-             */
+            /// When a slice becomes ACTIVE, check if any LOADED slices that depend on it can now be activated.
             private void activateDependentSlices(Artifact activatedArtifact) {
                 sliceStates.entrySet()
                            .stream()
@@ -656,11 +629,9 @@ public interface ClusterDeploymentManager {
                 }
             }
 
-            /**
-             * Clean up HTTP routes that reference the removed node.
-             * For each HttpRouteValue, remove the node from the node set.
-             * If the node set becomes empty, delete the entry.
-             */
+            /// Clean up HTTP routes that reference the removed node.
+            /// For each HttpRouteValue, remove the node from the node set.
+            /// If the node set becomes empty, delete the entry.
             private List<KVCommand<AetherKey>> cleanupHttpRoutesForNode(NodeId removedNode) {
                 var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
                 kvStore.forEach(HttpRouteKey.class, HttpRouteValue.class,
@@ -686,10 +657,8 @@ public interface ClusterDeploymentManager {
                 }
             }
 
-            /**
-             * Remove HTTP route entries that reference nodes not in the current topology.
-             * This handles cases where nodes died before the leader could clean up their routes.
-             */
+            /// Remove HTTP route entries that reference nodes not in the current topology.
+            /// This handles cases where nodes died before the leader could clean up their routes.
             private void cleanupStaleHttpRoutes() {
                 var currentNodes = new HashSet<>(activeNodes.get());
                 var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
@@ -728,9 +697,88 @@ public interface ClusterDeploymentManager {
                 }
             }
 
-            /**
-             * Allocate instances across cluster nodes using round-robin strategy.
-             */
+            /// Remove slice state entries for nodes not in the current topology.
+            /// This handles cases where nodes died before the leader could clean up their slice entries.
+            private void cleanupStaleSliceEntries() {
+                var currentNodes = new HashSet<>(activeNodes.get());
+                var staleKeys = sliceStates.keySet()
+                                           .stream()
+                                           .filter(key -> !currentNodes.contains(key.nodeId()))
+                                           .toList();
+                if (staleKeys.isEmpty()) {
+                    return;
+                }
+                staleKeys.forEach(sliceStates::remove);
+                List<KVCommand<AetherKey>> commands = staleKeys.stream()
+                                                               .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                                                               .toList();
+                log.info("Cleaning up {} stale slice entries", staleKeys.size());
+                cluster.apply(commands)
+                       .onFailure(cause -> log.error("Failed to clean up stale slice entries: {}",
+                                                      cause.message()));
+            }
+
+            /// Remove endpoint entries for nodes not in the current topology.
+            /// This handles cases where nodes died before the leader could clean up their endpoint entries.
+            private void cleanupStaleEndpointEntries() {
+                var currentNodes = new HashSet<>(activeNodes.get());
+                var staleKeys = new ArrayList<EndpointKey>();
+                kvStore.forEach(EndpointKey.class, EndpointValue.class,
+                                (key, value) -> collectStaleEndpointKey(staleKeys, key, value, currentNodes));
+                if (staleKeys.isEmpty()) {
+                    return;
+                }
+                List<KVCommand<AetherKey>> commands = staleKeys.stream()
+                                                               .<KVCommand<AetherKey>> map(KVCommand.Remove::new)
+                                                               .toList();
+                log.info("Cleaning up {} stale endpoint entries", staleKeys.size());
+                cluster.apply(commands)
+                       .onFailure(cause -> log.error("Failed to clean up stale endpoint entries: {}",
+                                                      cause.message()));
+            }
+
+            private void collectStaleEndpointKey(List<EndpointKey> result,
+                                                  EndpointKey endpointKey,
+                                                  EndpointValue endpointValue,
+                                                  Set<NodeId> currentNodes) {
+                if (!currentNodes.contains(endpointValue.nodeId())) {
+                    result.add(endpointKey);
+                }
+            }
+
+            /// Remove slice state entries whose artifact has no matching blueprint.
+            /// These are orphaned entries from incomplete undeploy operations where
+            /// the SliceTargetKey was removed but the SliceNodeKey cleanup didn't complete
+            /// before a leader change.
+            private void cleanupOrphanedSliceEntries() {
+                var orphanedEntries = sliceStates.entrySet()
+                                                 .stream()
+                                                 .filter(entry -> !blueprints.containsKey(entry.getKey()
+                                                                                               .artifact()))
+                                                 .toList();
+                if (orphanedEntries.isEmpty()) {
+                    return;
+                }
+                List<KVCommand<AetherKey>> commands = new ArrayList<>();
+                for (var entry : orphanedEntries) {
+                    var key = entry.getKey();
+                    var state = entry.getValue();
+                    sliceStates.remove(key);
+                    if (state == SliceState.UNLOAD || state == SliceState.UNLOADING) {
+                        // Already in teardown, just remove the KV entry
+                        commands.add(new KVCommand.Remove<>(key));
+                    } else {
+                        // Issue UNLOAD to trigger proper teardown on the node
+                        commands.add(new KVCommand.Put<>(key, new SliceNodeValue(SliceState.UNLOAD)));
+                    }
+                }
+                log.info("Cleaning up {} orphaned slice entries (no matching blueprint)", orphanedEntries.size());
+                cluster.apply(commands)
+                       .onFailure(cause -> log.error("Failed to clean up orphaned slice entries: {}",
+                                                      cause.message()));
+            }
+
+            /// Allocate instances across cluster nodes using round-robin strategy.
             private void allocateInstances(Artifact artifact, int desiredInstances) {
                 if (hasNoActiveNodes(artifact)) {
                     return;
@@ -740,9 +788,7 @@ public interface ClusterDeploymentManager {
                 adjustInstanceCount(artifact, desiredInstances, currentInstances);
             }
 
-            /**
-             * Check if there are no active nodes available for allocation.
-             */
+            /// Check if there are no active nodes available for allocation.
             private boolean hasNoActiveNodes(Artifact artifact) {
                 if (activeNodes.get()
                                .isEmpty()) {
@@ -752,9 +798,7 @@ public interface ClusterDeploymentManager {
                 return false;
             }
 
-            /**
-             * Log the allocation attempt details.
-             */
+            /// Log the allocation attempt details.
             private void logAllocationAttempt(Artifact artifact,
                                               int desiredInstances,
                                               List<SliceNodeKey> currentInstances) {
@@ -766,9 +810,7 @@ public interface ClusterDeploymentManager {
                                      .size());
             }
 
-            /**
-             * Adjust instance count by scaling up or down as needed.
-             */
+            /// Adjust instance count by scaling up or down as needed.
             private void adjustInstanceCount(Artifact artifact,
                                              int desiredInstances,
                                              List<SliceNodeKey> currentInstances) {
@@ -808,10 +850,8 @@ public interface ClusterDeploymentManager {
                 allocateRoundRobin(artifact, remaining - allocated);
             }
 
-            /**
-             * Find nodes that have absolutely no slices deployed (truly empty).
-             * These are ideal candidates for new deployments (e.g., AUTO-HEAL nodes).
-             */
+            /// Find nodes that have absolutely no slices deployed (truly empty).
+            /// These are ideal candidates for new deployments (e.g., AUTO-HEAL nodes).
             private Set<NodeId> findTrulyEmptyNodes() {
                 var nodesWithAnySlice = sliceStates.keySet()
                                                    .stream()
@@ -823,9 +863,7 @@ public interface ClusterDeploymentManager {
                                   .collect(Collectors.toSet());
             }
 
-            /**
-             * Allocate to a specific set of nodes.
-             */
+            /// Allocate to a specific set of nodes.
             private int allocateToSpecificNodes(Artifact artifact, int toAdd, Set<NodeId> targetNodes) {
                 var allocated = 0;
                 for (var node : targetNodes) {
@@ -961,10 +999,8 @@ public interface ClusterDeploymentManager {
                 getCurrentInstances(artifact).forEach(this::issueUnloadCommand);
             }
 
-            /**
-             * Reconcile desired state (blueprints) with actual state (slice states).
-             * Called on leader activation, topology changes, etc.
-             */
+            /// Reconcile desired state (blueprints) with actual state (slice states).
+            /// Called on leader activation, topology changes, etc.
             void reconcile() {
                 if (deactivated.get()) {
                     log.debug("Suppressing reconciliation - Active state deactivated");
@@ -994,27 +1030,23 @@ public interface ClusterDeploymentManager {
         }
     }
 
-    /**
-     * Blueprint representation (desired state).
-     */
+    /// Blueprint representation (desired state).
     record Blueprint(Artifact artifact, int instances) {
         static Blueprint blueprint(Artifact artifact, int instances) {
             return new Blueprint(artifact, instances);
         }
     }
 
-    /**
-     * Create a new cluster deployment manager.
-     *
-     * @param self            This node's ID
-     * @param cluster         The cluster node for consensus operations
-     * @param kvStore         The KV-Store for state persistence
-     * @param router          The message router for events
-     * @param initialTopology Initial cluster topology (nodes that should exist)
-     * @param topologyManager Topology manager for cluster size information
-     * @param nodeProvider    Node provider for auto-healing (empty to disable)
-     * @param autoHealConfig  Auto-heal retry configuration
-     */
+    /// Create a new cluster deployment manager.
+    ///
+    /// @param self            This node's ID
+    /// @param cluster         The cluster node for consensus operations
+    /// @param kvStore         The KV-Store for state persistence
+    /// @param router          The message router for events
+    /// @param initialTopology Initial cluster topology (nodes that should exist)
+    /// @param topologyManager Topology manager for cluster size information
+    /// @param nodeProvider    Node provider for auto-healing (empty to disable)
+    /// @param autoHealConfig  Auto-heal retry configuration
     static ClusterDeploymentManager clusterDeploymentManager(NodeId self,
                                                              ClusterNode<KVCommand<AetherKey>> cluster,
                                                              KVStore<AetherKey, AetherValue> kvStore,

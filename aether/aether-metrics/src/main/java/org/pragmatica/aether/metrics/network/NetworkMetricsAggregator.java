@@ -2,12 +2,10 @@ package org.pragmatica.aether.metrics.network;
 
 import java.util.concurrent.CopyOnWriteArrayList;
 
-/**
- * Aggregates network metrics from multiple handlers.
- * <p>
- * Use when you have multiple Netty pipelines (e.g., management server + cluster network)
- * and want unified metrics.
- */
+/// Aggregates network metrics from multiple handlers.
+///
+/// Use when you have multiple Netty pipelines (e.g., management server + cluster network)
+/// and want unified metrics.
 public final class NetworkMetricsAggregator {
     private final CopyOnWriteArrayList<NetworkMetricsHandler> handlers = new CopyOnWriteArrayList<>();
 
@@ -17,23 +15,17 @@ public final class NetworkMetricsAggregator {
         return new NetworkMetricsAggregator();
     }
 
-    /**
-     * Register a handler for aggregation.
-     */
+    /// Register a handler for aggregation.
     public void register(NetworkMetricsHandler handler) {
         handlers.addIfAbsent(handler);
     }
 
-    /**
-     * Unregister a handler.
-     */
+    /// Unregister a handler.
     public void unregister(NetworkMetricsHandler handler) {
         handlers.remove(handler);
     }
 
-    /**
-     * Get aggregated snapshot from all registered handlers.
-     */
+    /// Get aggregated snapshot from all registered handlers.
     public NetworkMetrics snapshot() {
         if (handlers.isEmpty()) {
             return NetworkMetrics.EMPTY;
@@ -64,9 +56,7 @@ public final class NetworkMetricsAggregator {
                                   lastBackpressure);
     }
 
-    /**
-     * Get aggregated snapshot and reset all handlers.
-     */
+    /// Get aggregated snapshot and reset all handlers.
     public NetworkMetrics snapshotAndReset() {
         if (handlers.isEmpty()) {
             return NetworkMetrics.EMPTY;

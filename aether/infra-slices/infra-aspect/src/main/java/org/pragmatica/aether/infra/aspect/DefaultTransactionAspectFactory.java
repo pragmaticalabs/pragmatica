@@ -14,10 +14,8 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * Default implementation of TransactionAspectFactory.
- * Uses JDK dynamic proxies with ThreadLocal for transaction context.
- */
+/// Default implementation of TransactionAspectFactory.
+/// Uses JDK dynamic proxies with ThreadLocal for transaction context.
 final class DefaultTransactionAspectFactory implements TransactionAspectFactory {
     private final AtomicBoolean enabled = new AtomicBoolean(true);
     private final ThreadLocal<TransactionContext> currentContext = new ThreadLocal<>();

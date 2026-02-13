@@ -19,70 +19,61 @@ package org.pragmatica.lang;
 
 import java.util.ServiceLoader;
 
-/**
- * SPI for context propagation across async boundaries.
- *
- * <p>Implementations are loaded via ServiceLoader to enable modules like aether
- * to provide context propagation without core depending on them.
- *
- * <p>To provide a custom implementation:
- * <ol>
- *   <li>Implement this interface</li>
- *   <li>Create a file at META-INF/services/org.pragmatica.lang.ContextPropagation</li>
- *   <li>Add the fully qualified class name of your implementation to that file</li>
- * </ol>
- *
- * <p>Example implementation for request ID propagation:
- * <pre>{@code
- * public class MyContextPropagation implements ContextPropagation {
- *     public Object capture() {
- *         return MyContext.captureSnapshot();
- *     }
- *
- *     public void runWith(Object snapshot, Runnable action) {
- *         if (snapshot instanceof MyContext.Snapshot s) {
- *             s.runWithCaptured(action);
- *         } else {
- *             action.run();
- *         }
- *     }
- * }
- * }</pre>
- */
+/// SPI for context propagation across async boundaries.
+///
+///
+/// Implementations are loaded via ServiceLoader to enable modules like aether
+/// to provide context propagation without core depending on them.
+///
+///
+/// To provide a custom implementation:
+/// <ol>
+///   - Implement this interface
+///   - Create a file at META-INF/services/org.pragmatica.lang.ContextPropagation
+///   - Add the fully qualified class name of your implementation to that file
+/// </ol>
+///
+///
+/// Example implementation for request ID propagation:
+/// ```{@code
+/// public class MyContextPropagation implements ContextPropagation {
+///     public Object capture() {
+///         return MyContext.captureSnapshot();
+///     }
+///
+///     public void runWith(Object snapshot, Runnable action) {
+///         if (snapshot instanceof MyContext.Snapshot s) {
+///             s.runWithCaptured(action);
+///         } else {
+///             action.run();
+///         }
+///     }
+/// }
+/// }```
 public interface ContextPropagation {
-    /**
-     * Singleton instance loaded via ServiceLoader.
-     * Falls back to NoOp if no implementation is found.
-     */
+    /// Singleton instance loaded via ServiceLoader.
+    /// Falls back to NoOp if no implementation is found.
     ContextPropagation INSTANCE = ServiceLoader.load(ContextPropagation.class)
                                               .findFirst()
                                               .orElseGet(NoOp::new);
 
-    /**
-     * Capture the current context for propagation.
-     *
-     * @return an opaque snapshot object representing the current context
-     */
+    /// Capture the current context for propagation.
+    ///
+    /// @return an opaque snapshot object representing the current context
     Object capture();
 
-    /**
-     * Run an action with the captured context restored.
-     *
-     * @param snapshot the captured context (from capture())
-     * @param action   the action to run with restored context
-     * @return Unit for composition
-     */
+    /// Run an action with the captured context restored.
+    ///
+    /// @param snapshot the captured context (from capture())
+    /// @param action   the action to run with restored context
+    /// @return Unit for composition
     Unit runWith(Object snapshot, Runnable action);
 
-    /**
-     * Sentinel object representing empty context (no-op).
-     */
+    /// Sentinel object representing empty context (no-op).
     Object EMPTY_CONTEXT = new Object();
 
-    /**
-     * No-op implementation when no context propagation is configured.
-     * Simply runs actions without any context manipulation.
-     */
+    /// No-op implementation when no context propagation is configured.
+    /// Simply runs actions without any context manipulation.
     class NoOp implements ContextPropagation {
         @Override
         public Object capture() {

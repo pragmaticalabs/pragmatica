@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-STY-01: Prefer fluent failure style (cause.result()).
- */
+/// JBCT-STY-01: Prefer fluent failure style (cause.result()).
 public class CstFluentFailureRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-01";
 

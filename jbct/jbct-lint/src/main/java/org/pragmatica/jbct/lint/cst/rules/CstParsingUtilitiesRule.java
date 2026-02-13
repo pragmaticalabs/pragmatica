@@ -15,13 +15,11 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-UTIL-01: Use Pragmatica parsing utilities instead of JDK parsing methods.
- *
- * Detects direct use of Integer.parseInt(), Long.parseLong(), etc. and suggests
- * using Number.parseInt(), Number.parseLong() which return Result&lt;T&gt; for
- * composable error handling.
- */
+/// JBCT-UTIL-01: Use Pragmatica parsing utilities instead of JDK parsing methods.
+///
+/// Detects direct use of Integer.parseInt(), Long.parseLong(), etc. and suggests
+/// using Number.parseInt(), Number.parseLong() which return Result&lt;T&gt; for
+/// composable error handling.
 public class CstParsingUtilitiesRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-UTIL-01";
 

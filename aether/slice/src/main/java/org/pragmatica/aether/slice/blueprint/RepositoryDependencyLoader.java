@@ -15,9 +15,7 @@ import java.net.URL;
 import java.util.Set;
 import java.util.stream.Stream;
 
-/**
- * Default DependencyLoader implementation using Repository.
- */
+/// Default DependencyLoader implementation using Repository.
 public interface RepositoryDependencyLoader {
     static DependencyLoader repositoryDependencyLoader(Repository repository) {
         return artifact -> repository.locate(artifact)

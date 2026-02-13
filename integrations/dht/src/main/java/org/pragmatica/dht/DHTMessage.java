@@ -16,23 +16,26 @@
 
 package org.pragmatica.dht;
 
+import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.ProtocolMessage;
 import org.pragmatica.lang.Option;
-import org.pragmatica.messaging.Message;
+
+import java.util.List;
 
 /// Messages for DHT operations between nodes.
-public sealed interface DHTMessage extends Message.Wired {
+public sealed interface DHTMessage extends ProtocolMessage {
     /// Request to get a value.
-    record GetRequest(String requestId, byte[] key) implements DHTMessage {
+    record GetRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {
         public GetRequest {
             key = key.clone();
         }
     }
 
     /// Response to a get request.
-    record GetResponse(String requestId, Option<byte[]> value) implements DHTMessage {}
+    record GetResponse(String requestId, NodeId sender, Option<byte[]> value) implements DHTMessage {}
 
     /// Request to put a value.
-    record PutRequest(String requestId, byte[] key, byte[] value) implements DHTMessage {
+    record PutRequest(String requestId, NodeId sender, byte[] key, byte[] value) implements DHTMessage {
         public PutRequest {
             key = key.clone();
             value = value.clone();
@@ -40,25 +43,49 @@ public sealed interface DHTMessage extends Message.Wired {
     }
 
     /// Response to a put request.
-    record PutResponse(String requestId, boolean success) implements DHTMessage {}
+    record PutResponse(String requestId, NodeId sender, boolean success) implements DHTMessage {}
 
     /// Request to remove a value.
-    record RemoveRequest(String requestId, byte[] key) implements DHTMessage {
+    record RemoveRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {
         public RemoveRequest {
             key = key.clone();
         }
     }
 
     /// Response to a remove request.
-    record RemoveResponse(String requestId, boolean found) implements DHTMessage {}
+    record RemoveResponse(String requestId, NodeId sender, boolean found) implements DHTMessage {}
 
     /// Request to check if key exists.
-    record ExistsRequest(String requestId, byte[] key) implements DHTMessage {
+    record ExistsRequest(String requestId, NodeId sender, byte[] key) implements DHTMessage {
         public ExistsRequest {
             key = key.clone();
         }
     }
 
     /// Response to exists request.
-    record ExistsResponse(String requestId, boolean exists) implements DHTMessage {}
+    record ExistsResponse(String requestId, NodeId sender, boolean exists) implements DHTMessage {}
+
+    /// A key-value pair used in migration data transfers.
+    record KeyValue(byte[] key, byte[] value) {
+        public KeyValue {
+            key = key.clone();
+            value = value.clone();
+        }
+    }
+
+    /// Request to transfer migration data for a partition range.
+    record MigrationDataRequest(String requestId, NodeId sender, int partitionStart, int partitionEnd) implements DHTMessage {}
+
+    /// Response containing migration data.
+    record MigrationDataResponse(String requestId, NodeId sender, List<KeyValue> entries) implements DHTMessage {}
+
+    /// Request to compute digest of keys in a partition range.
+    record DigestRequest(String requestId, NodeId sender, int partitionStart, int partitionEnd) implements DHTMessage {}
+
+    /// Response containing partition digest.
+    record DigestResponse(String requestId, NodeId sender, byte[] digest) implements DHTMessage {
+        public DigestResponse {
+            digest = digest.clone();
+        }
+    }
 }

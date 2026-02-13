@@ -61,10 +61,8 @@ public interface NodeDeploymentManager {
 
     boolean isActive();
 
-    /**
-     * Information about a suspended slice that can be reactivated.
-     * Tracks the slice key and the original deployment state.
-     */
+    /// Information about a suspended slice that can be reactivated.
+    /// Tracks the slice key and the original deployment state.
     record SuspendedSlice(SliceNodeKey key, SliceDeployment deployment) {}
 
     sealed interface NodeDeploymentState {
@@ -72,9 +70,7 @@ public interface NodeDeploymentManager {
 
         default void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {}
 
-        /**
-         * Dormant state with optional suspended slices for reactivation.
-         */
+        /// Dormant state with optional suspended slices for reactivation.
         record DormantNodeDeploymentState(List<SuspendedSlice> suspendedSlices) implements NodeDeploymentState {
             public DormantNodeDeploymentState() {
                 this(List.of());
@@ -571,21 +567,20 @@ public interface NodeDeploymentManager {
                           cause.message());
             }
 
-            /**
-             * Suspend all active slices on quorum loss without unloading them.
-             * Returns the list of suspended slices for potential reactivation.
-             *
-             * <p>This method:
-             * <ul>
-             *   <li>Unpublishes HTTP routes (removes from local handlers map)</li>
-             *   <li>Unpublishes endpoints (note: KV commands won't commit without quorum)</li>
-             *   <li>Unregisters slices from invocation handler</li>
-             *   <li>Does NOT unload slices from SliceStore</li>
-             *   <li>Does NOT clear deployments - saves them for reactivation</li>
-             * </ul>
-             *
-             * @return List of suspended slices that can be reactivated when quorum returns
-             */
+            /// Suspend all active slices on quorum loss without unloading them.
+            /// Returns the list of suspended slices for potential reactivation.
+            ///
+            ///
+            /// This method:
+            ///
+            ///   - Unpublishes HTTP routes (removes from local handlers map)
+            ///   - Unpublishes endpoints (note: KV commands won't commit without quorum)
+            ///   - Unregisters slices from invocation handler
+            ///   - Does NOT unload slices from SliceStore
+            ///   - Does NOT clear deployments - saves them for reactivation
+            ///
+            ///
+            /// @return List of suspended slices that can be reactivated when quorum returns
             List<SuspendedSlice> suspendSlices() {
                 log.warn("Suspending {} slices due to quorum loss (keeping loaded in memory)", deployments.size());
                 var suspended = new java.util.ArrayList<SuspendedSlice>();
@@ -605,10 +600,8 @@ public interface NodeDeploymentManager {
                 return suspended;
             }
 
-            /**
-             * Suspend a single slice: unpublish routes/endpoints and unregister from invocation.
-             * Does NOT unload the slice from SliceStore.
-             */
+            /// Suspend a single slice: unpublish routes/endpoints and unregister from invocation.
+            /// Does NOT unload the slice from SliceStore.
             private void suspendSlice(SliceNodeKey sliceKey) {
                 // Unpublish HTTP routes (local handler map only)
                 httpRoutePublisher.onPresent(publisher -> unpublishRoutesForSuspension(publisher, sliceKey));
@@ -622,19 +615,18 @@ public interface NodeDeploymentManager {
                           sliceKey.artifact());
             }
 
-            /**
-             * Reactivate previously suspended slices after quorum is restored.
-             *
-             * <p>For each suspended slice:
-             * <ul>
-             *   <li>Check if slice is still loaded in SliceStore</li>
-             *   <li>Re-register with invocation handler</li>
-             *   <li>Re-publish HTTP routes</li>
-             *   <li>Re-publish endpoints to KV store</li>
-             * </ul>
-             *
-             * @param suspended List of suspended slices to reactivate
-             */
+            /// Reactivate previously suspended slices after quorum is restored.
+            ///
+            ///
+            /// For each suspended slice:
+            ///
+            ///   - Check if slice is still loaded in SliceStore
+            ///   - Re-register with invocation handler
+            ///   - Re-publish HTTP routes
+            ///   - Re-publish endpoints to KV store
+            ///
+            ///
+            /// @param suspended List of suspended slices to reactivate
             void reactivateSuspendedSlices(List<SuspendedSlice> suspended) {
                 if (suspended.isEmpty()) {
                     log.debug("No suspended slices to reactivate");
@@ -672,13 +664,11 @@ public interface NodeDeploymentManager {
                 deployments.remove(sliceKey);
             }
 
-            /**
-             * Deactivate all slices on quorum loss.
-             * Called before transitioning to dormant state.
-             *
-             * @deprecated Use {@link #suspendSlices()} instead to preserve slices in memory.
-             *             This method is kept for actual slice removal (ValueRemove).
-             */
+            /// Deactivate all slices on quorum loss.
+            /// Called before transitioning to dormant state.
+            ///
+            /// @deprecated Use {@link #suspendSlices()} instead to preserve slices in memory.
+            ///             This method is kept for actual slice removal (ValueRemove).
             void deactivateAllSlices() {
                 log.warn("Deactivating all {} slices due to quorum loss", deployments.size());
                 for (var entry : deployments.entrySet()) {

@@ -27,18 +27,16 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for quorum intersection properties from weak_mvc.ivy specification (lines 17-29).
- * <p>
- * These axioms are foundational to Rabia's safety guarantees:
- * <pre>
- * axiom forall Q1:set_majority, Q2:set_majority. exists N:node.
- *       member_maj(N, Q1) & member_maj(N, Q2)
- *
- * axiom forall Q1:set_majority, Q2:set_f_plus_1.
- *       exists N:node. member_maj(N, Q1) & member_fp1(N, Q2)
- * </pre>
- */
+/// Tests for quorum intersection properties from weak_mvc.ivy specification (lines 17-29).
+///
+/// These axioms are foundational to Rabia's safety guarantees:
+/// ```
+/// axiom forall Q1:set_majority, Q2:set_majority. exists N:node.
+///       member_maj(N, Q1) & member_maj(N, Q2)
+///
+/// axiom forall Q1:set_majority, Q2:set_f_plus_1.
+///       exists N:node. member_maj(N, Q1) & member_fp1(N, Q2)
+/// ```
 class RabiaQuorumIntersectionTest {
 
     static Stream<Arguments> clusterSizes() {

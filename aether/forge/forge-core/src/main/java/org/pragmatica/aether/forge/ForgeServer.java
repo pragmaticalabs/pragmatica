@@ -32,29 +32,27 @@ import java.util.concurrent.TimeUnit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Main entry point for Aether Forge.
- * Starts a cluster, load generator, and web dashboard on a single JVM.
- * <p>
- * CLI arguments:
- * <pre>
- * --config &lt;forge.toml&gt;       Forge cluster configuration
- * --blueprint &lt;file.toml&gt;     Blueprint to deploy on startup
- * --load-config &lt;file.toml&gt;   Load test configuration
- * --auto-start                Start load generation after config loaded
- * </pre>
- * <p>
- * Environment variables (override CLI args):
- * <pre>
- * FORGE_CONFIG        - Path to forge.toml
- * FORGE_BLUEPRINT     - Path to blueprint file
- * FORGE_LOAD_CONFIG   - Path to load config file
- * FORGE_AUTO_START    - Set to "true" to auto-start load
- * FORGE_PORT          - Dashboard port (backwards compatible)
- * CLUSTER_SIZE        - Number of nodes (backwards compatible)
- * LOAD_RATE           - Initial load rate (backwards compatible)
- * </pre>
- */
+/// Main entry point for Aether Forge.
+/// Starts a cluster, load generator, and web dashboard on a single JVM.
+///
+/// CLI arguments:
+/// ```
+/// --config &lt;forge.toml&gt;       Forge cluster configuration
+/// --blueprint &lt;file.toml&gt;     Blueprint to deploy on startup
+/// --load-config &lt;file.toml&gt;   Load test configuration
+/// --auto-start                Start load generation after config loaded
+/// ```
+///
+/// Environment variables (override CLI args):
+/// ```
+/// FORGE_CONFIG        - Path to forge.toml
+/// FORGE_BLUEPRINT     - Path to blueprint file
+/// FORGE_LOAD_CONFIG   - Path to load config file
+/// FORGE_AUTO_START    - Set to "true" to auto-start load
+/// FORGE_PORT          - Dashboard port (backwards compatible)
+/// CLUSTER_SIZE        - Number of nodes (backwards compatible)
+/// LOAD_RATE           - Initial load rate (backwards compatible)
+/// ```
 public final class ForgeServer {
     private static final Logger log = LoggerFactory.getLogger(ForgeServer.class);
 
@@ -69,7 +67,6 @@ public final class ForgeServer {
     private final ForgeConfig forgeConfig;
 
     private volatile Option<ForgeCluster> cluster = Option.empty();
-    private volatile Option<LoadGenerator> loadGenerator = Option.empty();
     private volatile Option<ConfigurableLoadRunner> configurableLoadRunner = Option.empty();
     private volatile Option<ForgeMetrics> metrics = Option.empty();
     private volatile Option<ForgeApiHandler> apiHandler = Option.empty();
@@ -179,37 +176,31 @@ public final class ForgeServer {
                                                         "node",
                                                         configProvider);
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
-        var loadGeneratorInstance = LoadGenerator.loadGenerator(forgeConfig.appHttpPort(),
-                                                                metricsInstance,
-                                                                entryPointMetrics);
         var configurableLoadRunnerInstance = ConfigurableLoadRunner.configurableLoadRunner(
             clusterInstance::getAvailableAppHttpPorts,
             metricsInstance,
             entryPointMetrics);
         var apiHandlerInstance = ForgeApiHandler.forgeApiHandler(clusterInstance,
-                                                                 loadGeneratorInstance,
                                                                  metricsInstance,
                                                                  configurableLoadRunnerInstance,
                                                                  startupConfig.loadConfig());
         metrics = Option.some(metricsInstance);
         cluster = Option.some(clusterInstance);
-        loadGenerator = Option.some(loadGeneratorInstance);
         configurableLoadRunner = Option.some(configurableLoadRunnerInstance);
         apiHandler = Option.some(apiHandlerInstance);
         staticHandler = Option.some(StaticFileHandler.staticFileHandler());
         var wsPublisherInstance = StatusWebSocketPublisher.statusWebSocketPublisher(
             wsHandler,
-            () -> serializeStatus(clusterInstance, loadGeneratorInstance,
+            () -> serializeStatus(clusterInstance,
                                   metricsInstance, startTime, configurableLoadRunnerInstance));
         wsPublisher = Option.some(wsPublisherInstance);
     }
 
     private static String serializeStatus(ForgeCluster cluster,
-                                           LoadGenerator loadGenerator,
                                            ForgeMetrics metrics,
                                            long startTime,
                                            ConfigurableLoadRunner loadRunner) {
-        var status = StatusRoutes.buildFullStatus(cluster, loadGenerator, metrics, startTime, loadRunner);
+        var status = StatusRoutes.buildFullStatus(cluster, metrics, startTime, loadRunner);
         return CODEC.serialize(status)
                     .map(byteBuf -> {
                         try {
@@ -249,9 +240,6 @@ public final class ForgeServer {
             log.info("Auto-starting load generation...");
             configurableLoadRunner.onPresent(ConfigurableLoadRunner::start);
             apiHandler.onPresent(h -> h.addEvent("LOAD_STARTED", "Load generation auto-started"));
-        } else if (startupConfig.loadRate() > 0 && startupConfig.loadConfig().isEmpty()) {
-            log.info("Starting load generator at {} req/sec", startupConfig.loadRate());
-            loadGenerator.onPresent(lg -> lg.start(startupConfig.loadRate()));
         }
     }
 
@@ -307,7 +295,6 @@ public final class ForgeServer {
 
     public void stop() {
         log.info("Stopping Forge server...");
-        loadGenerator.onPresent(LoadGenerator::stop);
         wsPublisher.onPresent(StatusWebSocketPublisher::stop);
         metricsScheduler.onPresent(ScheduledExecutorService::shutdownNow);
         httpServer.onPresent(server -> server.stop()
@@ -338,20 +325,18 @@ public final class ForgeServer {
               });
     }
 
-    /**
-     * Build ConfigurationProvider with layered configuration.
-     * <p>
-     * Priority (highest to lowest):
-     * <ol>
-     *   <li>Runtime values (H2 URL if enabled)</li>
-     *   <li>Environment variables (AETHER_*)</li>
-     *   <li>System properties (-Daether.*)</li>
-     *   <li>forge.toml (if specified)</li>
-     *   <li>aether.toml (if exists)</li>
-     * </ol>
-     *
-     * @return ConfigurationProvider for all nodes, or empty if no config needed
-     */
+    /// Build ConfigurationProvider with layered configuration.
+    ///
+    /// Priority (highest to lowest):
+    /// <ol>
+    ///   - Runtime values (H2 URL if enabled)
+    ///   - Environment variables (AETHER_*)
+    ///   - System properties (-Daether.*)
+    ///   - forge.toml (if specified)
+    ///   - aether.toml (if exists)
+    /// </ol>
+    ///
+    /// @return ConfigurationProvider for all nodes, or empty if no config needed
     private Option<ConfigurationProvider> buildConfigurationProvider() {
         var builder = ConfigurationProvider.builder();
 
@@ -397,9 +382,7 @@ public final class ForgeServer {
                                                                         cause.message())));
     }
 
-    /**
-     * Get the H2 JDBC URL if H2 is enabled and running.
-     */
+    /// Get the H2 JDBC URL if H2 is enabled and running.
     public Option<String> h2JdbcUrl() {
         return h2Server.filter(ForgeH2Server::isRunning)
                        .map(ForgeH2Server::jdbcUrl);

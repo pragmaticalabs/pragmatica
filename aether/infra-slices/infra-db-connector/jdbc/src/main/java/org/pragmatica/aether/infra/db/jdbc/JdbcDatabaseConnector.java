@@ -21,11 +21,9 @@ import java.sql.SQLTransactionRollbackException;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * JDBC implementation of DatabaseConnector.
- * <p>
- * Uses a DataSource for connection pooling (typically HikariCP).
- */
+/// JDBC implementation of DatabaseConnector.
+///
+/// Uses a DataSource for connection pooling (typically HikariCP).
 public final class JdbcDatabaseConnector implements DatabaseConnector {
     private final DatabaseConnectorConfig config;
     private final DataSource dataSource;
@@ -35,13 +33,11 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
         this.dataSource = dataSource;
     }
 
-    /**
-     * Creates a JDBC connector with the given configuration and data source.
-     *
-     * @param config     Connector configuration
-     * @param dataSource JDBC DataSource (typically from HikariCP)
-     * @return New JdbcDatabaseConnector instance
-     */
+    /// Creates a JDBC connector with the given configuration and data source.
+    ///
+    /// @param config     Connector configuration
+    /// @param dataSource JDBC DataSource (typically from HikariCP)
+    /// @return New JdbcDatabaseConnector instance
     public static JdbcDatabaseConnector jdbcDatabaseConnector(DatabaseConnectorConfig config, DataSource dataSource) {
         return new JdbcDatabaseConnector(config, dataSource);
     }
@@ -277,9 +273,7 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
         }
     }
 
-    /**
-     * Transaction-bound connector that uses a single connection.
-     */
+    /// Transaction-bound connector that uses a single connection.
     private record TransactionalJdbcConnector(DatabaseConnectorConfig config, Connection conn) implements DatabaseConnector {
 
         @Override

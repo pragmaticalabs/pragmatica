@@ -8,24 +8,16 @@ import org.pragmatica.lang.utils.Causes;
 import java.time.Duration;
 import java.util.Set;
 
-/**
- * Chaos events that can be injected into the system for resilience testing.
- */
+/// Chaos events that can be injected into the system for resilience testing.
 public sealed interface ChaosEvent {
-    /**
-     * Type identifier for the event.
-     */
+    /// Type identifier for the event.
     String type();
 
-    /**
-     * Human-readable description.
-     */
+    /// Human-readable description.
     String description();
 
-    /**
-     * How long the chaos effect should last.
-     * Empty means permanent until explicitly stopped.
-     */
+    /// How long the chaos effect should last.
+    /// Empty means permanent until explicitly stopped.
     Option<Duration> duration();
 
     // Shared validation causes
@@ -33,9 +25,7 @@ public sealed interface ChaosEvent {
     Cause LEVEL_OUT_OF_RANGE = Causes.cause("level must be between 0 and 1");
     Cause FAILURE_RATE_OUT_OF_RANGE = Causes.cause("failureRate must be between 0 and 1");
 
-    /**
-     * Kill a specific node (simulates crash).
-     */
+    /// Kill a specific node (simulates crash).
     record NodeKill(String nodeId, Option<Duration> duration) implements ChaosEvent {
         @Override
         public String type() {
@@ -64,9 +54,7 @@ public sealed interface ChaosEvent {
         }
     }
 
-    /**
-     * Simulate network partition between node groups.
-     */
+    /// Simulate network partition between node groups.
     record NetworkPartition(Set<String> group1, Set<String> group2, Option<Duration> duration) implements ChaosEvent {
         private static final Cause GROUP1_EMPTY = Causes.cause("group1 cannot be null or empty");
         private static final Cause GROUP2_EMPTY = Causes.cause("group2 cannot be null or empty");
@@ -104,9 +92,7 @@ public sealed interface ChaosEvent {
         }
     }
 
-    /**
-     * Add latency to a specific node's responses.
-     */
+    /// Add latency to a specific node's responses.
     record LatencySpike(String nodeId, long latencyMs, Option<Duration> duration) implements ChaosEvent {
         private static final Cause LATENCY_NEGATIVE = Causes.cause("latencyMs must be >= 0");
 
@@ -131,9 +117,7 @@ public sealed interface ChaosEvent {
         }
     }
 
-    /**
-     * Crash a specific slice on a node.
-     */
+    /// Crash a specific slice on a node.
     record SliceCrash(String sliceArtifact, Option<String> nodeId, Option<Duration> duration) implements ChaosEvent {
         private static final Cause ARTIFACT_REQUIRED = Causes.cause("sliceArtifact cannot be null or blank");
 
@@ -161,9 +145,7 @@ public sealed interface ChaosEvent {
         }
     }
 
-    /**
-     * Simulate memory pressure on a node.
-     */
+    /// Simulate memory pressure on a node.
     record MemoryPressure(String nodeId, double level, Option<Duration> duration) implements ChaosEvent {
         @Override
         public String type() {
@@ -186,9 +168,7 @@ public sealed interface ChaosEvent {
         }
     }
 
-    /**
-     * Simulate CPU spike on a node.
-     */
+    /// Simulate CPU spike on a node.
     record CpuSpike(String nodeId, double level, Option<Duration> duration) implements ChaosEvent {
         @Override
         public String type() {
@@ -211,9 +191,7 @@ public sealed interface ChaosEvent {
         }
     }
 
-    /**
-     * Inject random failures into slice invocations.
-     */
+    /// Inject random failures into slice invocations.
     record InvocationFailure(Option<String> sliceArtifact, double failureRate, Option<Duration> duration) implements ChaosEvent {
         @Override
         public String type() {
@@ -240,9 +218,7 @@ public sealed interface ChaosEvent {
         }
     }
 
-    /**
-     * Custom chaos event with arbitrary action.
-     */
+    /// Custom chaos event with arbitrary action.
     record CustomChaos(String name, Option<String> descriptionText, Runnable action, Option<Duration> duration) implements ChaosEvent {
         private static final Cause NAME_REQUIRED = Causes.cause("name cannot be null or blank");
         private static final Cause ACTION_REQUIRED = Causes.cause("action cannot be null");

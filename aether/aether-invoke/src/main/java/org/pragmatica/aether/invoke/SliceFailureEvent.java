@@ -9,34 +9,33 @@ import org.pragmatica.messaging.Message;
 
 import java.util.List;
 
-/**
- * Events related to slice invocation failures.
- *
- * <p>Used to notify the controller and alerting system about
- * critical failure conditions requiring action.
- *
- * <p>This is a sealed hierarchy validated at route-building time via SealedBuilder.
- * These events are dispatched locally via MessageRouter.
- *
- * @see org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder
- */
+/// Events related to slice invocation failures.
+///
+///
+/// Used to notify the controller and alerting system about
+/// critical failure conditions requiring action.
+///
+///
+/// This is a sealed hierarchy validated at route-building time via SealedBuilder.
+/// These events are dispatched locally via MessageRouter.
+///
+/// @see org.pragmatica.messaging.MessageRouter.Entry.SealedBuilder
 public sealed interface SliceFailureEvent extends Message.Local {
-    /**
-     * Emitted when all instances of a slice have failed during invocation.
-     *
-     * <p>This is a critical condition indicating:
-     * <ul>
-     *   <li>All available endpoints were tried and failed</li>
-     *   <li>The slice may need rollback or manual intervention</li>
-     * </ul>
-     *
-     * @param requestId the distributed tracing ID
-     * @param artifact the failing slice
-     * @param method the method being invoked
-     * @param lastError the last error encountered (may be absent if no attempts were made)
-     * @param attemptedNodes nodes that were tried
-     * @param timestamp when the failure was detected
-     */
+    /// Emitted when all instances of a slice have failed during invocation.
+    ///
+    ///
+    /// This is a critical condition indicating:
+    ///
+    ///   - All available endpoints were tried and failed
+    ///   - The slice may need rollback or manual intervention
+    ///
+    ///
+    /// @param requestId the distributed tracing ID
+    /// @param artifact the failing slice
+    /// @param method the method being invoked
+    /// @param lastError the last error encountered (may be absent if no attempts were made)
+    /// @param attemptedNodes nodes that were tried
+    /// @param timestamp when the failure was detected
     record AllInstancesFailed(String requestId,
                               Artifact artifact,
                               MethodName method,

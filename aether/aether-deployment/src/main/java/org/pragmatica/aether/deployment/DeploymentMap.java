@@ -16,15 +16,13 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
 
-/**
- * Event-driven slice-to-node index.
- * Subscribes to KV store ValuePut/ValueRemove notifications and maintains
- * a bidirectional index of slice deployments across nodes.
- * <p>
- * Thread safety: ConcurrentHashMap handles concurrent reads (HTTP dashboard)
- * and writes (consensus thread). Weakly consistent iteration is acceptable
- * for dashboard display.
- */
+/// Event-driven slice-to-node index.
+/// Subscribes to KV store ValuePut/ValueRemove notifications and maintains
+/// a bidirectional index of slice deployments across nodes.
+///
+/// Thread safety: ConcurrentHashMap handles concurrent reads (HTTP dashboard)
+/// and writes (consensus thread). Weakly consistent iteration is acceptable
+/// for dashboard display.
 public sealed interface DeploymentMap {
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);

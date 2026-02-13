@@ -10,9 +10,7 @@ import java.util.concurrent.Callable;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-/**
- * Upgrade command - update JBCT to latest version.
- */
+/// Upgrade command - update JBCT to latest version.
 @Command(
  name = "upgrade",
  description = "Upgrade JBCT to the latest version",

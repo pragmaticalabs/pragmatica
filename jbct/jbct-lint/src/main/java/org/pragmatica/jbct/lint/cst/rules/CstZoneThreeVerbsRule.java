@@ -12,17 +12,15 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-ZONE-02: Leaf functions should use Zone 3 verbs.
- *
- * Zone 3 (implementation level) verbs are specific, concrete operations.
- * Private helper methods and leaf functions should use these verbs for
- * clear, implementation-focused naming.
- *
- * Zone 3 verbs: get, set, fetch, parse, calculate, convert, hash, format,
- *               encode, decode, extract, split, join, log, send, receive,
- *               read, write, add, remove
- */
+/// JBCT-ZONE-02: Leaf functions should use Zone 3 verbs.
+///
+/// Zone 3 (implementation level) verbs are specific, concrete operations.
+/// Private helper methods and leaf functions should use these verbs for
+/// clear, implementation-focused naming.
+///
+/// Zone 3 verbs: get, set, fetch, parse, calculate, convert, hash, format,
+///               encode, decode, extract, split, join, log, send, receive,
+///               read, write, add, remove
 public class CstZoneThreeVerbsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-ZONE-02";
 

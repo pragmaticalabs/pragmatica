@@ -11,13 +11,9 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.lang.Result.lift;
 
-/**
- * Value object representing a source root directory containing Java files.
- */
+/// Value object representing a source root directory containing Java files.
 public record SourceRoot(Path path) {
-    /**
-     * Factory method to create a SourceRoot, validating the path exists and is a directory.
-     */
+    /// Factory method to create a SourceRoot, validating the path exists and is a directory.
     public static Result<SourceRoot> sourceRoot(Path path) {
         if (!Files.exists(path)) {
             return Causes.cause("Path does not exist: " + path)
@@ -30,9 +26,7 @@ public record SourceRoot(Path path) {
         return Result.success(new SourceRoot(path));
     }
 
-    /**
-     * Find all Java source files in this source root.
-     */
+    /// Find all Java source files in this source root.
     public Result<List<Path>> findJavaFiles() {
         return lift(Causes::fromThrowable,
                     () -> {
@@ -45,9 +39,7 @@ public record SourceRoot(Path path) {
                     });
     }
 
-    /**
-     * Load all Java source files as SourceFile objects.
-     */
+    /// Load all Java source files as SourceFile objects.
     public Result<List<SourceFile>> loadJavaFiles() {
         return findJavaFiles().map(paths -> paths.stream()
                                                  .map(SourceFile::sourceFile)

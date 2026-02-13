@@ -20,6 +20,8 @@ import org.pragmatica.aether.slice.kvstore.AetherValue;
 import org.pragmatica.aether.http.forward.HttpForwardMessage;
 import org.pragmatica.aether.invoke.InvocationMessage;
 import org.pragmatica.cluster.state.kvstore.LeaderKey;
+import org.pragmatica.dht.DHTMessage;
+import org.pragmatica.dht.Partition;
 import org.pragmatica.cluster.state.kvstore.LeaderValue;
 import org.pragmatica.cluster.metrics.DeploymentMetricsMessage;
 import org.pragmatica.cluster.metrics.MetricsMessage;
@@ -30,9 +32,7 @@ import java.util.function.Consumer;
 
 import static org.pragmatica.utility.HierarchyScanner.concreteSubtypes;
 
-/**
- * Registers Aether-specific classes for serialization.
- */
+/// Registers Aether-specific classes for serialization.
 public interface AetherCustomClasses {
     static void configure(Consumer<Class<?>> consumer) {
         // Include base Rabia classes
@@ -74,5 +74,9 @@ public interface AetherCustomClasses {
         consumer.accept(SecurityContext.class);
         consumer.accept(Principal.class);
         consumer.accept(Role.class);
+        // DHT message types
+        concreteSubtypes(DHTMessage.class).forEach(consumer);
+        consumer.accept(DHTMessage.KeyValue.class);
+        consumer.accept(Partition.class);
     }
 }

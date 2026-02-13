@@ -3,13 +3,9 @@ package org.pragmatica.aether.infra.database;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
-/**
- * Error types for database operations.
- */
+/// Error types for database operations.
 public sealed interface DatabaseError extends Cause {
-    /**
-     * Query execution failed.
-     */
+    /// Query execution failed.
     record QueryFailed(String sql, Option<Throwable> cause) implements DatabaseError {
         @Override
         public String message() {
@@ -17,9 +13,7 @@ public sealed interface DatabaseError extends Cause {
         }
     }
 
-    /**
-     * No rows affected by update/delete.
-     */
+    /// No rows affected by update/delete.
     record NoRowsAffected(String sql) implements DatabaseError {
         @Override
         public String message() {
@@ -27,9 +21,7 @@ public sealed interface DatabaseError extends Cause {
         }
     }
 
-    /**
-     * Record not found.
-     */
+    /// Record not found.
     record RecordNotFound(String table, String criteria) implements DatabaseError {
         @Override
         public String message() {
@@ -37,9 +29,7 @@ public sealed interface DatabaseError extends Cause {
         }
     }
 
-    /**
-     * Duplicate key violation.
-     */
+    /// Duplicate key violation.
     record DuplicateKey(String table, String key) implements DatabaseError {
         @Override
         public String message() {
@@ -47,9 +37,7 @@ public sealed interface DatabaseError extends Cause {
         }
     }
 
-    /**
-     * Connection failed.
-     */
+    /// Connection failed.
     record ConnectionFailed(String reason, Option<Throwable> cause) implements DatabaseError {
         @Override
         public String message() {
@@ -57,9 +45,7 @@ public sealed interface DatabaseError extends Cause {
         }
     }
 
-    /**
-     * Invalid configuration.
-     */
+    /// Invalid configuration.
     record InvalidConfiguration(String reason) implements DatabaseError {
         @Override
         public String message() {
@@ -67,9 +53,7 @@ public sealed interface DatabaseError extends Cause {
         }
     }
 
-    /**
-     * Transaction failed.
-     */
+    /// Transaction failed.
     record TransactionFailed(String operation, Option<Throwable> cause) implements DatabaseError {
         @Override
         public String message() {
@@ -77,9 +61,7 @@ public sealed interface DatabaseError extends Cause {
         }
     }
 
-    /**
-     * Table does not exist.
-     */
+    /// Table does not exist.
     record TableNotFound(String table) implements DatabaseError {
         @Override
         public String message() {

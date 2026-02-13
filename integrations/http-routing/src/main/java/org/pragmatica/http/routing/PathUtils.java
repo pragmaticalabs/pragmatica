@@ -4,18 +4,14 @@ import org.pragmatica.lang.Option;
 
 import java.util.regex.Pattern;
 
-/**
- * Utility methods for HTTP path normalization.
- */
+/// Utility methods for HTTP path normalization.
 public sealed interface PathUtils {
     Pattern MULTISLASH = Pattern.compile("/+");
 
-    /**
-     * Normalize a URL path by:
-     * - Stripping query parameters
-     * - Collapsing multiple slashes
-     * - Ensuring path starts and ends with /
-     */
+    /// Normalize a URL path by:
+    /// - Stripping query parameters
+    /// - Collapsing multiple slashes
+    /// - Ensuring path starts and ends with /
     static String normalize(String fullPath) {
         return Option.option(fullPath)
                      .map(PathUtils::normalizeNonNull)

@@ -13,19 +13,13 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * Framework for simulating realistic backend behavior including latency and failures.
- * Used to test system resilience and behavior under various conditions.
- */
+/// Framework for simulating realistic backend behavior including latency and failures.
+/// Used to test system resilience and behavior under various conditions.
 public sealed interface BackendSimulation {
-    /**
-     * Thread counter for unique naming.
-     */
+    /// Thread counter for unique naming.
     AtomicInteger THREAD_COUNTER = new AtomicInteger(0);
 
-    /**
-     * Shared scheduler for latency simulation.
-     */
+    /// Shared scheduler for latency simulation.
     ScheduledExecutorService SCHEDULER = Executors.newScheduledThreadPool(2, BackendSimulation::createDaemonThread);
 
     private static Thread createDaemonThread(Runnable r) {
@@ -43,9 +37,7 @@ public sealed interface BackendSimulation {
     Cause ERROR_TYPES_EMPTY = Causes.cause("errorTypes cannot be null or empty");
     Cause SIMULATIONS_EMPTY = Causes.cause("simulations cannot be null or empty");
 
-    /**
-     * Shutdown the scheduler. Should be called on application shutdown.
-     */
+    /// Shutdown the scheduler. Should be called on application shutdown.
     static void shutdown() {
         SCHEDULER.shutdown();
         try{
@@ -59,16 +51,12 @@ public sealed interface BackendSimulation {
         }
     }
 
-    /**
-     * Apply the simulation effect.
-     *
-     * @return Promise that completes after simulation effect (delay, or fails for failure injection)
-     */
+    /// Apply the simulation effect.
+    ///
+    /// @return Promise that completes after simulation effect (delay, or fails for failure injection)
     Promise<Unit> apply();
 
-    /**
-     * No-op simulation that does nothing.
-     */
+    /// No-op simulation that does nothing.
     record NoOp() implements BackendSimulation {
         public static final NoOp INSTANCE = new NoOp();
 
@@ -78,9 +66,7 @@ public sealed interface BackendSimulation {
         }
     }
 
-    /**
-     * Simulates network/processing latency with optional jitter and spikes.
-     */
+    /// Simulates network/processing latency with optional jitter and spikes.
     record LatencySimulation(long baseLatencyMs, long jitterMs, double spikeChance, long spikeLatencyMs)
     implements BackendSimulation {
         @Override
@@ -144,9 +130,7 @@ public sealed interface BackendSimulation {
         }
     }
 
-    /**
-     * Simulates random failures at a configurable rate.
-     */
+    /// Simulates random failures at a configurable rate.
     record FailureInjection(double failureRate, List<SimulatedError> errorTypes) implements BackendSimulation {
         public FailureInjection(double failureRate, List<SimulatedError> errorTypes) {
             this.failureRate = failureRate;
@@ -183,10 +167,8 @@ public sealed interface BackendSimulation {
         }
     }
 
-    /**
-     * Combines multiple simulations - all must succeed for the composite to succeed.
-     * Latency simulations are applied sequentially (delays add up).
-     */
+    /// Combines multiple simulations - all must succeed for the composite to succeed.
+    /// Latency simulations are applied sequentially (delays add up).
     record Composite(List<BackendSimulation> simulations) implements BackendSimulation {
         public Composite(List<BackendSimulation> simulations) {
             this.simulations = simulations == null
@@ -215,9 +197,7 @@ public sealed interface BackendSimulation {
         }
     }
 
-    /**
-     * Simulated error types for failure injection.
-     */
+    /// Simulated error types for failure injection.
     sealed interface SimulatedError extends Cause {
         record ServiceUnavailable(String serviceName) implements SimulatedError {
             @Override

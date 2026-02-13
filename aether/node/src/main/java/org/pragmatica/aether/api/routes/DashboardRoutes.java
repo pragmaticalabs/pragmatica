@@ -6,10 +6,8 @@ import org.pragmatica.http.routing.StaticFileRouteSource;
 
 import java.util.stream.Stream;
 
-/**
- * Routes for dashboard static files.
- * Serves static files from classpath:/dashboard/
- */
+/// Routes for dashboard static files.
+/// Serves static files from classpath:/dashboard/
 public final class DashboardRoutes implements RouteSource {
     private DashboardRoutes() {}
 

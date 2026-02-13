@@ -4,13 +4,9 @@ import org.pragmatica.lang.Cause;
 
 import java.util.List;
 
-/**
- * Error types for load configuration parsing and validation.
- */
+/// Error types for load configuration parsing and validation.
 public sealed interface LoadConfigError extends Cause {
-    /**
-     * TOML parsing failed.
-     */
+    /// TOML parsing failed.
     record ParseFailed(String details) implements LoadConfigError {
         public static ParseFailed parseFailed(String details) {
             return new ParseFailed(details);
@@ -22,9 +18,7 @@ public sealed interface LoadConfigError extends Cause {
         }
     }
 
-    /**
-     * Configuration validation failed.
-     */
+    /// Configuration validation failed.
     record ValidationFailed(List<String> errors) implements LoadConfigError {
         @Override
         public String message() {
@@ -32,9 +26,7 @@ public sealed interface LoadConfigError extends Cause {
         }
     }
 
-    /**
-     * File not found or cannot be read.
-     */
+    /// File not found or cannot be read.
     record FileReadFailed(String path, Throwable cause) implements LoadConfigError {
         @Override
         public String message() {
@@ -42,9 +34,7 @@ public sealed interface LoadConfigError extends Cause {
         }
     }
 
-    /**
-     * Invalid pattern in body or path variable.
-     */
+    /// Invalid pattern in body or path variable.
     record PatternInvalid(String pattern, String reason) implements LoadConfigError {
         @Override
         public String message() {

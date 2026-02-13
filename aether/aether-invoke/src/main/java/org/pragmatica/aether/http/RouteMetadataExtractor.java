@@ -9,32 +9,27 @@ import java.util.List;
 
 import static org.pragmatica.aether.http.handler.HttpRouteDefinition.httpRouteDefinition;
 
-/**
- * Extracts route metadata from {@link RouteSource} and converts to {@link HttpRouteDefinition} objects
- * for KV-Store publication.
- *
- * <p>Each route is converted with:
- * <ul>
- *   <li>httpMethod - from {@code route.method().name()}</li>
- *   <li>pathPrefix - from {@code route.path()}</li>
- *   <li>artifactCoord - passed as parameter</li>
- *   <li>sliceMethod - derived from route path (used as method identifier)</li>
- *   <li>security - defaults to {@link RouteSecurityPolicy#publicRoute()}</li>
- * </ul>
- */
+/// Extracts route metadata from {@link RouteSource} and converts to {@link HttpRouteDefinition} objects
+/// for KV-Store publication.
+///
+///
+/// Each route is converted with:
+///
+///   - httpMethod - from `route.method().name()`
+///   - pathPrefix - from `route.path()`
+///   - artifactCoord - passed as parameter
+///   - sliceMethod - derived from route path (used as method identifier)
+///   - security - defaults to {@link RouteSecurityPolicy#publicRoute()}
+///
 public interface RouteMetadataExtractor {
-    /**
-     * Extract route definitions from a route source.
-     *
-     * @param routes       The route source providing routes
-     * @param artifactCoord The artifact coordinate to associate with routes
-     * @return List of HTTP route definitions for KV-Store publication
-     */
+    /// Extract route definitions from a route source.
+    ///
+    /// @param routes       The route source providing routes
+    /// @param artifactCoord The artifact coordinate to associate with routes
+    /// @return List of HTTP route definitions for KV-Store publication
     List<HttpRouteDefinition> extract(RouteSource routes, String artifactCoord);
 
-    /**
-     * Create a RouteMetadataExtractor instance.
-     */
+    /// Create a RouteMetadataExtractor instance.
     static RouteMetadataExtractor routeMetadataExtractor() {
         return new RouteMetadataExtractorImpl();
     }
@@ -57,13 +52,11 @@ class RouteMetadataExtractorImpl implements RouteMetadataExtractor {
                                    RouteSecurityPolicy.publicRoute());
     }
 
-    /**
-     * Extract path prefix before first path parameter placeholder.
-     * Examples:
-     * - /api/v1/urls/{shortCode} → /api/v1/urls/
-     * - /api/v1/analytics/{shortCode}/click → /api/v1/analytics/
-     * - /api/v1/users → /api/v1/users
-     */
+    /// Extract path prefix before first path parameter placeholder.
+    /// Examples:
+    /// - /api/v1/urls/{shortCode} → /api/v1/urls/
+    /// - /api/v1/analytics/{shortCode}/click → /api/v1/analytics/
+    /// - /api/v1/users → /api/v1/users
     private String extractPathPrefix(String path) {
         int placeholderIndex = path.indexOf('{');
         return placeholderIndex > 0

@@ -17,12 +17,10 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * Configuration for the simulator.
- * <p>
- * Supports per-entry-point rate configuration and slice settings.
- * Can be loaded from JSON file or constructed programmatically.
- */
+/// Configuration for the simulator.
+///
+/// Supports per-entry-point rate configuration and slice settings.
+/// Can be loaded from JSON file or constructed programmatically.
 public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                               Map<String, SliceConfig> slices,
                               boolean loadGeneratorEnabled,
@@ -33,9 +31,7 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
     private static final Cause SLICES_NULL = Causes.cause("slices cannot be null");
     private static final Cause INVALID_MULTIPLIER = Causes.cause("globalRateMultiplier must be >= 0 and finite");
 
-    /**
-     * Configuration for a single entry point.
-     */
+    /// Configuration for a single entry point.
     public record EntryPointConfig(int callsPerSecond,
                                    boolean enabled,
                                    List<String> products,
@@ -52,18 +48,14 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
             return new EntryPointConfig(callsPerSecond, true, List.of(), List.of(), 1, 5);
         }
 
-        /**
-         * Get products list, using defaults if empty.
-         */
+        /// Get products list, using defaults if empty.
         public List<String> effectiveProducts() {
             return products.isEmpty()
                    ? DEFAULT_PRODUCTS
                    : products;
         }
 
-        /**
-         * Build a DataGenerator for this entry point type.
-         */
+        /// Build a DataGenerator for this entry point type.
         public DataGenerator buildGenerator(String entryPointName) {
             var productGen = new DataGenerator.ProductIdGenerator(effectiveProducts());
             return switch (entryPointName) {
@@ -102,9 +94,7 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         }
     }
 
-    /**
-     * Configuration for a slice.
-     */
+    /// Configuration for a slice.
     public record SliceConfig(String stockMode,
                               int refillRate,
                               int baseLatencyMs,
@@ -157,9 +147,7 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
             return new SliceConfig("infinite", 0, 0, 0, 0.0, 0.0, 0);
         }
 
-        /**
-         * Build a BackendSimulation from this config.
-         */
+        /// Build a BackendSimulation from this config.
         public BackendSimulation buildSimulation() {
             var hasLatency = baseLatencyMs > 0 || jitterMs > 0;
             var hasFailure = failureRate > 0;
@@ -218,9 +206,7 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         return Result.success(new SimulatorConfig(entryPoints, slices, loadGeneratorEnabled, globalRateMultiplier));
     }
 
-    /**
-     * Create default configuration.
-     */
+    /// Create default configuration.
     public static SimulatorConfig defaultConfig() {
         var entryPoints = new HashMap<String, EntryPointConfig>();
         entryPoints.put("placeOrder", EntryPointConfig.withRate(0));
@@ -234,32 +220,24 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         return new SimulatorConfig(entryPoints, slices, false, 1.0);
     }
 
-    /**
-     * Get entry point config, returning default if not found.
-     */
+    /// Get entry point config, returning default if not found.
     public EntryPointConfig entryPointConfig(String name) {
         return entryPoints.getOrDefault(name, EntryPointConfig.defaultConfig());
     }
 
-    /**
-     * Get slice config, returning default if not found.
-     */
+    /// Get slice config, returning default if not found.
     public SliceConfig sliceConfig(String name) {
         return slices.getOrDefault(name, SliceConfig.defaultConfig());
     }
 
-    /**
-     * Get effective rate for an entry point (applies global multiplier).
-     */
+    /// Get effective rate for an entry point (applies global multiplier).
     public int effectiveRate(String entryPoint) {
         var config = entryPointConfig(entryPoint);
         if (!config.enabled()) return 0;
         return (int)(config.callsPerSecond() * globalRateMultiplier);
     }
 
-    /**
-     * Create a new config with updated entry point rate.
-     */
+    /// Create a new config with updated entry point rate.
     public SimulatorConfig withEntryPointRate(String entryPoint, int rate) {
         var newEntryPoints = new HashMap<>(entryPoints);
         var existing = entryPointConfig(entryPoint);
@@ -273,23 +251,17 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         return new SimulatorConfig(newEntryPoints, slices, loadGeneratorEnabled, globalRateMultiplier);
     }
 
-    /**
-     * Create a new config with updated global rate multiplier.
-     */
+    /// Create a new config with updated global rate multiplier.
     public SimulatorConfig withGlobalMultiplier(double multiplier) {
         return new SimulatorConfig(entryPoints, slices, loadGeneratorEnabled, multiplier);
     }
 
-    /**
-     * Create a new config with load generator enabled/disabled.
-     */
+    /// Create a new config with load generator enabled/disabled.
     public SimulatorConfig withLoadGeneratorEnabled(boolean enabled) {
         return new SimulatorConfig(entryPoints, slices, enabled, globalRateMultiplier);
     }
 
-    /**
-     * Serialize to JSON.
-     */
+    /// Serialize to JSON.
     public String toJson() {
         var sb = new StringBuilder();
         sb.append("{\"entryPoints\":{");
@@ -318,17 +290,13 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
         }
     }
 
-    /**
-     * Load configuration from file.
-     */
+    /// Load configuration from file.
     public static Result<SimulatorConfig> loadFromFile(Path path) {
         return Result.lift(Causes.forOneValue("Failed to load config from " + path),
                            () -> parseJson(Files.readString(path)));
     }
 
-    /**
-     * Try to load from file, return default if file doesn't exist.
-     */
+    /// Try to load from file, return default if file doesn't exist.
     public static SimulatorConfig loadOrDefault(Path path) {
         if (!Files.exists(path)) {
             log.info("Config file not found at {}, using defaults", path);
@@ -339,9 +307,7 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                            .or(defaultConfig());
     }
 
-    /**
-     * Parse JSON configuration (simple parser, no external dependencies).
-     */
+    /// Parse JSON configuration (simple parser, no external dependencies).
     public static SimulatorConfig parseJson(String json) {
         var config = defaultConfig();
         var entryPoints = new HashMap<>(config.entryPoints());
@@ -387,9 +353,7 @@ public record SimulatorConfig(Map<String, EntryPointConfig> entryPoints,
                : defaultValue;
     }
 
-    /**
-     * Save configuration to file.
-     */
+    /// Save configuration to file.
     public Result<Unit> saveToFile(Path path) {
         return Result.lift(Causes.forOneValue("Failed to save config to " + path),
                            () -> {

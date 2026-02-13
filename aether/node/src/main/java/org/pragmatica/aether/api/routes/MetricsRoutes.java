@@ -33,9 +33,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.http.routing.QueryParameter.aString;
 
-/**
- * Routes for metrics endpoints: node metrics, artifact metrics, invocation metrics, prometheus.
- */
+/// Routes for metrics endpoints: node metrics, artifact metrics, invocation metrics, prometheus.
 public final class MetricsRoutes implements RouteSource {
     private static final ContentType PROMETHEUS_CONTENT_TYPE = ContentType.contentType("text/plain; version=0.0.4; charset=utf-8",
                                                                                        ContentCategory.PLAIN_TEXT);

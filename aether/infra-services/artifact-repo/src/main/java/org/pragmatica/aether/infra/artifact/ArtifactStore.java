@@ -22,94 +22,65 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Artifact storage backed by DHT.
- * Stores artifacts in chunks for efficient distribution.
- *
- * <p>Key format:
- * <ul>
- *   <li>Artifact content: {@code artifacts/{groupId}/{artifactId}/{version}/content/{chunkIndex}}</li>
- *   <li>Artifact metadata: {@code artifacts/{groupId}/{artifactId}/{version}/meta}</li>
- *   <li>Version list: {@code artifacts/{groupId}/{artifactId}/versions}</li>
- * </ul>
- */
+/// Artifact storage backed by DHT.
+/// Stores artifacts in chunks for efficient distribution.
+///
+///
+/// Key format:
+///
+///   - Artifact content: `artifacts/{groupId`/{artifactId}/{version}/content/{chunkIndex}}
+///   - Artifact metadata: `artifacts/{groupId`/{artifactId}/{version}/meta}
+///   - Version list: `artifacts/{groupId`/{artifactId}/versions}
+///
 public interface ArtifactStore {
-    /**
-     * Deploy an artifact.
-     */
+    /// Deploy an artifact.
     Promise<DeployResult> deploy(Artifact artifact, byte[] content);
 
-    /**
-     * Resolve an artifact.
-     */
+    /// Resolve an artifact.
     Promise<byte[]> resolve(Artifact artifact);
 
-    /**
-     * Resolve an artifact with its metadata.
-     * Allows callers to access verification details (hash, size, etc.).
-     */
+    /// Resolve an artifact with its metadata.
+    /// Allows callers to access verification details (hash, size, etc.).
     Promise<ResolvedArtifact> resolveWithMetadata(Artifact artifact);
 
-    /**
-     * Resolved artifact with content and metadata.
-     */
+    /// Resolved artifact with content and metadata.
     record ResolvedArtifact(byte[] content, ArtifactMetadata metadata) {}
 
-    /**
-     * Check if an artifact exists.
-     */
+    /// Check if an artifact exists.
     Promise<Boolean> exists(Artifact artifact);
 
-    /**
-     * List all versions of an artifact.
-     */
+    /// List all versions of an artifact.
     Promise<List<Version>> versions(GroupId groupId, ArtifactId artifactId);
 
-    /**
-     * Delete an artifact.
-     */
+    /// Delete an artifact.
     Promise<Unit> delete(Artifact artifact);
 
-    /**
-     * Get storage metrics for this artifact store.
-     */
+    /// Get storage metrics for this artifact store.
     Metrics metrics();
 
-    /**
-     * Artifact storage metrics snapshot.
-     */
+    /// Artifact storage metrics snapshot.
     record Metrics(int artifactCount, int chunkCount, long memoryBytes) {
-        /**
-         * Chunk size in bytes (64KB).
-         */
+        /// Chunk size in bytes (64KB).
         static final int CHUNK_SIZE = 64 * 1024;
 
-        /**
-         * Create metrics from artifact and chunk counts.
-         */
+        /// Create metrics from artifact and chunk counts.
         static Metrics metrics(int artifactCount, int chunkCount) {
             return new Metrics(artifactCount, chunkCount, (long) chunkCount * CHUNK_SIZE);
         }
 
-        /**
-         * Empty metrics.
-         */
+        /// Empty metrics.
         static Metrics empty() {
             return new Metrics(0, 0, 0);
         }
     }
 
-    /**
-     * Deployment result with checksums.
-     */
+    /// Deployment result with checksums.
     record DeployResult(Artifact artifact,
                         long size,
                         String md5,
                         String sha1) {}
 
-    /**
-     * Artifact metadata.
-     */
+    /// Artifact metadata.
     record ArtifactMetadata(long size,
                             int chunkCount,
                             String md5,
@@ -135,9 +106,7 @@ public interface ArtifactStore {
         }
     }
 
-    /**
-     * Artifact store errors.
-     */
+    /// Artifact store errors.
     sealed interface ArtifactStoreError extends Cause {
         record NotFound(Artifact artifact) implements ArtifactStoreError {
             @Override
@@ -168,9 +137,7 @@ public interface ArtifactStore {
         }
     }
 
-    /**
-     * Create an artifact store backed by DHT.
-     */
+    /// Create an artifact store backed by DHT.
     static ArtifactStore artifactStore(DHTClient dht) {
         return new ArtifactStoreImpl(dht);
     }

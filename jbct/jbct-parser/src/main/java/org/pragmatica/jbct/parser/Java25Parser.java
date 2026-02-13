@@ -9,18 +9,17 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Generated PEG parser for Java 25 syntax with CST (Concrete Syntax Tree) output.
- * This parser preserves all source information including trivia (whitespace/comments).
- * Depends only on pragmatica-lite:core for Result type.
- *
- * <p><b>Thread Safety:</b> This class is NOT thread-safe. Each thread must use
- * its own instance. For concurrent parsing, use a ThreadLocal:
- * <pre>{@code
- * private static final ThreadLocal<Java25Parser> PARSER =
- *     ThreadLocal.withInitial(Java25Parser::new);
- * }</pre>
- */
+/// Generated PEG parser for Java 25 syntax with CST (Concrete Syntax Tree) output.
+/// This parser preserves all source information including trivia (whitespace/comments).
+/// Depends only on pragmatica-lite:core for Result type.
+///
+///
+/// **Thread Safety:** This class is NOT thread-safe. Each thread must use
+/// its own instance. For concurrent parsing, use a ThreadLocal:
+/// ```{@code
+/// private static final ThreadLocal<Java25Parser> PARSER =
+///     ThreadLocal.withInitial(Java25Parser::new);
+/// }```
 public final class Java25Parser {
     // === Rule ID Types ===
     public sealed interface RuleId {
@@ -1546,7 +1545,7 @@ public final class Java25Parser {
             return new SourceLocation(line, column, offset);
         }
 
-        /** @deprecated Use {@link #sourceLocation(int, int, int)} instead */
+        /// @deprecated Use {@link #sourceLocation(int, int, int)} instead */
         @Deprecated(forRemoval = true)
         public static SourceLocation at(int line, int column, int offset) {
             return sourceLocation(line, column, offset);
@@ -1562,7 +1561,7 @@ public final class Java25Parser {
             return new SourceSpan(start, end);
         }
 
-        /** @deprecated Use {@link #sourceSpan(SourceLocation, SourceLocation)} instead */
+        /// @deprecated Use {@link #sourceSpan(SourceLocation, SourceLocation)} instead */
         @Deprecated(forRemoval = true)
         public static SourceSpan of(SourceLocation start, SourceLocation end) {
             return sourceSpan(start, end);
@@ -1945,10 +1944,8 @@ public final class Java25Parser {
     private Option<SourceLocation> furthestFailure;
     private Option<String> furthestExpected;
 
-    /**
-     * Enable or disable packrat memoization.
-     * Disabling may reduce memory usage for large inputs.
-     */
+    /// Enable or disable packrat memoization.
+    /// Disabling may reduce memory usage for large inputs.
     public void setPackratEnabled(boolean enabled) {
         this.packratEnabled = enabled;
     }
@@ -2074,10 +2071,8 @@ public final class Java25Parser {
         return Result.success(rootNode);
     }
 
-    /**
-     * Parse input and return AST (Abstract Syntax Tree).
-     * The AST is a simplified tree without trivia (whitespace/comments).
-     */
+    /// Parse input and return AST (Abstract Syntax Tree).
+    /// The AST is a simplified tree without trivia (whitespace/comments).
     public Result<AstNode> parseAst(String input) {
         return parse(input).map(this::toAst);
     }
@@ -2103,11 +2098,9 @@ public final class Java25Parser {
         };
     }
 
-    /**
-     * Parse with advanced error recovery and Rust-style diagnostics.
-     * Returns a result containing the CST (with Error nodes for unparseable regions)
-     * and a list of diagnostics.
-     */
+    /// Parse with advanced error recovery and Rust-style diagnostics.
+    /// Returns a result containing the CST (with Error nodes for unparseable regions)
+    /// and a list of diagnostics.
     public ParseResultWithDiagnostics parseWithDiagnostics(String input) {
         init(input);
         var leadingTrivia = skipWhitespace();

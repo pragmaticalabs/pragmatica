@@ -4,14 +4,10 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.Causes;
 
-/**
- * Error types for database connector operations.
- */
+/// Error types for database connector operations.
 public sealed interface DatabaseConnectorError extends Cause {
 
-    /**
-     * Connection to database failed.
-     */
+    /// Connection to database failed.
     record ConnectionFailed(String message, Option<Throwable> cause) implements DatabaseConnectorError {
         public static ConnectionFailed connectionFailed(String message) {
             return new ConnectionFailed(message, Option.none());
@@ -48,9 +44,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return ConnectionFailed.connectionFailed(cause);
     }
 
-    /**
-     * Query execution failed.
-     */
+    /// Query execution failed.
     record QueryFailed(String sql, String message, Option<Throwable> cause) implements DatabaseConnectorError {
         public static QueryFailed queryFailed(String sql, String message) {
             return new QueryFailed(sql, message, Option.none());
@@ -85,9 +79,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return QueryFailed.queryFailed(sql, cause);
     }
 
-    /**
-     * Database constraint violation (unique, foreign key, etc).
-     */
+    /// Database constraint violation (unique, foreign key, etc).
     record ConstraintViolation(String constraint, String message) implements DatabaseConnectorError {
         public static ConstraintViolation constraintViolation(String message) {
             return new ConstraintViolation("unknown", message);
@@ -107,9 +99,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return ConstraintViolation.constraintViolation(message);
     }
 
-    /**
-     * Operation timed out.
-     */
+    /// Operation timed out.
     record TimedOut(String operation) implements DatabaseConnectorError {
         public static TimedOut timedOut(String operation) {
             return new TimedOut(operation);
@@ -125,9 +115,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return TimedOut.timedOut(operation);
     }
 
-    /**
-     * Transaction rolled back (deadlock, serialization failure, etc).
-     */
+    /// Transaction rolled back (deadlock, serialization failure, etc).
     record TransactionRolledBack(String reason) implements DatabaseConnectorError {
         public static TransactionRolledBack transactionRolledBack(String reason) {
             return new TransactionRolledBack(reason);
@@ -143,9 +131,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return TransactionRolledBack.transactionRolledBack(reason);
     }
 
-    /**
-     * Transaction not active when required.
-     */
+    /// Transaction not active when required.
     enum TransactionNotActive implements DatabaseConnectorError {
         INSTANCE;
 
@@ -155,9 +141,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         }
     }
 
-    /**
-     * Query returned no result when one was expected.
-     */
+    /// Query returned no result when one was expected.
     enum ResultNotFound implements DatabaseConnectorError {
         INSTANCE;
 
@@ -167,9 +151,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         }
     }
 
-    /**
-     * Query returned multiple results when single was expected.
-     */
+    /// Query returned multiple results when single was expected.
     record MultipleResults(int count) implements DatabaseConnectorError {
         public static MultipleResults multipleResults(int count) {
             return new MultipleResults(count);
@@ -185,9 +167,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return MultipleResults.multipleResults(count);
     }
 
-    /**
-     * Configuration error.
-     */
+    /// Configuration error.
     record ConfigurationError(String reason) implements DatabaseConnectorError {
         public static ConfigurationError configurationError(String reason) {
             return new ConfigurationError(reason);
@@ -203,9 +183,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         return ConfigurationError.configurationError(reason);
     }
 
-    /**
-     * Pool exhausted - no connections available.
-     */
+    /// Pool exhausted - no connections available.
     enum PoolExhausted implements DatabaseConnectorError {
         INSTANCE;
 
@@ -215,9 +193,7 @@ public sealed interface DatabaseConnectorError extends Cause {
         }
     }
 
-    /**
-     * General database failure (catch-all for unexpected errors).
-     */
+    /// General database failure (catch-all for unexpected errors).
     record DatabaseFailure(Throwable cause) implements DatabaseConnectorError {
         public static DatabaseFailure databaseFailure(Throwable cause) {
             return new DatabaseFailure(cause);

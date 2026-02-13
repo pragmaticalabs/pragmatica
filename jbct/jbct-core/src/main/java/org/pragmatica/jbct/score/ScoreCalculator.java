@@ -7,18 +7,16 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Calculates JBCT compliance scores using density + severity weighting.
- *
- * Formula:
- * weighted_violations = Σ(count[severity] × multiplier[severity])
- *   error:    × 2.5
- *   warning:  × 1.0
- *   info:     × 0.3
- *
- * category_score = 100 × (1 - weighted_violations / checkpoints)
- * overall_score = Σ(category_score[i] × weight[i])
- */
+/// Calculates JBCT compliance scores using density + severity weighting.
+///
+/// Formula:
+/// weighted_violations = Σ(count[severity] × multiplier[severity])
+///   error:    × 2.5
+///   warning:  × 1.0
+///   info:     × 0.3
+///
+/// category_score = 100 × (1 - weighted_violations / checkpoints)
+/// overall_score = Σ(category_score[i] × weight[i])
 public sealed interface ScoreCalculator permits ScoreCalculator.unused {
     record unused() implements ScoreCalculator {}
 
@@ -26,9 +24,7 @@ public sealed interface ScoreCalculator permits ScoreCalculator.unused {
     double WARNING_MULTIPLIER = 1.0;
     double INFO_MULTIPLIER = 0.3;
 
-    /**
-     * Calculate JBCT score from lint diagnostics.
-     */
+    /// Calculate JBCT score from lint diagnostics.
     static ScoreResult calculate(List<Diagnostic> diagnostics, int filesAnalyzed) {
         var categoryViolations = groupByCategory(diagnostics);
         var categoryCheckpoints = countCheckpoints(diagnostics);

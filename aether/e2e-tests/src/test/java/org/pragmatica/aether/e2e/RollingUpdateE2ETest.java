@@ -15,30 +15,32 @@ import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for rolling update functionality.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Two-stage rolling update (deploy then route)</li>
- *   <li>Traffic ratio-based routing</li>
- *   <li>Health-based auto-progression</li>
- *   <li>Rollback scenarios</li>
- *   <li>Request continuity during updates</li>
- * </ul>
- *
- * <p>Note: These tests require Docker and the echo-slice test artifact.
- * Uses echo-slice v1 (0.15.0) and v2 (0.16.0) for version transition testing.
- * Run with: mvn test -pl e2e-tests -Dtest=RollingUpdateE2ETest
- *
- * <p>This test class uses a shared cluster for all tests to reduce startup overhead.
- * Tests run in order and each test cleans up previous state before running.
- */
+/// E2E tests for rolling update functionality.
+///
+///
+/// Tests cover:
+///
+///   - Two-stage rolling update (deploy then route)
+///   - Traffic ratio-based routing
+///   - Health-based auto-progression
+///   - Rollback scenarios
+///   - Request continuity during updates
+///
+///
+///
+/// Note: These tests require Docker and the echo-slice test artifact.
+/// Uses echo-slice v1 (current version) and v2 (0.16.0) for version transition testing.
+/// Run with: mvn test -pl e2e-tests -Dtest=RollingUpdateE2ETest
+///
+///
+/// This test class uses a shared cluster for all tests to reduce startup overhead.
+/// Tests run in order and each test cleans up previous state before running.
 @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
 @Execution(ExecutionMode.SAME_THREAD)
 class RollingUpdateE2ETest {
     private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
-    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.15.0";
+    private static final String TEST_ARTIFACT_VERSION = System.getProperty("project.version", "0.15.1");
+    private static final String OLD_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:" + TEST_ARTIFACT_VERSION;
     private static final String NEW_VERSION = "org.pragmatica-lite.aether.test:echo-slice-echo-service:0.16.0";
     private static final Duration UPDATE_TIMEOUT = adapt(Duration.ofSeconds(120));
 
@@ -71,7 +73,6 @@ class RollingUpdateE2ETest {
         // Wait for cluster stability
         cluster.awaitLeader();
         cluster.awaitAllHealthy();
-        sleep(timeSpan(2).seconds());
 
         // Cancel any active rolling updates
         cancelActiveRollingUpdates();

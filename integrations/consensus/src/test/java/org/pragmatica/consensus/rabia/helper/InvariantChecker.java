@@ -30,10 +30,8 @@ import java.util.Set;
 
 import static org.pragmatica.lang.Result.success;
 
-/**
- * Invariant checker for Rabia consensus protocol.
- * Implements invariants from weak_mvc.ivy specification (lines 201-298).
- */
+/// Invariant checker for Rabia consensus protocol.
+/// Implements invariants from weak_mvc.ivy specification (lines 201-298).
 public final class InvariantChecker {
 
     /// Result of an invariant check

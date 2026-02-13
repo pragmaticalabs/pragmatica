@@ -16,9 +16,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
 
-/**
- * Tests for CST-based formatter.
- */
+/// Tests for CST-based formatter.
 class CstFormatterTest {
     private static final Path EXAMPLES_DIR = Path.of("src/test/resources/format-examples");
 

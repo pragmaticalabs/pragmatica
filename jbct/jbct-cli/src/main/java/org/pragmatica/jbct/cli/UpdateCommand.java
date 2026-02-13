@@ -8,9 +8,7 @@ import java.util.concurrent.Callable;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-/**
- * Update command - update AI tools from coding-technology repository.
- */
+/// Update command - update AI tools from coding-technology repository.
 @Command(
  name = "update",
  description = "Update AI tools from coding-technology repository",

@@ -15,32 +15,30 @@ import java.util.Map;
 
 import static java.lang.System.Logger.Level.WARNING;
 
-/**
- * Loader for route configuration from TOML files.
- * <p>
- * Supports loading configuration from:
- * <ul>
- *   <li>Single config file via {@link #load(Path)}</li>
- *   <li>Merged base + slice config via {@link #loadMerged(Path)}</li>
- * </ul>
- * <p>
- * TOML format:
- * <pre>{@code
- * prefix = "/api/v1"
- *
- * [routes]
- * getUser = "GET /{id:Long}"
- * createUser = "POST /"
- *
- * [errors]
- * default = 500
- * HTTP_404 = ["*NotFound*", "*Missing*"]
- * HTTP_400 = ["*Invalid*"]
- *
- * [errors.explicit]
- * SomeAmbiguousType = 404
- * }</pre>
- */
+/// Loader for route configuration from TOML files.
+///
+/// Supports loading configuration from:
+///
+///   - Single config file via {@link #load(Path)}
+///   - Merged base + slice config via {@link #loadMerged(Path)}
+///
+///
+/// TOML format:
+/// ```{@code
+/// prefix = "/api/v1"
+///
+/// [routes]
+/// getUser = "GET /{id:Long}"
+/// createUser = "POST /"
+///
+/// [errors]
+/// default = 500
+/// HTTP_404 = ["*NotFound*", "*Missing*"]
+/// HTTP_400 = ["*Invalid*"]
+///
+/// [errors.explicit]
+/// SomeAmbiguousType = 404
+/// }```
 public final class RouteConfigLoader {
     public static final String CONFIG_FILE = "routes.toml";
     public static final String BASE_CONFIG_FILE = "routes-base.toml";
@@ -51,12 +49,10 @@ public final class RouteConfigLoader {
 
     private RouteConfigLoader() {}
 
-    /**
-     * Load route configuration from a specific file.
-     *
-     * @param configPath path to the TOML configuration file
-     * @return Result containing RouteConfig or error
-     */
+    /// Load route configuration from a specific file.
+    ///
+    /// @param configPath path to the TOML configuration file
+    /// @return Result containing RouteConfig or error
     public static Result<RouteConfig> load(Path configPath) {
         if (!Files.exists(configPath) || !Files.isRegularFile(configPath)) {
             return FILE_NOT_FOUND.result();
@@ -75,20 +71,18 @@ public final class RouteConfigLoader {
         return routesResult.map(routes -> RouteConfig.routeConfig(prefix, routes, errorsConfig));
     }
 
-    /**
-     * Load and merge base configuration with slice-specific configuration.
-     * <p>
-     * Looks for:
-     * <ul>
-     *   <li>{@code routes-base.toml} - base configuration (optional)</li>
-     *   <li>{@code routes.toml} - slice-specific configuration (optional)</li>
-     * </ul>
-     * <p>
-     * If neither file exists, returns empty configuration.
-     *
-     * @param slicePackagePath path to the slice package directory
-     * @return Result containing merged RouteConfig (empty if no config files found)
-     */
+    /// Load and merge base configuration with slice-specific configuration.
+    ///
+    /// Looks for:
+    ///
+    ///   - `routes-base.toml` - base configuration (optional)
+    ///   - `routes.toml` - slice-specific configuration (optional)
+    ///
+    ///
+    /// If neither file exists, returns empty configuration.
+    ///
+    /// @param slicePackagePath path to the slice package directory
+    /// @return Result containing merged RouteConfig (empty if no config files found)
     public static Result<RouteConfig> loadMerged(Path slicePackagePath) {
         var basePath = slicePackagePath.resolve(BASE_CONFIG_FILE);
         var slicePath = slicePackagePath.resolve(CONFIG_FILE);

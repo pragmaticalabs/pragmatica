@@ -14,9 +14,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * In-memory implementation of PubSub for testing and single-node scenarios.
- */
+/// In-memory implementation of PubSub for testing and single-node scenarios.
 final class InMemoryPubSub implements PubSub {
     private final ConcurrentHashMap<String, CopyOnWriteArrayList<SubscriptionEntry>> subscriptions = new ConcurrentHashMap<>();
     private final Set<String> topics = ConcurrentHashMap.newKeySet();

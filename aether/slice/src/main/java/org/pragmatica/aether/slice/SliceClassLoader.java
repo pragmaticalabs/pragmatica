@@ -4,38 +4,34 @@ import java.io.IOException;
 import java.net.URL;
 import java.net.URLClassLoader;
 
-/**
- * ClassLoader for individual slice isolation.
- * <p>
- * Uses child-first delegation strategy for slice code and conflict overrides,
- * delegating to parent (SharedLibraryClassLoader) for shared dependencies.
- * <p>
- * Delegation strategy:
- * <ul>
- *   <li><b>Parent-first</b> for JDK classes (java.*, javax.*, jdk.*, sun.*) - mandatory</li>
- *   <li><b>Child-first</b> for everything else - enables slice isolation</li>
- * </ul>
- * <p>
- * The URLs provided should include:
- * <ul>
- *   <li>The slice JAR itself</li>
- *   <li>Any conflicting dependency JARs that shadow shared versions</li>
- * </ul>
- *
- * @see SharedLibraryClassLoader
- */
+/// ClassLoader for individual slice isolation.
+///
+/// Uses child-first delegation strategy for slice code and conflict overrides,
+/// delegating to parent (SharedLibraryClassLoader) for shared dependencies.
+///
+/// Delegation strategy:
+///
+///   - **Parent-first** for JDK classes (java.*, javax.*, jdk.*, sun.*) - mandatory
+///   - **Child-first** for everything else - enables slice isolation
+///
+///
+/// The URLs provided should include:
+///
+///   - The slice JAR itself
+///   - Any conflicting dependency JARs that shadow shared versions
+///
+///
+/// @see SharedLibraryClassLoader
 public class SliceClassLoader extends URLClassLoader {
     private static final String JAVA_PREFIX = "java.";
     private static final String JAVAX_PREFIX = "javax.";
     private static final String JDK_PREFIX = "jdk.";
     private static final String SUN_PREFIX = "sun.";
 
-    /**
-     * Create a new SliceClassLoader.
-     *
-     * @param urls   URLs to slice JAR and any conflicting dependency JARs
-     * @param parent Parent classloader (typically SharedLibraryClassLoader)
-     */
+    /// Create a new SliceClassLoader.
+    ///
+    /// @param urls   URLs to slice JAR and any conflicting dependency JARs
+    /// @param parent Parent classloader (typically SharedLibraryClassLoader)
     public SliceClassLoader(URL[] urls, ClassLoader parent) {
         super(urls, parent);
     }
@@ -67,22 +63,18 @@ public class SliceClassLoader extends URLClassLoader {
         }
     }
 
-    /**
-     * Check if class is a JDK internal class that must be loaded by parent.
-     * These classes cannot be overridden in child classloaders.
-     */
+    /// Check if class is a JDK internal class that must be loaded by parent.
+    /// These classes cannot be overridden in child classloaders.
     private boolean isJdkClass(String name) {
         return name.startsWith(JAVA_PREFIX) || name.startsWith(JAVAX_PREFIX) || name.startsWith(JDK_PREFIX) || name.startsWith(SUN_PREFIX);
     }
 
-    /**
-     * Add a URL to this classloader's search path.
-     * <p>
-     * Used to add dependency slice JARs before loading the slice class,
-     * ensuring parameter types from dependency slices can be resolved.
-     *
-     * @param url URL to add (typically a dependency slice JAR)
-     */
+    /// Add a URL to this classloader's search path.
+    ///
+    /// Used to add dependency slice JARs before loading the slice class,
+    /// ensuring parameter types from dependency slices can be resolved.
+    ///
+    /// @param url URL to add (typically a dependency slice JAR)
     public void addSliceDependencyUrl(URL url) {
         addURL(url);
     }

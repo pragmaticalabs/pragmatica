@@ -10,11 +10,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Validates API key authentication.
- * <p>
- * Checks X-API-Key header against configured valid keys.
- */
+/// Validates API key authentication.
+///
+/// Checks X-API-Key header against configured valid keys.
 class ApiKeySecurityValidator implements SecurityValidator {
     private static final String API_KEY_HEADER = "X-API-Key";
     private final Set<String> validKeys;

@@ -19,12 +19,11 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.aether.api.ManagementApiResponses.ArtifactInfoResponse;
 
-/**
- * Routes for artifact repository: artifact info endpoint.
- *
- * <p>Maven protocol routes (GET/PUT/POST for binary artifacts) remain in
- * {@link MavenProtocolRoutes} as they require dynamic content types.
- */
+/// Routes for artifact repository: artifact info endpoint.
+///
+///
+/// Maven protocol routes (GET/PUT/POST for binary artifacts) remain in
+/// {@link MavenProtocolRoutes} as they require dynamic content types.
 public final class RepositoryRoutes implements RouteSource {
     private static final Cause INVALID_PATH = Causes.cause("Invalid artifact path. Expected: /repository/info/{groupPath}/{artifactId}/{version}");
 

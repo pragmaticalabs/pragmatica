@@ -6,9 +6,7 @@ import org.pragmatica.lang.Promise;
 
 import java.util.List;
 
-/**
- * Test slice for verifying HTTP route generation.
- */
+/// Test slice for verifying HTTP route generation.
 @Slice
 public interface TestSlice {
     // Body only (POST)

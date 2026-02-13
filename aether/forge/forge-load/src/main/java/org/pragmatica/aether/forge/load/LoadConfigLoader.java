@@ -15,35 +15,29 @@ import java.util.stream.IntStream;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
-/**
- * Loads load generation configuration from TOML files.
- * <p>
- * Example configuration:
- * <pre>
- * [[load]]
- * target = "InventoryService.checkStock"
- * rate = "100/s"
- * duration = "5m"
- *
- * [load.path]
- * sku = "${random:SKU-#####}"
- *
- * [load.body]
- * quantity = "${range:1-100}"
- * </pre>
- */
+/// Loads load generation configuration from TOML files.
+///
+/// Example configuration:
+/// ```
+/// [[load]]
+/// target = "InventoryService.checkStock"
+/// rate = "100/s"
+/// duration = "5m"
+///
+/// [load.path]
+/// sku = "${random:SKU-#####}"
+///
+/// [load.body]
+/// quantity = "${range:1-100}"
+/// ```
 public sealed interface LoadConfigLoader {
-    /**
-     * Load configuration from file path.
-     */
+    /// Load configuration from file path.
     static Result<LoadConfig> load(Path path) {
         return TomlParser.parseFile(path)
                          .flatMap(LoadConfigLoader::fromDocument);
     }
 
-    /**
-     * Load configuration from TOML string content.
-     */
+    /// Load configuration from TOML string content.
     static Result<LoadConfig> loadFromString(String content) {
         return TomlParser.parse(content)
                          .flatMap(LoadConfigLoader::fromDocument);

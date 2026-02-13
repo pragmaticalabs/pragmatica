@@ -15,10 +15,8 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Controller for chaos engineering experiments.
- * Injects failures and disruptions to test system resilience.
- */
+/// Controller for chaos engineering experiments.
+/// Injects failures and disruptions to test system resilience.
 public final class ChaosController {
     private static final Logger log = LoggerFactory.getLogger(ChaosController.class);
     private static final int EVENT_ID_LENGTH = 8;
@@ -42,9 +40,7 @@ public final class ChaosController {
         return new ChaosController(eventExecutor);
     }
 
-    /**
-     * Enable or disable chaos injection.
-     */
+    /// Enable or disable chaos injection.
     public void setEnabled(boolean enabled) {
         this.enabled.set(enabled);
         log.info("Chaos controller {}", enabled
@@ -55,16 +51,12 @@ public final class ChaosController {
         }
     }
 
-    /**
-     * Check if chaos is enabled.
-     */
+    /// Check if chaos is enabled.
     public boolean isEnabled() {
         return enabled.get();
     }
 
-    /**
-     * Inject a chaos event immediately.
-     */
+    /// Inject a chaos event immediately.
     public Promise<String> injectChaos(ChaosEvent event) {
         if (!enabled.get()) {
             log.warn("Chaos injection attempted but controller is disabled");
@@ -103,9 +95,7 @@ public final class ChaosController {
         return Promise.success(eventId);
     }
 
-    /**
-     * Stop a specific chaos event.
-     */
+    /// Stop a specific chaos event.
     public Promise<Unit> stopChaos(String eventId) {
         var event = activeEvents.remove(eventId);
         var future = scheduledTasks.remove(eventId);
@@ -121,9 +111,7 @@ public final class ChaosController {
         return Promise.success(Unit.unit());
     }
 
-    /**
-     * Stop all active chaos events.
-     */
+    /// Stop all active chaos events.
     public void stopAllChaos() {
         log.info("Stopping all {} active chaos events", activeEvents.size());
         for (var eventId : List.copyOf(activeEvents.keySet())) {
@@ -131,9 +119,7 @@ public final class ChaosController {
         }
     }
 
-    /**
-     * Schedule a chaos event for later.
-     */
+    /// Schedule a chaos event for later.
     public String scheduleChaos(ChaosEvent event, Duration delay) {
         if (!enabled.get()) {
             log.warn("Chaos scheduling attempted but controller is disabled");
@@ -147,25 +133,19 @@ public final class ChaosController {
         return scheduleId;
     }
 
-    /**
-     * Get list of active chaos events.
-     */
+    /// Get list of active chaos events.
     public List<ActiveChaosEvent> activeEvents() {
         return List.copyOf(activeEvents.values());
     }
 
-    /**
-     * Get chaos controller status.
-     */
+    /// Get chaos controller status.
     public ChaosStatus status() {
         return new ChaosStatus(enabled.get(),
                                activeEvents.size(),
                                List.copyOf(activeEvents.values()));
     }
 
-    /**
-     * Shutdown the chaos controller.
-     */
+    /// Shutdown the chaos controller.
     public void shutdown() {
         stopAllChaos();
         scheduler.shutdown();
@@ -180,9 +160,7 @@ public final class ChaosController {
         }
     }
 
-    /**
-     * Active chaos event with metadata.
-     */
+    /// Active chaos event with metadata.
     public record ActiveChaosEvent(String eventId,
                                    ChaosEvent event,
                                    Instant startedAt) {
@@ -199,9 +177,7 @@ public final class ChaosController {
         }
     }
 
-    /**
-     * Chaos controller status.
-     */
+    /// Chaos controller status.
     public record ChaosStatus(boolean enabled,
                               int activeEventCount,
                               List<ActiveChaosEvent> activeEvents) {
@@ -221,9 +197,7 @@ public final class ChaosController {
         }
     }
 
-    /**
-     * Chaos-specific errors.
-     */
+    /// Chaos-specific errors.
     public sealed interface ChaosError extends org.pragmatica.lang.Cause {
         record ExecutionFailed() implements ChaosError {
             public static final ExecutionFailed INSTANCE = new ExecutionFailed();

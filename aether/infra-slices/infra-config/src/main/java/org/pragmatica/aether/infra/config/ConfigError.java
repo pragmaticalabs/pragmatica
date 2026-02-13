@@ -2,13 +2,9 @@ package org.pragmatica.aether.infra.config;
 
 import org.pragmatica.lang.Cause;
 
-/**
- * Errors for configuration operations.
- */
+/// Errors for configuration operations.
 public sealed interface ConfigError extends Cause {
-    /**
-     * Configuration key not found.
-     */
+    /// Configuration key not found.
     record KeyNotFound(String key, ConfigScope scope) implements ConfigError {
         @Override
         public String message() {
@@ -16,9 +12,7 @@ public sealed interface ConfigError extends Cause {
         }
     }
 
-    /**
-     * Configuration parsing failed.
-     */
+    /// Configuration parsing failed.
     record ParseFailed(String location, String reason) implements ConfigError {
         @Override
         public String message() {
@@ -26,9 +20,7 @@ public sealed interface ConfigError extends Cause {
         }
     }
 
-    /**
-     * Configuration validation failed.
-     */
+    /// Configuration validation failed.
     record ValidationFailed(String key, String reason) implements ConfigError {
         @Override
         public String message() {
@@ -36,9 +28,7 @@ public sealed interface ConfigError extends Cause {
         }
     }
 
-    /**
-     * Watcher registration failed.
-     */
+    /// Watcher registration failed.
     record WatchFailed(String key, String reason) implements ConfigError {
         @Override
         public String message() {

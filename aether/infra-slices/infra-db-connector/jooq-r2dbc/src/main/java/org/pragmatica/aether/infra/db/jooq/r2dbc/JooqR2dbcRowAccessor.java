@@ -6,9 +6,7 @@ import org.pragmatica.aether.infra.db.RowMapper.RowAccessor;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 
-/**
- * R2DBC Row implementation of RowAccessor for jOOQ R2DBC connector.
- */
+/// R2DBC Row implementation of RowAccessor for jOOQ R2DBC connector.
 final class JooqR2dbcRowAccessor implements RowAccessor {
     private final Row row;
 

@@ -19,49 +19,47 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-/**
- * Generates RouteSource and SliceRouterFactory implementation class for a slice.
- * <p>
- * Generated class structure:
- * <pre>{@code
- * public final class {SliceName}Routes implements RouteSource, SliceRouterFactory<{SliceName}> {
- *     private final {SliceName} delegate;
- *
- *     private {SliceName}Routes({SliceName} delegate) {
- *         this.delegate = delegate;
- *     }
- *
- *     public {SliceName}Routes() {
- *         this.delegate = null;
- *     }
- *
- *     @Override
- *     public Class<{SliceName}> sliceType() {
- *         return {SliceName}.class;
- *     }
- *
- *     @Override
- *     public SliceRouter create({SliceName} slice) {
- *         return create(slice, JsonMapper.defaultJsonMapper());
- *     }
- *
- *     @Override
- *     public SliceRouter create({SliceName} slice, JsonMapper jsonMapper) {
- *         var routes = new {SliceName}Routes(slice);
- *         return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper);
- *     }
- *
- *     @Override
- *     public Stream<Route<?>> routes() {
- *         return Stream.of(...);
- *     }
- *
- *     public ErrorMapper errorMapper() {
- *         return cause -> switch (cause) { ... };
- *     }
- * }
- * }</pre>
- */
+/// Generates RouteSource and SliceRouterFactory implementation class for a slice.
+///
+/// Generated class structure:
+/// ```{@code
+/// public final class {SliceName}Routes implements RouteSource, SliceRouterFactory<{SliceName}> {
+///     private final {SliceName} delegate;
+///
+///     private {SliceName}Routes({SliceName} delegate) {
+///         this.delegate = delegate;
+///     }
+///
+///     public {SliceName}Routes() {
+///         this.delegate = null;
+///     }
+///
+///     @Override
+///     public Class<{SliceName}> sliceType() {
+///         return {SliceName}.class;
+///     }
+///
+///     @Override
+///     public SliceRouter create({SliceName} slice) {
+///         return create(slice, JsonMapper.defaultJsonMapper());
+///     }
+///
+///     @Override
+///     public SliceRouter create({SliceName} slice, JsonMapper jsonMapper) {
+///         var routes = new {SliceName}Routes(slice);
+///         return SliceRouter.sliceRouter(routes, routes.errorMapper(), jsonMapper);
+///     }
+///
+///     @Override
+///     public Stream<Route<?>> routes() {
+///         return Stream.of(...);
+///     }
+///
+///     public ErrorMapper errorMapper() {
+///         return cause -> switch (cause) { ... };
+///     }
+/// }
+/// }```
 public class RouteSourceGenerator {
     private static final Map<String, String> TYPE_TO_PATH_PARAMETER = Map.ofEntries(Map.entry("String", "aString"),
                                                                                     Map.entry("java.lang.String",
@@ -143,11 +141,9 @@ public class RouteSourceGenerator {
         this.elements = elements;
     }
 
-    /**
-     * Generates Routes class for a slice.
-     * Returns the qualified name of the generated class if routes exist, empty otherwise.
-     * The caller is responsible for writing the service file with all accumulated entries.
-     */
+    /// Generates Routes class for a slice.
+    /// Returns the qualified name of the generated class if routes exist, empty otherwise.
+    /// The caller is responsible for writing the service file with all accumulated entries.
     public Result<Option<String>> generate(SliceModel model,
                                            RouteConfig routeConfig,
                                            List<ErrorTypeMapping> errorMappings) {
@@ -588,10 +584,8 @@ public class RouteSourceGenerator {
         return TYPE_TO_PATH_PARAMETER.getOrDefault(type, "aString");
     }
 
-    /**
-     * Escapes a string for safe embedding in Java string literals.
-     * Handles quotes, backslashes, and common control characters.
-     */
+    /// Escapes a string for safe embedding in Java string literals.
+    /// Handles quotes, backslashes, and common control characters.
     private String escapeJavaString(String input) {
         return Option.option(input)
                      .map(this::doEscapeJavaString)

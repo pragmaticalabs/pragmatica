@@ -7,21 +7,17 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
-/**
- * Processes templates containing pattern placeholders like {@code ${type:args}}.
- * <p>
- * A template can contain multiple patterns intermixed with literal text.
- * Example: {@code {"sku": "${random:SKU-#####}", "qty": ${range:1-10}}}
- */
+/// Processes templates containing pattern placeholders like `${type:args`}.
+///
+/// A template can contain multiple patterns intermixed with literal text.
+/// Example: `{"sku": "${random:SKU-#####`", "qty": ${range:1-10}}}
 public final class TemplateProcessor {
     private static final Pattern PATTERN_REGEX = Pattern.compile("(\\$\\{[a-z]+(?::[^}]*)?})");
 
     private final String template;
     private final List<Segment> segments;
 
-    /**
-     * A segment is either literal text or a pattern generator.
-     */
+    /// A segment is either literal text or a pattern generator.
     private sealed interface Segment {
         String process();
 
@@ -45,14 +41,12 @@ public final class TemplateProcessor {
         this.segments = segments;
     }
 
-    /**
-     * Compiles a template string into a processor.
-     * <p>
-     * Parses all patterns at compile time and validates them.
-     *
-     * @param template the template string
-     * @return Result containing the processor or an error
-     */
+    /// Compiles a template string into a processor.
+    ///
+    /// Parses all patterns at compile time and validates them.
+    ///
+    /// @param template the template string
+    /// @return Result containing the processor or an error
     public static Result<TemplateProcessor> compile(String template) {
         return Option.option(template)
                      .filter(s -> !s.isEmpty())
@@ -104,11 +98,9 @@ public final class TemplateProcessor {
         return List.copyOf(segments);
     }
 
-    /**
-     * Processes the template, replacing all patterns with generated values.
-     *
-     * @return the processed string
-     */
+    /// Processes the template, replacing all patterns with generated values.
+    ///
+    /// @return the processed string
     public String process() {
         if (segments.isEmpty()) {
             return template;
@@ -120,33 +112,25 @@ public final class TemplateProcessor {
         return result.toString();
     }
 
-    /**
-     * Returns the original template string.
-     */
+    /// Returns the original template string.
     public String template() {
         return template;
     }
 
-    /**
-     * Returns true if this template contains any patterns.
-     */
+    /// Returns true if this template contains any patterns.
     public boolean hasPatterns() {
         return segments.stream()
                        .anyMatch(s -> s instanceof Segment.Generator);
     }
 
-    /**
-     * Returns the number of pattern generators in this template.
-     */
+    /// Returns the number of pattern generators in this template.
     public int patternCount() {
         return (int) segments.stream()
                             .filter(s -> s instanceof Segment.Generator)
                             .count();
     }
 
-    /**
-     * Resets all sequence generators in this template.
-     */
+    /// Resets all sequence generators in this template.
     public void resetSequences() {
         for (var segment : segments) {
             if (segment instanceof Segment.Generator gen && gen.generator() instanceof SequenceGenerator seq) {

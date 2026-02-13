@@ -16,14 +16,13 @@ import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.option;
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * In-memory implementation of SecretsManager.
- *
- * <p><strong>WARNING: This implementation does NOT encrypt values.</strong>
- * The {@code encryptionEnabled} config flag is ignored - secrets are stored in plain text.
- * Use this implementation ONLY for testing and development. For production, use a proper
- * secrets manager with actual encryption (e.g., HashiCorp Vault, AWS Secrets Manager).
- */
+/// In-memory implementation of SecretsManager.
+///
+///
+/// **WARNING: This implementation does NOT encrypt values.**
+/// The `encryptionEnabled` config flag is ignored - secrets are stored in plain text.
+/// Use this implementation ONLY for testing and development. For production, use a proper
+/// secrets manager with actual encryption (e.g., HashiCorp Vault, AWS Secrets Manager).
 final class InMemorySecretsManager implements SecretsManager {
     private static final SecretsConfig DEFAULT_CONFIG = new SecretsConfig("default", false, Option.none(), 10);
 

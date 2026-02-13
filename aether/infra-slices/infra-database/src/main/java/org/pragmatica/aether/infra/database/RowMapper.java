@@ -7,46 +7,34 @@ import java.util.Map;
 
 import static org.pragmatica.lang.Option.option;
 
-/**
- * Functional interface for mapping database rows to domain objects.
- *
- * @param <T> The type of object to map to
- */
+/// Functional interface for mapping database rows to domain objects.
+///
+/// @param <T> The type of object to map to
 @FunctionalInterface
 public interface RowMapper<T> {
-    /**
-     * Maps a row (represented as a Map) to a domain object.
-     *
-     * @param row      Row data as column-name to value map
-     * @param rowIndex Zero-based index of the row
-     * @return Result containing mapped object or error
-     */
+    /// Maps a row (represented as a Map) to a domain object.
+    ///
+    /// @param row      Row data as column-name to value map
+    /// @param rowIndex Zero-based index of the row
+    /// @return Result containing mapped object or error
     Result<T> mapRow(Map<String, Object> row, int rowIndex);
 
-    /**
-     * Creates a RowMapper that extracts a single column as a String.
-     */
+    /// Creates a RowMapper that extracts a single column as a String.
     static RowMapper<String> stringColumn(String columnName) {
         return (row, idx) -> extractColumn(row, columnName, String.class);
     }
 
-    /**
-     * Creates a RowMapper that extracts a single column as a Long.
-     */
+    /// Creates a RowMapper that extracts a single column as a Long.
     static RowMapper<Long> longColumn(String columnName) {
         return (row, idx) -> extractColumn(row, columnName, Long.class);
     }
 
-    /**
-     * Creates a RowMapper that extracts a single column as an Integer.
-     */
+    /// Creates a RowMapper that extracts a single column as an Integer.
     static RowMapper<Integer> intColumn(String columnName) {
         return (row, idx) -> extractColumn(row, columnName, Integer.class);
     }
 
-    /**
-     * Creates a RowMapper that returns the entire row as a Map.
-     */
+    /// Creates a RowMapper that returns the entire row as a Map.
     static RowMapper<Map<String, Object>> asMap() {
         return (row, idx) -> Result.success(Map.copyOf(row));
     }

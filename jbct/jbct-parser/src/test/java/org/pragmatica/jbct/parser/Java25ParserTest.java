@@ -6,9 +6,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-/**
- * Tests for the generated Java25Parser.
- */
+/// Tests for the generated Java25Parser.
 class Java25ParserTest {
     private final Java25Parser parser = new Java25Parser();
 

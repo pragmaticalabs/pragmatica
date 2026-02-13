@@ -12,21 +12,19 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 
-/**
- * Configuration source backed by a TOML file.
- * <p>
- * TOML sections are flattened to dot notation:
- * <pre>{@code
- * [database]
- * host = "localhost"
- * port = 5432
- * }</pre>
- * Becomes:
- * <ul>
- *   <li>database.host -> localhost</li>
- *   <li>database.port -> 5432</li>
- * </ul>
- */
+/// Configuration source backed by a TOML file.
+///
+/// TOML sections are flattened to dot notation:
+/// ```{@code
+/// [database]
+/// host = "localhost"
+/// port = 5432
+/// }```
+/// Becomes:
+///
+///   - database.host -> localhost
+///   - database.port -> 5432
+///
 public final class TomlConfigSource implements ConfigSource {
     private static final int DEFAULT_PRIORITY = 0;
 
@@ -42,35 +40,29 @@ public final class TomlConfigSource implements ConfigSource {
         this.flattenedValues = flattenDocument(document);
     }
 
-    /**
-     * Create a TomlConfigSource from a file path.
-     *
-     * @param path Path to the TOML file
-     * @return Result containing the source or error
-     */
+    /// Create a TomlConfigSource from a file path.
+    ///
+    /// @param path Path to the TOML file
+    /// @return Result containing the source or error
     public static Result<TomlConfigSource> tomlConfigSource(Path path) {
         return tomlConfigSource(path, DEFAULT_PRIORITY);
     }
 
-    /**
-     * Create a TomlConfigSource from a file path with specified priority.
-     *
-     * @param path     Path to the TOML file
-     * @param priority Source priority
-     * @return Result containing the source or error
-     */
+    /// Create a TomlConfigSource from a file path with specified priority.
+    ///
+    /// @param path     Path to the TOML file
+    /// @param priority Source priority
+    /// @return Result containing the source or error
     public static Result<TomlConfigSource> tomlConfigSource(Path path, int priority) {
         return TomlParser.parseFile(path)
                          .mapError(e -> ConfigError.readFailed(path.toString(), new RuntimeException(e.message())))
                          .map(doc -> new TomlConfigSource(path, priority, doc));
     }
 
-    /**
-     * Create a TomlConfigSource from TOML content string.
-     *
-     * @param content TOML content
-     * @return Result containing the source or error
-     */
+    /// Create a TomlConfigSource from TOML content string.
+    ///
+    /// @param content TOML content
+    /// @return Result containing the source or error
     public static Result<TomlConfigSource> tomlConfigSource(String content) {
         return TomlParser.parse(content)
                          .mapError(e -> ConfigError.parseFailed("inline", e.message()))
@@ -112,11 +104,9 @@ public final class TomlConfigSource implements ConfigSource {
         return tomlConfigSource(path, priority).map(ConfigSource.class::cast);
     }
 
-    /**
-     * Get the underlying TOML document.
-     *
-     * @return The parsed TOML document
-     */
+    /// Get the underlying TOML document.
+    ///
+    /// @return The parsed TOML document
     public TomlDocument document() {
         return document;
     }

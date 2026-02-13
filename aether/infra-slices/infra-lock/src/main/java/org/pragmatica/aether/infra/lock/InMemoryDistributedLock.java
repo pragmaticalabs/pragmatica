@@ -18,9 +18,7 @@ import static org.pragmatica.lang.Option.some;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * In-memory implementation of DistributedLock for testing and single-node scenarios.
- */
+/// In-memory implementation of DistributedLock for testing and single-node scenarios.
 final class InMemoryDistributedLock implements DistributedLock {
     private final ConcurrentHashMap<String, LockEntry> locks = new ConcurrentHashMap<>();
     private final AtomicLong tokenCounter = new AtomicLong(0);

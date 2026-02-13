@@ -32,21 +32,19 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for Rabia protocol wrapper invariants from weak_mvc.ivy specification (conjectures 47-52).
- * <p>
- * These invariants cover phase goodness and started predicates as defined in the ind_defs isolate
- * (lines 305-385 of weak_mvc.ivy).
- * <p>
- * Derived predicates:
- * <ul>
- *   <li>lt(P1, P2) = le(P1, P2) & P1 ~= P2</li>
- *   <li>started(P) = exists N, V. vote_rnd1(N, P, V)</li>
- *   <li>good(P) = started(P) & (forall P0. lt(P0, P) -> started(P0)) &
- *       (forall P0, V0. lt(P0, P) & started(P) & ((exists N. decision_bc(N, P0, V0)) |
- *       state_value_locked(P0, V0)) -> state_value_locked(P, V0))</li>
- * </ul>
- */
+/// Tests for Rabia protocol wrapper invariants from weak_mvc.ivy specification (conjectures 47-52).
+///
+/// These invariants cover phase goodness and started predicates as defined in the ind_defs isolate
+/// (lines 305-385 of weak_mvc.ivy).
+///
+/// Derived predicates:
+///
+///   - lt(P1, P2) = le(P1, P2) & P1 ~= P2
+///   - started(P) = exists N, V. vote_rnd1(N, P, V)
+///   - good(P) = started(P) & (forall P0. lt(P0, P) -> started(P0)) &
+///       (forall P0, V0. lt(P0, P) & started(P) & ((exists N. decision_bc(N, P0, V0)) |
+///       state_value_locked(P0, V0)) -> state_value_locked(P, V0))
+///
 class RabiaWrapperInvariantTest {
 
     record TestCommand(String value) implements Command {}

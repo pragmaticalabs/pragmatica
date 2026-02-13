@@ -7,34 +7,29 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 
-/**
- * Base class with shared test utilities for Forge tests.
- *
- * <p>Provides common HTTP helper methods and cluster utilities that are
- * used across multiple E2E test classes.
- */
+/// Base class with shared test utilities for Forge tests.
+///
+///
+/// Provides common HTTP helper methods and cluster utilities that are
+/// used across multiple E2E test classes.
 public abstract class ForgeTestBase {
 
-    /**
-     * Check if all nodes in the cluster are healthy.
-     *
-     * @param cluster the ForgeCluster to check
-     * @param httpClient the HTTP client to use for health checks
-     * @return true if all nodes report healthy with quorum
-     */
+    /// Check if all nodes in the cluster are healthy.
+    ///
+    /// @param cluster the ForgeCluster to check
+    /// @param httpClient the HTTP client to use for health checks
+    /// @return true if all nodes report healthy with quorum
     protected boolean allNodesHealthy(ForgeCluster cluster, HttpClient httpClient) {
         var status = cluster.status();
         return status.nodes().stream()
                      .allMatch(node -> checkNodeHealth(node.mgmtPort(), httpClient));
     }
 
-    /**
-     * Check if a single node is healthy.
-     *
-     * @param port the management port of the node
-     * @param httpClient the HTTP client to use
-     * @return true if the node reports healthy with quorum
-     */
+    /// Check if a single node is healthy.
+    ///
+    /// @param port the management port of the node
+    /// @param httpClient the HTTP client to use
+    /// @return true if the node reports healthy with quorum
     protected boolean checkNodeHealth(int port, HttpClient httpClient) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + "/api/health"))
@@ -49,14 +44,12 @@ public abstract class ForgeTestBase {
         }
     }
 
-    /**
-     * Perform an HTTP GET request.
-     *
-     * @param port the port to connect to
-     * @param path the path to request
-     * @param httpClient the HTTP client to use
-     * @return the response body or error JSON
-     */
+    /// Perform an HTTP GET request.
+    ///
+    /// @param port the port to connect to
+    /// @param path the path to request
+    /// @param httpClient the HTTP client to use
+    /// @return the response body or error JSON
     protected String httpGet(int port, String path, HttpClient httpClient) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))
@@ -71,15 +64,13 @@ public abstract class ForgeTestBase {
         }
     }
 
-    /**
-     * Perform an HTTP POST request.
-     *
-     * @param port the port to connect to
-     * @param path the path to request
-     * @param body the request body
-     * @param httpClient the HTTP client to use
-     * @return the response body or error JSON
-     */
+    /// Perform an HTTP POST request.
+    ///
+    /// @param port the port to connect to
+    /// @param path the path to request
+    /// @param body the request body
+    /// @param httpClient the HTTP client to use
+    /// @return the response body or error JSON
     protected String httpPost(int port, String path, String body, HttpClient httpClient) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))
@@ -95,13 +86,11 @@ public abstract class ForgeTestBase {
         }
     }
 
-    /**
-     * Get health status from any available node in the cluster.
-     *
-     * @param cluster the ForgeCluster
-     * @param httpClient the HTTP client to use
-     * @return the health response or empty string if no nodes available
-     */
+    /// Get health status from any available node in the cluster.
+    ///
+    /// @param cluster the ForgeCluster
+    /// @param httpClient the HTTP client to use
+    /// @return the health response or empty string if no nodes available
     protected String getHealthFromAnyNode(ForgeCluster cluster, HttpClient httpClient) {
         var status = cluster.status();
         if (status.nodes().isEmpty()) {
@@ -111,11 +100,9 @@ public abstract class ForgeTestBase {
         return httpGet(port, "/api/health", httpClient);
     }
 
-    /**
-     * Sleep for the specified duration, handling interrupts gracefully.
-     *
-     * @param duration the duration to sleep
-     */
+    /// Sleep for the specified duration, handling interrupts gracefully.
+    ///
+    /// @param duration the duration to sleep
     protected void sleep(Duration duration) {
         try {
             Thread.sleep(duration.toMillis());
@@ -124,13 +111,11 @@ public abstract class ForgeTestBase {
         }
     }
 
-    /**
-     * Wait for a leader to be elected in the cluster.
-     *
-     * @param cluster the ForgeCluster
-     * @param timeout maximum time to wait
-     * @param pollInterval interval between checks
-     */
+    /// Wait for a leader to be elected in the cluster.
+    ///
+    /// @param cluster the ForgeCluster
+    /// @param timeout maximum time to wait
+    /// @param pollInterval interval between checks
     protected void awaitLeader(ForgeCluster cluster, Duration timeout, Duration pollInterval) {
         var deadline = System.currentTimeMillis() + timeout.toMillis();
         while (System.currentTimeMillis() < deadline) {
@@ -142,13 +127,11 @@ public abstract class ForgeTestBase {
         throw new AssertionError("Leader not elected within timeout");
     }
 
-    /**
-     * Wait for the cluster to achieve quorum with a leader.
-     *
-     * @param cluster the ForgeCluster
-     * @param timeout maximum time to wait
-     * @param pollInterval interval between checks
-     */
+    /// Wait for the cluster to achieve quorum with a leader.
+    ///
+    /// @param cluster the ForgeCluster
+    /// @param timeout maximum time to wait
+    /// @param pollInterval interval between checks
     protected void awaitQuorum(ForgeCluster cluster, Duration timeout, Duration pollInterval) {
         var deadline = System.currentTimeMillis() + timeout.toMillis();
         while (System.currentTimeMillis() < deadline) {

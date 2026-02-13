@@ -16,27 +16,21 @@ import java.nio.file.Path;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 import static org.pragmatica.aether.slice.repository.Location.location;
 
-/**
- * Repository implementation for Maven local repository (~/.m2/repository).
- * <p>
- * Resolves artifacts to their JAR locations following Maven conventions:
- * <pre>
- * {localRepo}/{groupId as path}/{artifactId}/{version}/{artifactId}-{version}.jar
- * Example: ~/.m2/repository/org/example/my-slice/1.0.0/my-slice-1.0.0.jar
- * </pre>
- */
+/// Repository implementation for Maven local repository (~/.m2/repository).
+///
+/// Resolves artifacts to their JAR locations following Maven conventions:
+/// ```
+/// {localRepo}/{groupId as path}/{artifactId}/{version}/{artifactId}-{version}.jar
+/// Example: ~/.m2/repository/org/example/my-slice/1.0.0/my-slice-1.0.0.jar
+/// ```
 public interface LocalRepository extends Repository {
-    /**
-     * Create a LocalRepository using the detected Maven local repository location.
-     * Detection order: maven.repo.local property → user settings.xml → global settings.xml → default ~/.m2/repository
-     */
+    /// Create a LocalRepository using the detected Maven local repository location.
+    /// Detection order: maven.repo.local property → user settings.xml → global settings.xml → default ~/.m2/repository
     static LocalRepository localRepository() {
         return localRepository(Path.of(MavenLocalRepoLocator.findLocalRepository()));
     }
 
-    /**
-     * Create a LocalRepository at a specific path (useful for testing).
-     */
+    /// Create a LocalRepository at a specific path (useful for testing).
     static LocalRepository localRepository(Path localRepo) {
         record repository(Path localRepo) implements LocalRepository {
             private static final TimeSpan LOCATE_TIMEOUT = timeSpan(30).seconds();

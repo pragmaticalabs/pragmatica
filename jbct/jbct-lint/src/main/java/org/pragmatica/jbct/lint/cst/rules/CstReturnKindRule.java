@@ -11,11 +11,9 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-RET-01: Business methods must use only four return kinds.
- *
- * T, Option<T>, Result<T>, or Promise<T>.
- */
+/// JBCT-RET-01: Business methods must use only four return kinds.
+///
+/// T, Option<T>, Result<T>, or Promise<T>.
 public class CstReturnKindRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-01";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";

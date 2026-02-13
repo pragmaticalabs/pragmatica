@@ -3,10 +3,8 @@ package org.pragmatica.aether.forge;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
-/**
- * Aggregates metrics for the Forge dashboard.
- * Thread-safe and designed for high-frequency updates.
- */
+/// Aggregates metrics for the Forge dashboard.
+/// Thread-safe and designed for high-frequency updates.
 public final class ForgeMetrics {
     // Rolling window counters (reset every second)
     private final LongAdder successCount = new LongAdder();
@@ -37,9 +35,7 @@ public final class ForgeMetrics {
         return new ForgeMetrics();
     }
 
-    /**
-     * Record a successful request with latency.
-     */
+    /// Record a successful request with latency.
     public void recordSuccess(long latencyNanos) {
         successCount.increment();
         totalSuccess.incrementAndGet();
@@ -47,9 +43,7 @@ public final class ForgeMetrics {
         requestCount.increment();
     }
 
-    /**
-     * Record a failed request.
-     */
+    /// Record a failed request.
     public void recordFailure(long latencyNanos) {
         failureCount.increment();
         totalFailures.incrementAndGet();
@@ -57,10 +51,8 @@ public final class ForgeMetrics {
         requestCount.increment();
     }
 
-    /**
-     * Take a snapshot and calculate rates.
-     * Should be called periodically (e.g., every 500ms).
-     */
+    /// Take a snapshot and calculate rates.
+    /// Should be called periodically (e.g., every 500ms).
     public synchronized void snapshot() {
         var now = System.currentTimeMillis();
         var elapsed = now - lastSnapshotTime;
@@ -70,12 +62,14 @@ public final class ForgeMetrics {
         var successDelta = currentSuccess - lastSuccessSnapshot;
         var failureDelta = currentFailure - lastFailureSnapshot;
         var totalDelta = successDelta + failureDelta;
-        // Calculate rates
-        requestsPerSecond = (totalDelta * 1000.0) / elapsed;
+        // Calculate rates with EMA smoothing (~5s effective window)
+        var instantRps = (totalDelta * 1000.0) / elapsed;
+        requestsPerSecond = requestsPerSecond == 0
+            ? instantRps
+            : EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * requestsPerSecond;
         if (totalDelta > 0) {
-            successRate = (successDelta * 100.0) / totalDelta;
-        } else {
-            successRate = 100.0;
+            var instantSuccessRate = (successDelta * 100.0) / totalDelta;
+            successRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * successRate;
         }
         // Calculate average latency with EMA smoothing
         var count = requestCount.sumThenReset();
@@ -95,17 +89,13 @@ public final class ForgeMetrics {
         lastSnapshotTime = now;
     }
 
-    /**
-     * Get current metrics for dashboard.
-     * Synchronized to match snapshot() for consistent reads across all volatile fields.
-     */
+    /// Get current metrics for dashboard.
+    /// Synchronized to match snapshot() for consistent reads across all volatile fields.
     public synchronized MetricsSnapshot currentMetrics() {
         return MetricsSnapshot.metricsSnapshot(requestsPerSecond, successRate, avgLatencyMs, totalSuccess.get(), totalFailures.get());
     }
 
-    /**
-     * Reset all metrics.
-     */
+    /// Reset all metrics.
     public synchronized void reset() {
         successCount.reset();
         failureCount.reset();
@@ -121,9 +111,7 @@ public final class ForgeMetrics {
         avgLatencyMs = 0;
     }
 
-    /**
-     * Metrics snapshot for dashboard.
-     */
+    /// Metrics snapshot for dashboard.
     public record MetricsSnapshot(double requestsPerSecond,
                                   double successRate,
                                   double avgLatencyMs,

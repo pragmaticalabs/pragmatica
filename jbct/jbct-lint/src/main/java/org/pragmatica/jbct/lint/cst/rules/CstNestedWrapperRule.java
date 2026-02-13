@@ -13,11 +13,9 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-RET-02: No nested wrappers.
- *
- * Forbids Promise<Result<T>>, Option<Option<T>>, etc.
- */
+/// JBCT-RET-02: No nested wrappers.
+///
+/// Forbids Promise<Result<T>>, Option<Option<T>>, etc.
 public class CstNestedWrapperRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-02";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/series/part-2-four-return-types.md";

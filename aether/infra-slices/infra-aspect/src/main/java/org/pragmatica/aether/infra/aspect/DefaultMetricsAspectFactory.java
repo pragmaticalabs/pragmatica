@@ -14,10 +14,8 @@ import io.micrometer.core.instrument.Timer;
 
 import static org.pragmatica.lang.Unit.unit;
 
-/**
- * Default implementation of MetricsAspectFactory.
- * Uses JDK dynamic proxies with Micrometer timers for metrics collection.
- */
+/// Default implementation of MetricsAspectFactory.
+/// Uses JDK dynamic proxies with Micrometer timers for metrics collection.
 final class DefaultMetricsAspectFactory implements MetricsAspectFactory {
     private final MeterRegistry registry;
     private final AtomicBoolean enabled = new AtomicBoolean(true);

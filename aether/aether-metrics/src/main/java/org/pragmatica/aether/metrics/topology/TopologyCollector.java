@@ -22,16 +22,14 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.lang.Option.option;
 
-/**
- * Collects cluster topology information from various sources.
- * <p>
- * Aggregates data from:
- * <ul>
- *   <li>TopologyManager for node state</li>
- *   <li>LeaderManager for leader info</li>
- *   <li>KVStore for slice distribution</li>
- * </ul>
- */
+/// Collects cluster topology information from various sources.
+///
+/// Aggregates data from:
+///
+///   - TopologyManager for node state
+///   - LeaderManager for leader info
+///   - KVStore for slice distribution
+///
 public final class TopologyCollector {
     private static final Logger log = LoggerFactory.getLogger(TopologyCollector.class);
 
@@ -49,9 +47,7 @@ public final class TopologyCollector {
         return new TopologyCollector();
     }
 
-    /**
-     * Set the topology manager reference.
-     */
+    /// Set the topology manager reference.
     public void setTopologyManager(TopologyManager manager) {
         topologyManager.set(manager);
         // Register self
@@ -63,23 +59,17 @@ public final class TopologyCollector {
         });
     }
 
-    /**
-     * Set the leader manager reference.
-     */
+    /// Set the leader manager reference.
     public void setLeaderManager(LeaderManager manager) {
         leaderManager.set(manager);
     }
 
-    /**
-     * Set the KV store reference.
-     */
+    /// Set the KV store reference.
     public void setKVStore(KVStore<AetherKey, AetherValue> store) {
         kvStore.set(store);
     }
 
-    /**
-     * Register a node as known.
-     */
+    /// Register a node as known.
     public void registerNode(NodeInfo node) {
         knownNodes.put(node.id()
                            .id(),
@@ -88,31 +78,23 @@ public final class TopologyCollector {
                                     .id());
     }
 
-    /**
-     * Unregister a node.
-     */
+    /// Unregister a node.
     public void unregisterNode(NodeId nodeId) {
         knownNodes.remove(nodeId.id());
         nodeSuspectTimes.remove(nodeId.id());
     }
 
-    /**
-     * Mark a node as suspected.
-     */
+    /// Mark a node as suspected.
     public void markSuspected(String nodeId) {
         nodeSuspectTimes.put(nodeId, System.currentTimeMillis());
     }
 
-    /**
-     * Clear suspected status for a node.
-     */
+    /// Clear suspected status for a node.
     public void clearSuspected(String nodeId) {
         nodeSuspectTimes.remove(nodeId);
     }
 
-    /**
-     * Take a snapshot of current cluster topology.
-     */
+    /// Take a snapshot of current cluster topology.
     public ClusterTopology snapshot() {
         var topology = option(topologyManager.get());
         var leader = option(leaderManager.get());

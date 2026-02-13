@@ -3,13 +3,9 @@ package org.pragmatica.aether.infra.secrets;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
-/**
- * Error types for secrets manager operations.
- */
+/// Error types for secrets manager operations.
 public sealed interface SecretsError extends Cause {
-    /**
-     * Secret does not exist.
-     */
+    /// Secret does not exist.
     record SecretNotFound(String name) implements SecretsError {
         @Override
         public String message() {
@@ -17,9 +13,7 @@ public sealed interface SecretsError extends Cause {
         }
     }
 
-    /**
-     * Secret already exists.
-     */
+    /// Secret already exists.
     record SecretAlreadyExists(String name) implements SecretsError {
         @Override
         public String message() {
@@ -27,9 +21,7 @@ public sealed interface SecretsError extends Cause {
         }
     }
 
-    /**
-     * Secret version not found.
-     */
+    /// Secret version not found.
     record VersionNotFound(String name, int version) implements SecretsError {
         @Override
         public String message() {
@@ -37,9 +29,7 @@ public sealed interface SecretsError extends Cause {
         }
     }
 
-    /**
-     * Invalid secret name.
-     */
+    /// Invalid secret name.
     record InvalidSecretName(String name, String reason) implements SecretsError {
         @Override
         public String message() {
@@ -47,9 +37,7 @@ public sealed interface SecretsError extends Cause {
         }
     }
 
-    /**
-     * Invalid configuration.
-     */
+    /// Invalid configuration.
     record InvalidConfiguration(String reason) implements SecretsError {
         @Override
         public String message() {
@@ -57,9 +45,7 @@ public sealed interface SecretsError extends Cause {
         }
     }
 
-    /**
-     * Encryption/decryption failed.
-     */
+    /// Encryption/decryption failed.
     record CryptoFailed(String operation, Option<Throwable> cause) implements SecretsError {
         @Override
         public String message() {
@@ -67,9 +53,7 @@ public sealed interface SecretsError extends Cause {
         }
     }
 
-    /**
-     * Access denied to secret.
-     */
+    /// Access denied to secret.
     record AccessDenied(String name, String reason) implements SecretsError {
         @Override
         public String message() {

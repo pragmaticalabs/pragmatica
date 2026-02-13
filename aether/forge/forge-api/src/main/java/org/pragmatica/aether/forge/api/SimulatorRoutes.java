@@ -1,6 +1,5 @@
 package org.pragmatica.aether.forge.api;
 
-import org.pragmatica.aether.forge.LoadGenerator;
 import org.pragmatica.aether.forge.ForgeCluster.EventLogEntry;
 import org.pragmatica.aether.forge.api.ForgeApiResponses.*;
 import org.pragmatica.aether.forge.simulator.DataGenerator;
@@ -17,27 +16,22 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-import static org.pragmatica.http.routing.PathParameter.aInteger;
 import static org.pragmatica.http.routing.PathParameter.aString;
 import static org.pragmatica.http.routing.Route.get;
 import static org.pragmatica.http.routing.Route.in;
 import static org.pragmatica.http.routing.Route.post;
 
-/**
- * REST API routes for simulator operations.
- * <p>
- * Provides endpoints for:
- * <ul>
- *   <li>Entry point listing and rate control</li>
- *   <li>Inventory mode management (infinite/realistic)</li>
- *   <li>Simulated order operations (place, status, cancel)</li>
- *   <li>Simulated inventory and pricing queries</li>
- * </ul>
- */
+/// REST API routes for simulator operations.
+///
+/// Provides endpoints for:
+///
+///   - Entry point listing and rate control
+///   - Inventory mode management (infinite/realistic)
+///   - Simulated order operations (place, status, cancel)
+///   - Simulated inventory and pricing queries
+///
 public sealed interface SimulatorRoutes {
-    /**
-     * State holder for inventory simulation.
-     */
+    /// State holder for inventory simulation.
     record InventoryState(AtomicLong reservations,
                           AtomicLong releases,
                           AtomicLong stockOuts,
@@ -64,17 +58,12 @@ public sealed interface SimulatorRoutes {
         }
     }
 
-    /**
-     * Create route source for all simulator-related endpoints.
-     */
-    static RouteSource simulatorRoutes(LoadGenerator loadGenerator,
-                                       Supplier<SimulatorConfig> configSupplier,
+    /// Create route source for all simulator-related endpoints.
+    static RouteSource simulatorRoutes(Supplier<SimulatorConfig> configSupplier,
                                        InventoryState inventoryState,
                                        Consumer<EventLogEntry> eventLogger) {
         return in("/api/simulator")
-        .serve(entryPointsRoute(loadGenerator),
-               setRateRoute(loadGenerator, eventLogger),
-               getInventoryModeRoute(inventoryState),
+        .serve(getInventoryModeRoute(inventoryState),
                setInventoryModeRoute(inventoryState, eventLogger),
                inventoryMetricsRoute(inventoryState),
                placeOrderRoute(configSupplier),
@@ -85,19 +74,6 @@ public sealed interface SimulatorRoutes {
     }
 
     // ========== Route Definitions ==========
-    private static Route<EntryPointsResponse> entryPointsRoute(LoadGenerator loadGenerator) {
-        return Route.<EntryPointsResponse> get("/entry-points")
-                    .toJson(() -> getEntryPoints(loadGenerator));
-    }
-
-    private static Route<SimulatorRateResponse> setRateRoute(LoadGenerator loadGenerator,
-                                                             Consumer<EventLogEntry> eventLogger) {
-        return Route.<SimulatorRateResponse> post("/rate")
-                    .withPath(aInteger())
-                    .to(rate -> setRate(loadGenerator, eventLogger, rate))
-                    .asJson();
-    }
-
     private static Route<InventoryModeResponse> getInventoryModeRoute(InventoryState state) {
         return Route.<InventoryModeResponse> get("/inventory/mode")
                     .toJson(() -> getInventoryMode(state));
@@ -150,23 +126,6 @@ public sealed interface SimulatorRoutes {
     }
 
     // ========== Handler Methods ==========
-    private static EntryPointsResponse getEntryPoints(LoadGenerator loadGenerator) {
-        var entryPointInfos = loadGenerator.entryPoints()
-                                           .stream()
-                                           .map(ep -> new EntryPointInfo(ep,
-                                                                         loadGenerator.currentRate(ep)))
-                                           .toList();
-        return new EntryPointsResponse(entryPointInfos);
-    }
-
-    private static Promise<SimulatorRateResponse> setRate(LoadGenerator loadGenerator,
-                                                          Consumer<EventLogEntry> eventLogger,
-                                                          int rate) {
-        loadGenerator.setRate(rate);
-        eventLogger.accept(new EventLogEntry("RATE_SET", "Set global rate to " + rate + " req/sec"));
-        return Promise.success(new SimulatorRateResponse(true, "global", rate));
-    }
-
     private static InventoryModeResponse getInventoryMode(InventoryState state) {
         return new InventoryModeResponse(state.isInfiniteMode()
                                          ? "infinite"

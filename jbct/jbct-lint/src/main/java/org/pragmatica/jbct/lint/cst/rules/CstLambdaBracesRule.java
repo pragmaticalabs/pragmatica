@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-LAM-02: No braces in lambdas.
- */
+/// JBCT-LAM-02: No braces in lambdas.
 public class CstLambdaBracesRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-LAM-02";
 

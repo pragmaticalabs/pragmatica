@@ -7,32 +7,30 @@ import org.pragmatica.lang.Functions.Fn1;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-/**
- * Convention-based mapper between fully qualified class names and Maven artifact coordinates.
- *
- * <p>Conventions:
- * <ul>
- *   <li>GroupId = package prefix (all but last segment)</li>
- *   <li>ArtifactId = kebab-case of simple class name</li>
- *   <li>ClassName = GroupId + "." + PascalCase of ArtifactId</li>
- * </ul>
- *
- * <p>Examples:
- * <ul>
- *   <li>{@code org.example.UserService} → {@code org.example:user-service:1.0.0}</li>
- *   <li>{@code org.example:user-service:1.0.0} → {@code org.example.UserService}</li>
- *   <li>{@code com.company.app.OrderProcessor} → {@code com.company.app:order-processor:1.0.0}</li>
- * </ul>
- */
+/// Convention-based mapper between fully qualified class names and Maven artifact coordinates.
+///
+///
+/// Conventions:
+///
+///   - GroupId = package prefix (all but last segment)
+///   - ArtifactId = kebab-case of simple class name
+///   - ClassName = GroupId + "." + PascalCase of ArtifactId
+///
+///
+///
+/// Examples:
+///
+///   - `org.example.UserService` → `org.example:user-service:1.0.0`
+///   - `org.example:user-service:1.0.0` → `org.example.UserService`
+///   - `com.company.app.OrderProcessor` → `com.company.app:order-processor:1.0.0`
+///
 public interface ArtifactMapper {
-    /**
-     * Convert a fully qualified class name and version to artifact coordinates.
-     *
-     * @param className fully qualified class name (e.g., "org.example.UserService")
-     * @param version   version string (e.g., "1.0.0")
-     *
-     * @return artifact or error if className format is invalid
-     */
+    /// Convert a fully qualified class name and version to artifact coordinates.
+    ///
+    /// @param className fully qualified class name (e.g., "org.example.UserService")
+    /// @param version   version string (e.g., "1.0.0")
+    ///
+    /// @return artifact or error if className format is invalid
     static Result<Artifact> toArtifact(String className, String version) {
         var lastDot = className.lastIndexOf('.');
         if (lastDot <= 0) {
@@ -49,14 +47,12 @@ public interface ArtifactMapper {
         return Artifact.artifact(groupId + ":" + artifactId + ":" + version);
     }
 
-    /**
-     * Convert a fully qualified class name and version pattern to artifact coordinates.
-     *
-     * @param className      fully qualified class name
-     * @param versionPattern version pattern to extract version from
-     *
-     * @return artifact or error
-     */
+    /// Convert a fully qualified class name and version pattern to artifact coordinates.
+    ///
+    /// @param className      fully qualified class name
+    /// @param versionPattern version pattern to extract version from
+    ///
+    /// @return artifact or error
     static Result<Artifact> toArtifact(String className, VersionPattern versionPattern) {
         return toArtifact(className, extractVersion(versionPattern));
     }
@@ -65,26 +61,22 @@ public interface ArtifactMapper {
         return toArtifact(descriptor.sliceClassName(), descriptor.versionPattern());
     }
 
-    /**
-     * Convert an ArtifactDependency to Artifact.
-     * Uses the lower bound of the version pattern as the concrete version.
-     *
-     * @param dependency the artifact dependency
-     *
-     * @return artifact or error
-     */
+    /// Convert an ArtifactDependency to Artifact.
+    /// Uses the lower bound of the version pattern as the concrete version.
+    ///
+    /// @param dependency the artifact dependency
+    ///
+    /// @return artifact or error
     static Result<Artifact> toArtifact(ArtifactDependency dependency) {
         var version = extractVersion(dependency.versionPattern());
         return Artifact.artifact(dependency.groupId() + ":" + dependency.artifactId() + ":" + version);
     }
 
-    /**
-     * Convert artifact coordinates to a fully qualified class name.
-     *
-     * @param artifact the artifact
-     *
-     * @return class name (e.g., "org.example.UserService")
-     */
+    /// Convert artifact coordinates to a fully qualified class name.
+    ///
+    /// @param artifact the artifact
+    ///
+    /// @return class name (e.g., "org.example.UserService")
     static String toClassName(Artifact artifact) {
         var groupId = artifact.groupId()
                               .id();
@@ -94,29 +86,26 @@ public interface ArtifactMapper {
         return groupId + "." + simpleName;
     }
 
-    /**
-     * Convert groupId and artifactId to a fully qualified class name.
-     *
-     * @param groupId    group ID (e.g., "org.example")
-     * @param artifactId artifact ID (e.g., "user-service")
-     *
-     * @return class name (e.g., "org.example.UserService")
-     */
+    /// Convert groupId and artifactId to a fully qualified class name.
+    ///
+    /// @param groupId    group ID (e.g., "org.example")
+    /// @param artifactId artifact ID (e.g., "user-service")
+    ///
+    /// @return class name (e.g., "org.example.UserService")
     static String toClassName(String groupId, String artifactId) {
         var simpleName = toPascalCase(artifactId);
         return groupId + "." + simpleName;
     }
 
-    /**
-     * Convert PascalCase to kebab-case.
-     * <p>Examples:
-     * <ul>
-     *   <li>UserService → user-service</li>
-     *   <li>OrderProcessor → order-processor</li>
-     *   <li>API → api</li>
-     *   <li>XMLParser → xml-parser</li>
-     * </ul>
-     */
+    /// Convert PascalCase to kebab-case.
+    ///
+    /// Examples:
+    ///
+    ///   - UserService → user-service
+    ///   - OrderProcessor → order-processor
+    ///   - API → api
+    ///   - XMLParser → xml-parser
+    ///
     private static String toKebabCase(String pascalCase) {
         if (pascalCase == null || pascalCase.isEmpty()) {
             return pascalCase;
@@ -144,15 +133,14 @@ public interface ArtifactMapper {
         return result.toString();
     }
 
-    /**
-     * Convert kebab-case to PascalCase.
-     * <p>Examples:
-     * <ul>
-     *   <li>user-service → UserService</li>
-     *   <li>order-processor → OrderProcessor</li>
-     *   <li>api → Api</li>
-     * </ul>
-     */
+    /// Convert kebab-case to PascalCase.
+    ///
+    /// Examples:
+    ///
+    ///   - user-service → UserService
+    ///   - order-processor → OrderProcessor
+    ///   - api → Api
+    ///
     private static String toPascalCase(String kebabCase) {
         if (kebabCase == null || kebabCase.isEmpty()) {
             return kebabCase;
@@ -172,11 +160,9 @@ public interface ArtifactMapper {
         return result.toString();
     }
 
-    /**
-     * Extract a concrete version from a version pattern.
-     * For exact versions, returns the version directly.
-     * For ranges/comparisons, returns the lower bound.
-     */
+    /// Extract a concrete version from a version pattern.
+    /// For exact versions, returns the version directly.
+    /// For ranges/comparisons, returns the lower bound.
     private static String extractVersion(VersionPattern pattern) {
         return switch (pattern) {
             case VersionPattern.Exact(Version version) -> version.withQualifier();

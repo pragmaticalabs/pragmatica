@@ -11,11 +11,9 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-RET-03: Never return null.
- *
- * JBCT code never returns null. Use Option<T> for optional values.
- */
+/// JBCT-RET-03: Never return null.
+///
+/// JBCT code never returns null. Use Option<T> for optional values.
 public class CstNullReturnRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-03";
     private static final String DOC_LINK = "https://github.com/siy/coding-technology/blob/main/skills/jbct/fundamentals/four-return-kinds.md";

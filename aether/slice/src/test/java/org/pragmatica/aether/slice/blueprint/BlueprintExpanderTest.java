@@ -289,9 +289,7 @@ class BlueprintExpanderTest {
         }
     }
 
-    /**
-     * Mock dependency loader for testing.
-     */
+    /// Mock dependency loader for testing.
     static class MockDependencyLoader implements DependencyLoader {
         private final Map<String, Set<Artifact>> dependencies = new HashMap<>();
 

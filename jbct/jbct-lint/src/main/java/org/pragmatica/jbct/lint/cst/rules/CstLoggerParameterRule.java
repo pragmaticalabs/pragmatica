@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-LOG-02: No logger as method parameter.
- */
+/// JBCT-LOG-02: No logger as method parameter.
 public class CstLoggerParameterRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-LOG-02";
 

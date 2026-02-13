@@ -37,18 +37,16 @@ import org.pragmatica.lang.Result;
 import java.time.Instant;
 import java.util.List;
 
-/**
- * Place Order - Lean Slice orchestrating the complete order flow.
- * <p>
- * This demonstrates:
- * <ul>
- *   <li>Inter-slice dependencies (Inventory, Pricing, Payment, Fulfillment)</li>
- *   <li>Complex multi-step orchestration using sequencer pattern</li>
- *   <li>Fork-join for parallel operations (pricing + shipping quote)</li>
- *   <li>Error handling with compensation (release stock on payment failure)</li>
- *   <li>Parse-don't-validate pattern for request validation</li>
- * </ul>
- */
+/// Place Order - Lean Slice orchestrating the complete order flow.
+///
+/// This demonstrates:
+///
+///   - Inter-slice dependencies (Inventory, Pricing, Payment, Fulfillment)
+///   - Complex multi-step orchestration using sequencer pattern
+///   - Fork-join for parallel operations (pricing + shipping quote)
+///   - Error handling with compensation (release stock on payment failure)
+///   - Parse-don't-validate pattern for request validation
+///
 @Slice
 public interface PlaceOrder {
     // === Request ===

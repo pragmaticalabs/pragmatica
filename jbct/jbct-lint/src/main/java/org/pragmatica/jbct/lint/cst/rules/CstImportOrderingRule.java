@@ -12,18 +12,16 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-STY-06: Import ordering convention.
- *
- * Expected order:
- * 1. java.* (including module imports)
- * 2. javax.*
- * 3. org.pragmatica.*
- * 4. Third-party (org.*, com.*, etc.)
- * 5. Project imports
- * 6. (blank line)
- * 7. Static imports (same grouping order)
- */
+/// JBCT-STY-06: Import ordering convention.
+///
+/// Expected order:
+/// 1. java.* (including module imports)
+/// 2. javax.*
+/// 3. org.pragmatica.*
+/// 4. Third-party (org.*, com.*, etc.)
+/// 5. Project imports
+/// 6. (blank line)
+/// 7. Static imports (same grouping order)
 public class CstImportOrderingRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-STY-06";
 

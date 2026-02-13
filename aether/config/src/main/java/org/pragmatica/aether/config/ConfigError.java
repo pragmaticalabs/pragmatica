@@ -4,14 +4,10 @@ import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.utils.Causes;
 
-/**
- * Error types for configuration operations.
- */
+/// Error types for configuration operations.
 public sealed interface ConfigError extends Cause {
 
-    /**
-     * Config section not found in configuration.
-     */
+    /// Config section not found in configuration.
     record SectionNotFound(String section) implements ConfigError {
         public static SectionNotFound sectionNotFound(String section) {
             return new SectionNotFound(section);
@@ -27,9 +23,7 @@ public sealed interface ConfigError extends Cause {
         return SectionNotFound.sectionNotFound(section);
     }
 
-    /**
-     * Failed to parse configuration section.
-     */
+    /// Failed to parse configuration section.
     record ParseFailed(String section, String reason, Option<Throwable> cause) implements ConfigError {
         public static ParseFailed parseFailed(String section, String reason) {
             return new ParseFailed(section, reason, Option.none());
@@ -58,9 +52,7 @@ public sealed interface ConfigError extends Cause {
         return ParseFailed.parseFailed(section, cause);
     }
 
-    /**
-     * Type mismatch in configuration section.
-     */
+    /// Type mismatch in configuration section.
     record TypeMismatch(String section, String expected, String actual) implements ConfigError {
         public static TypeMismatch typeMismatch(String section, String expected, String actual) {
             return new TypeMismatch(section, expected, actual);
@@ -76,9 +68,7 @@ public sealed interface ConfigError extends Cause {
         return TypeMismatch.typeMismatch(section, expected, actual);
     }
 
-    /**
-     * Configuration file not found.
-     */
+    /// Configuration file not found.
     record FileNotFound(String path) implements ConfigError {
         public static FileNotFound fileNotFound(String path) {
             return new FileNotFound(path);
@@ -94,9 +84,7 @@ public sealed interface ConfigError extends Cause {
         return FileNotFound.fileNotFound(path);
     }
 
-    /**
-     * Failed to read configuration file.
-     */
+    /// Failed to read configuration file.
     record ReadFailed(String path, Throwable cause) implements ConfigError {
         public static ReadFailed readFailed(String path, Throwable cause) {
             return new ReadFailed(path, cause);

@@ -5,41 +5,41 @@ import org.pragmatica.lang.Option;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
-/**
- * Root configuration for Aether cluster.
- *
- * <p>This is the unified configuration used by all Aether tools:
- * <ul>
- *   <li>aether-up: Reads config to generate deployment artifacts</li>
- *   <li>AetherNode: Reads config at runtime</li>
- *   <li>AetherCli: Reads connection info from config</li>
- * </ul>
- *
- * <p>Example aether.toml:
- * <pre>
- * [cluster]
- * environment = "docker"
- * nodes = 5
- * tls = false
- *
- * [cluster.ports]
- * management = 8080
- * cluster = 8090
- *
- * [node]
- * heap = "512m"
- * gc = "zgc"
- * </pre>
- *
- * @param cluster    Cluster-level configuration
- * @param node       Per-node configuration
- * @param tls        TLS configuration (when cluster.tls = true)
- * @param docker     Docker-specific settings
- * @param kubernetes Kubernetes-specific settings
- * @param ttm        TTM (Tiny Time Mixers) predictive scaling configuration
- * @param slice      Slice loading and repository configuration
- * @param appHttp    Application HTTP server configuration
- */
+/// Root configuration for Aether cluster.
+///
+///
+/// This is the unified configuration used by all Aether tools:
+///
+///   - aether-up: Reads config to generate deployment artifacts
+///   - AetherNode: Reads config at runtime
+///   - AetherCli: Reads connection info from config
+///
+///
+///
+/// Example aether.toml:
+/// ```
+/// [cluster]
+/// environment = "docker"
+/// nodes = 5
+/// tls = false
+///
+/// [cluster.ports]
+/// management = 8080
+/// cluster = 8090
+///
+/// [node]
+/// heap = "512m"
+/// gc = "zgc"
+/// ```
+///
+/// @param cluster    Cluster-level configuration
+/// @param node       Per-node configuration
+/// @param tls        TLS configuration (when cluster.tls = true)
+/// @param docker     Docker-specific settings
+/// @param kubernetes Kubernetes-specific settings
+/// @param ttm        TTM (Tiny Time Mixers) predictive scaling configuration
+/// @param slice      Slice loading and repository configuration
+/// @param appHttp    Application HTTP server configuration
 public record AetherConfig(ClusterConfig cluster,
                            NodeConfig node,
                            Option<TlsConfig> tls,
@@ -48,9 +48,7 @@ public record AetherConfig(ClusterConfig cluster,
                            TTMConfig ttm,
                            SliceConfig slice,
                            AppHttpConfig appHttp) {
-    /**
-     * Factory method following JBCT naming convention.
-     */
+    /// Factory method following JBCT naming convention.
     public static AetherConfig aetherConfig(ClusterConfig cluster,
                                             NodeConfig node,
                                             Option<TlsConfig> tls,
@@ -62,9 +60,7 @@ public record AetherConfig(ClusterConfig cluster,
         return new AetherConfig(cluster, node, tls, docker, kubernetes, ttm, slice, appHttp);
     }
 
-    /**
-     * Create configuration with defaults for specified environment.
-     */
+    /// Create configuration with defaults for specified environment.
     public static AetherConfig forEnvironment(Environment env) {
         return aetherConfig(ClusterConfig.forEnvironment(env),
                                 NodeConfig.forEnvironment(env),
@@ -82,30 +78,22 @@ public record AetherConfig(ClusterConfig cluster,
                                 AppHttpConfig.defaultConfig());
     }
 
-    /**
-     * Create default configuration (Docker environment).
-     */
+    /// Create default configuration (Docker environment).
     public static AetherConfig defaultConfig() {
         return forEnvironment(Environment.DOCKER);
     }
 
-    /**
-     * Get the environment from cluster config.
-     */
+    /// Get the environment from cluster config.
     public Environment environment() {
         return cluster.environment();
     }
 
-    /**
-     * Check if TLS is enabled.
-     */
+    /// Check if TLS is enabled.
     public boolean tlsEnabled() {
         return cluster.tls();
     }
 
-    /**
-     * Builder for fluent configuration.
-     */
+    /// Builder for fluent configuration.
     public static Builder builder() {
         return new Builder();
     }

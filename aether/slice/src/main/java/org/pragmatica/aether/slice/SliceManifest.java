@@ -12,41 +12,37 @@ import java.net.URL;
 import java.util.jar.JarFile;
 import java.util.jar.Manifest;
 
-/**
- * Reads slice artifact metadata from JAR manifest.
- *
- * <p>Expected manifest attributes:
- * <pre>
- * Manifest-Version: 1.0
- * Slice-Artifact: org.example:my-slice:1.0.0
- * Slice-Class: org.example.MySlice
- * </pre>
- *
- * <p>A valid slice JAR MUST contain these manifest attributes.
- * Loading will fail if manifest is missing or invalid.
- */
+/// Reads slice artifact metadata from JAR manifest.
+///
+///
+/// Expected manifest attributes:
+/// ```
+/// Manifest-Version: 1.0
+/// Slice-Artifact: org.example:my-slice:1.0.0
+/// Slice-Class: org.example.MySlice
+/// ```
+///
+///
+/// A valid slice JAR MUST contain these manifest attributes.
+/// Loading will fail if manifest is missing or invalid.
 public interface SliceManifest {
     String SLICE_ARTIFACT_ATTR = "Slice-Artifact";
     String SLICE_CLASS_ATTR = "Slice-Class";
 
-    /**
-     * Read slice manifest from a JAR URL.
-     *
-     * @param jarUrl URL pointing to the slice JAR file
-     *
-     * @return SliceManifestInfo or error if manifest is missing/invalid
-     */
+    /// Read slice manifest from a JAR URL.
+    ///
+    /// @param jarUrl URL pointing to the slice JAR file
+    ///
+    /// @return SliceManifestInfo or error if manifest is missing/invalid
     static Result<SliceManifestInfo> read(URL jarUrl) {
         return readManifest(jarUrl).flatMap(SliceManifest::parseManifest);
     }
 
-    /**
-     * Read slice manifest from a ClassLoader's resources.
-     *
-     * @param classLoader ClassLoader to read manifest from
-     *
-     * @return SliceManifestInfo or error if manifest is missing/invalid
-     */
+    /// Read slice manifest from a ClassLoader's resources.
+    ///
+    /// @param classLoader ClassLoader to read manifest from
+    ///
+    /// @return SliceManifestInfo or error if manifest is missing/invalid
     static Result<SliceManifestInfo> readFromClassLoader(ClassLoader classLoader) {
         return Result.lift(Causes::fromThrowable,
                            () -> classLoader.getResource(JarFile.MANIFEST_NAME))
@@ -107,9 +103,7 @@ public interface SliceManifest {
                                            .map(artifact -> new SliceManifestInfo(artifact, sliceClass))));
     }
 
-    /**
-     * Information extracted from a slice JAR manifest.
-     */
+    /// Information extracted from a slice JAR manifest.
     record SliceManifestInfo(Artifact artifact, String sliceClassName) {}
 
     // Error causes

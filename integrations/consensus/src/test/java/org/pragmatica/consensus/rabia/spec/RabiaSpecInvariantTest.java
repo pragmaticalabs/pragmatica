@@ -33,9 +33,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for Rabia protocol invariants from weak_mvc.ivy specification (conjectures 1-28).
- */
+/// Tests for Rabia protocol invariants from weak_mvc.ivy specification (conjectures 1-28).
 class RabiaSpecInvariantTest {
 
     record TestCommand(String value) implements Command {}

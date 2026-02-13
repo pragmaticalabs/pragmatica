@@ -10,18 +10,17 @@ import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-/**
- * Validates Aether configuration.
- *
- * <p>Validation rules:
- * <ul>
- *   <li>Node count must be odd (3, 5, 7) for quorum</li>
- *   <li>Node count must be at least 3</li>
- *   <li>Heap format must be valid (e.g., 256m, 1g)</li>
- *   <li>Ports must not conflict</li>
- *   <li>TLS certificate paths must exist if provided</li>
- * </ul>
- */
+/// Validates Aether configuration.
+///
+///
+/// Validation rules:
+///
+///   - Node count must be odd (3, 5, 7) for quorum
+///   - Node count must be at least 3
+///   - Heap format must be valid (e.g., 256m, 1g)
+///   - Ports must not conflict
+///   - TLS certificate paths must exist if provided
+///
 public final class ConfigValidator {
     private static final Set<Integer> VALID_NODE_COUNTS = Set.of(3, 5, 7);
     private static final Pattern HEAP_PATTERN = Pattern.compile("^\\d+[mMgG]$");
@@ -29,9 +28,7 @@ public final class ConfigValidator {
 
     private ConfigValidator() {}
 
-    /**
-     * Validate configuration, returning all validation errors.
-     */
+    /// Validate configuration, returning all validation errors.
     public static Result<AetherConfig> validate(AetherConfig config) {
         var errors = new ArrayList<String>();
         validateCluster(config.cluster(), errors);
@@ -132,9 +129,7 @@ public final class ConfigValidator {
         }
     }
 
-    /**
-     * Configuration validation error.
-     */
+    /// Configuration validation error.
     public sealed interface ConfigError extends Cause {
         record ValidationFailed(List<String> errors) implements ConfigError {
             @Override

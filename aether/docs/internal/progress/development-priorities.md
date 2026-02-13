@@ -1,8 +1,8 @@
 # Development Priorities
 
-## Current Status (v0.15.0)
+## Current Status (v0.15.1)
 
-Release 0.15.0 focuses on **monorepo consolidation** and **production readiness** with real-time dashboard, cluster-wide observability, and HTTP performance.
+Release 0.15.1 continues production hardening with bug fixes and documentation updates.
 
 ## Completed ✅
 
@@ -32,6 +32,7 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
 - **TTM Predictive Scaling** - ONNX-based traffic prediction and scaling recommendations
 - **DeploymentMap** - Event-driven slice-to-node index with cluster-wide deployment visibility
 - **EMA Latency Smoothing** - 5-second effective window for stable dashboard metrics
+- **Zero-Loss Forwarding** - Fresh re-routing on retry, proactive disconnection detection, and backoff retry with delayed re-query for route table healing during node transitions
 - **Dynamic Aspects** - Runtime-togglable per-method LOG/METRICS/LOG_AND_METRICS modes via `DynamicAspectRegistry`, REST API (`/api/aspects`), KV-store consensus sync, and `DynamicAspectInterceptor` wired into both local and remote invocation paths. Dashboard UI pending.
 
 ### Dashboard & Real-Time
@@ -115,13 +116,20 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
    - AWS Secrets Manager / Azure Key Vault support
    - Current: in-memory `infra-secrets` implementation exists
 
-6. **Cloud Provider Adapters (NodeLifecycleManager)**
+6. **Cloud Integration (NodeLifecycleManager + Load Balancing)**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
    - Cloud provider adapters: AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
    - Node auto-discovery and registration
    - Node pool support: core (on-demand) vs elastic (spot) pools
    - Instance type parameter for spot/on-demand selection
+   - **Cloud Load Balancer Configuration:**
+     - Automatic target group registration/deregistration on node join/leave
+     - Health check endpoint configuration (path, interval, thresholds)
+     - AWS ALB/NLB, GCP Cloud Load Balancing, Azure Load Balancer adapters
+     - Weighted routing sync: Aether rolling update weights → cloud LB weights
+     - Drain connections before node removal (graceful deregistration delay)
+     - TLS termination configuration (certificate ARN/ID passthrough)
    - **Enables:** Spot Instance Support (#17), Expense Tracking (#18)
 
 ### MEDIUM PRIORITY - Infrastructure Services
@@ -175,9 +183,33 @@ Release 0.15.0 focuses on **monorepo consolidation** and **production readiness*
     - Per-endpoint authorization rules
     - Audit logging for sensitive operations
 
+### UNPRIORITIZED
+
+15. **Configurable Rate Limiting per HTTP Route**
+    - Per-route rate limiting configuration in blueprint or management API
+    - Token bucket or sliding window algorithm
+    - Configurable limits: requests/second, burst size
+    - 429 Too Many Requests response with Retry-After header
+    - Cluster-aware: distributed counters via consensus or per-node local limits
+    - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
+
+16. **Resource Provisioning Framework**
+    - Generalize DB connector pattern to all external infrastructure (caches, queues, secrets stores)
+    - Aether manages connection lifecycle as cluster resources
+    - Mix of Aether-native resources (e.g. cluster-wide pubsub) and external connections (Kafka, Redis, PostgreSQL)
+    - Annotation processor foundation exists; needs Aether-side provisioning implementations
+    - Many current infra-slices (cache, pubsub, lock, scheduler, config, secrets) transition from in-memory implementations to external resource provisioning
+    - Recommended priority: HIGH (answers "what happens to my data?" and eliminates need to reimplement external systems)
+
+17. **OpenTelemetry Integration**
+    - Span export for distributed tracing across slice invocations (Jaeger/Zipkin compatible)
+    - Parent-child span hierarchy for inter-slice calls
+    - Foundation exists: request ID propagation via `ScopedValue`
+    - Recommended priority: P1 (enterprise evaluators expect trace visualization)
+
 ### FUTURE
 
-15. **LLM Integration (Layer 3)**
+16. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support

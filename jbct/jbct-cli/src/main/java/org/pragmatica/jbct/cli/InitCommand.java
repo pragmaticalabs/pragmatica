@@ -13,9 +13,7 @@ import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
 
-/**
- * Init command - create new JBCT project.
- */
+/// Init command - create new JBCT project.
 @Command(
  name = "init",
  description = "Initialize a new JBCT project",

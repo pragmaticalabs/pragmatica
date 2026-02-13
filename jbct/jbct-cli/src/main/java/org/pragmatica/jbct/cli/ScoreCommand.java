@@ -20,9 +20,7 @@ import java.util.concurrent.Callable;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
-/**
- * Score command for JBCT compliance scoring.
- */
+/// Score command for JBCT compliance scoring.
 @Command(
  name = "score",
  description = "Calculate JBCT compliance score",

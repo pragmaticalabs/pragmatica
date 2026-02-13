@@ -1,10 +1,8 @@
 package org.pragmatica.aether.ttm.model;
-/**
- * Feature indices matching {@link org.pragmatica.aether.metrics.MinuteAggregate#toFeatureArray()} order.
- * <p>
- * Features: cpu_usage, heap_usage, event_loop_lag_ms, latency_ms, invocations,
- * gc_pause_ms, latency_p50, latency_p95, latency_p99, error_rate, event_count
- */
+/// Feature indices matching {@link org.pragmatica.aether.metrics.MinuteAggregate#toFeatureArray()} order.
+///
+/// Features: cpu_usage, heap_usage, event_loop_lag_ms, latency_ms, invocations,
+/// gc_pause_ms, latency_p50, latency_p95, latency_p99, error_rate, event_count
 public sealed interface FeatureIndex {
     int CPU_USAGE = 0;
     int HEAP_USAGE = 1;
@@ -19,9 +17,7 @@ public sealed interface FeatureIndex {
     int EVENT_COUNT = 10;
     int FEATURE_COUNT = 11;
 
-    /**
-     * Feature names in order (matches MinuteAggregate.featureNames()).
-     */
+    /// Feature names in order (matches MinuteAggregate.featureNames()).
     static String[] featureNames() {
         return new String[]{"cpu_usage", "heap_usage", "event_loop_lag_ms", "latency_ms", "invocations",
         "gc_pause_ms", "latency_p50", "latency_p95", "latency_p99", "error_rate", "event_count"};

@@ -9,13 +9,11 @@ import org.pragmatica.lang.parse.Number;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Pattern;
 
-/**
- * Generates random integers within a specified range.
- * <p>
- * Pattern: {@code ${range:MIN-MAX}} where MIN and MAX are integers.
- * <p>
- * Example: {@code ${range:1-100}} generates a random number between 1 and 100 (inclusive)
- */
+/// Generates random integers within a specified range.
+///
+/// Pattern: `${range:MIN-MAX`} where MIN and MAX are integers.
+///
+/// Example: `${range:1-100`} generates a random number between 1 and 100 (inclusive)
 public record RangeGenerator(int min, int max) implements PatternGenerator {
     public static final String TYPE = "range";
 
@@ -29,9 +27,7 @@ public record RangeGenerator(int min, int max) implements PatternGenerator {
 
     private static final Cause MIN_GREATER_THAN_MAX = Causes.cause("Range min cannot be greater than max");
 
-    /**
-     * Parses a range specification like "1-100" or "-50-50".
-     */
+    /// Parses a range specification like "1-100" or "-50-50".
     public static Result<PatternGenerator> rangeGenerator(String rangeSpec) {
         var matcher = RANGE_PATTERN.matcher(rangeSpec.trim());
         if (!matcher.matches()) {

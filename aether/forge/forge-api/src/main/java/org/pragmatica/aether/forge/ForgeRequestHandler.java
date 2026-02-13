@@ -8,10 +8,8 @@ import org.pragmatica.http.server.ResponseWriter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Routes HTTP requests to the appropriate handler (API or static files).
- * Handles CORS preflight requests.
- */
+/// Routes HTTP requests to the appropriate handler (API or static files).
+/// Handles CORS preflight requests.
 public final class ForgeRequestHandler {
     private static final Logger log = LoggerFactory.getLogger(ForgeRequestHandler.class);
 

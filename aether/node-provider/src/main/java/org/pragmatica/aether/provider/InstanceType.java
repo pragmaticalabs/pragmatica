@@ -1,8 +1,6 @@
 package org.pragmatica.aether.provider;
 
-/**
- * Type of instance to provision. Supports on-demand and spot instance models.
- */
+/// Type of instance to provision. Supports on-demand and spot instance models.
 public sealed interface InstanceType {
     record OnDemand() implements InstanceType {}
 

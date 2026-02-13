@@ -5,9 +5,7 @@ import org.pragmatica.lang.Option;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Typed response records for all Management API endpoints.
- */
+/// Typed response records for all Management API endpoints.
 public sealed interface ManagementApiResponses {
     record unused() implements ManagementApiResponses {}
 

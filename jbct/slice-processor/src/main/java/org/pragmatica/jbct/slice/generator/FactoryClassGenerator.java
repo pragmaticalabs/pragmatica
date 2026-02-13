@@ -24,30 +24,28 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/**
- * Generates factory class for slice instantiation.
- * <p>
- * Generated factory contains:
- * <ul>
- *   <li>{@code create(Aspect, SliceCreationContext)} - returns typed slice instance</li>
- *   <li>{@code createSlice(Aspect, SliceCreationContext)} - returns Slice for Aether runtime</li>
- * </ul>
- * <p>
- * Slice dependencies get local proxy records that delegate to ctx.invoker().
- * Resource dependencies (annotated with @ResourceQualifier) use ctx.resources().provide().
- * <p>
- * When methods have @Aspect annotations, generates wrapper record with
- * aspect-wrapped method implementations.
- * <p>
- * Currently supported aspects:
- * <ul>
- *   <li>{@code CACHE} - Fully implemented with key extraction</li>
- *   <li>{@code LOG} - Planned, not yet implemented</li>
- *   <li>{@code METRICS} - Planned, not yet implemented</li>
- *   <li>{@code RETRY} - Planned, not yet implemented</li>
- *   <li>{@code TIMEOUT} - Planned, not yet implemented</li>
- * </ul>
- */
+/// Generates factory class for slice instantiation.
+///
+/// Generated factory contains:
+///
+///   - `create(Aspect, SliceCreationContext)` - returns typed slice instance
+///   - `createSlice(Aspect, SliceCreationContext)` - returns Slice for Aether runtime
+///
+///
+/// Slice dependencies get local proxy records that delegate to ctx.invoker().
+/// Resource dependencies (annotated with @ResourceQualifier) use ctx.resources().provide().
+///
+/// When methods have @Aspect annotations, generates wrapper record with
+/// aspect-wrapped method implementations.
+///
+/// Currently supported aspects:
+///
+///   - `CACHE` - Fully implemented with key extraction
+///   - `LOG` - Planned, not yet implemented
+///   - `METRICS` - Planned, not yet implemented
+///   - `RETRY` - Planned, not yet implemented
+///   - `TIMEOUT` - Planned, not yet implemented
+///
 public class FactoryClassGenerator {
     private final Filer filer;
     private final Elements elements;
@@ -472,10 +470,8 @@ public class FactoryClassGenerator {
                     + "));");
     }
 
-    /**
-     * Gets the key extractor from method aspects, throwing if missing.
-     * This should never happen if MethodModel.extractAspects() works correctly.
-     */
+    /// Gets the key extractor from method aspects, throwing if missing.
+    /// This should never happen if MethodModel.extractAspects() works correctly.
     private KeyExtractorInfo getKeyExtractorOrThrow(MethodModel method) {
         return method.aspects()
                      .keyExtractor()
@@ -622,10 +618,8 @@ public class FactoryClassGenerator {
         return Option.none();
     }
 
-    /**
-     * Escapes a string for safe embedding in Java string literals.
-     * Handles quotes, backslashes, and common control characters.
-     */
+    /// Escapes a string for safe embedding in Java string literals.
+    /// Handles quotes, backslashes, and common control characters.
     private String escapeJavaString(String input) {
         if (input == null) {
             return "";
@@ -645,10 +639,8 @@ public class FactoryClassGenerator {
         return sb.toString();
     }
 
-    /**
-     * Converts first letter to lowercase following JBCT naming conventions.
-     * Handles acronyms properly: "HTTPService" -> "httpService", "IOReader" -> "ioReader"
-     */
+    /// Converts first letter to lowercase following JBCT naming conventions.
+    /// Handles acronyms properly: "HTTPService" -> "httpService", "IOReader" -> "ioReader"
     private String lowercaseFirst(String name) {
         if (name == null || name.isEmpty()) {
             return "";
@@ -683,9 +675,7 @@ public class FactoryClassGenerator {
         return "Promise.success(" + interfaceName + "." + factoryMethodName + "())";
     }
 
-    /**
-     * Generate resource provisioning call: ctx.resources().provide(Type.class, "config.section")
-     */
+    /// Generate resource provisioning call: ctx.resources().provide(Type.class, "config.section")
     private String generateResourceProvideCall(DependencyModel resource) {
         var qualifier = resource.resourceQualifier()
                                 .or(() -> {

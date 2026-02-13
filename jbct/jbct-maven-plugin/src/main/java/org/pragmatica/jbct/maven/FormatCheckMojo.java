@@ -14,10 +14,8 @@ import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 
-/**
- * Maven goal for checking if Java source files are formatted according to JBCT style.
- * Does not modify files - only reports violations.
- */
+/// Maven goal for checking if Java source files are formatted according to JBCT style.
+/// Does not modify files - only reports violations.
 @Mojo(name = "format-check", defaultPhase = LifecyclePhase.VERIFY)
 public class FormatCheckMojo extends AbstractJbctMojo {
     @Parameter(property = "jbct.includeTests", defaultValue = "true")

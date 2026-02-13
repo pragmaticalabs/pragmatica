@@ -19,26 +19,26 @@ import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.plugins.annotations.ResolutionScope;
 import org.apache.maven.project.MavenProject;
 
-/**
- * Scans compile dependencies for slice manifests and writes interface-to-artifact mappings.
- * This allows the annotation processor to resolve slice dependency versions.
- *
- * <p>For each dependency JAR containing META-INF/slice/*.manifest files, extracts:
- * <ul>
- *   <li>{@code slice.interface} - the slice interface fully qualified name</li>
- *   <li>{@code slice.artifactId} - the slice artifact ID</li>
- *   <li>{@code base.artifact} - the groupId:baseArtifactId for dependency resolution.
- *       Format: {@code groupId:artifactId} where both components are non-blank Maven coordinates.
- *       Example: {@code org.example:inventory-service}</li>
- * </ul>
- *
- * <p>Writes mappings to slice-deps.properties in format:
- * <pre>
- * # Key: interface qualified name
- * # Value: groupId:artifactId:version
- * org.example.api.InventoryService=org.example:inventory-service:1.0.0
- * </pre>
- */
+/// Scans compile dependencies for slice manifests and writes interface-to-artifact mappings.
+/// This allows the annotation processor to resolve slice dependency versions.
+///
+///
+/// For each dependency JAR containing META-INF/slice/*.manifest files, extracts:
+///
+///   - `slice.interface` - the slice interface fully qualified name
+///   - `slice.artifactId` - the slice artifact ID
+///   - `base.artifact` - the groupId:baseArtifactId for dependency resolution.
+///       Format: `groupId:artifactId` where both components are non-blank Maven coordinates.
+///       Example: `org.example:inventory-service`
+///
+///
+///
+/// Writes mappings to slice-deps.properties in format:
+/// ```
+/// # Key: interface qualified name
+/// # Value: groupId:artifactId:version
+/// org.example.api.InventoryService=org.example:inventory-service:1.0.0
+/// ```
 @Mojo(name = "collect-slice-deps",
  defaultPhase = LifecyclePhase.GENERATE_SOURCES,
  requiresDependencyResolution = ResolutionScope.COMPILE)

@@ -12,9 +12,7 @@ import org.apache.maven.plugins.annotations.LifecyclePhase;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 
-/**
- * Maven goal for formatting Java source files according to JBCT style.
- */
+/// Maven goal for formatting Java source files according to JBCT style.
 @Mojo(name = "format", defaultPhase = LifecyclePhase.PROCESS_SOURCES)
 public class FormatMojo extends AbstractJbctMojo {
     @Parameter(property = "jbct.includeTests", defaultValue = "true")

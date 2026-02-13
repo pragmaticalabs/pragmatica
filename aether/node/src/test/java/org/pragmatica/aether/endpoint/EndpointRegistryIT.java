@@ -22,10 +22,8 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.pragmatica.consensus.NodeId.nodeId;
 
-/**
- * Integration tests for EndpointRegistry weighted routing.
- * Tests the weighted endpoint selection logic used during rolling updates.
- */
+/// Integration tests for EndpointRegistry weighted routing.
+/// Tests the weighted endpoint selection logic used during rolling updates.
 class EndpointRegistryIT {
     private EndpointRegistry registry;
 

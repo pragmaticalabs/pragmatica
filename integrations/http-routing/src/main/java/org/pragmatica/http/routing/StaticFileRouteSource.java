@@ -17,17 +17,15 @@ import static org.pragmatica.http.routing.ContentType.contentType;
 import static org.pragmatica.http.routing.HttpMethod.GET;
 import static org.pragmatica.http.routing.Route.route;
 
-/**
- * Route source for serving static files from the classpath.
- * <p>
- * Supports common web content types and provides security against directory traversal attacks.
- * <p>
- * Example usage:
- * <pre>{@code
- * var routes = StaticFileRouteSource.staticFiles("/static", "/web");
- * // Serves /static/app.js from classpath:/web/app.js
- * }</pre>
- */
+/// Route source for serving static files from the classpath.
+///
+/// Supports common web content types and provides security against directory traversal attacks.
+///
+/// Example usage:
+/// ```{@code
+/// var routes = StaticFileRouteSource.staticFiles("/static", "/web");
+/// // Serves /static/app.js from classpath:/web/app.js
+/// }```
 public interface StaticFileRouteSource extends RouteSource {
     Map<String, ContentType> CONTENT_TYPES = Map.ofEntries(Map.entry(".html",
                                                                      contentType("text/html; charset=UTF-8", HTML)),
@@ -61,13 +59,11 @@ public interface StaticFileRouteSource extends RouteSource {
 
     ContentType DEFAULT_CONTENT_TYPE = CommonContentTypes.APPLICATION_OCTET_STREAM;
 
-    /**
-     * Creates a route source for serving static files from the classpath.
-     *
-     * @param urlPrefix       the URL prefix to match (e.g., "/static")
-     * @param classpathPrefix the classpath prefix where files are located (e.g., "/web")
-     * @return a route source that serves static files
-     */
+    /// Creates a route source for serving static files from the classpath.
+    ///
+    /// @param urlPrefix       the URL prefix to match (e.g., "/static")
+    /// @param classpathPrefix the classpath prefix where files are located (e.g., "/web")
+    /// @return a route source that serves static files
     static StaticFileRouteSource staticFiles(String urlPrefix, String classpathPrefix) {
         var normalizedUrlPrefix = PathUtils.normalize(urlPrefix);
         var normalizedClasspathPrefix = normalizeClasspathPrefix(classpathPrefix);
@@ -156,9 +152,7 @@ public interface StaticFileRouteSource extends RouteSource {
         return CONTENT_TYPES.getOrDefault(extension, DEFAULT_CONTENT_TYPE);
     }
 
-    /**
-     * Errors that can occur when serving static files.
-     */
+    /// Errors that can occur when serving static files.
     sealed interface StaticFileError extends Cause {
         enum General implements StaticFileError {
             DIRECTORY_TRAVERSAL("Directory traversal not allowed"),

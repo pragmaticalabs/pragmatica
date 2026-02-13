@@ -19,31 +19,24 @@ import java.util.List;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Handler for Maven repository protocol.
- * Supports GET for artifact resolution and PUT for deployment.
- *
- * <p>URL patterns:
- * <ul>
- *   <li>{@code GET /repository/{groupPath}/{artifactId}/{version}/{file}}</li>
- *   <li>{@code PUT /repository/{groupPath}/{artifactId}/{version}/{file}}</li>
- *   <li>{@code GET /repository/{groupPath}/{artifactId}/maven-metadata.xml}</li>
- * </ul>
- */
+/// Handler for Maven repository protocol.
+/// Supports GET for artifact resolution and PUT for deployment.
+///
+///
+/// URL patterns:
+///
+///   - `GET /repository/{groupPath`/{artifactId}/{version}/{file}}
+///   - `PUT /repository/{groupPath`/{artifactId}/{version}/{file}}
+///   - `GET /repository/{groupPath`/{artifactId}/maven-metadata.xml}
+///
 public interface MavenProtocolHandler {
-    /**
-     * Handle a GET request.
-     */
+    /// Handle a GET request.
     Promise<MavenResponse> handleGet(String path);
 
-    /**
-     * Handle a PUT request.
-     */
+    /// Handle a PUT request.
     Promise<MavenResponse> handlePut(String path, byte[] content);
 
-    /**
-     * Response from Maven protocol handler.
-     */
+    /// Response from Maven protocol handler.
     record MavenResponse(int statusCode,
                          String contentType,
                          byte[] content) {
@@ -68,9 +61,7 @@ public interface MavenProtocolHandler {
         }
     }
 
-    /**
-     * Parsed Maven path.
-     */
+    /// Parsed Maven path.
     sealed interface ParsedPath {
         record ArtifactPath(Artifact artifact, String classifier, String extension) implements ParsedPath {}
 
@@ -79,9 +70,7 @@ public interface MavenProtocolHandler {
         record ChecksumPath(ParsedPath inner, String algorithm) implements ParsedPath {}
     }
 
-    /**
-     * Create a Maven protocol handler.
-     */
+    /// Create a Maven protocol handler.
     static MavenProtocolHandler mavenProtocolHandler(ArtifactStore store) {
         return new MavenProtocolHandlerImpl(store);
     }

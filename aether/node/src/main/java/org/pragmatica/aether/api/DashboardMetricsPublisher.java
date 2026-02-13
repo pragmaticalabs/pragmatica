@@ -18,20 +18,29 @@ import java.util.stream.Collectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Publishes dashboard metrics via WebSocket at regular intervals.
- *
- * <p>Aggregates metrics from various collectors and broadcasts to all connected clients.
- */
+/// Publishes dashboard metrics via WebSocket at regular intervals.
+///
+///
+/// Aggregates metrics from various collectors and broadcasts to all connected clients.
 public class DashboardMetricsPublisher {
     private static final Logger log = LoggerFactory.getLogger(DashboardMetricsPublisher.class);
     private static final long BROADCAST_INTERVAL_MS = 1000;
+
+    private static final double EMA_ALPHA = 0.2;
 
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
     private final DynamicAspectRegistry aspectManager;
     private final ScheduledExecutorService scheduler;
     private final AtomicBoolean running = new AtomicBoolean(false);
+
+    private long lastTotalInvocations = 0;
+    private long lastTotalSuccess = 0;
+    private long lastTotalFailure = 0;
+    private double emaRps = 0.0;
+    private double emaSuccessRate = 1.0;
+    private double emaErrorRate = 0.0;
+    private double emaAvgLatencyMs = 0.0;
 
     public DashboardMetricsPublisher(Supplier<AetherNode> nodeSupplier,
                                      AlertManager alertManager,
@@ -95,9 +104,7 @@ public class DashboardMetricsPublisher {
         }
     }
 
-    /**
-     * Build initial state snapshot for newly connected clients.
-     */
+    /// Build initial state snapshot for newly connected clients.
     public String buildInitialState() {
         var node = nodeSupplier.get();
         var sb = new StringBuilder();
@@ -157,9 +164,7 @@ public class DashboardMetricsPublisher {
         return sb.toString();
     }
 
-    /**
-     * Build periodic metrics update message.
-     */
+    /// Build periodic metrics update message.
     private String buildMetricsUpdate() {
         var sb = new StringBuilder();
         sb.append("{\"type\":\"METRICS_UPDATE\",\"timestamp\":")
@@ -210,8 +215,52 @@ public class DashboardMetricsPublisher {
         // Dynamic aspects
         sb.append("\"aspects\":")
           .append(aspectManager.aspectsAsJson());
+        sb.append(",\"aggregates\":")
+          .append(buildAggregates());
         sb.append("}");
         return sb.toString();
+    }
+
+    private String buildAggregates() {
+        var node = nodeSupplier.get();
+        var snapshots = node.invocationMetrics()
+                            .snapshot();
+        long totalInvocations = 0;
+        long totalSuccess = 0;
+        long totalFailure = 0;
+        double weightedLatency = 0.0;
+
+        for (var snapshot : snapshots) {
+            var metrics = snapshot.metrics();
+            totalInvocations += metrics.count();
+            totalSuccess += metrics.successCount();
+            totalFailure += metrics.failureCount();
+            weightedLatency += metrics.averageLatencyNs() / 1_000_000.0 * metrics.count();
+        }
+
+        long deltaInvocations = totalInvocations - lastTotalInvocations;
+        long deltaSuccess = totalSuccess - lastTotalSuccess;
+
+        double instantRps = deltaInvocations / (BROADCAST_INTERVAL_MS / 1000.0);
+        double instantSuccessRate = deltaInvocations > 0
+                                    ? (double) deltaSuccess / deltaInvocations
+                                    : 1.0;
+        double instantErrorRate = 1.0 - instantSuccessRate;
+        double avgLatencyMs = totalInvocations > 0
+                              ? weightedLatency / totalInvocations
+                              : 0.0;
+
+        emaRps = EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * emaRps;
+        emaSuccessRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * emaSuccessRate;
+        emaErrorRate = EMA_ALPHA * instantErrorRate + (1 - EMA_ALPHA) * emaErrorRate;
+        emaAvgLatencyMs = EMA_ALPHA * avgLatencyMs + (1 - EMA_ALPHA) * emaAvgLatencyMs;
+
+        lastTotalInvocations = totalInvocations;
+        lastTotalSuccess = totalSuccess;
+        lastTotalFailure = totalFailure;
+
+        return String.format("{\"rps\":%.2f,\"successRate\":%.4f,\"errorRate\":%.4f,\"avgLatencyMs\":%.2f}",
+                             emaRps, emaSuccessRate, emaErrorRate, emaAvgLatencyMs);
     }
 
     private String buildInvocationMetrics() {
@@ -283,9 +332,7 @@ public class DashboardMetricsPublisher {
         sb.append("]");
     }
 
-    /**
-     * Handle threshold configuration from client.
-     */
+    /// Handle threshold configuration from client.
     public void handleSetThreshold(String message) {
         // Parse: {"type":"SET_THRESHOLD","metric":"cpu.usage","warning":0.7,"critical":0.9}
         var metricPattern = Pattern.compile("\"metric\"\\s*:\\s*\"([^\"]+)\"");
@@ -303,9 +350,7 @@ public class DashboardMetricsPublisher {
         }
     }
 
-    /**
-     * Build history response for GET_HISTORY request.
-     */
+    /// Build history response for GET_HISTORY request.
     public String buildHistoryResponse(String message) {
         // Parse: {"type":"GET_HISTORY","timeRange":"1h"}
         var rangePattern = Pattern.compile("\"timeRange\"\\s*:\\s*\"([^\"]+)\"");

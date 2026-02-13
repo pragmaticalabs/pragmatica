@@ -29,9 +29,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
-/**
- * Records protocol events for debugging and analysis.
- */
+/// Records protocol events for debugging and analysis.
 public final class VotingHistoryRecorder<C extends Command> {
 
     /// Sealed interface for all history events

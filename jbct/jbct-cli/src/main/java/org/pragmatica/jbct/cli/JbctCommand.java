@@ -4,9 +4,7 @@ import picocli.CommandLine;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
-/**
- * Main entry point for the JBCT CLI tool.
- */
+/// Main entry point for the JBCT CLI tool.
 @Command(
  name = "jbct",
  description = "JBCT code formatting and linting tool",
@@ -36,9 +34,7 @@ public class JbctCommand implements Runnable {
         CommandLine.usage(this, System.out);
     }
 
-    /**
-     * Version provider that reads version from resource file.
-     */
+    /// Version provider that reads version from resource file.
     public static class VersionProvider implements CommandLine.IVersionProvider {
         @Override
         public String[] getVersion() {

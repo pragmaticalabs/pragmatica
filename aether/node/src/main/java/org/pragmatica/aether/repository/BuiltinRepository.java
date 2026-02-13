@@ -15,11 +15,9 @@ import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.aether.slice.repository.Location.location;
 
-/**
- * Repository implementation that uses ArtifactStore for in-process artifact resolution.
- * Resolved artifacts are written to temporary files for class loading.
- * Integrity verification is performed by ArtifactStore during resolution.
- */
+/// Repository implementation that uses ArtifactStore for in-process artifact resolution.
+/// Resolved artifacts are written to temporary files for class loading.
+/// Integrity verification is performed by ArtifactStore during resolution.
 public interface BuiltinRepository extends Repository {
     Logger log = LoggerFactory.getLogger(BuiltinRepository.class);
 

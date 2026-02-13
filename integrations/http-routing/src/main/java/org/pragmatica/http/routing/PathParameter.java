@@ -13,41 +13,33 @@ import java.util.Locale;
 import static org.pragmatica.http.routing.ParameterError.InvalidParameter;
 import static org.pragmatica.http.routing.ParameterError.PathMismatch;
 
-/**
- * Type-safe path parameter parser.
- * <p>
- * Provides factory methods for common parameter types following JBCT naming conventions.
- * All parsers return {@link Result} - they never throw exceptions.
- *
- * @param <T> the type of the parsed parameter value
- */
+/// Type-safe path parameter parser.
+///
+/// Provides factory methods for common parameter types following JBCT naming conventions.
+/// All parsers return {@link Result} - they never throw exceptions.
+///
+/// @param <T> the type of the parsed parameter value
 @SuppressWarnings("unused")
 public interface PathParameter<T> {
-    /**
-     * Parse a string value into the target type.
-     *
-     * @param value the raw string value from the path
-     * @return success with parsed value, or failure with descriptive error
-     */
+    /// Parse a string value into the target type.
+    ///
+    /// @param value the raw string value from the path
+    /// @return success with parsed value, or failure with descriptive error
     Result<T> parse(String value);
 
-    /**
-     * Creates a spacer that matches a literal path segment.
-     * Used for fixed path components like "/api" or "/users".
-     * <p>
-     * Spacers extend the route's registered path, allowing multiple routes
-     * with different trailing spacers to coexist (e.g., /api/foo/{id}/edit vs /api/foo/{id}/delete).
-     *
-     * @param text the expected literal value
-     * @return parser that succeeds only if value matches exactly
-     */
+    /// Creates a spacer that matches a literal path segment.
+    /// Used for fixed path components like "/api" or "/users".
+    ///
+    /// Spacers extend the route's registered path, allowing multiple routes
+    /// with different trailing spacers to coexist (e.g., /api/foo/{id}/edit vs /api/foo/{id}/delete).
+    ///
+    /// @param text the expected literal value
+    /// @return parser that succeeds only if value matches exactly
     static PathParameter<String> spacer(String text) {
         return new Spacer(text);
     }
 
-    /**
-     * Spacer implementation that tracks the literal text for path registration.
-     */
+    /// Spacer implementation that tracks the literal text for path registration.
     record Spacer(String text) implements PathParameter<String> {
         @Override
         public Result<String> parse(String value) {
@@ -57,73 +49,55 @@ public interface PathParameter<T> {
         }
     }
 
-    /**
-     * String parameter - accepts any string value.
-     */
+    /// String parameter - accepts any string value.
     static PathParameter<String> aString() {
         return Result::success;
     }
 
-    /**
-     * Byte parameter - parses signed 8-bit integer.
-     */
+    /// Byte parameter - parses signed 8-bit integer.
     static PathParameter<Byte> aByte() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid byte value: " + value),
                                     () -> Byte.parseByte(value));
     }
 
-    /**
-     * Short parameter - parses signed 16-bit integer.
-     */
+    /// Short parameter - parses signed 16-bit integer.
     static PathParameter<Short> aShort() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid short value: " + value),
                                     () -> Short.parseShort(value));
     }
 
-    /**
-     * Integer parameter - parses signed 32-bit integer.
-     */
+    /// Integer parameter - parses signed 32-bit integer.
     static PathParameter<Integer> aInteger() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid integer value: " + value),
                                     () -> Integer.parseInt(value));
     }
 
-    /**
-     * Long parameter - parses signed 64-bit integer.
-     */
+    /// Long parameter - parses signed 64-bit integer.
     static PathParameter<Long> aLong() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid long value: " + value),
                                     () -> Long.parseLong(value));
     }
 
-    /**
-     * Double parameter - parses 64-bit floating point number.
-     */
+    /// Double parameter - parses 64-bit floating point number.
     static PathParameter<Double> aDouble() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid double value: " + value),
                                     () -> Double.parseDouble(value));
     }
 
-    /**
-     * Float parameter - parses 32-bit floating point number.
-     */
+    /// Float parameter - parses 32-bit floating point number.
     static PathParameter<Float> aFloat() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid float value: " + value),
                                     () -> Float.parseFloat(value));
     }
 
-    /**
-     * BigDecimal parameter - parses arbitrary precision decimal.
-     */
+    /// BigDecimal parameter - parses arbitrary precision decimal.
     static PathParameter<BigDecimal> aDecimal() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid decimal value: " + value),
                                     () -> new BigDecimal(value));
     }
 
-    /**
-     * Boolean parameter - parses boolean value.
-     * Accepts "true"/"false" and "yes"/"no" (case-insensitive).
-     */
+    /// Boolean parameter - parses boolean value.
+    /// Accepts "true"/"false" and "yes"/"no" (case-insensitive).
     static PathParameter<Boolean> aBoolean() {
         return PathParameter::parseBooleanValue;
     }
@@ -144,46 +118,36 @@ public interface PathParameter<T> {
         return value.equalsIgnoreCase("false") || value.equalsIgnoreCase("no");
     }
 
-    /**
-     * OffsetDateTime parameter - parses ISO-8601 date-time with offset.
-     * Example: "2023-12-15T10:30:00+01:00"
-     */
+    /// OffsetDateTime parameter - parses ISO-8601 date-time with offset.
+    /// Example: "2023-12-15T10:30:00+01:00"
     static PathParameter<OffsetDateTime> aOffsetDateTime() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid offset date-time value: " + value),
                                     () -> OffsetDateTime.parse(value));
     }
 
-    /**
-     * LocalDateTime parameter - parses ISO-8601 date-time without offset.
-     * Example: "2023-12-15T10:30:00"
-     */
+    /// LocalDateTime parameter - parses ISO-8601 date-time without offset.
+    /// Example: "2023-12-15T10:30:00"
     static PathParameter<LocalDateTime> aLocalDateTime() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid local date-time value: " + value),
                                     () -> LocalDateTime.parse(value));
     }
 
-    /**
-     * LocalDate parameter - parses ISO-8601 date.
-     * Example: "2023-12-15"
-     */
+    /// LocalDate parameter - parses ISO-8601 date.
+    /// Example: "2023-12-15"
     static PathParameter<LocalDate> aLocalDate() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid local date value: " + value),
                                     () -> LocalDate.parse(value));
     }
 
-    /**
-     * LocalTime parameter - parses ISO-8601 time.
-     * Example: "10:30:00"
-     */
+    /// LocalTime parameter - parses ISO-8601 time.
+    /// Example: "10:30:00"
     static PathParameter<LocalTime> aLocalTime() {
         return value -> Result.lift(_ -> new InvalidParameter("Invalid local time value: " + value),
                                     () -> LocalTime.parse(value));
     }
 
-    /**
-     * Duration parameter - parses ISO-8601 duration.
-     * Accepts both "PT1H30M" and "1H30M" formats.
-     */
+    /// Duration parameter - parses ISO-8601 duration.
+    /// Accepts both "PT1H30M" and "1H30M" formats.
     static PathParameter<Duration> aDuration() {
         return value -> {
             var upperCase = value.toUpperCase(Locale.ROOT);

@@ -6,46 +6,40 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-/**
- * Traffic routing ratio between old and new versions.
- *
- * <p>Uses ratio-based routing (not percentages). For example:
- * <ul>
- *   <li>{@code (1, 3)} = 1 new : 3 old (25% to new)</li>
- *   <li>{@code (1, 1)} = 1 new : 1 old (50% to new)</li>
- *   <li>{@code (3, 1)} = 3 new : 1 old (75% to new)</li>
- *   <li>{@code (1, 0)} = 100% to new</li>
- *   <li>{@code (0, 1)} = 100% to old (initial state)</li>
- * </ul>
- *
- * <p>Ratios are scaled to actual instance counts. If ratio cannot be satisfied
- * with available instances (e.g., 1:3 with only 2 old instances), the operation
- * should be rejected.
- *
- * @param newWeight weight for new version traffic
- * @param oldWeight weight for old version traffic
- */
+/// Traffic routing ratio between old and new versions.
+///
+///
+/// Uses ratio-based routing (not percentages). For example:
+///
+///   - `(1, 3)` = 1 new : 3 old (25% to new)
+///   - `(1, 1)` = 1 new : 1 old (50% to new)
+///   - `(3, 1)` = 3 new : 1 old (75% to new)
+///   - `(1, 0)` = 100% to new
+///   - `(0, 1)` = 100% to old (initial state)
+///
+///
+///
+/// Ratios are scaled to actual instance counts. If ratio cannot be satisfied
+/// with available instances (e.g., 1:3 with only 2 old instances), the operation
+/// should be rejected.
+///
+/// @param newWeight weight for new version traffic
+/// @param oldWeight weight for old version traffic
 public record VersionRouting(int newWeight, int oldWeight) {
     private static final Cause NEGATIVE_WEIGHTS = Causes.cause("Weights must be non-negative");
     private static final Cause NO_POSITIVE_WEIGHT = Causes.cause("At least one weight must be positive");
 
     private static final Fn1<Cause, String> INVALID_RATIO_FORMAT = Causes.forOneValue("Invalid ratio format. Expected 'new:old', got: {}");
 
-    /**
-     * Initial routing: all traffic to old version.
-     */
+    /// Initial routing: all traffic to old version.
     public static final VersionRouting ALL_OLD = versionRouting(0, 1).unwrap();
 
-    /**
-     * Final routing: all traffic to new version.
-     */
+    /// Final routing: all traffic to new version.
     public static final VersionRouting ALL_NEW = versionRouting(1, 0).unwrap();
 
-    /**
-     * Creates a routing configuration.
-     *
-     * @return routing configuration, or failure if weights are invalid
-     */
+    /// Creates a routing configuration.
+    ///
+    /// @return routing configuration, or failure if weights are invalid
     public static Result<VersionRouting> versionRouting(int newWeight, int oldWeight) {
         if (newWeight < 0 || oldWeight < 0) {
             return NEGATIVE_WEIGHTS.result();
@@ -56,12 +50,10 @@ public record VersionRouting(int newWeight, int oldWeight) {
         return Result.success(new VersionRouting(newWeight, oldWeight));
     }
 
-    /**
-     * Parses routing from string format "new:old" (e.g., "1:3").
-     *
-     * @param ratio the ratio string
-     * @return parsed routing, or failure if format is invalid
-     */
+    /// Parses routing from string format "new:old" (e.g., "1:3").
+    ///
+    /// @param ratio the ratio string
+    /// @return parsed routing, or failure if format is invalid
     public static Result<VersionRouting> versionRouting(String ratio) {
         var parts = ratio.split(":");
         if (parts.length != 2) {
@@ -75,46 +67,37 @@ public record VersionRouting(int newWeight, int oldWeight) {
                                                    vr.oldWeight()));
     }
 
-    /**
-     * Checks if all traffic goes to old version.
-     */
+    /// Checks if all traffic goes to old version.
     public boolean isAllOld() {
         return newWeight == 0;
     }
 
-    /**
-     * Checks if all traffic goes to new version.
-     */
+    /// Checks if all traffic goes to new version.
     public boolean isAllNew() {
         return oldWeight == 0;
     }
 
-    /**
-     * Returns the total weight (for proportion calculations).
-     */
+    /// Returns the total weight (for proportion calculations).
     public int totalWeight() {
         return newWeight + oldWeight;
     }
 
-    /**
-     * Calculates the new version traffic percentage.
-     */
+    /// Calculates the new version traffic percentage.
     public double newVersionPercentage() {
         if (totalWeight() == 0) return 0.0;
         return (double) newWeight / totalWeight() * 100.0;
     }
 
-    /**
-     * Scales the routing ratio to instance counts.
-     *
-     * <p>For example, with ratio 1:3 and instances (new=3, old=9):
-     * - Scale factor: min(3/1, 9/3) = 3
-     * - Effective: 3 new instances, 9 old instances used
-     *
-     * @param newInstances available new version instances
-     * @param oldInstances available old version instances
-     * @return scaled instance counts (new, old), or empty if unsatisfiable
-     */
+    /// Scales the routing ratio to instance counts.
+    ///
+    ///
+    /// For example, with ratio 1:3 and instances (new=3, old=9):
+    /// - Scale factor: min(3/1, 9/3) = 3
+    /// - Effective: 3 new instances, 9 old instances used
+    ///
+    /// @param newInstances available new version instances
+    /// @param oldInstances available old version instances
+    /// @return scaled instance counts (new, old), or empty if unsatisfiable
     public Option<int[]> scaleToInstances(int newInstances, int oldInstances) {
         if (isAllOld()) {
             return Option.option(new int[] {0, oldInstances});

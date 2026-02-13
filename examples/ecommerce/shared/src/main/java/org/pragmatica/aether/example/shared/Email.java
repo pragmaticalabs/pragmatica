@@ -8,9 +8,7 @@ import org.pragmatica.lang.utils.Causes;
 
 import java.util.regex.Pattern;
 
-/**
- * Validated email address.
- */
+/// Validated email address.
 public record Email(String value) {
     private static final Pattern EMAIL_PATTERN = Pattern.compile("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
 

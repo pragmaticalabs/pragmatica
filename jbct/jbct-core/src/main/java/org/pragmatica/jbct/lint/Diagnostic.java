@@ -2,9 +2,7 @@ package org.pragmatica.jbct.lint;
 
 import org.pragmatica.lang.Option;
 
-/**
- * A lint diagnostic representing a JBCT rule violation or suggestion.
- */
+/// A lint diagnostic representing a JBCT rule violation or suggestion.
 public record Diagnostic(String ruleId,
                          DiagnosticSeverity severity,
                          String file,
@@ -14,9 +12,7 @@ public record Diagnostic(String ruleId,
                          String details,
                          Option<String> example,
                          Option<String> docLink) {
-    /**
-     * Factory method for creating a diagnostic.
-     */
+    /// Factory method for creating a diagnostic.
     public static Diagnostic diagnostic(String ruleId,
                                         DiagnosticSeverity severity,
                                         String file,
@@ -27,9 +23,7 @@ public record Diagnostic(String ruleId,
         return new Diagnostic(ruleId, severity, file, line, column, message, details, Option.none(), Option.none());
     }
 
-    /**
-     * Factory method for creating a diagnostic with example and doc link.
-     */
+    /// Factory method for creating a diagnostic with example and doc link.
     public static Diagnostic diagnostic(String ruleId,
                                         DiagnosticSeverity severity,
                                         String file,
@@ -50,23 +44,17 @@ public record Diagnostic(String ruleId,
                               Option.option(docLink));
     }
 
-    /**
-     * Builder-style method to add an example.
-     */
+    /// Builder-style method to add an example.
     public Diagnostic withExample(String example) {
         return new Diagnostic(ruleId, severity, file, line, column, message, details, Option.option(example), docLink);
     }
 
-    /**
-     * Builder-style method to add a documentation link.
-     */
+    /// Builder-style method to add a documentation link.
     public Diagnostic withDocLink(String docLink) {
         return new Diagnostic(ruleId, severity, file, line, column, message, details, example, Option.option(docLink));
     }
 
-    /**
-     * Format as human-readable string.
-     */
+    /// Format as human-readable string.
     public String toHumanReadable() {
         var sb = new StringBuilder();
         sb.append("%s:%d:%d: %s [%s] %s%n".formatted(file, line, column, severity, ruleId, message));
@@ -88,9 +76,7 @@ public record Diagnostic(String ruleId,
         return sb.toString();
     }
 
-    /**
-     * Format location as file:line:column.
-     */
+    /// Format location as file:line:column.
     public String location() {
         return "%s:%d:%d". formatted(file, line, column);
     }

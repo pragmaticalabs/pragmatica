@@ -7,10 +7,8 @@ import org.pragmatica.serialization.ClassRegistrator;
 
 import java.util.function.Consumer;
 
-/**
- * Registers HTTP handler classes for Fury serialization.
- * Required for remote slice invocation when HttpRequestContext is serialized.
- */
+/// Registers HTTP handler classes for Fury serialization.
+/// Required for remote slice invocation when HttpRequestContext is serialized.
 public final class HttpHandlerClassRegistrator implements ClassRegistrator {
     public static final HttpHandlerClassRegistrator INSTANCE = new HttpHandlerClassRegistrator();
 

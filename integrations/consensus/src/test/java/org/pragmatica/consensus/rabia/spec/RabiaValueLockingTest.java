@@ -33,9 +33,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Tests for Rabia protocol value locking invariants from weak_mvc.ivy specification (conjectures 31-46).
- */
+/// Tests for Rabia protocol value locking invariants from weak_mvc.ivy specification (conjectures 31-46).
 class RabiaValueLockingTest {
 
     record TestCommand(String value) implements Command {}

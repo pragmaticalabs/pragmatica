@@ -34,11 +34,11 @@ Aether's distributed capabilities. It provides:
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
 │  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐         │
-│  │ ForgeCluster │   │LoadGenerator │   │ ForgeMetrics │         │
+│  │ ForgeCluster │   │ LoadRunner   │   │ ForgeMetrics │         │
 │  │              │   │              │   │              │         │
-│  │ ┌────┬────┐  │   │ Continuous   │   │ Success rate │         │
-│  │ │N1  │N2  │  │◄──│ KV-Store     │──►│ Latency      │         │
-│  │ ├────┼────┤  │   │ operations   │   │ Throughput   │         │
+│  │ ┌────┬────┐  │   │ Configurable │   │ Success rate │         │
+│  │ │N1  │N2  │  │◄──│ HTTP load    │──►│ Latency      │         │
+│  │ ├────┼────┤  │   │ generation   │   │ Throughput   │         │
 │  │ │N3  │N4  │  │   │              │   │              │         │
 │  │ ├────┴────┤  │   └──────────────┘   └──────────────┘         │
 │  │ │   N5    │  │                                                │
@@ -65,7 +65,7 @@ Aether's distributed capabilities. It provides:
 |-----------|------|-------------|
 | `ForgeServer` | `forge/src/.../ForgeServer.java` | Main entry point, starts HTTP server and cluster |
 | `ForgeCluster` | `forge/src/.../ForgeCluster.java` | Manages multiple AetherNodes in-process |
-| `LoadGenerator` | `forge/src/.../LoadGenerator.java` | Generates continuous KV-Store operations |
+| `ConfigurableLoadRunner` | `forge/forge-load/src/.../ConfigurableLoadRunner.java` | Generates configurable HTTP load against the cluster |
 | `ForgeMetrics` | `forge/src/.../ForgeMetrics.java` | Aggregates success/failure/latency metrics |
 | `ForgeApiHandler` | `forge/src/.../ForgeApiHandler.java` | REST API for dashboard interactions |
 | `StaticFileHandler` | `forge/src/.../StaticFileHandler.java` | Serves web dashboard files |

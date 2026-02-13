@@ -1,11 +1,9 @@
 package org.pragmatica.jbct.slice.routing;
-/**
- * Path parameter extracted from route DSL.
- *
- * @param name     parameter name (e.g., "id" from "{id}")
- * @param type     parameter type (defaults to "String" if not specified)
- * @param position zero-based position in the path
- */
+/// Path parameter extracted from route DSL.
+///
+/// @param name     parameter name (e.g., "id" from "{id}")
+/// @param type     parameter type (defaults to "String" if not specified)
+/// @param position zero-based position in the path
 public record PathParam(String name,
                         String type,
                         int position) {

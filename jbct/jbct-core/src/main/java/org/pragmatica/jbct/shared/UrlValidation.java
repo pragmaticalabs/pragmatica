@@ -5,9 +5,7 @@ import org.pragmatica.lang.Result;
 import java.net.URI;
 import java.util.Set;
 
-/**
- * URL validation utilities for preventing downloads from untrusted sources.
- */
+/// URL validation utilities for preventing downloads from untrusted sources.
 public sealed interface UrlValidation permits UrlValidation.unused {
     record unused() implements UrlValidation {}
 
@@ -16,12 +14,10 @@ public sealed interface UrlValidation permits UrlValidation.unused {
                                          "api.github.com",
                                          "objects.githubusercontent.com");
 
-    /**
-     * Validate a download URL is safe (HTTPS, trusted domain).
-     *
-     * @param url The URL string to validate
-     * @return Result containing the validated URI, or failure if URL is unsafe
-     */
+    /// Validate a download URL is safe (HTTPS, trusted domain).
+    ///
+    /// @param url The URL string to validate
+    /// @return Result containing the validated URI, or failure if URL is unsafe
     static Result<URI> validateDownloadUrl(String url) {
         if (url == null || url.isBlank()) {
             return SecurityError.UrlRejected.urlRejected(url, "URL is null or blank")

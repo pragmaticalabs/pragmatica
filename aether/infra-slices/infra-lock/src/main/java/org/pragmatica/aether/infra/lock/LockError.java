@@ -3,9 +3,7 @@ package org.pragmatica.aether.infra.lock;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.io.TimeSpan;
 
-/**
- * Error hierarchy for distributed lock operations.
- */
+/// Error hierarchy for distributed lock operations.
 public sealed interface LockError extends Cause {
     record AcquisitionTimeout(String lockId, TimeSpan timeout) implements LockError {
         @Override

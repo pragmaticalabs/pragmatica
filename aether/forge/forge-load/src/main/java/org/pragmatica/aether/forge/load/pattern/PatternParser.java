@@ -11,9 +11,7 @@ import java.util.regex.Pattern;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
-/**
- * Parses pattern specifications like {@code ${type:args}} into PatternGenerator instances.
- */
+/// Parses pattern specifications like `${type:args`} into PatternGenerator instances.
 public sealed interface PatternParser {
     Pattern PATTERN_REGEX = Pattern.compile("\\$\\{([a-z]+)(?::(.*))?}");
 
@@ -21,12 +19,10 @@ public sealed interface PatternParser {
 
     Fn1<Cause, String> INVALID_PATTERN = Causes.forOneValue("Invalid pattern syntax: %s");
 
-    /**
-     * Parses a pattern string like "${uuid}" or "${random:SKU-#####}" into a generator.
-     *
-     * @param pattern the pattern string
-     * @return Result containing the generator or an error
-     */
+    /// Parses a pattern string like "${uuid}" or "${random:SKU-#####}" into a generator.
+    ///
+    /// @param pattern the pattern string
+    /// @return Result containing the generator or an error
     static Result<PatternGenerator> parse(String pattern) {
         var matcher = PATTERN_REGEX.matcher(pattern.trim());
         if (!matcher.matches()) {
@@ -72,16 +68,12 @@ public sealed interface PatternParser {
                      .flatMap(ChoiceGenerator::choiceGenerator);
     }
 
-    /**
-     * Checks if a string contains any pattern placeholders.
-     */
+    /// Checks if a string contains any pattern placeholders.
     static boolean containsPatterns(String text) {
         return text != null && text.contains("${");
     }
 
-    /**
-     * Extracts the pattern type from a pattern string.
-     */
+    /// Extracts the pattern type from a pattern string.
     static Option<String> extractType(String pattern) {
         var matcher = PATTERN_REGEX.matcher(pattern.trim());
         return matcher.matches()

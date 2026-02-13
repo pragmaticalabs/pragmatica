@@ -16,9 +16,7 @@ import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Initializes a new Aether slice project structure.
- */
+/// Initializes a new Aether slice project structure.
 public final class SliceProjectInitializer {
     private static final Logger LOG = LoggerFactory.getLogger(SliceProjectInitializer.class);
     private static final String TEMPLATES_PATH = "/templates/slice/";
@@ -54,9 +52,7 @@ public final class SliceProjectInitializer {
         this.aetherVersion = aetherVersion;
     }
 
-    /**
-     * Create initializer with project parameters, fetching latest versions from GitHub.
-     */
+    /// Create initializer with project parameters, fetching latest versions from GitHub.
     public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
                                                                           String groupId,
                                                                           String artifactId) {
@@ -64,9 +60,7 @@ public final class SliceProjectInitializer {
         return sliceProjectInitializer(projectDir, groupId, artifactId, resolver);
     }
 
-    /**
-     * Create initializer with project parameters and version resolver.
-     */
+    /// Create initializer with project parameters and version resolver.
     public static Result<SliceProjectInitializer> sliceProjectInitializer(Path projectDir,
                                                                           String groupId,
                                                                           String artifactId,
@@ -89,9 +83,7 @@ public final class SliceProjectInitializer {
                                                           resolver.aetherVersion()));
     }
 
-    /**
-     * Create initializer with explicit base package (uses fallback versions).
-     */
+    /// Create initializer with explicit base package (uses fallback versions).
     public static SliceProjectInitializer sliceProjectInitializer(Path projectDir,
                                                                   String groupId,
                                                                   String artifactId,
@@ -105,11 +97,9 @@ public final class SliceProjectInitializer {
                                            DEFAULT_AETHER_VERSION);
     }
 
-    /**
-     * Initialize the slice project structure.
-     *
-     * @return List of created files
-     */
+    /// Initialize the slice project structure.
+    ///
+    /// @return List of created files
     public Result<List<Path>> initialize() {
         return createDirectories().flatMap(_ -> createAllFiles());
     }
@@ -562,15 +552,11 @@ public final class SliceProjectInitializer {
         import org.pragmatica.lang.Promise;
         import org.pragmatica.lang.Result;
 
-        /**
-         * {{sliceName}} slice interface.
-         */
+        /// {{sliceName}} slice interface.
         @Slice
         public interface {{sliceName}} {
 
-            /**
-             * Request record.
-             */
+            /// Request record.
             record Request(String value) {
                 public static Result<Request> request(String value) {
                     if (value == null || value.isBlank()) {
@@ -580,14 +566,10 @@ public final class SliceProjectInitializer {
                 }
             }
 
-            /**
-             * Response record.
-             */
+            /// Response record.
             record Response(String result) {}
 
-            /**
-             * Validation error.
-             */
+            /// Validation error.
             sealed interface ValidationError extends Cause {
                 record EmptyValue() implements ValidationError {
                     @Override

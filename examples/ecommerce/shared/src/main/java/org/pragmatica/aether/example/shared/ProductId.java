@@ -6,9 +6,7 @@ import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Verify;
 import org.pragmatica.lang.utils.Causes;
 
-/**
- * Product identifier - alphanumeric SKU format.
- */
+/// Product identifier - alphanumeric SKU format.
 public record ProductId(String value) {
     private static final Fn1<Cause, String> INVALID_PRODUCT_ID = Causes.forOneValue("Invalid product ID: %s");
 

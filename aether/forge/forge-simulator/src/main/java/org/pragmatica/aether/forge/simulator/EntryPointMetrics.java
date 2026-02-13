@@ -7,16 +7,12 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * Collects per-entry-point metrics for the simulator.
- * <p>
- * Provides thread-safe metrics collection with histogram-based latency tracking.
- * Designed for high-throughput concurrent access.
- */
+/// Collects per-entry-point metrics for the simulator.
+///
+/// Provides thread-safe metrics collection with histogram-based latency tracking.
+/// Designed for high-throughput concurrent access.
 public final class EntryPointMetrics {
-    /**
-     * Histogram bucket boundaries in milliseconds.
-     */
+    /// Histogram bucket boundaries in milliseconds.
     private static final long[] BUCKET_BOUNDARIES_MS = {1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000};
 
     private final Map<String, EntryPointStats> stats = new ConcurrentHashMap<>();
@@ -28,30 +24,22 @@ public final class EntryPointMetrics {
         return new EntryPointMetrics();
     }
 
-    /**
-     * Record a successful invocation.
-     */
+    /// Record a successful invocation.
     public void recordSuccess(String entryPoint, long latencyNanos) {
         getOrCreate(entryPoint).recordSuccess(latencyNanos);
     }
 
-    /**
-     * Record a failed invocation.
-     */
+    /// Record a failed invocation.
     public void recordFailure(String entryPoint, long latencyNanos) {
         getOrCreate(entryPoint).recordFailure(latencyNanos);
     }
 
-    /**
-     * Set the current rate for an entry point.
-     */
+    /// Set the current rate for an entry point.
     public void setRate(String entryPoint, int callsPerSecond) {
         getOrCreate(entryPoint).currentRate.set(callsPerSecond);
     }
 
-    /**
-     * Take a snapshot of all entry points and reset counters.
-     */
+    /// Take a snapshot of all entry points and reset counters.
     public List<EntryPointSnapshot> snapshotAndReset() {
         var now = System.currentTimeMillis();
         var previousTime = lastSnapshotTime.getAndSet(now);
@@ -61,9 +49,7 @@ public final class EntryPointMetrics {
         return result;
     }
 
-    /**
-     * Take a snapshot without resetting.
-     */
+    /// Take a snapshot without resetting.
     public List<EntryPointSnapshot> snapshot() {
         var now = System.currentTimeMillis();
         var elapsedMs = now - lastSnapshotTime.get();
@@ -72,9 +58,7 @@ public final class EntryPointMetrics {
         return result;
     }
 
-    /**
-     * Reset all metrics.
-     */
+    /// Reset all metrics.
     public void reset() {
         stats.values()
              .forEach(EntryPointStats::reset);
@@ -85,9 +69,7 @@ public final class EntryPointMetrics {
         return stats.computeIfAbsent(entryPoint, _ -> EntryPointStats.entryPointStats());
     }
 
-    /**
-     * Per-entry-point statistics.
-     */
+    /// Per-entry-point statistics.
     private record EntryPointStats(AtomicLong totalCount,
                                    AtomicLong successCount,
                                    AtomicLong failureCount,
@@ -201,9 +183,7 @@ public final class EntryPointMetrics {
         }
     }
 
-    /**
-     * Snapshot of entry point metrics.
-     */
+    /// Snapshot of entry point metrics.
     public record EntryPointSnapshot(String name,
                                      int rate,
                                      long totalCalls,

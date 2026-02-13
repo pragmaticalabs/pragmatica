@@ -2,9 +2,7 @@ package org.pragmatica.aether.provider;
 
 import org.pragmatica.lang.Cause;
 
-/**
- * Error types for node provisioning failures.
- */
+/// Error types for node provisioning failures.
 public sealed interface NodeProviderError extends Cause {
     record ProvisionFailed(Throwable cause) implements NodeProviderError {
         @Override

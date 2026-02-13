@@ -13,20 +13,18 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-RET-06: No nullable parameters - use Option instead.
- * <p>
- * Detects method parameters that are checked for null inside the method body,
- * indicating they should be {@code Option<T>} instead.
- * <p>
- * Detected patterns:
- * <ul>
- *   <li>{@code if (param == null)}</li>
- *   <li>{@code if (null == param)}</li>
- *   <li>{@code param == null}</li>
- *   <li>{@code param != null}</li>
- * </ul>
- */
+/// JBCT-RET-06: No nullable parameters - use Option instead.
+///
+/// Detects method parameters that are checked for null inside the method body,
+/// indicating they should be `Option<T>` instead.
+///
+/// Detected patterns:
+///
+///   - `if (param == null)`
+///   - `if (null == param)`
+///   - `param == null`
+///   - `param != null`
+///
 public class CstNullableParameterRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-RET-06";
 

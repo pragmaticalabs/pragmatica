@@ -1,10 +1,12 @@
 package org.pragmatica.aether.metrics;
 
+import org.pragmatica.aether.metrics.invocation.InvocationMetricsCollector;
 import org.pragmatica.aether.slice.MethodName;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPing;
 import org.pragmatica.cluster.metrics.MetricsMessage.MetricsPong;
 import org.pragmatica.consensus.net.ClusterNetwork;
 import org.pragmatica.consensus.NodeId;
+import org.pragmatica.consensus.topology.TopologyChangeNotification;
 import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.utility.RingBuffer;
 
@@ -17,20 +19,20 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.DoubleAdder;
 import java.util.concurrent.atomic.LongAdder;
 
-/**
- * Collects and manages metrics for a single node.
- *
- * <p>Responsibilities:
- * <ul>
- *   <li>Collect JVM metrics (CPU, heap usage)</li>
- *   <li>Track per-method call stats (count, duration)</li>
- *   <li>Store custom metrics from slices</li>
- *   <li>Store received metrics from other nodes</li>
- *   <li>Handle MetricsPing/MetricsPong messages</li>
- * </ul>
- *
- * <p>Metrics are stored in-memory with a sliding window for historical data.
- */
+/// Collects and manages metrics for a single node.
+///
+///
+/// Responsibilities:
+///
+///   - Collect JVM metrics (CPU, heap usage)
+///   - Track per-method call stats (count, duration)
+///   - Store custom metrics from slices
+///   - Store received metrics from other nodes
+///   - Handle MetricsPing/MetricsPong messages
+///
+///
+///
+/// Metrics are stored in-memory with a sliding window for historical data.
 public interface MetricsCollector {
     // Standard metric names
     String CPU_USAGE = "cpu.usage";
@@ -38,42 +40,40 @@ public interface MetricsCollector {
     String HEAP_MAX = "heap.max";
     String HEAP_USAGE = "heap.usage";
 
-    /**
-     * Collect current local JVM metrics.
-     */
+    /// Collect current local JVM metrics.
     Map<String, Double> collectLocal();
 
-    /**
-     * Record a method call with its duration.
-     */
+    /// Record a method call with its duration.
     void recordCall(MethodName method, long durationMs);
 
-    /**
-     * Record a custom metric value from a slice.
-     */
+    /// Record a custom metric value from a slice.
     void recordCustom(String name, double value);
 
-    /**
-     * Get all known metrics (local + remote nodes).
-     */
+    /// Set the invocation metrics provider for cluster-wide aggregation.
+    /// Invocation snapshots are encoded as flat map entries and exchanged via gossip.
+    void setInvocationMetricsProvider(InvocationMetricsCollector provider);
+
+    /// Get all known metrics (local + remote nodes).
     Map<NodeId, Map<String, Double>> allMetrics();
 
-    /**
-     * Get metrics for a specific node.
-     */
+    /// Get metrics for a specific node.
     Map<String, Double> metricsFor(NodeId nodeId);
 
-    /**
-     * Get historical metrics within the sliding window (2 hours).
-     *
-     * @return Map of NodeId to list of timestamped snapshots, oldest first
-     */
+    /// Get historical metrics within the sliding window (2 hours).
+    ///
+    /// @return Map of NodeId to list of timestamped snapshots, oldest first
     Map<NodeId, java.util.List<MetricsSnapshot>> historicalMetrics();
 
-    /**
-     * Immutable metrics snapshot with timestamp.
-     */
+    /// Immutable metrics snapshot with timestamp.
     record MetricsSnapshot(long timestamp, Map<String, Double> metrics) {}
+
+    /// Remove a node from remote metrics and history.
+    /// Called when a node leaves the cluster or is detected as down.
+    void removeNode(NodeId nodeId);
+
+    /// Handle topology changes to clean up metrics for departed nodes.
+    @MessageReceiver
+    void onTopologyChange(TopologyChangeNotification topologyChange);
 
     @MessageReceiver
     void onMetricsPing(MetricsPing ping);
@@ -81,17 +81,13 @@ public interface MetricsCollector {
     @MessageReceiver
     void onMetricsPong(MetricsPong pong);
 
-    /**
-     * Create a new MetricsCollector instance.
-     */
+    /// Create a new MetricsCollector instance.
     static MetricsCollector metricsCollector(NodeId self, ClusterNetwork network) {
         return new MetricsCollectorImpl(self, network);
     }
 }
 
-/**
- * Implementation of MetricsCollector.
- */
+/// Implementation of MetricsCollector.
 class MetricsCollectorImpl implements MetricsCollector {
     // Sliding window duration: 2 hours in milliseconds
     private static final long SLIDING_WINDOW_MS = 2 * 60 * 60 * 1000L;
@@ -111,6 +107,9 @@ class MetricsCollectorImpl implements MetricsCollector {
 
     // Custom metrics from slices
     private final ConcurrentHashMap<String, Double> customMetrics = new ConcurrentHashMap<>();
+
+    // Invocation metrics provider for cluster-wide aggregation
+    private volatile InvocationMetricsCollector invocationMetricsProvider;
 
     // Metrics received from other nodes
     private final ConcurrentHashMap<NodeId, Map<String, Double>> remoteMetrics = new ConcurrentHashMap<>();
@@ -155,6 +154,20 @@ class MetricsCollectorImpl implements MetricsCollector {
                           });
         // Add custom metrics
         metrics.putAll(customMetrics);
+        // Add invocation metrics for cluster-wide aggregation via gossip
+        var invMetrics = invocationMetricsProvider;
+        if (invMetrics != null) {
+            for (var snapshot : invMetrics.snapshot()) {
+                var prefix = "inv|" + snapshot.artifact().asString() + "|" + snapshot.methodName().name() + "|";
+                var m = snapshot.metrics();
+                metrics.put(prefix + "count", (double) m.count());
+                metrics.put(prefix + "success", (double) m.successCount());
+                metrics.put(prefix + "failure", (double) m.failureCount());
+                metrics.put(prefix + "totalNs", (double) m.totalDurationNs());
+                metrics.put(prefix + "p50ns", (double) m.estimatePercentileNs(50));
+                metrics.put(prefix + "p95ns", (double) m.estimatePercentileNs(95));
+            }
+        }
         return metrics;
     }
 
@@ -168,6 +181,11 @@ class MetricsCollectorImpl implements MetricsCollector {
     @Override
     public void recordCustom(String name, double value) {
         customMetrics.put(name, value);
+    }
+
+    @Override
+    public void setInvocationMetricsProvider(InvocationMetricsCollector provider) {
+        this.invocationMetricsProvider = provider;
     }
 
     @Override
@@ -202,6 +220,21 @@ class MetricsCollectorImpl implements MetricsCollector {
     }
 
     @Override
+    public void removeNode(NodeId nodeId) {
+        remoteMetrics.remove(nodeId);
+        historicalMetricsMap.remove(nodeId);
+    }
+
+    @Override
+    public void onTopologyChange(TopologyChangeNotification topologyChange) {
+        switch (topologyChange) {
+            case TopologyChangeNotification.NodeRemoved(var removedNode, _) -> removeNode(removedNode);
+            case TopologyChangeNotification.NodeDown(var downNode, _) -> removeNode(downNode);
+            default -> {}
+        }
+    }
+
+    @Override
     public void onMetricsPing(MetricsPing ping) {
         // Store all cluster metrics from leader's aggregated snapshot
         ping.allMetrics().forEach((nodeId, metrics) -> {
@@ -224,18 +257,14 @@ class MetricsCollectorImpl implements MetricsCollector {
         }
     }
 
-    /**
-     * Add metrics snapshot to historical ring buffer.
-     * Old entries are automatically evicted when buffer is full.
-     */
+    /// Add metrics snapshot to historical ring buffer.
+    /// Old entries are automatically evicted when buffer is full.
     private void addToHistory(NodeId nodeId, Map<String, Double> metrics) {
         var ringBuffer = historicalMetricsMap.computeIfAbsent(nodeId, _ -> RingBuffer.ringBuffer(RING_BUFFER_CAPACITY));
         ringBuffer.add(new MetricsSnapshot(System.currentTimeMillis(), metrics));
     }
 
-    /**
-     * Mutable call statistics for a method.
-     */
+    /// Mutable call statistics for a method.
     private record CallStats(LongAdder count, DoubleAdder totalDuration) {
         static CallStats callStats() {
             return new CallStats(new LongAdder(), new DoubleAdder());

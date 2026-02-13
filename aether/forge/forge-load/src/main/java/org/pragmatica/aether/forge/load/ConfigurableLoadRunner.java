@@ -33,27 +33,23 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Option.none;
 import static org.pragmatica.lang.Option.some;
 
-/**
- * Config-driven load runner that generates HTTP load based on TOML configuration.
- * <p>
- * Supports:
- * <ul>
- *   <li>Multiple concurrent targets with independent rates</li>
- *   <li>Pattern-based data generation (uuid, random, range, choice, seq)</li>
- *   <li>Optional duration limits per target</li>
- *   <li>Pause/resume functionality</li>
- *   <li>Per-target metrics collection</li>
- * </ul>
- */
+/// Config-driven load runner that generates HTTP load based on TOML configuration.
+///
+/// Supports:
+///
+///   - Multiple concurrent targets with independent rates
+///   - Pattern-based data generation (uuid, random, range, choice, seq)
+///   - Optional duration limits per target
+///   - Pause/resume functionality
+///   - Per-target metrics collection
+///
 public final class ConfigurableLoadRunner {
     private static final Logger log = LoggerFactory.getLogger(ConfigurableLoadRunner.class);
 
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(5);
     private static final Cause NO_TARGETS_CONFIGURED = LoadConfigError.ParseFailed.parseFailed("No targets configured");
 
-    /**
-     * Current runner state.
-     */
+    /// Current runner state.
     public enum State {
         IDLE,
         RUNNING,
@@ -101,9 +97,7 @@ public final class ConfigurableLoadRunner {
         return new ConfigurableLoadRunner(portSupplier, metrics, entryPointMetrics);
     }
 
-    /**
-     * Select next port using round-robin across available ports.
-     */
+    /// Select next port using round-robin across available ports.
     private int selectPort() {
         var ports = portSupplier.get();
         if (ports.isEmpty()) {
@@ -114,17 +108,13 @@ public final class ConfigurableLoadRunner {
         return ports.get(index);
     }
 
-    /**
-     * Load configuration from TOML string content.
-     */
+    /// Load configuration from TOML string content.
     public Result<LoadConfig> loadConfigFromString(String tomlContent) {
         return LoadConfigLoader.loadFromString(tomlContent)
                                .onSuccess(this::setConfig);
     }
 
-    /**
-     * Set the current configuration.
-     */
+    /// Set the current configuration.
     public void setConfig(LoadConfig config) {
         currentConfig.set(config);
         log.info("Loaded configuration with {} targets, total {} req/s",
@@ -133,16 +123,12 @@ public final class ConfigurableLoadRunner {
                  config.totalRequestsPerSecond());
     }
 
-    /**
-     * Get the current configuration.
-     */
+    /// Get the current configuration.
     public LoadConfig config() {
         return currentConfig.get();
     }
 
-    /**
-     * Start load generation using the current configuration.
-     */
+    /// Start load generation using the current configuration.
     public Result<State> start() {
         if (currentConfig.get()
                          .targets()
@@ -197,9 +183,7 @@ public final class ConfigurableLoadRunner {
         }
     }
 
-    /**
-     * Stop all load generation.
-     */
+    /// Stop all load generation.
     public void stop() {
         if (!state.compareAndSet(State.RUNNING, State.STOPPING) &&
         !state.compareAndSet(State.PAUSED, State.STOPPING)) {
@@ -225,9 +209,7 @@ public final class ConfigurableLoadRunner {
         state.set(State.IDLE);
     }
 
-    /**
-     * Pause load generation (can be resumed).
-     */
+    /// Pause load generation (can be resumed).
     public void pause() {
         if (state.compareAndSet(State.RUNNING, State.PAUSED)) {
             log.info("Pausing load generation");
@@ -236,9 +218,7 @@ public final class ConfigurableLoadRunner {
         }
     }
 
-    /**
-     * Resume paused load generation.
-     */
+    /// Resume paused load generation.
     public void resume() {
         if (state.compareAndSet(State.PAUSED, State.RUNNING)) {
             log.info("Resuming load generation");
@@ -247,10 +227,8 @@ public final class ConfigurableLoadRunner {
         }
     }
 
-    /**
-     * Set the total target rate by calculating and applying a multiplier.
-     * If running, stops and restarts with new rates.
-     */
+    /// Set the total target rate by calculating and applying a multiplier.
+    /// If running, stops and restarts with new rates.
     public void setTotalRate(int targetTotalRate) {
         var config = currentConfig.get();
         var currentTotal = config.totalRequestsPerSecond();
@@ -275,47 +253,35 @@ public final class ConfigurableLoadRunner {
         }
     }
 
-    /**
-     * Get current rate multiplier.
-     */
+    /// Get current rate multiplier.
     public double rateMultiplier() {
         return rateMultiplier.get();
     }
 
-    /**
-     * Get current state.
-     */
+    /// Get current state.
     public State state() {
         return state.get();
     }
 
-    /**
-     * Check if running.
-     */
+    /// Check if running.
     public boolean isRunning() {
         return state.get() == State.RUNNING;
     }
 
-    /**
-     * Get metrics for a specific target.
-     */
+    /// Get metrics for a specific target.
     public Option<TargetMetrics> targetMetrics(String targetName) {
         return Option.option(activeRunners.get(targetName))
                      .map(TargetRunner::getTargetMetrics);
     }
 
-    /**
-     * Get metrics for all targets.
-     */
+    /// Get metrics for all targets.
     public Map<String, TargetMetrics> allTargetMetrics() {
         var result = new HashMap<String, TargetMetrics>();
         activeRunners.forEach((name, runner) -> result.put(name, runner.getTargetMetrics()));
         return result;
     }
 
-    /**
-     * Get list of active target names.
-     */
+    /// Get list of active target names.
     public List<String> activeTargets() {
         return List.copyOf(activeRunners.keySet());
     }
@@ -381,9 +347,7 @@ public final class ConfigurableLoadRunner {
                                         .targetRate());
     }
 
-    /**
-     * Metrics for a single target.
-     */
+    /// Metrics for a single target.
     public record TargetMetrics(String name,
                                 int targetRate,
                                 int actualRate,
@@ -399,9 +363,7 @@ public final class ConfigurableLoadRunner {
         }
     }
 
-    /**
-     * Runner for a single target.
-     */
+    /// Runner for a single target.
     private record TargetRunner(LoadTarget target,
                                 String name,
                                 Map<String, TemplateProcessor> pathProcessors,

@@ -16,12 +16,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 
-/**
- * In-memory DatabaseConnector implementation for testing.
- * <p>
- * Simulates database behavior using in-memory data structures.
- * Supports the specific SQL queries used by UrlShortener and Analytics.
- */
+/// In-memory DatabaseConnector implementation for testing.
+///
+/// Simulates database behavior using in-memory data structures.
+/// Supports the specific SQL queries used by UrlShortener and Analytics.
 public final class InMemoryDatabaseConnector implements DatabaseConnector {
     private final Map<String, String> urlsByCode = new HashMap<>();
     private final Map<String, String> codesByUrl = new HashMap<>();
@@ -149,9 +147,7 @@ public final class InMemoryDatabaseConnector implements DatabaseConnector {
         return 0;
     }
 
-    /**
-     * In-memory row accessor for mapping results.
-     */
+    /// In-memory row accessor for mapping results.
     private record InMemoryRowAccessor(Map<String, Object> data) implements RowMapper.RowAccessor {
         @Override
         public Result<String> getString(String column) {

@@ -4,22 +4,16 @@ import org.pragmatica.http.server.RequestContext;
 import org.pragmatica.http.server.ResponseWriter;
 import org.pragmatica.lang.Option;
 
-/**
- * Route handler interface for management API endpoints.
- */
+/// Route handler interface for management API endpoints.
 public interface RouteHandler {
-    /**
-     * Try to handle the request if it matches this handler's routes.
-     *
-     * @param ctx      request context
-     * @param response response writer
-     * @return true if handled, false if not a matching route
-     */
+    /// Try to handle the request if it matches this handler's routes.
+    ///
+    /// @param ctx      request context
+    /// @param response response writer
+    /// @return true if handled, false if not a matching route
     boolean handle(RequestContext ctx, ResponseWriter response);
 
-    /**
-     * Extract path without query string.
-     */
+    /// Extract path without query string.
     default String extractPath(String uri) {
         var queryIndex = uri.indexOf('?');
         return queryIndex >= 0
@@ -27,9 +21,7 @@ public interface RouteHandler {
                : uri;
     }
 
-    /**
-     * Extract query parameter value.
-     */
+    /// Extract query parameter value.
     default Option<String> extractQueryParam(String uri, String paramName) {
         var queryIndex = uri.indexOf('?');
         if (queryIndex < 0) {

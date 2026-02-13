@@ -15,19 +15,18 @@ import java.util.stream.IntStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-/**
- * Generates Docker Compose deployment for Aether cluster.
- *
- * <p>Generates:
- * <ul>
- *   <li>docker-compose.yml - Service definitions for all nodes</li>
- *   <li>.env - Environment variables</li>
- *   <li>aether.toml - Resolved configuration for reference</li>
- *   <li>start.sh - Cluster start script</li>
- *   <li>stop.sh - Cluster stop script</li>
- *   <li>status.sh - Cluster status script</li>
- * </ul>
- */
+/// Generates Docker Compose deployment for Aether cluster.
+///
+///
+/// Generates:
+///
+///   - docker-compose.yml - Service definitions for all nodes
+///   - .env - Environment variables
+///   - aether.toml - Resolved configuration for reference
+///   - start.sh - Cluster start script
+///   - stop.sh - Cluster stop script
+///   - status.sh - Cluster status script
+///
 public final class DockerGenerator implements Generator {
     private static final Logger log = LoggerFactory.getLogger(DockerGenerator.class);
 

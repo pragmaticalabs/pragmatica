@@ -19,18 +19,17 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 import static org.pragmatica.aether.forge.ForgeCluster.forgeCluster;
 
-/**
- * Tests for metrics collection and distribution.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>Metrics collection at 1-second intervals</li>
- *   <li>Per-node CPU and JVM metrics</li>
- *   <li>Cluster-wide metrics aggregation</li>
- *   <li>Prometheus endpoint format</li>
- *   <li>Metrics snapshot distribution to all nodes</li>
- * </ul>
- */
+/// Tests for metrics collection and distribution.
+///
+///
+/// Tests cover:
+///
+///   - Metrics collection at 1-second intervals
+///   - Per-node CPU and JVM metrics
+///   - Cluster-wide metrics aggregation
+///   - Prometheus endpoint format
+///   - Metrics snapshot distribution to all nodes
+///
 @Execution(ExecutionMode.SAME_THREAD)
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class MetricsTest {

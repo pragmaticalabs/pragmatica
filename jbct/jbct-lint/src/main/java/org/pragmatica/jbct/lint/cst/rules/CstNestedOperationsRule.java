@@ -12,12 +12,10 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-NEST-01: No nested monadic operations in lambdas.
- *
- * Detects nested .map(), .flatMap(), .fold() calls inside lambda bodies,
- * which indicate complexity that should be extracted to a named method.
- */
+/// JBCT-NEST-01: No nested monadic operations in lambdas.
+///
+/// Detects nested .map(), .flatMap(), .fold() calls inside lambda bodies,
+/// which indicate complexity that should be extracted to a named method.
 public class CstNestedOperationsRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-NEST-01";
 

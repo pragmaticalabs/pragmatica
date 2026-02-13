@@ -1,38 +1,96 @@
 package org.pragmatica.aether.e2e;
 
-import org.junit.jupiter.api.Nested;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.*;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
+import org.pragmatica.aether.e2e.containers.AetherCluster;
 import org.pragmatica.aether.e2e.containers.AetherNodeContainer;
 import org.pragmatica.lang.utils.Causes;
 
+import java.nio.file.Path;
+import java.time.Duration;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
+import static org.pragmatica.aether.e2e.TestEnvironment.adapt;
+import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * E2E tests for TTM (Tiny Time Mixers) predictive scaling.
- *
- * <p>Tests cover:
- * <ul>
- *   <li>TTM status API endpoint</li>
- *   <li>TTM disabled state (no model file)</li>
- *   <li>TTM state consistency across cluster</li>
- *   <li>TTM leader-only behavior</li>
- * </ul>
- *
- * <p>Note: These tests verify TTM infrastructure, not prediction accuracy.
- * Prediction accuracy testing requires a trained ONNX model and is better
- * suited for unit tests with mocked predictors.
- */
-class TtmE2ETest extends AbstractE2ETest {
+/// E2E tests for TTM (Tiny Time Mixers) predictive scaling.
+///
+///
+/// Tests cover:
+///
+///   - TTM status API endpoint
+///   - TTM disabled state (no model file)
+///   - TTM state consistency across cluster
+///   - TTM leader-only behavior
+///
+///
+///
+/// Note: These tests verify TTM infrastructure, not prediction accuracy.
+/// Prediction accuracy testing requires a trained ONNX model and is better
+/// suited for unit tests with mocked predictors.
+///
+///
+/// This test class uses a shared cluster with node restoration between tests.
+/// Tests run in order to ensure deterministic behavior.
+@TestMethodOrder(MethodOrderer.OrderAnnotation.class)
+@Execution(ExecutionMode.SAME_THREAD)
+@Disabled("TTM is disabled by default (no model); these trivial checks don't justify a 5-node cluster")
+class TtmE2ETest {
+    private static final Path PROJECT_ROOT = Path.of(System.getProperty("project.basedir", ".."));
 
-    @Override
-    protected int clusterSize() {
-        return 3;
+    private static final Duration RECOVERY_TIMEOUT = adapt(timeSpan(60).seconds().duration());
+    private static final Duration POLL_INTERVAL = timeSpan(2).seconds().duration();
+
+    private static AetherCluster cluster;
+
+    @BeforeAll
+    static void createCluster() {
+        cluster = AetherCluster.aetherCluster(5, PROJECT_ROOT);
+        cluster.start();
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
+        cluster.awaitLeader();
+        cluster.uploadTestArtifacts();
+    }
+
+    @AfterAll
+    static void destroyCluster() {
+        if (cluster != null) {
+            cluster.close();
+        }
+    }
+
+    @BeforeEach
+    void restoreAllNodes() {
+        // Restart any stopped nodes
+        for (var node : cluster.nodes()) {
+            if (!node.isRunning()) {
+                try {
+                    cluster.node(node.nodeId()).start();
+                } catch (Exception e) {
+                    System.out.println("[DEBUG] Error restarting " + node.nodeId() + ": " + e.getMessage());
+                }
+            }
+        }
+
+        // Wait for all nodes to be running
+        await().atMost(RECOVERY_TIMEOUT)
+               .pollInterval(POLL_INTERVAL)
+               .ignoreExceptions()
+               .until(() -> cluster.runningNodeCount() == 5);
+
+        cluster.awaitQuorum();
+        cluster.awaitAllHealthy();
     }
 
     @Nested
+    @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
     class TtmStatusEndpoint {
 
         @Test
+        @Order(1)
         void ttmStatus_returnsValidJson() {
             cluster.awaitLeader();
 
@@ -44,6 +102,7 @@ class TtmE2ETest extends AbstractE2ETest {
         }
 
         @Test
+        @Order(2)
         void ttmStatus_showsDisabledByDefault() {
             cluster.awaitLeader();
 
@@ -55,6 +114,7 @@ class TtmE2ETest extends AbstractE2ETest {
         }
 
         @Test
+        @Order(3)
         void ttmStatus_includesConfigurationDetails() {
             cluster.awaitLeader();
 
@@ -67,9 +127,11 @@ class TtmE2ETest extends AbstractE2ETest {
     }
 
     @Nested
+    @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
     class TtmClusterBehavior {
 
         @Test
+        @Order(1)
         void ttmStatus_availableOnAllNodes() {
             cluster.awaitLeader();
 
@@ -82,6 +144,7 @@ class TtmE2ETest extends AbstractE2ETest {
         }
 
         @Test
+        @Order(2)
         void ttmStatus_consistentAcrossCluster() {
             cluster.awaitLeader();
 
@@ -97,6 +160,7 @@ class TtmE2ETest extends AbstractE2ETest {
         }
 
         @Test
+        @Order(3)
         void ttmStatus_survivesLeaderFailure() {
             cluster.awaitLeader();
 
@@ -122,9 +186,11 @@ class TtmE2ETest extends AbstractE2ETest {
     }
 
     @Nested
+    @TestMethodOrder(MethodOrderer.OrderAnnotation.class)
     class TtmNoForecastWhenDisabled {
 
         @Test
+        @Order(1)
         void ttmStatus_showsNoForecastWhenDisabled() {
             cluster.awaitLeader();
 

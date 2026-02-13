@@ -10,10 +10,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.Currency;
 
-/**
- * Monetary value with currency.
- * Immutable, rounded to 2 decimal places.
- */
+/// Monetary value with currency.
+/// Immutable, rounded to 2 decimal places.
 public record Money(BigDecimal amount, Currency currency) {
     public sealed interface MoneyError extends Cause {
         record NegativeAmount(BigDecimal amount) implements MoneyError {

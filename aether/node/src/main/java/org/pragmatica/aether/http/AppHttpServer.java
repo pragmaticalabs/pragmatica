@@ -41,6 +41,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -50,17 +51,17 @@ import org.slf4j.LoggerFactory;
 import static org.pragmatica.lang.Unit.unit;
 import static org.pragmatica.lang.io.TimeSpan.timeSpan;
 
-/**
- * Application HTTP server for cluster-wide HTTP routing.
- *
- * <p>Handles HTTP requests by:
- * <ol>
- *   <li>Looking up routes locally via HttpRoutePublisher</li>
- *   <li>If not local, forwarding to remote nodes via HttpForwardRequest/Response</li>
- * </ol>
- *
- * <p>Separate from ManagementServer for security isolation.
- */
+/// Application HTTP server for cluster-wide HTTP routing.
+///
+///
+/// Handles HTTP requests by:
+/// <ol>
+///   - Looking up routes locally via HttpRoutePublisher
+///   - If not local, forwarding to remote nodes via HttpForwardRequest/Response
+/// </ol>
+///
+///
+/// Separate from ManagementServer for security isolation.
 public interface AppHttpServer {
     Promise<Unit> start();
 
@@ -68,44 +69,34 @@ public interface AppHttpServer {
 
     Option<Integer> boundPort();
 
-    /**
-     * Handle KV-Store updates to rebuild router when routes change.
-     */
+    /// Handle KV-Store updates to rebuild router when routes change.
     @MessageReceiver
     void onValuePut(ValuePut<AetherKey, AetherValue> valuePut);
 
-    /**
-     * Handle KV-Store removals to rebuild router when routes change.
-     */
+    /// Handle KV-Store removals to rebuild router when routes change.
     @MessageReceiver
     void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove);
 
-    /**
-     * Handle incoming HTTP forward request from another node.
-     */
+    /// Handle incoming HTTP forward request from another node.
     @MessageReceiver
     void onHttpForwardRequest(HttpForwardRequest request);
 
-    /**
-     * Handle HTTP forward response from another node.
-     */
+    /// Handle HTTP forward response from another node.
     @MessageReceiver
     void onHttpForwardResponse(HttpForwardResponse response);
 
-    /**
-     * Trigger router rebuild (called when local slices deploy/undeploy).
-     */
+    /// Trigger router rebuild (called when local slices deploy/undeploy).
     void rebuildRouter();
 
-    /**
-     * Handle node removal for immediate retry of pending forwards.
-     */
+    /// Whether this server has received initial route synchronization from the KV store.
+    /// Returns true if at least one route update has been processed, or if running in standalone mode.
+    boolean isRouteReady();
+
+    /// Handle node removal for immediate retry of pending forwards.
     @MessageReceiver
     void onNodeRemoved(TopologyChangeNotification.NodeRemoved nodeRemoved);
 
-    /**
-     * Handle node down for immediate retry of pending forwards.
-     */
+    /// Handle node down for immediate retry of pending forwards.
     @MessageReceiver
     void onNodeDown(TopologyChangeNotification.NodeDown nodeDown);
 
@@ -127,9 +118,7 @@ public interface AppHttpServer {
                                      tls);
     }
 
-    /**
-     * @deprecated Use full factory method with all parameters.
-     */
+    /// @deprecated Use full factory method with all parameters.
     @Deprecated
     static AppHttpServer appHttpServer(AppHttpConfig config,
                                        HttpRouteRegistry routeRegistry,
@@ -151,6 +140,7 @@ public interface AppHttpServer {
 class AppHttpServerImpl implements AppHttpServer {
     private static final Logger log = LoggerFactory.getLogger(AppHttpServerImpl.class);
     private static final int MAX_CONTENT_LENGTH = 16 * 1024 * 1024;
+    private static final long RETRY_DELAY_MS = 200;
 
     private final AppHttpConfig config;
     private final NodeId selfNodeId;
@@ -163,6 +153,7 @@ class AppHttpServerImpl implements AppHttpServer {
     private final Option<TlsConfig> tls;
     private final AtomicReference<HttpServer> serverRef = new AtomicReference<>();
     private final AtomicReference<RouteTable> routeTableRef = new AtomicReference<>(RouteTable.empty());
+    private final AtomicBoolean routeSyncReceived = new AtomicBoolean(false);
 
     // Pending HTTP forward requests awaiting responses
     private final Map<String, PendingForward> pendingForwards = new ConcurrentHashMap<>();
@@ -257,9 +248,15 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     @Override
+    public boolean isRouteReady() {
+        return routeSyncReceived.get() || httpRoutePublisher.isEmpty();
+    }
+
+    @Override
     public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
         if (valuePut.cause()
                     .key() instanceof HttpRouteKey) {
+            routeSyncReceived.set(true);
             log.debug("HttpRouteKey added, rebuilding router");
             rebuildRouter();
         }
@@ -269,6 +266,7 @@ class AppHttpServerImpl implements AppHttpServer {
     public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
         if (valueRemove.cause()
                        .key() instanceof HttpRouteKey) {
+            routeSyncReceived.set(true);
             log.debug("HttpRouteKey removed, rebuilding router");
             rebuildRouter();
         }
@@ -302,9 +300,16 @@ class AppHttpServerImpl implements AppHttpServer {
             handleRemoteRoute(request, response, remoteRouteOpt.unwrap(), requestId);
             return;
         }
-        // No route found
-        log.warn("No route found for {} {} [{}]", method, path, requestId);
-        sendProblem(response, HttpStatus.NOT_FOUND, "No route found for " + method + " " + path, path, requestId);
+        // No route found — distinguish between "not synced yet" and "genuinely missing"
+        if (!routeSyncReceived.get() && httpRoutePublisher.isPresent()) {
+            log.info("Route not yet available for {} {} [{}] — node starting, routes not synchronized",
+                     method, path, requestId);
+            sendProblem(response, HttpStatus.SERVICE_UNAVAILABLE,
+                        "Node starting, routes not yet synchronized", path, requestId);
+        } else {
+            log.warn("No route found for {} {} [{}]", method, path, requestId);
+            sendProblem(response, HttpStatus.NOT_FOUND, "No route found for " + method + " " + path, path, requestId);
+        }
     }
 
     private Option<HttpRouteKey> findMatchingLocalRoute(Set<HttpRouteKey> localRoutes,
@@ -458,6 +463,16 @@ class AppHttpServerImpl implements AppHttpServer {
                     .toList();
     }
 
+    private List<NodeId> freshCandidatesForRoute(HttpRouteKey routeKey) {
+        return routeRegistry.allRoutes()
+                            .stream()
+                            .filter(r -> r.toKey()
+                                          .equals(routeKey))
+                            .findFirst()
+                            .map(r -> filterConnectedNodes(r.nodes()))
+                            .orElse(List.of());
+    }
+
     private NodeId selectNodeRoundRobin(HttpRouteKey routeKey, List<NodeId> nodes) {
         var counter = roundRobinCounters.computeIfAbsent(routeKey, _ -> new AtomicInteger(0));
         var index = Math.abs(counter.getAndIncrement() % nodes.size());
@@ -483,11 +498,32 @@ class AppHttpServerImpl implements AppHttpServer {
                                        .filter(n -> !triedNodes.contains(n))
                                        .toList();
         if (candidates.isEmpty()) {
-            log.error("No more nodes to try for {} {} [{}] after {} attempts",
+            if (retriesRemaining > 0) {
+                // No candidates now — wait briefly for route table to heal, then re-query
+                log.info("No candidates for {} {} [{}], waiting {}ms before re-query ({} retries remaining)",
+                         routeKey.httpMethod(),
+                         routeKey.pathPrefix(),
+                         requestId,
+                         RETRY_DELAY_MS,
+                         retriesRemaining);
+                Promise.<Unit>promise()
+                       .timeout(timeSpan(RETRY_DELAY_MS).millis())
+                       .onResult(_ -> {
+                                    var freshNodes = freshCandidatesForRoute(routeKey);
+                                    forwardRequestWithRetry(request,
+                                                            response,
+                                                            freshNodes,
+                                                            Set.of(),
+                                                            routeKey,
+                                                            requestId,
+                                                            retriesRemaining - 1);
+                                });
+                return;
+            }
+            log.error("No more nodes to try for {} {} [{}] after all retries exhausted",
                       routeKey.httpMethod(),
                       routeKey.pathPrefix(),
-                      requestId,
-                      config.forwardMaxRetries() + 1 - retriesRemaining);
+                      requestId);
             sendProblem(response,
                         HttpStatus.GATEWAY_TIMEOUT,
                         "All nodes failed or unavailable",
@@ -506,12 +542,13 @@ class AppHttpServerImpl implements AppHttpServer {
                                requestId,
                                () -> {
                                    if (retriesRemaining > 0) {
-                                       log.info("Retrying request [{}], {} retries remaining",
+                                       log.info("Retrying request [{}], {} retries remaining, re-querying route",
                                                 requestId,
                                                 retriesRemaining);
+                                       var freshNodes = freshCandidatesForRoute(routeKey);
                                        forwardRequestWithRetry(request,
                                                                response,
-                                                               availableNodes,
+                                                               freshNodes,
                                                                newTriedNodes,
                                                                routeKey,
                                                                requestId,
@@ -533,6 +570,13 @@ class AppHttpServerImpl implements AppHttpServer {
                                         String requestId,
                                         Runnable onFailure) {
         var network = clusterNetwork.unwrap();
+        // Fast path: if the target is already known to be disconnected, fail immediately
+        if (!network.connectedPeers()
+                    .contains(targetNode)) {
+            log.info("Target node {} already disconnected, immediate retry [{}]", targetNode, requestId);
+            onFailure.run();
+            return;
+        }
         var ser = serializer.unwrap();
         var correlationId = KSUID.ksuid()
                                  .toString();
@@ -863,9 +907,7 @@ class AppHttpServerImpl implements AppHttpServer {
     }
 
     // ================== Route Table ==================
-    /**
-     * Snapshot of current route state for thread-safe access.
-     */
+    /// Snapshot of current route state for thread-safe access.
     record RouteTable(Set<HttpRouteKey> localRoutes,
                       List<HttpRouteRegistry.RouteInfo> remoteRoutes) {
         static RouteTable empty() {

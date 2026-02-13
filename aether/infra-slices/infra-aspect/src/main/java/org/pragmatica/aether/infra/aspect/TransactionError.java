@@ -3,13 +3,9 @@ package org.pragmatica.aether.infra.aspect;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Option;
 
-/**
- * Error types for transaction operations.
- */
+/// Error types for transaction operations.
 public sealed interface TransactionError extends Cause {
-    /**
-     * Transaction not active when operation required one.
-     */
+    /// Transaction not active when operation required one.
     record NoActiveTransaction(String operation) implements TransactionError {
         @Override
         public String message() {
@@ -17,9 +13,7 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    /**
-     * Transaction already active when operation required none.
-     */
+    /// Transaction already active when operation required none.
     record TransactionAlreadyActive(String operation) implements TransactionError {
         @Override
         public String message() {
@@ -27,9 +21,7 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    /**
-     * Transaction timed out.
-     */
+    /// Transaction timed out.
     record TransactionTimedOut(String transactionId) implements TransactionError {
         @Override
         public String message() {
@@ -37,9 +29,7 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    /**
-     * Transaction rollback occurred.
-     */
+    /// Transaction rollback occurred.
     record TransactionRolledBack(String transactionId, Option<Throwable> cause) implements TransactionError {
         @Override
         public String message() {
@@ -47,9 +37,7 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    /**
-     * Invalid transaction configuration.
-     */
+    /// Invalid transaction configuration.
     record InvalidConfig(String reason) implements TransactionError {
         @Override
         public String message() {
@@ -57,9 +45,7 @@ public sealed interface TransactionError extends Cause {
         }
     }
 
-    /**
-     * Transaction operation failed.
-     */
+    /// Transaction operation failed.
     record OperationFailed(String operation, Option<Throwable> cause) implements TransactionError {
         @Override
         public String message() {

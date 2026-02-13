@@ -18,10 +18,8 @@ import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Installs AI tools (Claude Code skills and agents) to project's .claude/ directory.
- * Uses offline cache at ~/.jbct/cache/ai-tools/ for faster installs.
- */
+/// Installs AI tools (Claude Code skills and agents) to project's .claude/ directory.
+/// Uses offline cache at ~/.jbct/cache/ai-tools/ for faster installs.
 public final class AiToolsInstaller {
     private static final Path CACHE_DIR = Path.of(System.getProperty("user.home"), ".jbct", "cache", "ai-tools");
     private static final String VERSION_FILE = ".sha";
@@ -35,19 +33,15 @@ public final class AiToolsInstaller {
         this.claudeDir = claudeDir;
     }
 
-    /**
-     * Create installer for project directory.
-     * AI tools will be installed to projectDir/.claude/
-     */
+    /// Create installer for project directory.
+    /// AI tools will be installed to projectDir/.claude/
     public static AiToolsInstaller aiToolsInstaller(Path projectDir) {
         return new AiToolsInstaller(projectDir.resolve(".claude"));
     }
 
-    /**
-     * Install AI tools from cache or fetch from GitHub.
-     *
-     * @return List of installed files
-     */
+    /// Install AI tools from cache or fetch from GitHub.
+    ///
+    /// @return List of installed files
     public Result<List<Path>> install() {
         return ensureCachePopulated().flatMap(_ -> copyFromCache());
     }
@@ -157,30 +151,22 @@ public final class AiToolsInstaller {
         });
     }
 
-    /**
-     * Get the Claude directory.
-     */
+    /// Get the Claude directory.
     public Path claudeDir() {
         return claudeDir;
     }
 
-    /**
-     * Get the path where skills are installed.
-     */
+    /// Get the path where skills are installed.
     public Path skillsDir() {
         return claudeDir.resolve("skills");
     }
 
-    /**
-     * Get the path where agents are installed.
-     */
+    /// Get the path where agents are installed.
     public Path agentsDir() {
         return claudeDir.resolve("agents");
     }
 
-    /**
-     * Get the cache directory path.
-     */
+    /// Get the cache directory path.
     public static Path cacheDir() {
         return CACHE_DIR;
     }

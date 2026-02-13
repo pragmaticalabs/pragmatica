@@ -4,15 +4,11 @@ import org.pragmatica.aether.artifact.ArtifactBase;
 import org.pragmatica.aether.artifact.Version;
 import org.pragmatica.lang.Cause;
 
-/**
- * Errors that can occur during rolling update operations.
- */
+/// Errors that can occur during rolling update operations.
 public sealed interface RollingUpdateError extends Cause {
-    /**
-     * Update not found.
-     */
+    /// Update not found.
     record UpdateNotFound(String updateId) implements RollingUpdateError {
-        /** Factory method following JBCT naming convention. */
+        /// Factory method following JBCT naming convention. */
         public static UpdateNotFound updateNotFound(String updateId) {
             return new UpdateNotFound(updateId);
         }
@@ -23,11 +19,9 @@ public sealed interface RollingUpdateError extends Cause {
         }
     }
 
-    /**
-     * Update already exists for this artifact.
-     */
+    /// Update already exists for this artifact.
     record UpdateAlreadyExists(ArtifactBase artifactBase) implements RollingUpdateError {
-        /** Factory method following JBCT naming convention. */
+        /// Factory method following JBCT naming convention. */
         public static UpdateAlreadyExists updateAlreadyExists(ArtifactBase artifactBase) {
             return new UpdateAlreadyExists(artifactBase);
         }
@@ -38,11 +32,9 @@ public sealed interface RollingUpdateError extends Cause {
         }
     }
 
-    /**
-     * Invalid state transition.
-     */
+    /// Invalid state transition.
     record InvalidStateTransition(RollingUpdateState from, RollingUpdateState to) implements RollingUpdateError {
-        /** Factory method following JBCT naming convention. */
+        /// Factory method following JBCT naming convention. */
         public static InvalidStateTransition invalidStateTransition(RollingUpdateState from, RollingUpdateState to) {
             return new InvalidStateTransition(from, to);
         }
@@ -53,11 +45,9 @@ public sealed interface RollingUpdateError extends Cause {
         }
     }
 
-    /**
-     * Version not found.
-     */
+    /// Version not found.
     record VersionNotFound(ArtifactBase artifactBase, Version version) implements RollingUpdateError {
-        /** Factory method following JBCT naming convention. */
+        /// Factory method following JBCT naming convention. */
         public static VersionNotFound versionNotFound(ArtifactBase artifactBase, Version version) {
             return new VersionNotFound(artifactBase, version);
         }
@@ -68,9 +58,7 @@ public sealed interface RollingUpdateError extends Cause {
         }
     }
 
-    /**
-     * Initial deployment (no previous version exists).
-     */
+    /// Initial deployment (no previous version exists).
     record InitialDeployment(ArtifactBase artifactBase) implements RollingUpdateError {
         public static InitialDeployment initialDeployment(ArtifactBase artifactBase) {
             return new InitialDeployment(artifactBase);
@@ -82,13 +70,11 @@ public sealed interface RollingUpdateError extends Cause {
         }
     }
 
-    /**
-     * Insufficient instances to satisfy routing ratio.
-     */
+    /// Insufficient instances to satisfy routing ratio.
     record InsufficientInstances(VersionRouting routing,
                                  int newInstances,
                                  int oldInstances) implements RollingUpdateError {
-        /** Factory method following JBCT naming convention. */
+        /// Factory method following JBCT naming convention. */
         public static InsufficientInstances insufficientInstances(VersionRouting routing,
                                                                   int newInstances,
                                                                   int oldInstances) {
@@ -102,13 +88,11 @@ public sealed interface RollingUpdateError extends Cause {
         }
     }
 
-    /**
-     * Health check failed.
-     */
+    /// Health check failed.
     record HealthCheckFailed(double errorRate,
                              long latencyMs,
                              HealthThresholds thresholds) implements RollingUpdateError {
-        /** Factory method following JBCT naming convention. */
+        /// Factory method following JBCT naming convention. */
         public static HealthCheckFailed healthCheckFailed(double errorRate,
                                                           long latencyMs,
                                                           HealthThresholds thresholds) {
@@ -122,11 +106,9 @@ public sealed interface RollingUpdateError extends Cause {
         }
     }
 
-    /**
-     * Manual approval required.
-     */
+    /// Manual approval required.
     record ManualApprovalRequired(String updateId) implements RollingUpdateError {
-        /** Factory method following JBCT naming convention. */
+        /// Factory method following JBCT naming convention. */
         public static ManualApprovalRequired manualApprovalRequired(String updateId) {
             return new ManualApprovalRequired(updateId);
         }
@@ -137,11 +119,9 @@ public sealed interface RollingUpdateError extends Cause {
         }
     }
 
-    /**
-     * Deployment failed.
-     */
+    /// Deployment failed.
     record DeploymentFailed(String updateId, Cause cause) implements RollingUpdateError {
-        /** Factory method following JBCT naming convention. */
+        /// Factory method following JBCT naming convention. */
         public static DeploymentFailed deploymentFailed(String updateId, Cause cause) {
             return new DeploymentFailed(updateId, cause);
         }
@@ -152,11 +132,9 @@ public sealed interface RollingUpdateError extends Cause {
         }
     }
 
-    /**
-     * Rollback failed.
-     */
+    /// Rollback failed.
     record RollbackFailed(String updateId, Cause cause) implements RollingUpdateError {
-        /** Factory method following JBCT naming convention. */
+        /// Factory method following JBCT naming convention. */
         public static RollbackFailed rollbackFailed(String updateId, Cause cause) {
             return new RollbackFailed(updateId, cause);
         }
@@ -167,9 +145,7 @@ public sealed interface RollingUpdateError extends Cause {
         }
     }
 
-    /**
-     * Not the leader node.
-     */
+    /// Not the leader node.
     enum NotLeader implements RollingUpdateError {
         INSTANCE;
         @Override

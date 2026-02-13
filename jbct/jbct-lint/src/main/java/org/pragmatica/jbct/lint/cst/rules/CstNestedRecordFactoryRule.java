@@ -10,9 +10,7 @@ import java.util.stream.Stream;
 
 import static org.pragmatica.jbct.parser.CstNodes.*;
 
-/**
- * JBCT-UC-01: Use case factories should return lambdas, not nested records.
- */
+/// JBCT-UC-01: Use case factories should return lambdas, not nested records.
 public class CstNestedRecordFactoryRule implements CstLintRule {
     private static final String RULE_ID = "JBCT-UC-01";
 
