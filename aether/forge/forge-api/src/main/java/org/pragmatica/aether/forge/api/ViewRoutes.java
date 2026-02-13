@@ -28,7 +28,7 @@ public sealed interface ViewRoutes {
         var http = JdkHttpOperations.jdkHttpOperations();
         return in("/api/view")
         .serve(overviewRoute(),
-               loadTabRoute(loadConfigPath),
+               testingTabRoute(loadConfigPath),
                alertsTabRoute(),
                activeAlertsRoute(cluster, http),
                alertHistoryRoute(cluster, http));
@@ -67,7 +67,25 @@ public sealed interface ViewRoutes {
                     </div>
                 </div>
             </div>
-            <div class="panel panel-full-width panel-performance">
+            """;
+    }
+
+    // ========== Testing Tab ==========
+    private static Route<String> testingTabRoute(Option<Path> loadConfigPath) {
+        return Route.<String> get("/testing")
+                    .to(_ -> Promise.success(renderTestingTab(loadConfigPath)))
+                    .as(CommonContentTypes.TEXT_HTML);
+    }
+
+    private static String renderTestingTab(Option<Path> loadConfigPath) {
+        var configContent = loadConfigPath.flatMap(ViewRoutes::readFile).or("");
+        return """
+            <div id="chaos-panel"
+                 hx-get="/api/panel/chaos"
+                 hx-trigger="load"
+                 hx-swap="innerHTML">
+            </div>
+            <div class="panel panel-full-width">
                 <h2>Performance</h2>
                 <div class="metrics-row">
                     <div class="metric-card">
@@ -75,7 +93,7 @@ public sealed interface ViewRoutes {
                         <div class="metric-label">req/s</div>
                     </div>
                     <div class="metric-card success">
-                        <div class="metric-value" id="success-rate">100%</div>
+                        <div class="metric-value" id="success-rate">100%%</div>
                         <div class="metric-label">success</div>
                     </div>
                     <div class="metric-card">
@@ -88,24 +106,6 @@ public sealed interface ViewRoutes {
                     <div class="chart-container"><canvas id="throughput-chart"></canvas></div>
                 </div>
             </div>
-            <div id="chaos-panel"
-                 hx-get="/api/panel/chaos"
-                 hx-trigger="load"
-                 hx-swap="innerHTML">
-            </div>
-            """;
-    }
-
-    // ========== Load Testing Tab ==========
-    private static Route<String> loadTabRoute(Option<Path> loadConfigPath) {
-        return Route.<String> get("/load")
-                    .to(_ -> Promise.success(renderLoadTab(loadConfigPath)))
-                    .as(CommonContentTypes.TEXT_HTML);
-    }
-
-    private static String renderLoadTab(Option<Path> loadConfigPath) {
-        var configContent = loadConfigPath.flatMap(ViewRoutes::readFile).or("");
-        return """
             <div class="load-testing-grid">
                 <div class="panel panel-wide">
                     <h2>Configuration</h2>

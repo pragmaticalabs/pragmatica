@@ -142,10 +142,6 @@ body {
     margin-top: 12px;
 }
 
-.panel-chaos {
-    margin-top: 0;
-}
-
 /* Nodes List */
 .nodes-list {
     display: flex;

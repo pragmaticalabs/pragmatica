@@ -40,8 +40,6 @@ public final class PanelRoutes {
                         <button id="btn-kill-node" class="btn btn-danger btn-small" onclick="showNodeModal(false)">Kill Node</button>
                         <button id="btn-kill-leader" class="btn btn-warning btn-small" onclick="killLeader()">Kill Leader</button>
                         <button id="btn-rolling-restart" class="btn btn-secondary btn-small" onclick="toggleRollingRestart()">Rolling Restart</button>
-                        <button class="btn btn-success btn-small" hx-post="/api/cluster/resize/up" hx-swap="none">+ Node</button>
-                        <button class="btn btn-danger btn-small" hx-post="/api/cluster/resize/down" hx-swap="none">- Node</button>
                         <button id="btn-reset" class="btn btn-secondary btn-small" onclick="resetMetrics()">Reset Metrics</button>
                     </div>
                 </div>

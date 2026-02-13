@@ -198,7 +198,7 @@ function updateCharts(m) {
 function updateNodes(cluster, nodeMetrics, slices, targetSize) {
     var header = document.getElementById('nodes-header');
     if (header) {
-        header.innerHTML = 'Cluster Nodes<span class="panel-badge">Target Size: ' + targetSize + '</span>';
+        header.innerHTML = 'Cluster Nodes<span class="panel-badge">' + cluster.nodes.length + ' nodes</span>';
     }
     var list = document.getElementById('nodes-list');
     if (!list) return;

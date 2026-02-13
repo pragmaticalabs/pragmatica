@@ -52,7 +52,6 @@ public final class ForgeRouter {
                                   DeploymentRoutes.deploymentRoutes(cluster, eventLogger),
                                   PanelRoutes.panelRoutes(),
                                   AlertProxyRoutes.alertProxyRoutes(cluster),
-                                  ClusterSizeRoutes.clusterSizeRoutes(cluster),
                                   ViewRoutes.viewRoutes(cluster, loadConfigPath));
     }
 }
