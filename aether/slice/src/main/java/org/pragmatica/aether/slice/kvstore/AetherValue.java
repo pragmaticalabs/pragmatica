@@ -253,4 +253,17 @@ public sealed interface AetherValue {
             return new DynamicAspectValue(artifactBase, methodName, mode, System.currentTimeMillis());
         }
     }
+
+    /// Dynamic configuration value stored in consensus.
+    /// Stores a single configuration key-value pair with timestamp.
+    ///
+    /// @param key the configuration key (dot.notation)
+    /// @param value the configuration value
+    /// @param updatedAt timestamp of last update
+    record ConfigValue(String key, String value, long updatedAt) implements AetherValue {
+        /// Creates a new config value with current timestamp.
+        public static ConfigValue configValue(String key, String value) {
+            return new ConfigValue(key, value, System.currentTimeMillis());
+        }
+    }
 }

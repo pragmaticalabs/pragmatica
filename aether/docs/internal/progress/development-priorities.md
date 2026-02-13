@@ -27,6 +27,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 - **Invocation Metrics** - Per-method call tracking with percentiles
 - **Prometheus Endpoint** - Standard metrics export format
 - **Alert Thresholds** - Persistent threshold configuration via consensus
+- **Secrets Resolution** - ${secrets:...} placeholder resolution in ConfigurationProvider via EnvironmentIntegration SPI
 - **Controller Configuration** - Runtime-configurable scaling thresholds
 - **Decision Tree Controller** - Programmatic scaling rules
 - **TTM Predictive Scaling** - ONNX-based traffic prediction and scaling recommendations
@@ -34,6 +35,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 - **EMA Latency Smoothing** - 5-second effective window for stable dashboard metrics
 - **Zero-Loss Forwarding** - Fresh re-routing on retry, proactive disconnection detection, and backoff retry with delayed re-query for route table healing during node transitions
 - **Dynamic Aspects** - Runtime-togglable per-method LOG/METRICS/LOG_AND_METRICS modes via `DynamicAspectRegistry`, REST API (`/api/aspects`), KV-store consensus sync, and `DynamicAspectInterceptor` wired into both local and remote invocation paths. Dashboard UI pending.
+- **Dynamic Configuration** - Runtime config updates via consensus KV store with REST API. Config overlay pattern: base config from TOML/env/system properties, overrides from KV store. Cluster-wide and per-node scoped keys. No restart required.
 
 ### Dashboard & Real-Time
 - **WebSocket Push** - Zero-polling dashboard via `/ws/status` with polling fallback
@@ -92,30 +94,23 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
    - Backend REST API (`/api/aspects`) and KV-store sync already implemented
    - **Why next:** Small remaining work to complete the Dynamic Aspect feature. All backend infrastructure is in place.
 
-2. **Dynamic Configuration via KV Store**
-   - Expose most configuration in consensus KV store
-   - Nodes automatically pick up configuration changes
-   - No restart required for config updates
-   - **Why second:** Generalizes the proven AlertManager/threshold KV pattern to all configuration. Prerequisite for many other features.
-
-3. **Dependency Lifecycle Management**
+2. **Dependency Lifecycle Management**
    - Block manual unload while dependents are ACTIVE
    - Graceful degradation on dependency failure (calls fail, slice handles it)
    - Dependency graph tracking in KV store
    - Clear error reporting with dependency chain visualization
-   - **Why third:** Correctness gap — currently possible to break running slices by unloading dependencies.
+   - **Why second:** Correctness gap — currently possible to break running slices by unloading dependencies.
 
-4. **DB Connector Infrastructure**
+3. **DB Connector Infrastructure**
    - Database connectivity layer for slices
    - Connection pooling and transaction management
    - Support for common databases (PostgreSQL, MySQL, etc.)
 
-5. **External Secrets Management Integration**
-   - HashiCorp Vault integration
-   - AWS Secrets Manager / Azure Key Vault support
+4. **External Secrets Management Integration**
+   - Basic secrets resolution implemented via ConfigurationProvider.withSecretResolution(). Remaining: HashiCorp Vault integration, AWS Secrets Manager / Azure Key Vault support.
    - Secrets resolved through ResourceProvider config pipeline; no standalone SecretsManager
 
-6. **Cloud Integration (NodeLifecycleManager + Load Balancing)**
+5. **Cloud Integration (NodeLifecycleManager + Load Balancing)**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
    - Cloud provider adapters: AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
@@ -129,30 +124,30 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
      - Weighted routing sync: Aether rolling update weights → cloud LB weights
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
-   - **Enables:** Spot Instance Support (#17), Expense Tracking (#18)
+   - **Enables:** Spot Instance Support (#20), Expense Tracking (#21)
 
 ### MEDIUM PRIORITY - Infrastructure Services
 
-7. **Distributed Saga Orchestration**
+6. **Distributed Saga Orchestration**
    - Long-running transaction orchestration (saga pattern)
    - Durable state transitions with compensation on failure
    - Differs from local state machine - coordinates across multiple slices
    - Automatic retry, timeout, and dead-letter handling
    - Visualization of in-flight sagas and their states
 
-8. **Disruption Budget**
+7. **Disruption Budget**
    - Minimum healthy instances during rolling updates and node failures
    - Configurable per slice or blueprint
    - Controller respects budget before scaling down or migrating
    - Prevents cascading failures during maintenance
 
-9. **Forge Script - Scenario Language**
+8. **Forge Script - Scenario Language**
    - DSL for defining load/chaos test scenarios
    - Reusable scenario libraries
    - CI/CD integration for automated testing
    - Note: Paid tier feature
 
-10. **Placement Hints**
+9. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
@@ -160,23 +155,23 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 
 ### LOWER PRIORITY - Security & Operations
 
-11. **TLS Certificate Management**
+10. **TLS Certificate Management**
     - Certificate provisioning and rotation
     - Mutual TLS between nodes
     - Integration with external CA or self-signed
 
-12. **Canary & Blue-Green Deployment Strategies**
+11. **Canary & Blue-Green Deployment Strategies**
     - Current: Rolling updates with weighted routing exist
     - Add explicit canary deployment with automatic rollback on error threshold
     - Add blue-green deployment with instant switchover
     - A/B testing support with traffic splitting by criteria
 
-13. **Topology in KV Store**
+12. **Topology in KV Store**
     - Leader maintains cluster topology in consensus KV store
     - Best-effort updates on membership changes
     - Enables external observability without direct node queries
 
-14. **RBAC for Management API**
+13. **RBAC for Management API**
     - Role-based access control for operations
     - Predefined roles: admin, operator, viewer
     - Per-endpoint authorization rules
@@ -184,7 +179,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 
 ### UNPRIORITIZED
 
-15. **Configurable Rate Limiting per HTTP Route**
+14. **Configurable Rate Limiting per HTTP Route**
     - Per-route rate limiting configuration in blueprint or management API
     - Token bucket or sliding window algorithm
     - Configurable limits: requests/second, burst size
@@ -192,7 +187,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - Cluster-aware: distributed counters via consensus or per-node local limits
     - Note: `infra-ratelimit` exists for slice-internal use; this is for external HTTP routes
 
-16. **Resource Provisioning Framework**
+15. **Resource Provisioning Framework**
     - Generalize DB connector pattern to all external infrastructure (caches, queues, secrets stores)
     - Aether manages connection lifecycle as cluster resources
     - Mix of Aether-native resources (e.g. cluster-wide pubsub) and external connections (Kafka, Redis, PostgreSQL)
@@ -200,7 +195,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - Many current infra-slices (cache, pubsub, lock, scheduler, config) transition from in-memory implementations to external resource provisioning
     - Recommended priority: HIGH (answers "what happens to my data?" and eliminates need to reimplement external systems)
 
-17. **OpenTelemetry Integration**
+16. **OpenTelemetry Integration**
     - Span export for distributed tracing across slice invocations (Jaeger/Zipkin compatible)
     - Parent-child span hierarchy for inter-slice calls
     - Foundation exists: request ID propagation via `ScopedValue`
@@ -208,18 +203,18 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 
 ### FUTURE
 
-16. **LLM Integration (Layer 3)**
+17. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-16. **Mini-Kafka (Message Streaming)**
+18. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-17. **Cross-Slice Transaction Support (2PC)**
+19. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -246,7 +241,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-18. **Spot Instance Support for Elastic Scaling**
+20. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -297,9 +292,9 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - Upcoming known events (prefer on-demand for releases/campaigns)
 
     **Complexity:** Low - just configuration and cloud API flag
-    **Prerequisite:** Cloud Provider Adapters (#6)
+    **Prerequisite:** Cloud Provider Adapters (#5)
 
-19. **Cluster Expense Tracking**
+21. **Cluster Expense Tracking**
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
 
@@ -329,7 +324,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - TTM/LLM: cost optimization recommendations
 
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
-    **Prerequisite:** Cloud Provider Adapters (#6)
+    **Prerequisite:** Cloud Provider Adapters (#5)
 
 ---
 
@@ -345,8 +340,8 @@ Infrastructure slices requiring distributed implementations:
 | infra-statemachine | ✅ | ❌ | Consensus state transitions |
 | infra-lock | ✅ | ❌ | Consensus-backed locking |
 | infra-ratelimit | ✅ | ❌ | Shared counters across nodes |
-| infra-config | ✅ | ❌ | → Dynamic Config (#2) |
-| infra-database | ✅ | N/A | → DB Connector (#4) |
+| infra-config | ✅ | ❌ | → Dynamic Config (completed) |
+| infra-database | ✅ | N/A | → DB Connector (#3) |
 | infra-http | ✅ | N/A | HTTP client, no distributed needed |
 | infra-aspect | ✅ | N/A | Dynamic Aspect backend complete, dashboard UI pending (#1) |
 

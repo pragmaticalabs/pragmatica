@@ -269,6 +269,14 @@ public sealed interface ManagementApiResponses {
     record RollingUpdateErrorResponse(String error,
                                       String updateId) {}
 
+    // ===== Config Routes =====
+    record ConfigSetResponse(String status,
+                             String key,
+                             String value) {}
+
+    record ConfigRemovedResponse(String status,
+                                 String key) {}
+
     // ===== Repository Routes =====
     record ArtifactInfoResponse(String artifact,
                                 long size,

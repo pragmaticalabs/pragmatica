@@ -9,6 +9,7 @@ import org.pragmatica.cluster.state.kvstore.StructuredPattern;
 import org.pragmatica.consensus.NodeId;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.lang.Functions.Fn1;
+import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.parse.Number;
 import org.pragmatica.lang.utils.Causes;
@@ -473,6 +474,75 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Config key format:
+    /// ```
+    /// config/{key}                    — cluster-wide
+    /// config/node/{nodeId}/{key}      — node-specific
+    /// ```
+    /// Stores dynamic configuration values in the cluster KV store.
+    record ConfigKey(String key, Option<NodeId> nodeScope) implements AetherKey {
+        private static final String CLUSTER_PREFIX = "config/";
+        private static final String NODE_PREFIX = "config/node/";
+
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.ConfigPattern configPattern -> configPattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return nodeScope.fold(
+                () -> CLUSTER_PREFIX + key,
+                nodeId -> NODE_PREFIX + nodeId.id() + "/" + key
+            );
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public boolean isClusterWide() {
+            return nodeScope.isEmpty();
+        }
+
+        public static ConfigKey configKey(String key) {
+            return new ConfigKey(key, Option.none());
+        }
+
+        public static ConfigKey configKey(String key, NodeId nodeId) {
+            return new ConfigKey(key, Option.some(nodeId));
+        }
+
+        public static Result<ConfigKey> parseConfigKey(String raw) {
+            if (raw.startsWith(NODE_PREFIX)) {
+                var content = raw.substring(NODE_PREFIX.length());
+                var slashIndex = content.indexOf('/');
+                if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                    return CONFIG_KEY_FORMAT_ERROR.apply(raw)
+                                                  .result();
+                }
+                var nodeIdPart = content.substring(0, slashIndex);
+                var keyPart = content.substring(slashIndex + 1);
+                return NodeId.nodeId(nodeIdPart)
+                             .map(nodeId -> new ConfigKey(keyPart, Option.some(nodeId)));
+            }
+            if (raw.startsWith(CLUSTER_PREFIX)) {
+                var keyPart = raw.substring(CLUSTER_PREFIX.length());
+                if (keyPart.isEmpty()) {
+                    return CONFIG_KEY_FORMAT_ERROR.apply(raw)
+                                                  .result();
+                }
+                return Result.success(new ConfigKey(keyPart, Option.none()));
+            }
+            return CONFIG_KEY_FORMAT_ERROR.apply(raw)
+                                          .result();
+        }
+    }
+
     Fn1<Cause, String> SLICE_TARGET_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice-target key format: %s");
     Fn1<Cause, String> APP_BLUEPRINT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid app-blueprint key format: %s");
     Fn1<Cause, String> SLICE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid slice key format: %s");
@@ -483,6 +553,7 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> HTTP_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid http-routes key format: %s");
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
     Fn1<Cause, String> DYNAMIC_ASPECT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dynamic-aspect key format: %s");
+    Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
 
     /// Aether KV-Store structured patterns for key matching
     sealed interface AetherKeyPattern extends StructuredPattern {
@@ -552,6 +623,13 @@ public sealed interface AetherKey extends StructuredKey {
         /// Pattern for dynamic-aspect keys: dynamic-aspect/*
         record DynamicAspectPattern() implements AetherKeyPattern {
             public boolean matches(DynamicAspectKey key) {
+                return true;
+            }
+        }
+
+        /// Pattern for config keys: config/*
+        record ConfigPattern() implements AetherKeyPattern {
+            public boolean matches(ConfigKey key) {
                 return true;
             }
         }

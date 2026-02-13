@@ -5,8 +5,10 @@ import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
 import org.pragmatica.aether.api.DynamicAspectRegistry;
 import org.pragmatica.aether.api.ManagementServer;
+import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.config.ConfigService;
 import org.pragmatica.aether.config.ConfigurationProvider;
+import org.pragmatica.aether.config.DynamicConfigurationProvider;
 import org.pragmatica.aether.config.ProviderBasedConfigService;
 import org.pragmatica.aether.controller.ClusterController;
 import org.pragmatica.aether.controller.ControlLoop;
@@ -139,6 +141,9 @@ public interface AetherNode {
 
     /// Get the dynamic aspect registry for runtime-togglable logging/metrics.
     DynamicAspectRegistry dynamicAspectRegistry();
+
+    /// Get the dynamic config manager for runtime configuration updates.
+    Option<DynamicConfigManager> dynamicConfigManager();
 
     /// Get the application HTTP server for slice routes.
     AppHttpServer appHttpServer();
@@ -276,12 +281,12 @@ public interface AetherNode {
         var repositories = repositoryFactory.createAll(config.sliceConfig());
         // Create remaining slice management components
         var sharedLibraryLoader = createSharedLibraryLoader(config);
-        var resourceFacade = createResourceProviderFacade(config);
+        var resourceProviderSetup = createResourceProviderFacade(config);
         var sliceStore = SliceStore.sliceStore(sliceRegistry,
                                                repositories,
                                                sharedLibraryLoader,
                                                deferredInvoker,
-                                               resourceFacade,
+                                               resourceProviderSetup.facade(),
                                                config.sliceAction());
         // Create DHTTopologyListener for ring updates on topology changes
         var dhtTopologyListener = DHTTopologyListener.dhtTopologyListener(dhtNode);
@@ -310,6 +315,7 @@ public interface AetherNode {
                           RollingUpdateManager rollingUpdateManager,
                           AlertManager alertManager,
                           DynamicAspectRegistry dynamicAspectRegistry,
+                          Option<DynamicConfigManager> dynamicConfigManager,
                           AppHttpServer appHttpServer,
                           TTMManager ttmManager,
                           RollbackManager rollbackManager,
@@ -564,6 +570,9 @@ public interface AetherNode {
         var rollingUpdateManager = RollingUpdateManager.rollingUpdateManager(clusterNode, kvStore, invocationMetrics);
         // Create alert manager with KV-Store persistence
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
+        // Create dynamic config manager if dynamic provider is available
+        var dynamicConfigManager = resourceProviderSetup.dynamicProvider()
+            .map(dp -> DynamicConfigManager.dynamicConfigManager(clusterNode, kvStore, dp, config.self()));
         // Create minute aggregator for TTM and metrics collection
         var minuteAggregator = MinuteAggregator.minuteAggregator();
         // Create subsystem collectors for comprehensive snapshots
@@ -652,6 +661,7 @@ public interface AetherNode {
                                                 invocationHandler,
                                                 alertManager,
                                                 aspectRegistry,
+                                                dynamicConfigManager,
                                                 ttmManager,
                                                 rabiaMetricsCollector,
                                                 rollingUpdateManager,
@@ -730,6 +740,7 @@ public interface AetherNode {
                                   rollingUpdateManager,
                                   alertManager,
                                   aspectRegistry,
+                                  dynamicConfigManager,
                                   appHttpServer,
                                   ttmManager,
                                   rollbackManager,
@@ -749,6 +760,7 @@ public interface AetherNode {
                                                                                               () -> node,
                                                                                               alertManager,
                                                                                               aspectRegistry,
+                                                                                              dynamicConfigManager,
                                                                                               config.tls());
                                      return new aetherNode(config,
                                                            delegateRouter,
@@ -775,6 +787,7 @@ public interface AetherNode {
                                                            rollingUpdateManager,
                                                            alertManager,
                                                            aspectRegistry,
+                                                           dynamicConfigManager,
                                                            appHttpServer,
                                                            ttmManager,
                                                            rollbackManager,
@@ -804,6 +817,7 @@ public interface AetherNode {
                                                                     InvocationHandler invocationHandler,
                                                                     AlertManager alertManager,
                                                                     DynamicAspectRegistry aspectRegistry,
+                                                                    Option<DynamicConfigManager> dynamicConfigManager,
                                                                     TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
                                                                     RollingUpdateManager rollingUpdateManager,
@@ -874,6 +888,19 @@ public interface AetherNode {
                                               filterRemove(AetherKey.class,
                                                            notification -> aspectRegistry.onKvStoreRemove(notification.cause()
                                                                                                                      .key()))));
+        // Dynamic config sync via KV-Store
+        dynamicConfigManager.onPresent(dcm -> {
+            entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                  filterPut(AetherKey.class,
+                                                            (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> dcm.onKvStoreUpdate(notification.cause()
+                                                                                                                                                                  .key(),
+                                                                                                                                      notification.cause()
+                                                                                                                                                  .value()))));
+            entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                                  filterRemove(AetherKey.class,
+                                                               notification -> dcm.onKvStoreRemove(notification.cause()
+                                                                                                               .key()))));
+        });
         // Quorum state notifications - these handlers activate/deactivate components.
         // NOTE: RabiaNode's handlers run first (consensus activates before LeaderManager emits LeaderChange).
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
@@ -1030,16 +1057,20 @@ public interface AetherNode {
                                     .or(new SharedLibraryClassLoader(AetherNode.class.getClassLoader())));
     }
 
+    record ResourceProviderSetup(ResourceProviderFacade facade,
+                                  Option<DynamicConfigurationProvider> dynamicProvider) {}
+
     /// Create ResourceProviderFacade from config.
-    /// If ConfigurationProvider is configured, creates ConfigService and ResourceProvider.
+    /// If ConfigurationProvider is configured, creates ConfigService and ResourceProvider
+    /// with a DynamicConfigurationProvider overlay for runtime config updates.
     /// Otherwise, returns a no-op facade that fails with an informative message.
-    private static ResourceProviderFacade createResourceProviderFacade(AetherNodeConfig config) {
+    private static ResourceProviderSetup createResourceProviderFacade(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         return config.configProvider()
                      .fold(
                          () -> {
                              log.debug("No configuration provider configured, resource provisioning disabled");
-                             return noOpResourceProviderFacade();
+                             return new ResourceProviderSetup(noOpResourceProviderFacade(), Option.empty());
                          },
                          configProvider -> {
                              log.info("Creating ConfigService and ResourceProvider from configuration provider");
@@ -1053,20 +1084,24 @@ public interface AetherNode {
                              return resolvedProvider.fold(
                                  cause -> {
                                      log.error("Failed to resolve secrets in configuration: {}", cause.message());
-                                     return noOpResourceProviderFacade();
+                                     return new ResourceProviderSetup(noOpResourceProviderFacade(), Option.empty());
                                  },
                                  provider -> {
-                                     var configService = ProviderBasedConfigService.providerBasedConfigService(provider);
+                                     var dynamicProvider = DynamicConfigurationProvider.dynamicConfigurationProvider(provider);
+                                     var configService = ProviderBasedConfigService.providerBasedConfigService(dynamicProvider);
                                      ConfigService.setInstance(configService);
                                      var resourceProvider = SpiResourceProvider.spiResourceProvider();
                                      ResourceProvider.setInstance(resourceProvider);
-                                     log.info("ConfigService and ResourceProvider initialized");
-                                     return new ResourceProviderFacade() {
-                                         @Override
-                                         public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                                             return resourceProvider.provide(resourceType, configSection);
-                                         }
-                                     };
+                                     log.info("ConfigService and ResourceProvider initialized with dynamic overlay");
+                                     return new ResourceProviderSetup(
+                                         new ResourceProviderFacade() {
+                                             @Override
+                                             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+                                                 return resourceProvider.provide(resourceType, configSection);
+                                             }
+                                         },
+                                         Option.some(dynamicProvider)
+                                     );
                                  }
                              );
                          }

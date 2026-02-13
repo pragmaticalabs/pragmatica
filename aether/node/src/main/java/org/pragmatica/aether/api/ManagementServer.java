@@ -1,6 +1,7 @@
 package org.pragmatica.aether.api;
 
 import org.pragmatica.aether.api.routes.AlertRoutes;
+import org.pragmatica.aether.api.routes.ConfigRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
 import org.pragmatica.aether.api.routes.DashboardRoutes;
 import org.pragmatica.aether.api.routes.DynamicAspectRoutes;
@@ -14,6 +15,7 @@ import org.pragmatica.aether.api.routes.SliceRoutes;
 import org.pragmatica.aether.api.routes.StatusRoutes;
 import org.pragmatica.aether.metrics.observability.ObservabilityRegistry;
 import org.pragmatica.aether.node.AetherNode;
+import org.pragmatica.http.routing.RouteSource;
 import org.pragmatica.http.server.HttpServer;
 import org.pragmatica.http.server.HttpServerConfig;
 import org.pragmatica.http.server.RequestContext;
@@ -24,6 +26,7 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.net.tcp.TlsConfig;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -57,8 +60,9 @@ public interface ManagementServer {
                                              Supplier<AetherNode> nodeSupplier,
                                              AlertManager alertManager,
                                              DynamicAspectRegistry aspectManager,
+                                             Option<DynamicConfigManager> dynamicConfigManager,
                                              Option<TlsConfig> tls) {
-        return new ManagementServerImpl(port, nodeSupplier, alertManager, aspectManager, tls);
+        return new ManagementServerImpl(port, nodeSupplier, alertManager, aspectManager, dynamicConfigManager, tls);
     }
 }
 
@@ -88,6 +92,7 @@ class ManagementServerImpl implements ManagementServer {
                          Supplier<AetherNode> nodeSupplier,
                          AlertManager alertManager,
                          DynamicAspectRegistry aspectManager,
+                         Option<DynamicConfigManager> dynamicConfigManager,
                          Option<TlsConfig> tls) {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
@@ -100,16 +105,19 @@ class ManagementServerImpl implements ManagementServer {
             () -> buildStatusJson(nodeSupplier));
         this.observability = ObservabilityRegistry.prometheus();
         this.tls = tls;
-        // Route-based router for migrated routes
-        this.router = ManagementRouter.managementRouter(StatusRoutes.statusRoutes(nodeSupplier),
-                                                        AlertRoutes.alertRoutes(alertManager),
-                                                        DynamicAspectRoutes.dynamicAspectRoutes(aspectManager),
-                                                        ControllerRoutes.controllerRoutes(nodeSupplier),
-                                                        SliceRoutes.sliceRoutes(nodeSupplier),
-                                                        MetricsRoutes.metricsRoutes(nodeSupplier, observability),
-                                                        RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier),
-                                                        RepositoryRoutes.repositoryRoutes(nodeSupplier),
-                                                        DashboardRoutes.dashboardRoutes());
+        // Route-based router for migrated routes — build route sources dynamically
+        var routeSources = new ArrayList<RouteSource>();
+        routeSources.add(StatusRoutes.statusRoutes(nodeSupplier));
+        routeSources.add(AlertRoutes.alertRoutes(alertManager));
+        routeSources.add(DynamicAspectRoutes.dynamicAspectRoutes(aspectManager));
+        routeSources.add(ControllerRoutes.controllerRoutes(nodeSupplier));
+        routeSources.add(SliceRoutes.sliceRoutes(nodeSupplier));
+        routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));
+        routeSources.add(RollingUpdateRoutes.rollingUpdateRoutes(nodeSupplier));
+        routeSources.add(RepositoryRoutes.repositoryRoutes(nodeSupplier));
+        routeSources.add(DashboardRoutes.dashboardRoutes());
+        dynamicConfigManager.onPresent(dcm -> routeSources.add(ConfigRoutes.configRoutes(dcm)));
+        this.router = ManagementRouter.managementRouter(routeSources.toArray(RouteSource[]::new));
         // Legacy routes using RouteHandler for dynamic content types
         this.legacyRoutes = List.of(MavenProtocolRoutes.mavenProtocolRoutes(nodeSupplier));
     }
