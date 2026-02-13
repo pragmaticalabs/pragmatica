@@ -1,7 +1,6 @@
 package org.pragmatica.aether.e2e.containers;
 
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.Network;
 import org.testcontainers.containers.wait.strategy.Wait;
 import org.testcontainers.images.builder.ImageFromDockerfile;
 import org.testcontainers.utility.DockerImageName;
@@ -20,10 +19,17 @@ import java.util.concurrent.Future;
 ///
 ///
 /// Provides programmatic control over Aether node instances for E2E testing.
-/// Each container exposes:
+/// Each container runs with unique port assignments to avoid conflicts between
+/// parallel test runs.
 ///
-///   - Management port (8080) - HTTP API for cluster management
-///   - Cluster port (8090) - Internal cluster communication
+///
+///
+/// Networking strategy:
+/// <ul>
+///   - **Linux**: Host networking for fast failure detection and zero NAT overhead
+///   - **macOS**: Bridge networking with fixed port bindings and network aliases
+///     (host networking is not supported on macOS with podman/Docker Desktop)
+/// </ul>
 ///
 ///
 ///
@@ -39,25 +45,35 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
     private static final String IMAGE_NAME = "aether-node-e2e";
     private static final String E2E_IMAGE_ENV = "AETHER_E2E_IMAGE";
 
+    /// Host networking is only supported on Linux. On macOS, podman/Docker Desktop
+    /// runs containers in a VM, so `withNetworkMode("host")` shares the VM's network,
+    /// not the macOS host. We fall back to bridge networking with fixed port bindings.
+    private static final boolean HOST_NETWORKING_SUPPORTED =
+        !System.getProperty("os.name", "").toLowerCase().contains("mac");
+
     // Cached image - built once, reused across all containers
     private static volatile Future<String> cachedImage;
     private static volatile Path cachedProjectRoot;
-    private static volatile DockerImageName prebuiltImage;
-
     private final String nodeId;
+    private final int managementPortValue;
+    private final int clusterPortValue;
     private final HttpClient httpClient;
 
-    private AetherNodeContainer(Future<String> image, String nodeId) {
+    private AetherNodeContainer(Future<String> image, String nodeId, int managementPort, int clusterPort) {
         super(image);
         this.nodeId = nodeId;
+        this.managementPortValue = managementPort;
+        this.clusterPortValue = clusterPort;
         this.httpClient = HttpClient.newBuilder()
                                     .connectTimeout(Duration.ofSeconds(5))
                                     .build();
     }
 
-    private AetherNodeContainer(DockerImageName imageName, String nodeId) {
+    private AetherNodeContainer(DockerImageName imageName, String nodeId, int managementPort, int clusterPort) {
         super(imageName);
         this.nodeId = nodeId;
+        this.managementPortValue = managementPort;
+        this.clusterPortValue = clusterPort;
         this.httpClient = HttpClient.newBuilder()
                                     .connectTimeout(Duration.ofSeconds(5))
                                     .build();
@@ -76,20 +92,18 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         "echo-slice-echo-service/0.16.0/echo-slice-echo-service-0.16.0.jar"
     };
 
-    /// Creates a new Aether node container with the specified node ID.
+    /// Creates a new Aether node container with default ports and bridge networking.
     ///
     ///
-    /// Image selection:
-    ///
-    ///   - If AETHER_E2E_IMAGE env var is set, uses that pre-built image
-    ///   - Otherwise, builds from Dockerfile (cached for subsequent containers)
+    /// This factory is for basic single-node usage. For cluster testing,
+    /// use [#aetherNode(String, Path, String, int, int)] which uses host networking.
     ///
     ///
     /// @param nodeId unique identifier for this node
     /// @param projectRoot path to the project root (for Dockerfile context, ignored if using pre-built)
     /// @return configured container (not yet started)
     public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot) {
-        var container = createContainer(nodeId, projectRoot);
+        var container = createContainer(nodeId, projectRoot, MANAGEMENT_PORT, CLUSTER_PORT);
         container.withExposedPorts(MANAGEMENT_PORT, CLUSTER_PORT)
                  .withEnv("NODE_ID", nodeId)
                  .withEnv("CLUSTER_PORT", String.valueOf(CLUSTER_PORT))
@@ -101,11 +115,57 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
                                  .withStartupTimeout(STARTUP_TIMEOUT))
                  .withNetworkAliases(nodeId);
 
-        // Copy specific test artifacts into container
-        // (more reliable than bind mount across different container runtimes)
         copyTestArtifacts(container);
 
         return container;
+    }
+
+    /// Creates a node container configured with unique ports for cluster testing.
+    ///
+    ///
+    /// On Linux, uses host networking for reliable failure detection.
+    /// On macOS, uses bridge networking with fixed port bindings and network aliases,
+    /// since host networking shares the podman VM's network rather than macOS host.
+    ///
+    ///
+    /// @param nodeId unique identifier for this node
+    /// @param projectRoot path to the project root
+    /// @param peers comma-separated peer addresses (format: nodeId:host:port,...)
+    /// @param managementPort unique management port for this node
+    /// @param clusterPort unique cluster port for this node
+    /// @return configured container (not yet started)
+    public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot, String peers,
+                                                 int managementPort, int clusterPort) {
+        var container = createContainer(nodeId, projectRoot, managementPort, clusterPort);
+        container.withEnv("NODE_ID", nodeId)
+                 .withEnv("CLUSTER_PORT", String.valueOf(clusterPort))
+                 .withEnv("MANAGEMENT_PORT", String.valueOf(managementPort))
+                 .withEnv("CLUSTER_PEERS", peers)
+                 .withEnv("JAVA_OPTS", "-Xmx256m -XX:+UseZGC");
+
+        if (HOST_NETWORKING_SUPPORTED) {
+            container.withNetworkMode("host")
+                     .addExposedPort(managementPort);
+        } else {
+            container.addFixedExposedPort(managementPort, managementPort);
+            container.addFixedExposedPort(clusterPort, clusterPort);
+            container.withNetworkAliases(nodeId);
+        }
+
+        container.waitingFor(Wait.forHttp("/api/health")
+                                 .forPort(managementPort)
+                                 .forStatusCode(200)
+                                 .withStartupTimeout(STARTUP_TIMEOUT));
+
+        copyTestArtifacts(container);
+
+        return container;
+    }
+
+    /// Returns whether host networking is supported on the current platform.
+    /// Used by [AetherCluster] to determine peer list format and network configuration.
+    public static boolean hostNetworkingSupported() {
+        return HOST_NETWORKING_SUPPORTED;
     }
 
     /// Copies test slice artifacts into the container's Maven repository.
@@ -124,12 +184,15 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         }
     }
 
-    private static AetherNodeContainer createContainer(String nodeId, Path projectRoot) {
+    private static AetherNodeContainer createContainer(String nodeId, Path projectRoot,
+                                                       int managementPort, int clusterPort) {
         var prebuiltImageName = System.getenv(E2E_IMAGE_ENV);
         if (prebuiltImageName != null && !prebuiltImageName.isBlank()) {
-            return new AetherNodeContainer(DockerImageName.parse(prebuiltImageName), nodeId);
+            return new AetherNodeContainer(DockerImageName.parse(prebuiltImageName), nodeId,
+                                           managementPort, clusterPort);
         }
-        return new AetherNodeContainer(getOrBuildImage(projectRoot), nodeId);
+        return new AetherNodeContainer(getOrBuildImage(projectRoot), nodeId,
+                                       managementPort, clusterPort);
     }
 
     /// Gets the cached image or builds it if not yet available.
@@ -142,7 +205,7 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
 
         // Build and cache the image
         // Try multiple paths based on where projectRoot points:
-        // - CI: repo root → aether/node/target/
+        // - CI: repo root -> aether/node/target/
         // - Local from e2e-tests: ../node/target/ (go up to aether/, then into node/)
         var jarPath = resolveExistingPath(projectRoot,
             "aether/node/target/aether-node.jar",   // CI: from repo root
@@ -194,47 +257,34 @@ public class AetherNodeContainer extends GenericContainer<AetherNodeContainer> {
         return null;
     }
 
-    /// Creates a node container configured to join an existing cluster.
-    ///
-    /// @param nodeId unique identifier for this node
-    /// @param projectRoot path to the project root
-    /// @param peers comma-separated peer addresses (format: nodeId:host:port,...)
-    /// @return configured container
-    public static AetherNodeContainer aetherNode(String nodeId, Path projectRoot, String peers) {
-        var container = aetherNode(nodeId, projectRoot);
-        container.withEnv("CLUSTER_PEERS", peers);
-        return container;
-    }
-
-    /// Configures this container to use the specified network.
-    public AetherNodeContainer withClusterNetwork(Network network) {
-        withNetwork(network);
-        return this;
-    }
-
     /// Returns the node ID for this container.
     public String nodeId() {
         return nodeId;
     }
 
-    /// Returns the mapped management port on the host.
+    /// Returns the management port for this node.
     public int managementPort() {
-        return getMappedPort(MANAGEMENT_PORT);
+        return managementPortValue;
     }
 
-    /// Returns the mapped cluster port on the host.
+    /// Returns the cluster port for this node.
     public int clusterPort() {
-        return getMappedPort(CLUSTER_PORT);
+        return clusterPortValue;
     }
 
     /// Returns the management API base URL.
     public String managementUrl() {
-        return "http://" + getHost() + ":" + managementPort();
+        return "http://localhost:" + managementPortValue;
     }
 
-    /// Returns the internal cluster address for peer configuration.
+    /// Returns the cluster address for peer configuration.
+    ///
+    ///
+    /// On Linux (host networking), peers connect via localhost.
+    /// On macOS (bridge networking), peers connect via Docker network aliases.
     public String clusterAddress() {
-        return nodeId + ":" + getNetworkAliases().getFirst() + ":" + CLUSTER_PORT;
+        var host = HOST_NETWORKING_SUPPORTED ? "localhost" : nodeId;
+        return nodeId + ":" + host + ":" + clusterPortValue;
     }
 
     // ===== API Helpers =====

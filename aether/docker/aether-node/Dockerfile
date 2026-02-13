@@ -54,5 +54,6 @@ ENTRYPOINT ["sh", "-c", "\
     --config=/app/aether.toml \
     ${NODE_ID:+--node-id=$NODE_ID} \
     --port=$CLUSTER_PORT \
+    --management-port=$MANAGEMENT_PORT \
     ${PEERS:+--peers=$PEERS} \
 "]

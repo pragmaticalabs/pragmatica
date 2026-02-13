@@ -41,7 +41,7 @@ jobs:
   e2e-tests:
     runs-on: ubuntu-latest
     needs: build-and-test
-    if: false # Disabled: Docker networking in CI prevents reliable consensus departure detection
+    # Host networking on Linux eliminates bridge NAT latency for reliable failure detection
 
     env:
       DOCKER_HOST: unix:///var/run/docker.sock

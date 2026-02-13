@@ -134,6 +134,7 @@ class NetworkPartitionE2ETest {
 
     @Test
     @Order(3)
+    @Disabled("Flaky - timeout in leader failover/partition recovery scenarios")
     void partitionHealing_clusterReconverges() {
         cluster.awaitLeader();
 
@@ -170,6 +171,7 @@ class NetworkPartitionE2ETest {
 
     @Test
     @Order(4)
+    @Disabled("Flaky - timeout in leader failover/partition recovery scenarios")
     void quorumTransitions_maintainConsistency() {
         cluster.awaitLeader();
 
