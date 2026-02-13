@@ -624,6 +624,33 @@ body {
 .mini-metric.latency .mini-metric-value { color: var(--accent-cyan); }
 .mini-metric.invocations .mini-metric-value { color: var(--accent-green); }
 
+/* Testing Tab */
+.testing-tab {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.testing-controls-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.controls-separator {
+    width: 1px;
+    height: 16px;
+    background: var(--border-color);
+    margin: 0 4px;
+}
+
+.testing-config-row {
+    display: grid;
+    grid-template-columns: 1fr 300px;
+    gap: 12px;
+}
+
 /* Load Testing */
 .load-testing-grid {
     display: grid;
@@ -670,40 +697,6 @@ body {
     padding: 8px 12px;
     background: var(--bg-primary);
     border-radius: 4px;
-}
-
-.load-controls-section {
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-}
-
-.load-state-display {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 14px;
-}
-
-.state-label { color: var(--text-secondary); }
-
-.state-value {
-    font-family: var(--font-mono);
-    font-weight: 600;
-    padding: 4px 8px;
-    border-radius: 4px;
-    background: var(--bg-primary);
-}
-
-.state-value.idle { color: var(--text-secondary); }
-.state-value.running { color: var(--accent-green); background: rgba(34, 197, 94, 0.1); }
-.state-value.paused { color: var(--accent-yellow); background: rgba(234, 179, 8, 0.1); }
-.state-value.stopping { color: var(--accent-red); background: rgba(239, 68, 68, 0.1); }
-
-.load-control-buttons {
-    display: flex;
-    gap: 8px;
-    flex-wrap: wrap;
 }
 
 .rate-buttons {
@@ -839,5 +832,6 @@ body {
 /* Responsive */
 @media (max-width: 1000px) {
     .overview-grid { grid-template-columns: 1fr; }
+    .testing-config-row { grid-template-columns: 1fr; }
     .load-testing-grid { grid-template-columns: 1fr; }
 }

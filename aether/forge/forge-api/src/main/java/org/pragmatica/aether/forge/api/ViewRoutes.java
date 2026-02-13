@@ -80,59 +80,46 @@ public sealed interface ViewRoutes {
     private static String renderTestingTab(Option<Path> loadConfigPath) {
         var configContent = loadConfigPath.flatMap(ViewRoutes::readFile).or("");
         return """
-            <div id="chaos-panel"
-                 hx-get="/api/panel/chaos"
-                 hx-trigger="load"
-                 hx-swap="innerHTML">
-            </div>
-            <div class="panel panel-full-width">
-                <h2>Performance</h2>
-                <div class="metrics-row">
-                    <div class="metric-card">
-                        <div class="metric-value" id="requests-per-sec">0</div>
-                        <div class="metric-label">req/s</div>
-                    </div>
-                    <div class="metric-card success">
-                        <div class="metric-value" id="success-rate">100%%</div>
-                        <div class="metric-label">success</div>
-                    </div>
-                    <div class="metric-card">
-                        <div class="metric-value" id="avg-latency">0ms</div>
-                        <div class="metric-label">latency</div>
-                    </div>
-                </div>
-                <div class="chart-row">
-                    <div class="chart-container"><canvas id="success-chart"></canvas></div>
-                    <div class="chart-container"><canvas id="throughput-chart"></canvas></div>
-                </div>
-            </div>
-            <div class="load-testing-grid">
-                <div class="panel panel-wide">
-                    <h2>Configuration</h2>
-                    <div class="load-config-section">
-                        <textarea id="load-config-text" placeholder="Paste TOML configuration here..." rows="10">%s</textarea>
-                        <div class="load-config-actions">
-                            <button id="btn-upload-config" class="btn btn-primary" onclick="uploadLoadConfig()">Upload Config</button>
-                            <span id="load-config-status"></span>
+            <div class="testing-tab">
+                <div class="panel">
+                    <h2>Performance</h2>
+                    <div class="metrics-row">
+                        <div class="metric-card">
+                            <div class="metric-value" id="requests-per-sec">0</div>
+                            <div class="metric-label">req/s</div>
+                        </div>
+                        <div class="metric-card success">
+                            <div class="metric-value" id="success-rate">100%%</div>
+                            <div class="metric-label">success</div>
+                        </div>
+                        <div class="metric-card">
+                            <div class="metric-value" id="avg-latency">0ms</div>
+                            <div class="metric-label">latency</div>
                         </div>
                     </div>
-                    <div class="load-config-info" id="load-config-info">
-                        <span>No configuration loaded</span>
+                    <div class="chart-row">
+                        <div class="chart-container"><canvas id="success-chart"></canvas></div>
+                        <div class="chart-container"><canvas id="throughput-chart"></canvas></div>
                     </div>
                 </div>
                 <div class="panel">
-                    <h2>Controls</h2>
-                    <div class="load-controls-section">
-                        <div class="load-state-display">
-                            <span class="state-label">State:</span>
-                            <span id="load-runner-state" class="state-value">IDLE</span>
-                        </div>
-                        <div class="load-control-buttons">
-                            <button class="btn btn-success" onclick="loadAction('start')">Start</button>
-                            <button class="btn btn-warning" onclick="loadAction('pause')">Pause</button>
-                            <button class="btn btn-info" onclick="loadAction('resume')">Resume</button>
-                            <button class="btn btn-danger" onclick="loadAction('stop')">Stop</button>
-                        </div>
+                    <h2>Per-Target Metrics</h2>
+                    <div id="load-metrics-container">
+                        <div class="placeholder">No targets running</div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <h2 class="panel-header">Controls<span class="panel-badge" id="load-runner-state">IDLE</span></h2>
+                    <div class="testing-controls-row">
+                        <button id="btn-kill-node" class="btn btn-danger btn-small" onclick="showNodeModal(false)">Kill Node</button>
+                        <button id="btn-kill-leader" class="btn btn-warning btn-small" onclick="killLeader()">Kill Leader</button>
+                        <button id="btn-rolling-restart" class="btn btn-secondary btn-small" onclick="toggleRollingRestart()">Rolling Restart</button>
+                        <span class="controls-separator"></span>
+                        <button class="btn btn-success btn-small" onclick="loadAction('start')">Start</button>
+                        <button class="btn btn-warning btn-small" onclick="loadAction('pause')">Pause</button>
+                        <button class="btn btn-info btn-small" onclick="loadAction('resume')">Resume</button>
+                        <button class="btn btn-danger btn-small" onclick="loadAction('stop')">Stop</button>
+                        <span class="controls-separator"></span>
                         <div class="rate-buttons">
                             <span class="rate-label">Rate:</span>
                             <button class="btn btn-primary btn-small" onclick="setTotalRate(100)">100</button>
@@ -143,25 +130,33 @@ public sealed interface ViewRoutes {
                             <button class="btn btn-primary btn-small" onclick="setTotalRate(5000)">5K</button>
                             <button class="btn btn-primary btn-small" onclick="setTotalRate(10000)">10K</button>
                         </div>
-                        <div class="config-row">
-                            <button class="btn btn-secondary btn-small" onclick="resetMetrics()">Reset Metrics</button>
+                        <span class="controls-separator"></span>
+                        <button id="btn-reset" class="btn btn-secondary btn-small" onclick="resetMetrics()">Reset Metrics</button>
+                    </div>
+                </div>
+                <div class="testing-config-row">
+                    <div class="panel">
+                        <h2>Configuration</h2>
+                        <div class="load-config-section">
+                            <textarea id="load-config-text" placeholder="Paste TOML configuration here..." rows="10">%s</textarea>
+                            <div class="load-config-actions">
+                                <button id="btn-upload-config" class="btn btn-primary" onclick="uploadLoadConfig()">Upload Config</button>
+                                <span id="load-config-status"></span>
+                            </div>
+                        </div>
+                        <div class="load-config-info" id="load-config-info">
+                            <span>No configuration loaded</span>
                         </div>
                     </div>
-                </div>
-                <div class="panel panel-wide">
-                    <h2>Per-Target Metrics</h2>
-                    <div id="load-metrics-container">
-                        <div class="placeholder">No targets running</div>
-                    </div>
-                </div>
-                <div class="panel">
-                    <h2>Pattern Reference</h2>
-                    <div class="pattern-help">
-                        <div class="pattern-item"><code>${uuid}</code> - Random UUID</div>
-                        <div class="pattern-item"><code>${random:SKU-#####}</code> - # = digit, ? = letter, * = alphanumeric</div>
-                        <div class="pattern-item"><code>${range:1-100}</code> - Random integer in range</div>
-                        <div class="pattern-item"><code>${choice:NYC,LAX,CHI}</code> - Random pick from list</div>
-                        <div class="pattern-item"><code>${seq:1000}</code> - Sequential counter</div>
+                    <div class="panel">
+                        <h2>Pattern Reference</h2>
+                        <div class="pattern-help">
+                            <div class="pattern-item"><code>${uuid}</code> - Random UUID</div>
+                            <div class="pattern-item"><code>${random:SKU-#####}</code> - # = digit, ? = letter, * = alphanumeric</div>
+                            <div class="pattern-item"><code>${range:1-100}</code> - Random integer in range</div>
+                            <div class="pattern-item"><code>${choice:NYC,LAX,CHI}</code> - Random pick from list</div>
+                            <div class="pattern-item"><code>${seq:1000}</code> - Sequential counter</div>
+                        </div>
                     </div>
                 </div>
             </div>

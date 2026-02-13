@@ -449,7 +449,6 @@ async function loadAction(action) {
         var stateSpan = document.getElementById('load-runner-state');
         if (stateSpan && data.state) {
             stateSpan.textContent = data.state;
-            stateSpan.className = 'state-value ' + data.state.toLowerCase();
         }
     } catch (e) { /* ignore */ }
 }
