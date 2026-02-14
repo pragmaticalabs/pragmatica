@@ -338,7 +338,18 @@ public final class ConfigurableLoadRunner {
     }
 
     private void syncMetrics() {
+        updateTargetLatency();
         activeRunners.forEach(this::syncRunnerMetrics);
+    }
+
+    private void updateTargetLatency() {
+        var snapshots = entryPointMetrics.snapshotAndReset();
+        for (var snapshot : snapshots) {
+            var runner = activeRunners.get(snapshot.name());
+            if (runner != null && snapshot.avgLatencyMs() > 0) {
+                runner.updateLatencyEma(snapshot.avgLatencyMs());
+            }
+        }
     }
 
     private void syncRunnerMetrics(String name, TargetRunner runner) {
@@ -381,8 +392,12 @@ public final class ConfigurableLoadRunner {
                                 AtomicLong failureCount,
                                 AtomicLong totalLatencyNanos,
                                 AtomicReference<Instant> startTimeRef,
-                                AtomicInteger actualRate) {
+                                AtomicInteger actualRate,
+                                AtomicReference<Double> emaAvgLatencyMs) {
         private static final java.util.regex.Pattern HTTP_METHOD_PREFIX = java.util.regex.Pattern.compile("^(GET|POST|PUT|DELETE|PATCH)\\s+");
+
+        // ~2s effective window at 100ms snapshot interval
+        private static final double LATENCY_EMA_ALPHA = 0.05;
 
         static TargetRunner targetRunner(LoadTarget target,
                                          Map<String, TemplateProcessor> pathProcessors,
@@ -411,7 +426,8 @@ public final class ConfigurableLoadRunner {
                                     new AtomicLong(0),
                                     new AtomicLong(0),
                                     new AtomicReference<>(),
-                                    new AtomicInteger(0));
+                                    new AtomicInteger(0),
+                                    new AtomicReference<>(0.0));
         }
 
         Instant startTime() {
@@ -432,6 +448,13 @@ public final class ConfigurableLoadRunner {
 
         void resume() {
             paused.set(false);
+        }
+
+        void updateLatencyEma(double instantMs) {
+            var current = emaAvgLatencyMs.get();
+            emaAvgLatencyMs.set(current == 0.0
+                                ? instantMs
+                                : LATENCY_EMA_ALPHA * instantMs + (1 - LATENCY_EMA_ALPHA) * current);
         }
 
         void run() {
@@ -611,17 +634,14 @@ public final class ConfigurableLoadRunner {
 
         TargetMetrics getTargetMetrics() {
             var remaining = calculateRemainingDuration();
-            var requests = totalRequests.get();
             return new TargetMetrics(name,
                                      target.rate()
                                            .requestsPerSecond(),
                                      actualRate.get(),
-                                     requests,
+                                     totalRequests.get(),
                                      successCount.get(),
                                      failureCount.get(),
-                                     requests > 0
-                                     ? (double) totalLatencyNanos.get() / requests / 1_000_000
-                                     : 0,
+                                     emaAvgLatencyMs.get(),
                                      remaining);
         }
 

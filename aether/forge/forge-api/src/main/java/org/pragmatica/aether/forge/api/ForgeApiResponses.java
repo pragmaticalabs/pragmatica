@@ -26,6 +26,7 @@ public final class ForgeApiResponses {
     /// Full cluster status response from /api/status endpoint.
     public record FullStatusResponse(ClusterInfo cluster,
                                      MetricsInfo metrics,
+                                     AetherAggregates aetherMetrics,
                                      LoadInfo load,
                                      long uptimeSeconds,
                                      int sliceCount,
@@ -60,6 +61,10 @@ public final class ForgeApiResponses {
                               double avgLatencyMs,
                               long totalSuccess,
                               long totalFailures) {}
+
+    /// Real Aether invocation aggregates (EMA-smoothed).
+    public record AetherAggregates(double rps, double successRate, double avgLatencyMs,
+                                    long totalInvocations, long totalSuccess, long totalFailures) {}
 
     /// Load status information derived from ConfigurableLoadRunner.
     public record LoadInfo(String state,

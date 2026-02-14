@@ -8,6 +8,7 @@ var throughputChart = null;
 var successHistory = [];
 var throughputHistory = [];
 var MAX_HISTORY = 60;
+var historyChart = null;
 var rollingRestartActive = false;
 var pollInterval = null;
 var ws = null;
@@ -27,6 +28,15 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
         var canvas = document.getElementById('success-chart');
         if (canvas) {
             initCharts();
+        }
+        if (document.getElementById('aspects-table-container')) {
+            loadAspects();
+        }
+        if (document.getElementById('thresholds-container')) {
+            loadThresholds();
+        }
+        if (document.getElementById('history-chart')) {
+            loadHistory('1h');
         }
         startPolling();
         connectWebSocket();
@@ -61,7 +71,7 @@ function connectWebSocket() {
                 updateCharts(s.metrics);
                 updateNodes(s.cluster, s.nodeMetrics, s.slices, s.targetClusterSize);
                 updateSlices(s.slices);
-                updateMetrics(s.metrics, s.nodeMetrics);
+                updateMetrics(s.aetherMetrics, s.nodeMetrics);
                 updateLoadTargets(s.loadTargets);
             } catch (e) { /* ignore parse errors */ }
         };
@@ -88,7 +98,7 @@ async function poll() {
         updateCharts(s.metrics);
         updateNodes(s.cluster, s.nodeMetrics, s.slices, s.targetClusterSize);
         updateSlices(s.slices);
-        updateMetrics(s.metrics, s.nodeMetrics);
+        updateMetrics(s.aetherMetrics, s.nodeMetrics);
         updateLoadTargets(s.loadTargets);
     } catch (e) { /* ignore */ }
 }
@@ -317,10 +327,10 @@ function updateMetrics(m, nodeMetrics) {
     var html = '<div class="metrics-grid">';
     html += miniMetric(avgCpu, 'Avg CPU', 'cpu');
     html += miniMetric(heapStr, 'Total Heap', 'heap');
-    html += miniMetric(Math.round(m.requestsPerSecond).toLocaleString(), 'Req/s', 'invocations');
+    html += miniMetric(Math.round(m.rps).toLocaleString(), 'Req/s', 'invocations');
     html += miniMetric(m.successRate.toFixed(1) + '%', 'Success', 'latency');
     html += miniMetric(m.avgLatencyMs.toFixed(1) + 'ms', 'Avg Latency', 'latency');
-    html += miniMetric((m.totalSuccess + m.totalFailures).toLocaleString(), 'Total Reqs', 'invocations');
+    html += miniMetric(m.totalInvocations.toLocaleString(), 'Total Reqs', 'invocations');
     html += miniMetric(m.totalSuccess.toLocaleString(), 'Success', 'invocations');
     html += miniMetric(m.totalFailures.toLocaleString(), 'Failures', 'error');
     html += '</div>';
@@ -467,6 +477,232 @@ function escapeHtml(text) {
     var div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+// ===============================
+// Aspects Tab
+// ===============================
+async function loadAspects() {
+    try {
+        var response = await fetch('/api/aspects');
+        var data = await response.json();
+        var aspects = typeof data.body === 'string' ? JSON.parse(data.body) : data;
+        renderAspects(aspects);
+    } catch (e) { /* ignore */ }
+}
+
+function renderAspects(data) {
+    var container = document.getElementById('aspects-table-container');
+    if (!container) return;
+    var entries = [];
+    if (data && typeof data === 'object') {
+        if (data.aspects) data = data.aspects;
+        for (var key in data) {
+            if (data.hasOwnProperty(key)) {
+                var val = data[key];
+                entries.push({ key: key, artifact: val.artifact || key, method: val.method || '', mode: val.mode || val });
+            }
+        }
+    }
+    if (!entries.length) {
+        container.innerHTML = '<div class="placeholder">No active aspects</div>';
+        return;
+    }
+    var html = '<table class="aspects-table"><thead><tr><th>Artifact</th><th>Method</th><th>Mode</th><th></th></tr></thead><tbody>';
+    for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        var modeStr = typeof e.mode === 'string' ? e.mode : String(e.mode);
+        var modeCls = 'aspect-mode-badge ' + modeStr.toLowerCase().replace(/_/g, '-');
+        html += '<tr>';
+        html += '<td class="mono">' + escapeHtml(e.artifact) + '</td>';
+        html += '<td class="mono">' + escapeHtml(e.method) + '</td>';
+        html += '<td><span class="' + modeCls + '">' + escapeHtml(modeStr) + '</span></td>';
+        html += '<td><button class="btn btn-danger btn-small" onclick="removeAspect(\'' + escapeHtml(e.artifact) + '/' + escapeHtml(e.method) + '\')">Remove</button></td>';
+        html += '</tr>';
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+}
+
+async function setAspect() {
+    var artifact = document.getElementById('aspect-artifact').value.trim();
+    var method = document.getElementById('aspect-method').value.trim();
+    var mode = document.getElementById('aspect-mode').value;
+    if (!artifact || !method) return;
+    try {
+        await fetch('/api/aspects', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ artifact: artifact, method: method, mode: mode })
+        });
+        loadAspects();
+    } catch (e) { /* ignore */ }
+}
+
+async function removeAspect(key) {
+    try {
+        await fetch('/api/aspects/' + encodeURIComponent(key), { method: 'DELETE' });
+        loadAspects();
+    } catch (e) { /* ignore */ }
+}
+
+// ===============================
+// Thresholds (Alerts Tab)
+// ===============================
+async function loadThresholds() {
+    try {
+        var response = await fetch('/api/alerts/thresholds');
+        var data = await response.json();
+        var thresholds = typeof data.body === 'string' ? JSON.parse(data.body) : data;
+        renderThresholds(thresholds);
+    } catch (e) { /* ignore */ }
+}
+
+function renderThresholds(data) {
+    var container = document.getElementById('thresholds-container');
+    if (!container) return;
+    var entries = [];
+    if (data && typeof data === 'object') {
+        if (data.thresholds && Array.isArray(data.thresholds)) {
+            entries = data.thresholds;
+        } else if (Array.isArray(data)) {
+            entries = data;
+        } else {
+            for (var k in data) {
+                if (data.hasOwnProperty(k) && k !== 'thresholds') {
+                    entries.push({ metric: k, warning: data[k].warning, critical: data[k].critical });
+                }
+            }
+        }
+    }
+    if (!entries.length) {
+        container.innerHTML = '<div class="placeholder">No thresholds configured</div>';
+        return;
+    }
+    var html = '';
+    for (var i = 0; i < entries.length; i++) {
+        var t = entries[i];
+        var metric = t.metric || t.name || '';
+        html += '<div class="threshold-card">';
+        html += '<div class="threshold-metric">' + escapeHtml(metric) + '</div>';
+        html += '<div class="threshold-values">';
+        html += '<label>Warning: <input type="number" step="any" class="threshold-input" value="' + (t.warning != null ? t.warning : '') + '" onchange="updateThreshold(\'' + escapeHtml(metric) + '\', this.value, null)"></label>';
+        html += '<label>Critical: <input type="number" step="any" class="threshold-input" value="' + (t.critical != null ? t.critical : '') + '" onchange="updateThreshold(\'' + escapeHtml(metric) + '\', null, this.value)"></label>';
+        html += '</div>';
+        html += '<button class="btn btn-danger btn-small" onclick="deleteThreshold(\'' + escapeHtml(metric) + '\')">Delete</button>';
+        html += '</div>';
+    }
+    container.innerHTML = html;
+}
+
+async function updateThreshold(metric, warning, critical) {
+    try {
+        var body = { metric: metric };
+        if (warning !== null) body.warning = parseFloat(warning);
+        if (critical !== null) body.critical = parseFloat(critical);
+        await fetch('/api/alerts/thresholds', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+    } catch (e) { /* ignore */ }
+}
+
+async function deleteThreshold(metric) {
+    try {
+        await fetch('/api/alerts/thresholds/' + encodeURIComponent(metric), { method: 'DELETE' });
+        loadThresholds();
+    } catch (e) { /* ignore */ }
+}
+
+// ===============================
+// History Tab
+// ===============================
+async function loadHistory(range) {
+    try {
+        var rangeSpan = document.getElementById('history-range');
+        if (rangeSpan) rangeSpan.textContent = range;
+
+        var response = await fetch('/api/metrics/history?range=' + range);
+        var data = await response.json();
+        var history = typeof data.body === 'string' ? JSON.parse(data.body) : data;
+        renderHistory(history);
+    } catch (e) { /* ignore */ }
+}
+
+function renderHistory(data) {
+    var canvas = document.getElementById('history-chart');
+    if (!canvas) return;
+
+    if (historyChart) {
+        historyChart.destroy();
+        historyChart = null;
+    }
+
+    var datasets = [];
+    var colors = ['#06b6d4', '#22c55e', '#f59e0b', '#ef4444', '#3b82f6', '#8b5cf6', '#ec4899'];
+    var colorIdx = 0;
+
+    if (data && data.nodes) {
+        for (var nodeId in data.nodes) {
+            if (!data.nodes.hasOwnProperty(nodeId)) continue;
+            var snapshots = data.nodes[nodeId];
+            var color = colors[colorIdx % colors.length];
+            colorIdx++;
+            datasets.push({
+                label: nodeId + ' CPU',
+                data: snapshots.map(function(s) {
+                    return { x: s.timestamp, y: (s.metrics['cpu.usage'] || 0) * 100 };
+                }),
+                borderColor: color,
+                backgroundColor: color + '20',
+                fill: false,
+                tension: 0.3,
+                pointRadius: 0,
+                borderWidth: 1.5
+            });
+        }
+    }
+
+    historyChart = new Chart(canvas, {
+        type: 'line',
+        data: { datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: {
+                    display: true,
+                    labels: { color: '#888898', font: { size: 9 } }
+                }
+            },
+            scales: {
+                x: {
+                    type: 'linear',
+                    display: true,
+                    ticks: {
+                        color: '#888898',
+                        font: { size: 9 },
+                        callback: function(v) {
+                            var d = new Date(v);
+                            return d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes();
+                        }
+                    },
+                    grid: { color: '#252530' }
+                },
+                y: {
+                    min: 0,
+                    grid: { color: '#252530' },
+                    ticks: {
+                        color: '#888898',
+                        font: { size: 9 },
+                        callback: function(v) { return v + '%'; }
+                    }
+                }
+            },
+            animation: { duration: 0 }
+        }
+    });
 }
 
 // ===============================

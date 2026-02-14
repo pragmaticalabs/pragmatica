@@ -75,6 +75,14 @@ public final class ForgeCluster {
     private final AtomicReference<ScheduledFuture<?>> rollingRestartTask = new AtomicReference<>();
     private final Random random = new Random();
 
+    // Aether invocation metrics EMA state
+    private long lastTotalInvocations = 0;
+    private long lastTotalSuccess = 0;
+    private double emaRps = 0.0;
+    private double emaSuccessRate = 1.0;
+    private double emaAvgLatencyMs = 0.0;
+    private static final double EMA_ALPHA = 0.2;
+
     private final int targetClusterSize;
     private final AtomicInteger effectiveSize;
 
@@ -526,6 +534,58 @@ public final class ForgeCluster {
                          .toList();
     }
 
+    /// Compute EMA-smoothed Aether invocation aggregates from cluster-wide gossip data.
+    /// Uses inv|artifact|method|* entries from MetricsCollector.allMetrics() which
+    /// aggregates all nodes via MetricsPing/MetricsPong gossip protocol.
+    public AetherAggregates aetherAggregates() {
+        var leaderId = currentLeader().or("");
+        var leaderNode = nodes.get(leaderId);
+        if (leaderNode == null) {
+            if (nodes.isEmpty()) {
+                return new AetherAggregates(0, 1.0, 0, 0, 0, 0);
+            }
+            leaderNode = nodes.values().iterator().next();
+        }
+        var allNodeMetrics = leaderNode.metricsCollector().allMetrics();
+        long totalInvocations = 0;
+        long totalSuccess = 0;
+        long totalFailure = 0;
+        double totalDurationNs = 0.0;
+        for (var nodeMetrics : allNodeMetrics.values()) {
+            for (var entry : nodeMetrics.entrySet()) {
+                var key = entry.getKey();
+                if (!key.startsWith("inv|")) {
+                    continue;
+                }
+                if (key.endsWith("|count")) {
+                    totalInvocations += entry.getValue().longValue();
+                } else if (key.endsWith("|success")) {
+                    totalSuccess += entry.getValue().longValue();
+                } else if (key.endsWith("|failure")) {
+                    totalFailure += entry.getValue().longValue();
+                } else if (key.endsWith("|totalNs")) {
+                    totalDurationNs += entry.getValue();
+                }
+            }
+        }
+        long deltaInvocations = totalInvocations - lastTotalInvocations;
+        long deltaSuccess = totalSuccess - lastTotalSuccess;
+        double instantRps = deltaInvocations;
+        double instantSuccessRate = deltaInvocations > 0
+                                    ? (double) deltaSuccess / deltaInvocations
+                                    : 1.0;
+        double avgLatencyMs = totalInvocations > 0
+                              ? totalDurationNs / totalInvocations / 1_000_000.0
+                              : 0.0;
+        emaRps = EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * emaRps;
+        emaSuccessRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * emaSuccessRate;
+        emaAvgLatencyMs = EMA_ALPHA * avgLatencyMs + (1 - EMA_ALPHA) * emaAvgLatencyMs;
+        lastTotalInvocations = totalInvocations;
+        lastTotalSuccess = totalSuccess;
+        return new AetherAggregates(emaRps, emaSuccessRate * 100.0, emaAvgLatencyMs,
+                                    totalInvocations, totalSuccess, totalFailure);
+    }
+
     private NodeMetrics toNodeMetrics(String nodeId, Map<String, Double> metrics, String leaderId) {
         var cpuUsage = metrics.getOrDefault("cpu.usage", 0.0);
         var heapUsed = metrics.getOrDefault("heap.used", 0.0);
@@ -572,6 +632,10 @@ public final class ForgeCluster {
 
     /// Response from rolling restart status check.
     public record RollingRestartStatusResponse(boolean active) {}
+
+    /// Aggregated Aether invocation metrics with EMA smoothing.
+    public record AetherAggregates(double rps, double successRate, double avgLatencyMs,
+                                    long totalInvocations, long totalSuccess, long totalFailures) {}
 
     /// Get slice status from the DeploymentMap.
     /// Uses event-driven index instead of KV store scan — zero allocations per poll.

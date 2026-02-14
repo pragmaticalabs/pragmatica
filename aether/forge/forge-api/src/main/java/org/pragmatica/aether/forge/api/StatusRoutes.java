@@ -70,6 +70,7 @@ public final class StatusRoutes {
         var nodeInfos = buildNodeInfos(clusterStatus);
         var clusterInfo = new ClusterInfo(nodeInfos, clusterStatus.leaderId(), nodeInfos.size());
         var metricsInfo = buildMetricsInfo(metricsSnapshot);
+        var aetherMetrics = buildAetherMetrics(cluster);
         var loadInfo = buildLoadInfo(loadRunner);
         var uptimeSeconds = uptimeSeconds(startTime);
         var sliceCount = countSlices(cluster);
@@ -77,7 +78,7 @@ public final class StatusRoutes {
         var nodeMetrics = buildNodeMetrics(cluster);
         var slices = buildSliceStatusInfos(cluster);
         var loadTargets = buildLoadTargets(loadRunner);
-        return new FullStatusResponse(clusterInfo, metricsInfo, loadInfo, uptimeSeconds, sliceCount,
+        return new FullStatusResponse(clusterInfo, metricsInfo, aetherMetrics, loadInfo, uptimeSeconds, sliceCount,
                                       targetClusterSize, nodeMetrics, slices, loadTargets);
     }
 
@@ -97,6 +98,12 @@ public final class StatusRoutes {
                                snapshot.avgLatencyMs(),
                                snapshot.totalSuccess(),
                                snapshot.totalFailures());
+    }
+
+    private static AetherAggregates buildAetherMetrics(ForgeCluster cluster) {
+        var agg = cluster.aetherAggregates();
+        return new AetherAggregates(agg.rps(), agg.successRate(), agg.avgLatencyMs(),
+                                    agg.totalInvocations(), agg.totalSuccess(), agg.totalFailures());
     }
 
     private static LoadInfo buildLoadInfo(ConfigurableLoadRunner loadRunner) {

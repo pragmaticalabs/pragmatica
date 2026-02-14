@@ -30,6 +30,8 @@ public sealed interface ViewRoutes {
         .serve(overviewRoute(),
                testingTabRoute(loadConfigPath),
                alertsTabRoute(),
+               aspectsTabRoute(),
+               historyTabRoute(),
                activeAlertsRoute(cluster, http),
                alertHistoryRoute(cluster, http));
     }
@@ -174,6 +176,12 @@ public sealed interface ViewRoutes {
         return """
             <div class="alerts-grid">
                 <div class="panel panel-wide">
+                    <h2>Thresholds</h2>
+                    <div id="thresholds-container" class="threshold-grid">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                </div>
+                <div class="panel panel-wide">
                     <h2>Active Alerts</h2>
                     <div id="active-alerts" class="alerts-content"
                          hx-get="/api/view/alerts/active"
@@ -195,6 +203,63 @@ public sealed interface ViewRoutes {
                          hx-trigger="load, every 10s"
                          hx-swap="innerHTML">
                         <div class="placeholder">Loading...</div>
+                    </div>
+                </div>
+            </div>
+            """;
+    }
+
+    // ========== Aspects Tab Shell ==========
+    private static Route<String> aspectsTabRoute() {
+        return Route.<String> get("/aspects")
+                    .to(_ -> Promise.success(renderAspectsShell()))
+                    .as(CommonContentTypes.TEXT_HTML);
+    }
+
+    private static String renderAspectsShell() {
+        return """
+            <div class="aspects-tab">
+                <div class="panel">
+                    <h2>Dynamic Aspects</h2>
+                    <div class="aspect-controls-row">
+                        <input type="text" id="aspect-artifact" placeholder="Artifact" class="aspect-input">
+                        <input type="text" id="aspect-method" placeholder="Method" class="aspect-input">
+                        <select id="aspect-mode" class="aspect-select">
+                            <option>NONE</option>
+                            <option>LOG</option>
+                            <option>METRICS</option>
+                            <option>LOG_AND_METRICS</option>
+                        </select>
+                        <button class="btn btn-primary btn-small" onclick="setAspect()">Set</button>
+                    </div>
+                    <div id="aspects-table-container">
+                        <div class="placeholder">Loading...</div>
+                    </div>
+                </div>
+            </div>
+            """;
+    }
+
+    // ========== History Tab Shell ==========
+    private static Route<String> historyTabRoute() {
+        return Route.<String> get("/history")
+                    .to(_ -> Promise.success(renderHistoryShell()))
+                    .as(CommonContentTypes.TEXT_HTML);
+    }
+
+    private static String renderHistoryShell() {
+        return """
+            <div class="history-tab">
+                <div class="panel">
+                    <h2 class="panel-header">Metrics History<span class="panel-badge" id="history-range">1h</span></h2>
+                    <div class="history-range-selector">
+                        <button class="btn btn-small btn-secondary" onclick="loadHistory('5m')">5m</button>
+                        <button class="btn btn-small btn-secondary" onclick="loadHistory('15m')">15m</button>
+                        <button class="btn btn-small btn-primary" onclick="loadHistory('1h')">1h</button>
+                        <button class="btn btn-small btn-secondary" onclick="loadHistory('2h')">2h</button>
+                    </div>
+                    <div class="chart-container history-chart-container">
+                        <canvas id="history-chart"></canvas>
                     </div>
                 </div>
             </div>
