@@ -71,7 +71,7 @@ function connectWebSocket() {
                 updateCharts(s.metrics);
                 updateNodes(s.cluster, s.nodeMetrics, s.slices, s.targetClusterSize);
                 updateSlices(s.slices);
-                updateMetrics(s.aetherMetrics, s.nodeMetrics);
+                updateMetrics(s.metrics, s.nodeMetrics);
                 updateLoadTargets(s.loadTargets);
             } catch (e) { /* ignore parse errors */ }
         };
@@ -98,7 +98,7 @@ async function poll() {
         updateCharts(s.metrics);
         updateNodes(s.cluster, s.nodeMetrics, s.slices, s.targetClusterSize);
         updateSlices(s.slices);
-        updateMetrics(s.aetherMetrics, s.nodeMetrics);
+        updateMetrics(s.metrics, s.nodeMetrics);
         updateLoadTargets(s.loadTargets);
     } catch (e) { /* ignore */ }
 }
@@ -327,10 +327,10 @@ function updateMetrics(m, nodeMetrics) {
     var html = '<div class="metrics-grid">';
     html += miniMetric(avgCpu, 'Avg CPU', 'cpu');
     html += miniMetric(heapStr, 'Total Heap', 'heap');
-    html += miniMetric(Math.round(m.rps).toLocaleString(), 'Req/s', 'invocations');
+    html += miniMetric(Math.round(m.requestsPerSecond).toLocaleString(), 'Req/s', 'invocations');
     html += miniMetric(m.successRate.toFixed(1) + '%', 'Success', 'latency');
     html += miniMetric(m.avgLatencyMs.toFixed(1) + 'ms', 'Avg Latency', 'latency');
-    html += miniMetric(m.totalInvocations.toLocaleString(), 'Total Reqs', 'invocations');
+    html += miniMetric((m.totalSuccess + m.totalFailures).toLocaleString(), 'Total Reqs', 'invocations');
     html += miniMetric(m.totalSuccess.toLocaleString(), 'Success', 'invocations');
     html += miniMetric(m.totalFailures.toLocaleString(), 'Failures', 'error');
     html += '</div>';
