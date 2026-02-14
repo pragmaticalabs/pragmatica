@@ -124,7 +124,7 @@ public sealed interface LoadRoutes {
                                                                           m.avgLatencyMs(),
                                                                           m.successRate(),
                                                                           m.remainingDuration()
-                                                                           .map(Object::toString)))
+                                                                           .map(ForgeApiResponses::formatDuration)))
                                        .toList();
         return new LoadRunnerStatusResponse(state.name(), targetInfos.size(), targetInfos);
     }

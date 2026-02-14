@@ -161,7 +161,7 @@ public final class StatusRoutes {
                                                             t.avgLatencyMs(),
                                                             t.successRate(),
                                                             t.remainingDuration()
-                                                             .map(Object::toString)))
+                                                             .map(ForgeApiResponses::formatDuration)))
                          .toList();
     }
 

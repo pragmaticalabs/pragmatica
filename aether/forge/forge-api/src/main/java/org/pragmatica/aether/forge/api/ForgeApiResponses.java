@@ -2,12 +2,22 @@ package org.pragmatica.aether.forge.api;
 
 import org.pragmatica.lang.Option;
 
+import java.time.Duration;
 import java.util.List;
 
 /// API response records for Forge endpoints.
 /// Organized by domain for clarity and discoverability.
 public final class ForgeApiResponses {
     private ForgeApiResponses() {}
+
+    /// Format a Duration as HH:MM:SS.
+    static String formatDuration(Duration duration) {
+        var totalSeconds = duration.toSeconds();
+        var hours = totalSeconds / 3600;
+        var minutes = (totalSeconds % 3600) / 60;
+        var seconds = totalSeconds % 60;
+        return String.format("%02d:%02d:%02d", hours, minutes, seconds);
+    }
 
     // ========== Common Responses ==========
     /// Generic success response.
