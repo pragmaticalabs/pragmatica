@@ -195,11 +195,14 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - Many current infra-slices (cache, pubsub, lock, scheduler, config) transition from in-memory implementations to external resource provisioning
     - Recommended priority: HIGH (answers "what happens to my data?" and eliminates need to reimplement external systems)
 
-16. **OpenTelemetry Integration**
-    - Span export for distributed tracing across slice invocations (Jaeger/Zipkin compatible)
-    - Parent-child span hierarchy for inter-slice calls
-    - Foundation exists: request ID propagation via `ScopedValue`
-    - Recommended priority: P1 (enterprise evaluators expect trace visualization)
+16. **Built-in Request Tracing** — [RFC-0009](../../../../docs/rfc/RFC-0009-request-tracing.md)
+    - Two-tier: in-memory ring buffer (dashboard) + structured logging (persistence)
+    - Single instrumentation point at invocation boundary (DynamicAspectInterceptor pipeline)
+    - Management API: `/api/traces`, `/api/traces/{requestId}`, `/api/traces/stats`
+    - Dashboard "Requests" tab with waterfall view for multi-hop request visualization
+    - Foundation exists: request ID propagation, InvocationTimingContext, DynamicAspectInterceptor
+    - OpenTelemetry rejected: heavyweight dependency, gRPC mismatch, microservices-oriented
+    - Recommended priority: P1 (observability for development, debugging, and production)
 
 ### Hetzner Cloud
 
