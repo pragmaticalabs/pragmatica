@@ -38,3 +38,6 @@ PUBLISHING.md
 *.jdtls/
 .metadata/
 .mcp.json
+
+### H2 DB ###
+*.mv.db

@@ -38,6 +38,9 @@ document.body.addEventListener('htmx:afterSwap', function(event) {
         if (document.getElementById('history-chart')) {
             loadHistory('1h');
         }
+        if (document.getElementById('btn-rolling-restart')) {
+            syncRollingRestartState();
+        }
         startPolling();
         connectWebSocket();
     }
@@ -415,6 +418,18 @@ async function killLeader() {
 // ===============================
 // Rolling Restart
 // ===============================
+async function syncRollingRestartState() {
+    try {
+        var data = await (await fetch('/api/chaos/rolling-restart-status')).json();
+        rollingRestartActive = data.active;
+        var btn = document.getElementById('btn-rolling-restart');
+        if (btn) {
+            btn.textContent = data.active ? 'Stop Rolling Restart' : 'Rolling Restart';
+            btn.classList.toggle('btn-active', data.active);
+        }
+    } catch (e) { /* ignore */ }
+}
+
 async function toggleRollingRestart() {
     var endpoint = rollingRestartActive ? '/api/chaos/stop-rolling-restart' : '/api/chaos/start-rolling-restart';
     await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
