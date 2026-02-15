@@ -4,6 +4,7 @@ import org.pragmatica.aether.api.AlertManager;
 import org.pragmatica.aether.api.ClusterEventAggregator;
 import org.pragmatica.aether.api.ClusterEventAggregatorConfig;
 import org.pragmatica.aether.api.DynamicAspectRegistry;
+import org.pragmatica.aether.api.LogLevelRegistry;
 import org.pragmatica.aether.api.ManagementServer;
 import org.pragmatica.aether.api.DynamicConfigManager;
 import org.pragmatica.aether.config.ConfigService;
@@ -142,6 +143,9 @@ public interface AetherNode {
 
     /// Get the dynamic aspect registry for runtime-togglable logging/metrics.
     DynamicAspectRegistry dynamicAspectRegistry();
+
+    /// Get the log level registry for runtime log level management.
+    LogLevelRegistry logLevelRegistry();
 
     /// Get the dynamic config manager for runtime configuration updates.
     Option<DynamicConfigManager> dynamicConfigManager();
@@ -316,6 +320,7 @@ public interface AetherNode {
                           RollingUpdateManager rollingUpdateManager,
                           AlertManager alertManager,
                           DynamicAspectRegistry dynamicAspectRegistry,
+                          LogLevelRegistry logLevelRegistry,
                           Option<DynamicConfigManager> dynamicConfigManager,
                           AppHttpServer appHttpServer,
                           TTMManager ttmManager,
@@ -520,6 +525,8 @@ public interface AetherNode {
         var invocationMetrics = InvocationMetricsCollector.invocationMetricsCollector();
         // Create dynamic aspect registry with KV-Store persistence (needed by InvocationHandler + SliceInvoker)
         var aspectRegistry = DynamicAspectRegistry.dynamicAspectRegistry(clusterNode, kvStore);
+        // Create log level registry with KV-Store persistence
+        var logLevelRegistry = LogLevelRegistry.logLevelRegistry(clusterNode, kvStore);
         // Create shared interceptor for both InvocationHandler and SliceInvoker
         var aspectInterceptor = DynamicAspectInterceptor.dynamicAspectInterceptor(aspectRegistry::getAspectMode);
         // Create invocation handler BEFORE deployment manager (needed for slice registration)
@@ -667,6 +674,7 @@ public interface AetherNode {
                                                 invocationHandler,
                                                 alertManager,
                                                 aspectRegistry,
+                                                logLevelRegistry,
                                                 dynamicConfigManager,
                                                 ttmManager,
                                                 rabiaMetricsCollector,
@@ -747,6 +755,7 @@ public interface AetherNode {
                                   rollingUpdateManager,
                                   alertManager,
                                   aspectRegistry,
+                                  logLevelRegistry,
                                   dynamicConfigManager,
                                   appHttpServer,
                                   ttmManager,
@@ -767,6 +776,7 @@ public interface AetherNode {
                                                                                               () -> node,
                                                                                               alertManager,
                                                                                               aspectRegistry,
+                                                                                              logLevelRegistry,
                                                                                               dynamicConfigManager,
                                                                                               config.tls());
                                      return new aetherNode(config,
@@ -794,6 +804,7 @@ public interface AetherNode {
                                                            rollingUpdateManager,
                                                            alertManager,
                                                            aspectRegistry,
+                                                           logLevelRegistry,
                                                            dynamicConfigManager,
                                                            appHttpServer,
                                                            ttmManager,
@@ -824,6 +835,7 @@ public interface AetherNode {
                                                                     InvocationHandler invocationHandler,
                                                                     AlertManager alertManager,
                                                                     DynamicAspectRegistry aspectRegistry,
+                                                                    LogLevelRegistry logLevelRegistry,
                                                                     Option<DynamicConfigManager> dynamicConfigManager,
                                                                     TTMManager ttmManager,
                                                                     RabiaMetricsCollector rabiaMetricsCollector,
@@ -896,6 +908,17 @@ public interface AetherNode {
                                               filterRemove(AetherKey.class,
                                                            notification -> aspectRegistry.onKvStoreRemove(notification.cause()
                                                                                                                      .key()))));
+        // Log level sync via KV-Store
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                              filterPut(AetherKey.class,
+                                                        (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> logLevelRegistry.onKvStoreUpdate(notification.cause()
+                                                                                                                                                                            .key(),
+                                                                                                                                                                notification.cause()
+                                                                                                                                                                            .value()))));
+        entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                              filterRemove(AetherKey.class,
+                                                           notification -> logLevelRegistry.onKvStoreRemove(notification.cause()
+                                                                                                                       .key()))));
         // Dynamic config sync via KV-Store
         dynamicConfigManager.onPresent(dcm -> {
             entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,

@@ -237,6 +237,21 @@ public sealed interface AetherValue {
         }
     }
 
+    /// Log level override stored in consensus.
+    /// Stores per-logger log level overrides for runtime toggling.
+    ///
+    /// @param loggerName the logger this override applies to
+    /// @param level the log level (TRACE, DEBUG, INFO, WARN, ERROR, FATAL, OFF)
+    /// @param updatedAt timestamp of last update
+    record LogLevelValue(String loggerName,
+                         String level,
+                         long updatedAt) implements AetherValue {
+        /// Creates a new log level value with current timestamp.
+        public static LogLevelValue logLevelValue(String loggerName, String level) {
+            return new LogLevelValue(loggerName, level, System.currentTimeMillis());
+        }
+    }
+
     /// Dynamic aspect configuration stored in consensus.
     /// Stores per-method aspect mode (logging/metrics) for runtime toggling.
     ///

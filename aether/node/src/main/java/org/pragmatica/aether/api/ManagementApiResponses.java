@@ -209,6 +209,14 @@ public sealed interface ManagementApiResponses {
     record AlertsResponse(Object active,
                           Object history) {}
 
+    // ===== Log Level Routes =====
+    record LogLevelSetResponse(String status,
+                               String logger,
+                               String level) {}
+
+    record LogLevelResetResponse(String status,
+                                 String logger) {}
+
     // ===== Dynamic Aspect Routes =====
     record AspectModeSetResponse(String status,
                                  String artifact,

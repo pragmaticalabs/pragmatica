@@ -47,6 +47,7 @@
         <module>core</module>
         <module>integrations</module>
         <module>testing</module>
+        <module>test-logging</module>
         <module>jbct</module>
         <module>aether</module>
         <module>examples</module>
@@ -63,7 +64,7 @@
         <assertj-core.version>3.27.7</assertj-core.version>
         <mockito.version>5.21.0</mockito.version>
         <awaitility.version>4.3.0</awaitility.version>
-        <tinylog.version>2.7.0</tinylog.version>
+        <log4j2.version>2.24.3</log4j2.version>
         <kryo.version>5.6.2</kryo.version>
         <fury-core.version>0.10.3</fury-core.version>
         <picocli.version>4.7.6</picocli.version>
@@ -99,6 +100,11 @@
             <dependency>
                 <groupId>org.pragmatica-lite</groupId>
                 <artifactId>testing</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>test-logging</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
@@ -275,14 +281,19 @@
                 <version>${slf4j.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.tinylog</groupId>
-                <artifactId>slf4j-tinylog</artifactId>
-                <version>${tinylog.version}</version>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-core</artifactId>
+                <version>${log4j2.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.tinylog</groupId>
-                <artifactId>tinylog-impl</artifactId>
-                <version>${tinylog.version}</version>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-slf4j2-impl</artifactId>
+                <version>${log4j2.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.logging.log4j</groupId>
+                <artifactId>log4j-layout-template-json</artifactId>
+                <version>${log4j2.version}</version>
             </dependency>
 
             <!-- Testing -->

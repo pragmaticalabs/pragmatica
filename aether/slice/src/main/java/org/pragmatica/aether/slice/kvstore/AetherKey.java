@@ -387,6 +387,50 @@ public sealed interface AetherKey extends StructuredKey {
         }
     }
 
+    /// Log level key format:
+    /// ```
+    /// log-level/{loggerName}
+    /// ```
+    /// Stores runtime log level overrides per logger.
+    record LogLevelKey(String loggerName) implements AetherKey {
+        private static final String PREFIX = "log-level/";
+
+        @Override
+        public boolean matches(StructuredPattern pattern) {
+            return switch (pattern) {
+                case AetherKeyPattern.LogLevelPattern logLevelPattern -> logLevelPattern.matches(this);
+                default -> false;
+            };
+        }
+
+        @Override
+        public String asString() {
+            return PREFIX + loggerName;
+        }
+
+        @Override
+        public String toString() {
+            return asString();
+        }
+
+        public static LogLevelKey logLevelKey(String loggerName) {
+            return new LogLevelKey(loggerName);
+        }
+
+        public static Result<LogLevelKey> parseLogLevelKey(String key) {
+            if (!key.startsWith(PREFIX)) {
+                return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key)
+                                                  .result();
+            }
+            var loggerName = key.substring(PREFIX.length());
+            if (loggerName.isEmpty()) {
+                return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key)
+                                                  .result();
+            }
+            return Result.success(new LogLevelKey(loggerName));
+        }
+    }
+
     /// Dynamic aspect key format:
     /// ```
     /// dynamic-aspect/{artifactBase}/{methodName}
@@ -552,6 +596,7 @@ public sealed interface AetherKey extends StructuredKey {
     Fn1<Cause, String> PREVIOUS_VERSION_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid previous-version key format: %s");
     Fn1<Cause, String> HTTP_ROUTE_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid http-routes key format: %s");
     Fn1<Cause, String> ALERT_THRESHOLD_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid alert-threshold key format: %s");
+    Fn1<Cause, String> LOG_LEVEL_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid log-level key format: %s");
     Fn1<Cause, String> DYNAMIC_ASPECT_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid dynamic-aspect key format: %s");
     Fn1<Cause, String> CONFIG_KEY_FORMAT_ERROR = Causes.forOneValue("Invalid config key format: %s");
 
@@ -616,6 +661,13 @@ public sealed interface AetherKey extends StructuredKey {
         /// Pattern for alert-threshold keys: alert-threshold/*
         record AlertThresholdPattern() implements AetherKeyPattern {
             public boolean matches(AlertThresholdKey key) {
+                return true;
+            }
+        }
+
+        /// Pattern for log-level keys: log-level/*
+        record LogLevelPattern() implements AetherKeyPattern {
+            public boolean matches(LogLevelKey key) {
                 return true;
             }
         }

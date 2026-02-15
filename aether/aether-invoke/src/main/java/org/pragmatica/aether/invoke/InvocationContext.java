@@ -2,6 +2,7 @@ package org.pragmatica.aether.invoke;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.utility.KSUID;
+import org.slf4j.MDC;
 
 import java.util.function.Supplier;
 
@@ -36,6 +37,7 @@ import java.util.function.Supplier;
 /// }```
 public final class InvocationContext {
     private static final ScopedValue<String> REQUEST_ID = ScopedValue.newInstance();
+    private static final String MDC_KEY = "requestId";
 
     private InvocationContext() {}
 
@@ -65,8 +67,13 @@ public final class InvocationContext {
     ///
     /// @return the result of the supplier
     public static <T> T runWithRequestId(String requestId, Supplier<T> supplier) {
-        return ScopedValue.where(REQUEST_ID, requestId)
-                          .call(supplier::get);
+        MDC.put(MDC_KEY, requestId);
+        try {
+            return ScopedValue.where(REQUEST_ID, requestId)
+                              .call(supplier::get);
+        } finally {
+            MDC.remove(MDC_KEY);
+        }
     }
 
     /// Run a runnable within a request ID scope.
@@ -74,8 +81,13 @@ public final class InvocationContext {
     /// @param requestId the request ID to set for this scope
     /// @param runnable  the runnable to execute within the scope
     public static void runWithRequestId(String requestId, Runnable runnable) {
-        ScopedValue.where(REQUEST_ID, requestId)
-                   .run(runnable);
+        MDC.put(MDC_KEY, requestId);
+        try {
+            ScopedValue.where(REQUEST_ID, requestId)
+                       .run(runnable);
+        } finally {
+            MDC.remove(MDC_KEY);
+        }
     }
 
     /// Capture the current context for propagation across async boundaries.

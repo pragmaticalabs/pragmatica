@@ -378,6 +378,35 @@ aether config remove database.pool.max_size
 aether config remove server.port --node node-2
 ```
 
+#### logging
+
+Manage runtime log levels:
+
+```bash
+# List all runtime-configured log level overrides
+aether logging list
+
+# Set log level for a specific logger
+aether logging set <logger> <level>
+
+# Reset logger to configuration default
+aether logging reset <logger>
+```
+
+Available levels: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`, `OFF`
+
+Example workflow:
+```bash
+# Enable debug logging for a package
+aether logging set org.pragmatica.aether.node DEBUG
+
+# Check active overrides
+aether logging list
+
+# Reset to default
+aether logging reset org.pragmatica.aether.node
+```
+
 ### REPL Mode
 
 Start interactive mode by omitting the command:

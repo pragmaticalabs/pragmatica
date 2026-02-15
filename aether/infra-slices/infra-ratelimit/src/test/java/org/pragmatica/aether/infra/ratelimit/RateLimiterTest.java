@@ -138,7 +138,7 @@ class RateLimiterTest {
 
     @Test
     void window_resets_after_expiry() throws InterruptedException {
-        var shortConfig = RateLimitConfig.rateLimitConfig(2, timeSpan(100).millis()).unwrap();
+        var shortConfig = RateLimitConfig.rateLimitConfig(2, timeSpan(500).millis()).unwrap();
         var limiter = RateLimiter.inMemory(shortConfig);
 
         limiter.acquire("key").await();
@@ -148,7 +148,7 @@ class RateLimiterTest {
                .await()
                .onSuccess(result -> assertThat(result.allowed()).isFalse());
 
-        Thread.sleep(150);
+        Thread.sleep(600);
 
         limiter.acquire("key")
                .await()

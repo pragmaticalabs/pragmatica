@@ -62,6 +62,7 @@ import picocli.CommandLine.Parameters;
  AetherCli.AlertsCommand.class,
  AetherCli.ThresholdsCommand.class,
  AetherCli.AspectsCommand.class,
+ AetherCli.LoggingCommand.class,
  AetherCli.ConfigCommand.class})
 public class AetherCli implements Runnable {
     private static final String DEFAULT_ADDRESS = "localhost:8080";
@@ -1671,6 +1672,72 @@ public class AetherCli implements Runnable {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // ===== Logging Commands =====
+    @Command(name = "logging",
+    description = "Runtime log level management",
+    subcommands = {LoggingCommand.ListCommand.class,
+    LoggingCommand.SetCommand.class,
+    LoggingCommand.ResetCommand.class})
+    static class LoggingCommand implements Runnable {
+        @CommandLine.ParentCommand
+        private AetherCli parent;
+
+        @Override
+        public void run() {
+            var response = parent.fetchFromNode("/api/logging/levels");
+            System.out.println(formatJson(response));
+        }
+
+        @Command(name = "list", description = "List runtime-configured log levels")
+        static class ListCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private LoggingCommand loggingParent;
+
+            @Override
+            public Integer call() {
+                var response = loggingParent.parent.fetchFromNode("/api/logging/levels");
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "set", description = "Set log level for a logger")
+        static class SetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private LoggingCommand loggingParent;
+
+            @Parameters(index = "0", description = "Logger name (e.g., org.pragmatica.aether)")
+            private String logger;
+
+            @Parameters(index = "1", description = "Log level (TRACE, DEBUG, INFO, WARN, ERROR)")
+            private String level;
+
+            @Override
+            public Integer call() {
+                var body = "{\"logger\":\"" + logger + "\",\"level\":\"" + level.toUpperCase() + "\"}";
+                var response = loggingParent.parent.postToNode("/api/logging/levels", body);
+                System.out.println(formatJson(response));
+                return 0;
+            }
+        }
+
+        @Command(name = "reset", description = "Reset logger to config default")
+        static class ResetCommand implements Callable<Integer> {
+            @CommandLine.ParentCommand
+            private LoggingCommand loggingParent;
+
+            @Parameters(index = "0", description = "Logger name")
+            private String logger;
+
+            @Override
+            public Integer call() {
+                var response = loggingParent.parent.deleteFromNode("/api/logging/levels/" + logger);
+                System.out.println(formatJson(response));
+                return 0;
             }
         }
     }

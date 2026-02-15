@@ -5,6 +5,7 @@ import org.pragmatica.aether.api.routes.ConfigRoutes;
 import org.pragmatica.aether.api.routes.ControllerRoutes;
 import org.pragmatica.aether.api.routes.DashboardRoutes;
 import org.pragmatica.aether.api.routes.DynamicAspectRoutes;
+import org.pragmatica.aether.api.routes.LogLevelRoutes;
 import org.pragmatica.aether.api.routes.ManagementRouter;
 import org.pragmatica.aether.api.routes.MavenProtocolRoutes;
 import org.pragmatica.aether.api.routes.MetricsRoutes;
@@ -60,9 +61,11 @@ public interface ManagementServer {
                                              Supplier<AetherNode> nodeSupplier,
                                              AlertManager alertManager,
                                              DynamicAspectRegistry aspectManager,
+                                             LogLevelRegistry logLevelRegistry,
                                              Option<DynamicConfigManager> dynamicConfigManager,
                                              Option<TlsConfig> tls) {
-        return new ManagementServerImpl(port, nodeSupplier, alertManager, aspectManager, dynamicConfigManager, tls);
+        return new ManagementServerImpl(port, nodeSupplier, alertManager, aspectManager, logLevelRegistry,
+                                        dynamicConfigManager, tls);
     }
 }
 
@@ -75,6 +78,7 @@ class ManagementServerImpl implements ManagementServer {
     private final Supplier<AetherNode> nodeSupplier;
     private final AlertManager alertManager;
     private final DynamicAspectRegistry aspectManager;
+    private final LogLevelRegistry logLevelRegistry;
     private final DashboardMetricsPublisher metricsPublisher;
     private final StatusWebSocketHandler statusWsHandler;
     private final StatusWebSocketPublisher statusWsPublisher;
@@ -92,12 +96,14 @@ class ManagementServerImpl implements ManagementServer {
                          Supplier<AetherNode> nodeSupplier,
                          AlertManager alertManager,
                          DynamicAspectRegistry aspectManager,
+                         LogLevelRegistry logLevelRegistry,
                          Option<DynamicConfigManager> dynamicConfigManager,
                          Option<TlsConfig> tls) {
         this.port = port;
         this.nodeSupplier = nodeSupplier;
         this.alertManager = alertManager;
         this.aspectManager = aspectManager;
+        this.logLevelRegistry = logLevelRegistry;
         this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager, aspectManager);
         this.statusWsHandler = new StatusWebSocketHandler();
         this.statusWsPublisher = StatusWebSocketPublisher.statusWebSocketPublisher(
@@ -110,6 +116,7 @@ class ManagementServerImpl implements ManagementServer {
         routeSources.add(StatusRoutes.statusRoutes(nodeSupplier));
         routeSources.add(AlertRoutes.alertRoutes(alertManager));
         routeSources.add(DynamicAspectRoutes.dynamicAspectRoutes(aspectManager));
+        routeSources.add(LogLevelRoutes.logLevelRoutes(logLevelRegistry));
         routeSources.add(ControllerRoutes.controllerRoutes(nodeSupplier));
         routeSources.add(SliceRoutes.sliceRoutes(nodeSupplier));
         routeSources.add(MetricsRoutes.metricsRoutes(nodeSupplier, observability));

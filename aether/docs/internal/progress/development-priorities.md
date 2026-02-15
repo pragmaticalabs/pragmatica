@@ -37,7 +37,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 - **Zero-Loss Forwarding** - Fresh re-routing on retry, proactive disconnection detection, and backoff retry with delayed re-query for route table healing during node transitions
 - **Dynamic Aspects** - Runtime-togglable per-method LOG/METRICS/LOG_AND_METRICS modes via `DynamicAspectRegistry`, REST API (`/api/aspects`), KV-store consensus sync, and `DynamicAspectInterceptor` wired into both local and remote invocation paths
 - **Dynamic Configuration** - Runtime config updates via consensus KV store with REST API. Config overlay pattern: base config from TOML/env/system properties, overrides from KV store. Cluster-wide and per-node scoped keys. No restart required.
-- **Tinylog Test Provider** - Unified test logging across all 75 modules, eliminating SLF4J "No providers" warnings
+- **Logging Overhaul (tinylog → Log4j2)** - Production-grade structured logging: request ID auto-injected via SLF4J MDC (`[rid=%X{requestId}]`), optional JSON output via `-Dlog4j2.appender=JsonConsole`, runtime log level management via Management API (`/api/logging/levels`) with cluster-wide KV-store consensus sync, noise reduction (Fury→error, Netty→warn, H2→error), shared `test-logging` module replacing 47 per-module tinylog configs. Unblocks RFC-0009 Tier 2.
 
 ### Dashboard & Real-Time
 - **WebSocket Push** - Zero-polling dashboard via `/ws/status` with polling fallback
@@ -92,30 +92,23 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 
 ### HIGH PRIORITY - Observability & Operations
 
-1. **Logging Overhaul** ← recommended next
-   - **Structured format:** Request ID auto-injected via ScopedValue/MDC, consistent field order, optional JSON output
-   - **Level management API:** Per-package log level control via management API endpoint, runtime changes without restart
-   - **Noise audit:** Reduce verbosity where unnecessary (framework internals, H2, Netty), add missing data at invocation boundaries
-   - Prerequisite for Built-in Request Tracing (#2)
-   - **Why first:** Current logging is inconsistent — verbose in low-value paths, missing critical data at invocation boundaries. Blocks tracing Tier 2.
-
-2. **Built-in Request Tracing** — [RFC-0009](../../../../docs/rfc/RFC-0009-request-tracing.md)
+1. **Built-in Request Tracing** ← recommended next — [RFC-0009](../../../../docs/rfc/RFC-0009-request-tracing.md)
    - Two-tier: in-memory ring buffer (dashboard) + structured logging (persistence)
    - Single instrumentation point at invocation boundary (DynamicAspectInterceptor pipeline)
    - Management API: `/api/traces`, `/api/traces/{requestId}`, `/api/traces/stats`
    - Foundation exists: request ID propagation, InvocationTimingContext, DynamicAspectInterceptor
    - OpenTelemetry rejected: heavyweight dependency, gRPC mismatch, microservices-oriented
-   - Depends on: Logging Overhaul (#1) for Tier 2 structured logging
+   - Logging Overhaul complete — Tier 2 structured logging unblocked
    - Dashboard UI tracked separately in Dashboard & UI section (#7)
 
-3. **Dependency Lifecycle Management**
+2. **Dependency Lifecycle Management**
    - Block manual unload while dependents are ACTIVE
    - Graceful degradation on dependency failure (calls fail, slice handles it)
    - Dependency graph tracking in KV store
    - Clear error reporting with dependency chain visualization
    - **Why important:** Correctness gap — currently possible to break running slices by unloading dependencies.
 
-4. **Cloud Integration**
+3. **Cloud Integration**
    - Implement `NodeLifecycleManager.executeAction(NodeAction)`
    - Cloud provider adapters: Hetzner (primary), AWS, GCP, Azure
    - Execute `StartNode`, `StopNode`, `MigrateSlices` decisions from controller
@@ -131,9 +124,9 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
      - Drain connections before node removal (graceful deregistration delay)
      - TLS termination configuration (certificate ARN/ID passthrough)
    - **Partially complete:** LoadBalancerProvider SPI + Hetzner L4 done, ComputeProvider SPI + Hetzner done
-   - **Enables:** Spot Instance Support (#17), Expense Tracking (#18)
+   - **Enables:** Spot Instance Support (#16), Expense Tracking (#17)
 
-5. **Resource Provisioning & Infra Modules Overhaul**
+4. **Resource Provisioning & Infra Modules Overhaul**
    - **One unified pattern:** `@ResourceQualifier(type, config)` governs everything — injected dependencies (database, scheduler, lock, pubsub) AND behavioral wrappers (cache, rate limit, retry, log, metrics). No separate "aspect" category.
    - Annotation processor distinguishes by position: **parameter annotation** = inject resource, **method annotation** = wrap method with resource behavior. Same meta-annotation, different wiring.
    - **No configuration data in annotations** — user defines custom annotation per use case, meta-annotated with `@ResourceQualifier(type, config)`. Config lives in TOML, not Java source.
@@ -159,39 +152,39 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 
 ### HIGH PRIORITY - Dashboard & UI
 
-6. **Dynamic Aspect Dashboard UI**
+5. **Dynamic Aspect Dashboard UI**
    - Wire `DynamicAspectRegistry` data to dashboard with convenient UI for toggling per-method aspect modes
    - Backend REST API (`/api/aspects`) and KV-store sync already implemented
    - Smallest UI task — good starting point for establishing dashboard patterns
 
-7. **Request Tracing Dashboard Tab**
+6. **Request Tracing Dashboard Tab**
    - "Requests" tab: table view with timestamp, requestId, source → target.method, duration, status
    - Click-to-expand waterfall view for multi-hop request visualization
    - Filters: time range, slice, method, status (success/failure)
    - Auto-refresh via existing WebSocket push
    - See [RFC-0009](../../../../docs/rfc/RFC-0009-request-tracing.md) for full specification
-   - Depends on: Built-in Request Tracing (#2) backend
+   - Depends on: Built-in Request Tracing (#1) backend
 
-8. **Log Level Management UI**
+7. **Log Level Management UI**
    - Per-package log level controls in dashboard
    - Current effective levels display
-   - Depends on: Logging Overhaul (#1) management API
+   - Backend ready: `/api/logging/levels` endpoints implemented
 
 ### MEDIUM PRIORITY
 
-9. **DB Connector Infrastructure**
+8. **DB Connector Infrastructure**
     - Database connectivity layer for slices
     - Connection pooling and transaction management
     - Support for common databases (PostgreSQL, MySQL, etc.)
     - Modules exist: `infra-db-connector/jdbc`, `r2dbc`, `jooq`, `jooq-r2dbc`
 
-10. **Disruption Budget**
+9. **Disruption Budget**
     - Minimum healthy instances during rolling updates and node failures
     - Configurable per slice or blueprint
     - Controller respects budget before scaling down or migrating
     - Prevents cascading failures during maintenance
 
-11. **Placement Hints**
+10. **Placement Hints**
     - Affinity/anti-affinity rules for slice placement
     - Spread: distribute instances across nodes/zones
     - Co-locate: place related slices on same node
@@ -199,29 +192,29 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 
 ### LOWER PRIORITY - Security & Operations
 
-12. **TLS Certificate Management**
+11. **TLS Certificate Management**
     - Certificate provisioning and rotation
     - Mutual TLS between nodes
     - Integration with external CA or self-signed
 
-13. **Canary & Blue-Green Deployment Strategies**
+12. **Canary & Blue-Green Deployment Strategies**
     - Current: Rolling updates with weighted routing exist
     - Add explicit canary deployment with automatic rollback on error threshold
     - Add blue-green deployment with instant switchover
     - A/B testing support with traffic splitting by criteria
 
-14. **Topology in KV Store**
+13. **Topology in KV Store**
     - Leader maintains cluster topology in consensus KV store
     - Best-effort updates on membership changes
     - Enables external observability without direct node queries
 
-15. **RBAC for Management API**
+14. **RBAC for Management API**
     - Role-based access control for operations
     - Predefined roles: admin, operator, viewer
     - Per-endpoint authorization rules
     - Audit logging for sensitive operations
 
-16. **Configurable Rate Limiting per HTTP Route**
+15. **Configurable Rate Limiting per HTTP Route**
     - Per-route rate limiting configuration in blueprint or management API
     - Token bucket or sliding window algorithm
     - Configurable limits: requests/second, burst size
@@ -247,7 +240,7 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
 
 ### FUTURE
 
-17. **Spot Instance Support for Elastic Scaling**
+16. **Spot Instance Support for Elastic Scaling**
     - Cost-optimized scaling using cloud spot/preemptible instances
     - 60-90% cost savings for traffic spike handling
 
@@ -298,9 +291,9 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - Upcoming known events (prefer on-demand for releases/campaigns)
 
     **Complexity:** Low - just configuration and cloud API flag
-    **Prerequisite:** Cloud Integration (#4)
+    **Prerequisite:** Cloud Integration (#3)
 
-18. **Cluster Expense Tracking**
+17. **Cluster Expense Tracking**
     - Real-time cost visibility for cluster operations
     - Enables cost-aware scaling decisions
 
@@ -330,20 +323,20 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - TTM/LLM: cost optimization recommendations
 
     **Complexity:** Medium - cloud billing APIs have quirks, data aggregation needed
-    **Prerequisite:** Cloud Integration (#4)
+    **Prerequisite:** Cloud Integration (#3)
 
-19. **LLM Integration (Layer 3)**
+18. **LLM Integration (Layer 3)**
     - Claude/GPT API integration
     - Complex reasoning workflows
     - Multi-cloud decision support
 
-20. **Mini-Kafka (Message Streaming)**
+19. **Mini-Kafka (Message Streaming)**
     - Ordered message streaming with partitions (differs from pub/sub)
     - In-memory storage (initial implementation)
     - Consumer group coordination
     - Retention policies
 
-21. **Cross-Slice Transaction Support (2PC)**
+20. **Cross-Slice Transaction Support (2PC)**
     - Distributed transactions via Transaction aspect
     - Scope: DB transactions + internal services (pub-sub, queues, streaming)
     - NOT Saga pattern (user-unfriendly compensation design)
@@ -370,14 +363,14 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - Aether's "each call eventually succeeds, if cluster is alive" applies
     - DB failure = transaction failure (expected behavior)
 
-22. **Distributed Saga Orchestration**
+21. **Distributed Saga Orchestration**
     - Long-running transaction orchestration (saga pattern)
     - Durable state transitions with compensation on failure
     - Differs from local state machine — coordinates across multiple slices
     - Automatic retry, timeout, and dead-letter handling
     - Visualization of in-flight sagas and their states
 
-23. **Forge Script - Scenario Language**
+22. **Forge Script - Scenario Language**
     - DSL for defining load/chaos test scenarios
     - Reusable scenario libraries
     - CI/CD integration for automated testing

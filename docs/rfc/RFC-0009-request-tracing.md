@@ -561,7 +561,7 @@ if (traceLog.isInfoEnabled()) {
 }
 ```
 
-Logger name: `org.pragmatica.aether.trace`. Operators configure log level and appenders via standard tinylog/SLF4J configuration. When logging is disabled (`level = OFF`), zero overhead.
+Logger name: `org.pragmatica.aether.trace`. Operators configure log level and appenders via standard SLF4J/Log4j2 configuration. When logging is disabled (`level = OFF`), zero overhead.
 
 ### 10. Dashboard Integration
 

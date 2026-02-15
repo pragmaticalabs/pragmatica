@@ -560,6 +560,64 @@ curl -X DELETE http://localhost:8080/api/aspects/org.example:my-slice:1.0.0/proc
 
 ---
 
+## Log Level Management
+
+Runtime log level control with cluster-wide persistence via KV-Store consensus.
+
+### GET /api/logging/levels
+
+Get all runtime-configured log level overrides.
+
+**Response:**
+```json
+{
+  "org.pragmatica.aether.node": "DEBUG",
+  "org.pragmatica.consensus": "WARN"
+}
+```
+
+### POST /api/logging/levels
+
+Set log level for a specific logger. The change is persisted to the KV-Store and replicated across all cluster nodes.
+
+**Request:**
+```json
+{
+  "logger": "org.pragmatica.aether.node",
+  "level": "DEBUG"
+}
+```
+
+Available levels: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`, `OFF`
+
+**Response:**
+```json
+{
+  "status": "level_set",
+  "logger": "org.pragmatica.aether.node",
+  "level": "DEBUG"
+}
+```
+
+### DELETE /api/logging/levels/{logger}
+
+Reset a logger to its configuration default. The removal is persisted to the KV-Store and replicated across all cluster nodes.
+
+**Example:**
+```bash
+curl -X DELETE http://localhost:8080/api/logging/levels/org.pragmatica.aether.node
+```
+
+**Response:**
+```json
+{
+  "status": "level_reset",
+  "logger": "org.pragmatica.aether.node"
+}
+```
+
+---
+
 ## Dynamic Configuration
 
 Configuration overrides are persisted to the KV-Store and replicated across all cluster nodes. Overrides take precedence over base configuration from TOML/environment/system properties.
