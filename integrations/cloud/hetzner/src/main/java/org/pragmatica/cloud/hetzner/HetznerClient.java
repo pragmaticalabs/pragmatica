@@ -34,6 +34,7 @@ import org.pragmatica.cloud.hetzner.api.Server.ServerListResponse;
 import org.pragmatica.cloud.hetzner.api.Server.ServerResponse;
 import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.cloud.hetzner.api.SshKey.SshKeyListResponse;
+import org.pragmatica.cloud.hetzner.api.SshKey.SshKeyResponse;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
 import org.pragmatica.http.JdkHttpOperations;
@@ -60,6 +61,12 @@ public interface HetznerClient {
 
     /// Lists all servers.
     Promise<List<Server>> listServers();
+
+    /// Creates a new SSH key.
+    Promise<SshKey> createSshKey(SshKey.CreateSshKeyRequest request);
+
+    /// Deletes an SSH key by ID.
+    Promise<Unit> deleteSshKey(long sshKeyId);
 
     /// Lists all SSH keys.
     Promise<List<SshKey>> listSshKeys();
@@ -131,6 +138,17 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
     public Promise<List<Server>> listServers() {
         return getJson("/servers", ServerListResponse.class)
             .map(ServerListResponse::servers);
+    }
+
+    @Override
+    public Promise<SshKey> createSshKey(SshKey.CreateSshKeyRequest request) {
+        return postJson("/ssh_keys", request, SshKeyResponse.class)
+            .map(SshKeyResponse::sshKey);
+    }
+
+    @Override
+    public Promise<Unit> deleteSshKey(long sshKeyId) {
+        return delete("/ssh_keys/" + sshKeyId);
     }
 
     @Override

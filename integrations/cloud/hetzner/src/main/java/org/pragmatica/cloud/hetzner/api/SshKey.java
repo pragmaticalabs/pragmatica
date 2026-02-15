@@ -26,6 +26,17 @@ import java.util.List;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record SshKey(long id, String name, String fingerprint, @JsonProperty("public_key") String publicKey) {
 
+    /// Request to create a new SSH key.
+    public record CreateSshKeyRequest(String name, @JsonProperty("public_key") String publicKey) {
+        public static CreateSshKeyRequest createSshKeyRequest(String name, String publicKey) {
+            return new CreateSshKeyRequest(name, publicKey);
+        }
+    }
+
+    /// Wrapper for single SSH key API responses.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record SshKeyResponse(@JsonProperty("ssh_key") SshKey sshKey) {}
+
     /// Wrapper for SSH key list API responses.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record SshKeyListResponse(@JsonProperty("ssh_keys") List<SshKey> sshKeys) {}

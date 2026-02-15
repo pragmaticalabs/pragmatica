@@ -338,6 +338,16 @@ class HetznerComputeProviderTest {
         }
 
         @Override
+        public Promise<SshKey> createSshKey(SshKey.CreateSshKeyRequest request) {
+            return Promise.success(new SshKey(1, "test-key", "aa:bb:cc", "ssh-ed25519 AAAA"));
+        }
+
+        @Override
+        public Promise<Unit> deleteSshKey(long sshKeyId) {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
         public Promise<List<SshKey>> listSshKeys() {
             return Promise.success(List.of());
         }

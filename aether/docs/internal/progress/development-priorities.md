@@ -201,6 +201,21 @@ Release 0.16.0 continues production hardening with bug fixes and documentation u
     - Foundation exists: request ID propagation via `ScopedValue`
     - Recommended priority: P1 (enterprise evaluators expect trace visualization)
 
+### Hetzner Cloud
+
+**Testing (near-term):**
+- Load balancer test — create LB, add servers as targets, verify traffic distribution
+- Node failure + re-election — kill servers, verify quorum maintained and new leader elected
+- Network partition — manipulate Hetzner firewall rules to block traffic between nodes
+- Slice deployment — deploy echo-slice via management API, verify ACTIVE on all nodes
+- Pre-baked snapshots — Hetzner image with Java + JAR for instant boot (~30s vs ~3min)
+
+**Production (longer-term):**
+- Multi-region cluster — nodes in fsn1 + nbg1 + hel1, test consensus over higher-latency links
+- Cloud-native discovery — Hetzner label-based peer discovery (eliminates static peer list)
+- Disaster recovery — terminate majority, bring up replacements, verify state recovery via Rabia sync
+- Cost tracking — timestamps + actual cost per test run as test metric
+
 ### FUTURE
 
 17. **LLM Integration (Layer 3)**

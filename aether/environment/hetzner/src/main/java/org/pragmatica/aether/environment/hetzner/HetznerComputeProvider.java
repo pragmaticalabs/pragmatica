@@ -66,7 +66,7 @@ public record HetznerComputeProvider(HetznerClient client,
         return CreateServerRequest.createServerRequest(
             name, config.serverType(), config.image(),
             config.sshKeyIds(), config.networkIds(), config.firewallIds(),
-            config.userData(), true);
+            config.region(), config.userData(), true);
     }
 
     // --- Leaf: parse server ID from instance ID ---

@@ -570,6 +570,12 @@
             </modules>
         </profile>
         <profile>
+            <id>with-cloud-tests</id>
+            <modules>
+                <module>cloud-tests</module>
+            </modules>
+        </profile>
+        <profile>
             <id>release</id>
             <activation>
                 <property>

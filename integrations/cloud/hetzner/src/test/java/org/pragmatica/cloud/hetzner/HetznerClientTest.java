@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer;
 import org.pragmatica.cloud.hetzner.api.Server;
 import org.pragmatica.cloud.hetzner.api.Server.CreateServerRequest;
+import org.pragmatica.cloud.hetzner.api.SshKey;
 import org.pragmatica.lang.Cause;
 import org.pragmatica.http.HttpOperations;
 import org.pragmatica.http.HttpResult;
@@ -62,7 +63,7 @@ class HetznerClientTest {
 
             client.createServer(CreateServerRequest.createServerRequest(
                     "my-server", "cx11", "ubuntu-22.04",
-                    List.of(1L), List.of(10L), List.of(5L), "", true))
+                    List.of(1L), List.of(10L), List.of(5L), "fsn1", "", true))
                   .await()
                   .onFailure(cause -> assertThat(cause).isNull())
                   .onSuccess(HetznerClientTest::assertCreatedServer);
@@ -173,6 +174,37 @@ class HetznerClientTest {
         }
     }
 
+    @Nested
+    class SshKeyOperations {
+
+        @Test
+        void createSshKey_success_parsesResponse() {
+            testHttp.respondWith(201, CREATE_SSH_KEY_RESPONSE);
+
+            client.createSshKey(SshKey.CreateSshKeyRequest.createSshKeyRequest("my-key", "ssh-ed25519 AAAA..."))
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(HetznerClientTest::assertCreatedSshKey);
+
+            assertThat(capturedRequest.get().method()).isEqualTo("POST");
+            assertThat(capturedRequest.get().uri().toString()).isEqualTo(BASE_URL + "/ssh_keys");
+            assertAuthorizationHeader();
+        }
+
+        @Test
+        void deleteSshKey_success_returnsUnit() {
+            testHttp.respondWith(200, DELETE_ACTION_RESPONSE);
+
+            client.deleteSshKey(99)
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isNotNull());
+
+            assertThat(capturedRequest.get().method()).isEqualTo("DELETE");
+            assertThat(capturedRequest.get().uri().toString()).isEqualTo(BASE_URL + "/ssh_keys/99");
+        }
+    }
+
     // --- Assertion helpers ---
 
     private static void assertCreatedServer(Server server) {
@@ -208,6 +240,12 @@ class HetznerClientTest {
         assertThat(cause).isInstanceOf(HetznerError.ApiError.class);
         var apiError = (HetznerError.ApiError) cause;
         assertThat(apiError.statusCode()).isEqualTo(500);
+    }
+
+    private static void assertCreatedSshKey(SshKey key) {
+        assertThat(key.id()).isEqualTo(2323);
+        assertThat(key.name()).isEqualTo("my-key");
+        assertThat(key.fingerprint()).isEqualTo("b7:2f:30:a0:2f:6c:58:6c:21:04:58:61:ba:06:3b:2f");
     }
 
     private static void assertSingleLoadBalancerList(List<LoadBalancer> lbs) {
@@ -330,6 +368,17 @@ class HetznerClientTest {
               "targets": []
             }
           ]
+        }
+        """;
+
+    private static final String CREATE_SSH_KEY_RESPONSE = """
+        {
+          "ssh_key": {
+            "id": 2323,
+            "name": "my-key",
+            "fingerprint": "b7:2f:30:a0:2f:6c:58:6c:21:04:58:61:ba:06:3b:2f",
+            "public_key": "ssh-ed25519 AAAA..."
+          }
         }
         """;
 

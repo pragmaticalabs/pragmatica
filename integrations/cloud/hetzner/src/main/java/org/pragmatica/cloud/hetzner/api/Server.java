@@ -63,6 +63,7 @@ public record Server(long id,
                                       @JsonProperty("ssh_keys") List<Long> sshKeys,
                                       List<Long> networks,
                                       List<FirewallRef> firewalls,
+                                      String location,
                                       @JsonProperty("user_data") String userData,
                                       @JsonProperty("start_after_create") boolean startAfterCreate) {
 
@@ -76,11 +77,12 @@ public record Server(long id,
                                                               List<Long> sshKeys,
                                                               List<Long> networks,
                                                               List<Long> firewalls,
+                                                              String location,
                                                               String userData,
                                                               boolean startAfterCreate) {
             return new CreateServerRequest(name, serverType, image, sshKeys, networks,
                                            firewalls.stream().map(FirewallRef::new).toList(),
-                                           userData, startAfterCreate);
+                                           location, userData, startAfterCreate);
         }
     }
 
