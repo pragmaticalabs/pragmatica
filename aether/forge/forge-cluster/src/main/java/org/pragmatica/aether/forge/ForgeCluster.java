@@ -6,7 +6,11 @@ import org.pragmatica.aether.node.AetherNode;
 import org.pragmatica.aether.node.AetherNodeConfig;
 import org.pragmatica.aether.environment.AutoHealConfig;
 import org.pragmatica.aether.environment.ComputeProvider;
+import org.pragmatica.aether.environment.EnvironmentError;
 import org.pragmatica.aether.environment.EnvironmentIntegration;
+import org.pragmatica.aether.environment.InstanceId;
+import org.pragmatica.aether.environment.InstanceInfo;
+import org.pragmatica.aether.environment.InstanceStatus;
 import org.pragmatica.aether.environment.InstanceType;
 import org.pragmatica.aether.slice.SliceState;
 import org.pragmatica.consensus.NodeId;
@@ -95,8 +99,39 @@ public final class ForgeCluster {
     /// ComputeProvider implementation that provisions nodes via ForgeCluster.addNode().
     private final class ForgeComputeProvider implements ComputeProvider {
         @Override
-        public Promise<Unit> provision(InstanceType instanceType) {
-            return addNode().mapToUnit();
+        public Promise<InstanceInfo> provision(InstanceType instanceType) {
+            return addNode().map(nodeId -> toInstanceInfo(nodeId.id()));
+        }
+
+        @Override
+        public Promise<Unit> terminate(InstanceId instanceId) {
+            return killNode(instanceId.value());
+        }
+
+        @Override
+        public Promise<List<InstanceInfo>> listInstances() {
+            var infos = nodes.keySet()
+                             .stream()
+                             .map(this::toInstanceInfo)
+                             .toList();
+            return Promise.success(infos);
+        }
+
+        @Override
+        public Promise<InstanceInfo> instanceStatus(InstanceId instanceId) {
+            return Option.option(nodes.get(instanceId.value()))
+                         .map(_ -> toInstanceInfo(instanceId.value()))
+                         .async(EnvironmentError.instanceNotFound(instanceId));
+        }
+
+        private InstanceInfo toInstanceInfo(String nodeIdStr) {
+            var addresses = Option.option(nodeInfos.get(nodeIdStr))
+                                  .map(info -> List.of("localhost:" + info.address().port()))
+                                  .or(List.of());
+            return InstanceInfo.instanceInfo(InstanceId.instanceId(nodeIdStr),
+                                             InstanceStatus.RUNNING,
+                                             addresses,
+                                             InstanceType.ON_DEMAND);
         }
     }
 

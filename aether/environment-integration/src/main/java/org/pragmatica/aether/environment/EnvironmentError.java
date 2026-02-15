@@ -11,6 +11,27 @@ public sealed interface EnvironmentError extends Cause {
         }
     }
 
+    record TerminateFailed(InstanceId instanceId, Throwable cause) implements EnvironmentError {
+        @Override
+        public String message() {
+            return "Instance termination failed for '" + instanceId.value() + "': " + cause.getMessage();
+        }
+    }
+
+    record InstanceNotFound(InstanceId instanceId) implements EnvironmentError {
+        @Override
+        public String message() {
+            return "Instance not found: " + instanceId.value();
+        }
+    }
+
+    record ListInstancesFailed(Throwable cause) implements EnvironmentError {
+        @Override
+        public String message() {
+            return "Failed to list instances: " + cause.getMessage();
+        }
+    }
+
     record SecretResolutionFailed(String path, Throwable cause) implements EnvironmentError {
         @Override
         public String message() {
@@ -20,6 +41,18 @@ public sealed interface EnvironmentError extends Cause {
 
     static EnvironmentError provisionFailed(Throwable cause) {
         return new ProvisionFailed(cause);
+    }
+
+    static EnvironmentError terminateFailed(InstanceId instanceId, Throwable cause) {
+        return new TerminateFailed(instanceId, cause);
+    }
+
+    static EnvironmentError instanceNotFound(InstanceId instanceId) {
+        return new InstanceNotFound(instanceId);
+    }
+
+    static EnvironmentError listInstancesFailed(Throwable cause) {
+        return new ListInstancesFailed(cause);
     }
 
     static EnvironmentError secretResolutionFailed(String path, Throwable cause) {

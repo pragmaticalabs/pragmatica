@@ -644,9 +644,33 @@ class ClusterDeploymentManagerTest {
         }
 
         @Override
-        public Promise<Unit> provision(org.pragmatica.aether.environment.InstanceType instanceType) {
-            provisionCount.incrementAndGet();
+        public Promise<org.pragmatica.aether.environment.InstanceInfo> provision(org.pragmatica.aether.environment.InstanceType instanceType) {
+            var id = org.pragmatica.aether.environment.InstanceId.instanceId("test-" + provisionCount.incrementAndGet());
+            var info = org.pragmatica.aether.environment.InstanceInfo.instanceInfo(
+                id,
+                org.pragmatica.aether.environment.InstanceStatus.RUNNING,
+                List.of("localhost:9999"),
+                instanceType);
+            return Promise.success(info);
+        }
+
+        @Override
+        public Promise<Unit> terminate(org.pragmatica.aether.environment.InstanceId instanceId) {
             return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<List<org.pragmatica.aether.environment.InstanceInfo>> listInstances() {
+            return Promise.success(List.of());
+        }
+
+        @Override
+        public Promise<org.pragmatica.aether.environment.InstanceInfo> instanceStatus(org.pragmatica.aether.environment.InstanceId instanceId) {
+            return Promise.success(org.pragmatica.aether.environment.InstanceInfo.instanceInfo(
+                instanceId,
+                org.pragmatica.aether.environment.InstanceStatus.RUNNING,
+                List.of("localhost:9999"),
+                org.pragmatica.aether.environment.InstanceType.ON_DEMAND));
         }
     }
 

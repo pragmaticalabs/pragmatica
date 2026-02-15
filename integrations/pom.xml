@@ -28,5 +28,6 @@
         <module>config</module>
         <module>http-routing</module>
         <module>cluster</module>
+        <module>cloud</module>
     </modules>
 </project>

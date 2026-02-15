@@ -198,6 +198,11 @@
                 <artifactId>cluster</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>hetzner</artifactId>
+                <version>${project.version}</version>
+            </dependency>
 
             <!-- JBCT modules -->
             <dependency>
@@ -245,6 +250,16 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>http-routing-adapter</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-integration</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-hetzner</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

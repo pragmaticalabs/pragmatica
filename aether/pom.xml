@@ -50,6 +50,7 @@
         <module>dashboard</module>
         <module>slice-api</module>
         <module>environment-integration</module>
+        <module>environment</module>
         <module>infra-api</module>
         <module>infra-slices</module>
         <module>slice</module>
@@ -182,6 +183,16 @@
             <dependency>
                 <groupId>org.pragmatica-lite.aether</groupId>
                 <artifactId>environment-integration</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite.aether</groupId>
+                <artifactId>environment-hetzner</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.pragmatica-lite</groupId>
+                <artifactId>hetzner</artifactId>
                 <version>${project.version}</version>
             </dependency>
 
