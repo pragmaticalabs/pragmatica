@@ -79,6 +79,20 @@
         <jbct.skip>false</jbct.skip>
     </properties>
 
+    <dependencies>
+        <!-- Logging provider for tests — inherited by all aether child modules -->
+        <dependency>
+            <groupId>org.tinylog</groupId>
+            <artifactId>slf4j-tinylog</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.tinylog</groupId>
+            <artifactId>tinylog-impl</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
     <dependencyManagement>
         <dependencies>
             <dependency>
