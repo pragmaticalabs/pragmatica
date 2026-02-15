@@ -37,7 +37,11 @@ public record LoadBalancer(long id, String name, @JsonProperty("load_balancer_ty
 
     /// Load balancer target.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Target(String type, TargetServer server) {}
+    public record Target(String type, TargetServer server, @JsonProperty("ip") TargetIp ip) {}
+
+    /// IP reference within a target.
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public record TargetIp(String ip) {}
 
     /// Server reference within a target.
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -81,6 +85,18 @@ public record LoadBalancer(long id, String name, @JsonProperty("load_balancer_ty
         /// Factory method for a server target action.
         public static TargetActionRequest serverTarget(long serverId) {
             return new TargetActionRequest("server", new TargetServer(serverId));
+        }
+    }
+
+    /// Request to add/remove an IP target.
+    public record IpTargetActionRequest(String type, Ip ip) {
+
+        /// IP address within an IP target request.
+        public record Ip(String ip) {}
+
+        /// Factory method for an IP target action.
+        public static IpTargetActionRequest ipTarget(String ipAddress) {
+            return new IpTargetActionRequest("ip", new Ip(ipAddress));
         }
     }
 

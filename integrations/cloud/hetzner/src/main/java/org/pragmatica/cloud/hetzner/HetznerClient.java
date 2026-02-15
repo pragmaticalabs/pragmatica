@@ -24,6 +24,7 @@ import org.pragmatica.cloud.hetzner.api.LoadBalancer;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer.CreateLoadBalancerRequest;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer.LoadBalancerListResponse;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer.LoadBalancerResponse;
+import org.pragmatica.cloud.hetzner.api.LoadBalancer.IpTargetActionRequest;
 import org.pragmatica.cloud.hetzner.api.LoadBalancer.TargetActionRequest;
 import org.pragmatica.cloud.hetzner.api.Network;
 import org.pragmatica.cloud.hetzner.api.Network.NetworkListResponse;
@@ -97,6 +98,15 @@ public interface HetznerClient {
 
     /// Removes a server target from a load balancer.
     Promise<Unit> removeTarget(long loadBalancerId, long serverId);
+
+    /// Adds an IP target to a load balancer.
+    Promise<Unit> addIpTarget(long loadBalancerId, String ip);
+
+    /// Removes an IP target from a load balancer.
+    Promise<Unit> removeIpTarget(long loadBalancerId, String ip);
+
+    /// Gets a load balancer by ID.
+    Promise<LoadBalancer> getLoadBalancer(long loadBalancerId);
 
     /// Creates a HetznerClient with default HTTP operations.
     static HetznerClient hetznerClient(HetznerConfig config) {
@@ -208,6 +218,24 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
     public Promise<Unit> removeTarget(long loadBalancerId, long serverId) {
         return postJsonDiscarding("/load_balancers/" + loadBalancerId + "/actions/remove_target",
                                   TargetActionRequest.serverTarget(serverId));
+    }
+
+    @Override
+    public Promise<Unit> addIpTarget(long loadBalancerId, String ip) {
+        return postJsonDiscarding("/load_balancers/" + loadBalancerId + "/actions/add_target",
+                                  IpTargetActionRequest.ipTarget(ip));
+    }
+
+    @Override
+    public Promise<Unit> removeIpTarget(long loadBalancerId, String ip) {
+        return postJsonDiscarding("/load_balancers/" + loadBalancerId + "/actions/remove_target",
+                                  IpTargetActionRequest.ipTarget(ip));
+    }
+
+    @Override
+    public Promise<LoadBalancer> getLoadBalancer(long loadBalancerId) {
+        return getJson("/load_balancers/" + loadBalancerId, LoadBalancerResponse.class)
+            .map(LoadBalancerResponse::loadBalancer);
     }
 
     // --- Internal HTTP helpers ---

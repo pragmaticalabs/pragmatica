@@ -172,6 +172,48 @@ class HetznerClientTest {
             assertThat(capturedRequest.get().uri().toString())
                 .isEqualTo(BASE_URL + "/load_balancers/100/actions/add_target");
         }
+
+        @Test
+        void addIpTarget_success_returnsUnit() {
+            testHttp.respondWith(201, ADD_TARGET_RESPONSE);
+
+            client.addIpTarget(100, "10.0.0.1")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isNotNull());
+
+            assertThat(capturedRequest.get().method()).isEqualTo("POST");
+            assertThat(capturedRequest.get().uri().toString())
+                .isEqualTo(BASE_URL + "/load_balancers/100/actions/add_target");
+        }
+
+        @Test
+        void removeIpTarget_success_returnsUnit() {
+            testHttp.respondWith(201, ADD_TARGET_RESPONSE);
+
+            client.removeIpTarget(100, "10.0.0.1")
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(unit -> assertThat(unit).isNotNull());
+
+            assertThat(capturedRequest.get().method()).isEqualTo("POST");
+            assertThat(capturedRequest.get().uri().toString())
+                .isEqualTo(BASE_URL + "/load_balancers/100/actions/remove_target");
+        }
+
+        @Test
+        void getLoadBalancer_success_parsesResponse() {
+            testHttp.respondWith(200, GET_LOAD_BALANCER_RESPONSE);
+
+            client.getLoadBalancer(100)
+                  .await()
+                  .onFailure(cause -> assertThat(cause).isNull())
+                  .onSuccess(HetznerClientTest::assertLoadBalancerWithIpTarget);
+
+            assertThat(capturedRequest.get().method()).isEqualTo("GET");
+            assertThat(capturedRequest.get().uri().toString())
+                .isEqualTo(BASE_URL + "/load_balancers/100");
+        }
     }
 
     @Nested
@@ -252,6 +294,14 @@ class HetznerClientTest {
         assertThat(lbs).hasSize(1);
         assertThat(lbs.getFirst().id()).isEqualTo(100);
         assertThat(lbs.getFirst().name()).isEqualTo("my-lb");
+    }
+
+    private static void assertLoadBalancerWithIpTarget(LoadBalancer lb) {
+        assertThat(lb.id()).isEqualTo(100);
+        assertThat(lb.name()).isEqualTo("my-lb");
+        assertThat(lb.targets()).hasSize(1);
+        assertThat(lb.targets().getFirst().type()).isEqualTo("ip");
+        assertThat(lb.targets().getFirst().ip().ip()).isEqualTo("10.0.0.1");
     }
 
     private void assertAuthorizationHeader() {
@@ -378,6 +428,23 @@ class HetznerClientTest {
             "name": "my-key",
             "fingerprint": "b7:2f:30:a0:2f:6c:58:6c:21:04:58:61:ba:06:3b:2f",
             "public_key": "ssh-ed25519 AAAA..."
+          }
+        }
+        """;
+
+    private static final String GET_LOAD_BALANCER_RESPONSE = """
+        {
+          "load_balancer": {
+            "id": 100,
+            "name": "my-lb",
+            "load_balancer_type": {"id": 1, "name": "lb11", "description": "LB11"},
+            "algorithm": {"type": "round_robin"},
+            "targets": [
+              {
+                "type": "ip",
+                "ip": {"ip": "10.0.0.1"}
+              }
+            ]
           }
         }
         """;

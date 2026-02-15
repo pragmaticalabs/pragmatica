@@ -17,6 +17,7 @@ import org.pragmatica.aether.controller.RollbackManager;
 import org.pragmatica.aether.deployment.DeploymentMap;
 import org.pragmatica.aether.deployment.cluster.BlueprintService;
 import org.pragmatica.aether.deployment.cluster.ClusterDeploymentManager;
+import org.pragmatica.aether.deployment.loadbalancer.LoadBalancerManager;
 import org.pragmatica.aether.deployment.node.NodeDeploymentManager;
 import org.pragmatica.aether.endpoint.EndpointRegistry;
 import org.pragmatica.aether.http.AppHttpServer;
@@ -550,6 +551,11 @@ public interface AetherNode {
                                                                                          clusterNode.topologyManager(),
                                                                                          config.environment().flatMap(EnvironmentIntegration::compute),
                                                                                          config.autoHeal());
+        // Create load balancer manager when provider is available
+        var loadBalancerManager = config.environment()
+            .flatMap(EnvironmentIntegration::loadBalancer)
+            .map(provider -> LoadBalancerManager.loadBalancerManager(
+                config.self(), kvStore, clusterNode.topologyManager(), provider, config.appHttp().port()));
         // Create endpoint registry
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         // Create HTTP route registry for application HTTP routing
@@ -670,7 +676,8 @@ public interface AetherNode {
                                                 deploymentMap,
                                                 eventAggregator,
                                                 clusterNode.leaderManager(),
-                                                appHttpServer);
+                                                appHttpServer,
+                                                loadBalancerManager);
         // DHT message routes for distributed operations
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
                                                      request -> dhtNode.handleGetRequest(request,
@@ -826,7 +833,8 @@ public interface AetherNode {
                                                                     DeploymentMap deploymentMap,
                                                                     ClusterEventAggregator eventAggregator,
                                                                     LeaderManager leaderManager,
-                                                                    AppHttpServer appHttpServer) {
+                                                                    AppHttpServer appHttpServer,
+                                                                    Option<LoadBalancerManager> loadBalancerManager) {
         var entries = new ArrayList<MessageRouter.Entry<?>>();
         // KVStore notifications - ORDER MATTERS!
         // EndpointRegistry MUST process before ClusterDeploymentManager so endpoints
@@ -1014,6 +1022,17 @@ public interface AetherNode {
         // Leader election commit listener - notifies LeaderManager when leader is committed through consensus
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               notification -> handleLeaderCommit(notification, leaderManager)));
+        // Load balancer manager routes
+        loadBalancerManager.onPresent(lbm -> {
+            entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, lbm::onLeaderChange));
+            entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                  filterPut(AetherKey.class, lbm::onValuePut)));
+            entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                                  filterRemove(AetherKey.class, lbm::onValueRemove)));
+            entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, lbm::onTopologyChange));
+            entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class, lbm::onTopologyChange));
+            entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, lbm::onTopologyChange));
+        });
         return entries;
     }
 

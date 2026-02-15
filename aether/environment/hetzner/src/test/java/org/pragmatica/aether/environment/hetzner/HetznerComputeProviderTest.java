@@ -399,5 +399,23 @@ class HetznerComputeProviderTest {
         public Promise<Unit> removeTarget(long loadBalancerId, long serverId) {
             return Promise.success(Unit.unit());
         }
+
+        @Override
+        public Promise<Unit> addIpTarget(long loadBalancerId, String ip) {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<Unit> removeIpTarget(long loadBalancerId, String ip) {
+            return Promise.success(Unit.unit());
+        }
+
+        @Override
+        public Promise<LoadBalancer> getLoadBalancer(long loadBalancerId) {
+            return Promise.success(new LoadBalancer(loadBalancerId, "test-lb",
+                                                    new LoadBalancer.LbType(1, "lb11", "LB11"),
+                                                    new LoadBalancer.Algorithm("round_robin"),
+                                                    List.of()));
+        }
     }
 }

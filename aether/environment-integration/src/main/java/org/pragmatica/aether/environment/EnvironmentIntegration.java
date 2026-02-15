@@ -19,17 +19,21 @@ public interface EnvironmentIntegration {
 
     Option<SecretsProvider> secrets();
 
+    Option<LoadBalancerProvider> loadBalancer();
+
     /// Create an EnvironmentIntegration with compute support only.
     static EnvironmentIntegration withCompute(ComputeProvider compute) {
-        return environmentIntegration(Option.some(compute), Option.empty());
+        return environmentIntegration(Option.some(compute), Option.empty(), Option.empty());
     }
 
     /// Create an EnvironmentIntegration with all specified facets.
     static EnvironmentIntegration environmentIntegration(Option<ComputeProvider> compute,
-                                                         Option<SecretsProvider> secrets) {
+                                                         Option<SecretsProvider> secrets,
+                                                         Option<LoadBalancerProvider> loadBalancer) {
         record facetedEnvironment(Option<ComputeProvider> compute,
-                                  Option<SecretsProvider> secrets) implements EnvironmentIntegration {}
+                                  Option<SecretsProvider> secrets,
+                                  Option<LoadBalancerProvider> loadBalancer) implements EnvironmentIntegration {}
 
-        return new facetedEnvironment(compute, secrets);
+        return new facetedEnvironment(compute, secrets, loadBalancer);
     }
 }
