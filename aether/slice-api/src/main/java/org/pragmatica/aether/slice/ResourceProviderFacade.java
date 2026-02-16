@@ -13,7 +13,6 @@ import org.pragmatica.lang.Promise;
 /// ctx.resources().provide(DatabaseConnector.class, "database.primary")
 /// }```
 public interface ResourceProviderFacade {
-
     /// Provide a resource instance for the given type and configuration section.
     ///
     /// @param resourceType  The resource interface class

@@ -37,7 +37,8 @@ public sealed interface InfraSliceError extends Cause {
 
         @Override
         public String message() {
-            return "Retry failed: " + detail + cause.map(c -> " - " + c.getMessage()).or("");
+            return "Retry failed: " + detail + cause.map(c -> " - " + c.getMessage())
+                                                   .or("");
         }
     }
 
@@ -52,7 +53,8 @@ public sealed interface InfraSliceError extends Cause {
 
         @Override
         public String message() {
-            return "Circuit breaker tripped: " + detail + cause.map(c -> " - " + c.getMessage()).or("");
+            return "Circuit breaker tripped: " + detail + cause.map(c -> " - " + c.getMessage())
+                                                              .or("");
         }
     }
 }

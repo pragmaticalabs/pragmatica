@@ -12,7 +12,6 @@ import java.util.Map;
 /// in priority order (sources should be pre-sorted, highest priority first).
 /// Later sources override earlier sources for the same keys.
 public sealed interface DeepMerger {
-
     /// Merge multiple configuration sources into a single flat map.
     ///
     /// Sources should be sorted by priority (highest first).
@@ -22,13 +21,11 @@ public sealed interface DeepMerger {
     /// @return Merged map of all key-value pairs
     static Map<String, String> mergeSources(List<ConfigSource> sources) {
         var result = new LinkedHashMap<String, String>();
-
         // Process in reverse order so highest priority wins
         for (int i = sources.size() - 1; i >= 0; i--) {
             var source = sources.get(i);
             result.putAll(source.asMap());
         }
-
         return Map.copyOf(result);
     }
 
@@ -56,25 +53,19 @@ public sealed interface DeepMerger {
     @SuppressWarnings("unchecked")
     static Map<String, Object> deepMerge(Map<String, Object> base, Map<String, Object> override) {
         var result = new LinkedHashMap<>(base);
-
         for (var entry : override.entrySet()) {
             var key = entry.getKey();
             var overrideValue = entry.getValue();
             var baseValue = result.get(key);
-
             if (isNestedMap(baseValue) && isNestedMap(overrideValue)) {
                 // Recursively merge nested maps
-                var mergedNested = deepMerge(
-                    (Map<String, Object>) baseValue,
-                    (Map<String, Object>) overrideValue
-                );
+                var mergedNested = deepMerge((Map<String, Object>) baseValue, (Map<String, Object>) overrideValue);
                 result.put(key, mergedNested);
             } else {
                 // Override value replaces base
                 result.put(key, overrideValue);
             }
         }
-
         return result;
     }
 
@@ -88,20 +79,17 @@ public sealed interface DeepMerger {
     @SuppressWarnings("unchecked")
     static Map<String, Object> toHierarchical(Map<String, String> flat) {
         var result = new LinkedHashMap<String, Object>();
-
         for (var entry : flat.entrySet()) {
-            var keyPath = entry.getKey().split("\\.");
+            var keyPath = entry.getKey()
+                               .split("\\.");
             Map<String, Object> current = result;
-
             for (int i = 0; i < keyPath.length - 1; i++) {
                 var segment = keyPath[i];
                 var nested = current.computeIfAbsent(segment, _ -> new LinkedHashMap<String, Object>());
                 current = (Map<String, Object>) nested;
             }
-
             current.put(keyPath[keyPath.length - 1], entry.getValue());
         }
-
         return result;
     }
 
@@ -121,9 +109,10 @@ public sealed interface DeepMerger {
     @SuppressWarnings("unchecked")
     private static void flattenRecursive(String prefix, Map<String, Object> map, Map<String, String> result) {
         for (var entry : map.entrySet()) {
-            var key = prefix.isEmpty() ? entry.getKey() : prefix + "." + entry.getKey();
+            var key = prefix.isEmpty()
+                      ? entry.getKey()
+                      : prefix + "." + entry.getKey();
             var value = entry.getValue();
-
             if (isNestedMap(value)) {
                 flattenRecursive(key, (Map<String, Object>) value, result);
             } else {

@@ -44,102 +44,99 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
 
     @Override
     public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-        return Promise.lift(
-            e -> mapException(e, sql),
-            () -> executeQuery(sql, params, rs -> {
-                if (!rs.next()) {
-                    throw new NoResultException("Query returned no results");
-                }
-                var accessor = new JdbcRowAccessor(rs);
-                var result = mapper.map(accessor);
-                if (rs.next()) {
-                    throw new MultipleResultsException("Query returned multiple results", countRemaining(rs) + 2);
-                }
-                return result.unwrap();
-            })
-        );
+        return Promise.lift(e -> mapException(e, sql),
+                            () -> executeQuery(sql,
+                                               params,
+                                               rs -> {
+                                                   if (!rs.next()) {
+                                                       throw new NoResultException("Query returned no results");
+                                                   }
+                                                   var accessor = new JdbcRowAccessor(rs);
+                                                   var result = mapper.map(accessor);
+                                                   if (rs.next()) {
+                                                       throw new MultipleResultsException("Query returned multiple results",
+                                                                                          countRemaining(rs) + 2);
+                                                   }
+                                                   return result.unwrap();
+                                               }));
     }
 
     @Override
     public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
-        return Promise.lift(
-            e -> mapException(e, sql),
-            () -> executeQuery(sql, params, rs -> {
-                if (!rs.next()) {
-                    return Option.none();
-                }
-                var accessor = new JdbcRowAccessor(rs);
-                return mapper.map(accessor).map(Option::some).or(Option::none);
-            })
-        );
+        return Promise.lift(e -> mapException(e, sql),
+                            () -> executeQuery(sql,
+                                               params,
+                                               rs -> {
+                                                   if (!rs.next()) {
+                                                       return Option.none();
+                                                   }
+                                                   var accessor = new JdbcRowAccessor(rs);
+                                                   return mapper.map(accessor)
+                                                                .map(Option::some)
+                                                                .or(Option::none);
+                                               }));
     }
 
     @Override
     public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
-        return Promise.lift(
-            e -> mapException(e, sql),
-            () -> executeQuery(sql, params, rs -> {
-                var results = new ArrayList<T>();
-                var accessor = new JdbcRowAccessor(rs);
-                while (rs.next()) {
-                    mapper.map(accessor).onSuccess(results::add);
-                }
-                return results;
-            })
-        );
+        return Promise.lift(e -> mapException(e, sql),
+                            () -> executeQuery(sql,
+                                               params,
+                                               rs -> {
+                                                   var results = new ArrayList<T>();
+                                                   var accessor = new JdbcRowAccessor(rs);
+                                                   while (rs.next()) {
+                                                       mapper.map(accessor)
+                                                             .onSuccess(results::add);
+                                                   }
+                                                   return results;
+                                               }));
     }
 
     @Override
     public Promise<Integer> update(String sql, Object... params) {
-        return Promise.lift(
-            e -> mapException(e, sql),
-            () -> {
-                try (var conn = dataSource.getConnection();
-                     var stmt = prepareStatement(conn, sql, params)) {
-                    return stmt.executeUpdate();
-                }
-            }
-        );
+        return Promise.lift(e -> mapException(e, sql),
+                            () -> {
+                                try (var conn = dataSource.getConnection();
+                                     var stmt = prepareStatement(conn, sql, params)) {
+                                    return stmt.executeUpdate();
+                                }
+                            });
     }
 
     @Override
     public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
-        return Promise.lift(
-            e -> mapException(e, sql),
-            () -> {
-                try (var conn = dataSource.getConnection();
-                     var stmt = conn.prepareStatement(sql)) {
-                    for (var params : paramsList) {
-                        setParameters(stmt, params);
-                        stmt.addBatch();
-                    }
-                    return stmt.executeBatch();
-                }
-            }
-        );
+        return Promise.lift(e -> mapException(e, sql),
+                            () -> {
+                                try (var conn = dataSource.getConnection();
+                                     var stmt = conn.prepareStatement(sql)) {
+                                    for (var params : paramsList) {
+                                        setParameters(stmt, params);
+                                        stmt.addBatch();
+                                    }
+                                    return stmt.executeBatch();
+                                }
+                            });
     }
 
     @Override
     public <T> Promise<T> transactional(TransactionCallback<T> callback) {
-        return Promise.lift(
-            DatabaseConnectorError::databaseFailure,
-            () -> {
-                try (var conn = dataSource.getConnection()) {
-                    conn.setAutoCommit(false);
-                    try {
-                        var transactionalConnector = new TransactionalJdbcConnector(config, conn);
-                        var result = callback.execute(transactionalConnector).await();
-                        return result.fold(
-                            cause -> handleTransactionFailure(conn, cause),
-                            value -> handleTransactionSuccess(conn, value)
-                        );
-                    } catch (Exception e) {
-                        rollbackSilently(conn);
-                        throw e;
-                    }
-                }
-            }
-        );
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> {
+                                try (var conn = dataSource.getConnection()) {
+                                    conn.setAutoCommit(false);
+                                    try{
+                                        var transactionalConnector = new TransactionalJdbcConnector(config, conn);
+                                        var result = callback.execute(transactionalConnector)
+                                                             .await();
+                                        return result.fold(cause -> handleTransactionFailure(conn, cause),
+                                                           value -> handleTransactionSuccess(conn, value));
+                                    } catch (Exception e) {
+                                        rollbackSilently(conn);
+                                        throw e;
+                                    }
+                                }
+                            });
     }
 
     private <T> T handleTransactionFailure(Connection conn, org.pragmatica.lang.Cause cause) {
@@ -159,27 +156,25 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
 
     @Override
     public Promise<Boolean> isHealthy() {
-        return Promise.lift(
-            DatabaseConnectorError::databaseFailure,
-            () -> {
-                try (var conn = dataSource.getConnection()) {
-                    return conn.isValid(5);
-                }
-            }
-        ).replaceResult(result -> result.fold(_ -> Result.success(false), Result::success));
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> {
+                                try (var conn = dataSource.getConnection()) {
+                                    return conn.isValid(5);
+                                }
+                            })
+                      .replaceResult(result -> result.fold(_ -> Result.success(false),
+                                                           Result::success));
     }
 
     @Override
     public Promise<Unit> stop() {
-        return Promise.lift(
-            DatabaseConnectorError::databaseFailure,
-            () -> {
-                if (dataSource instanceof AutoCloseable closeable) {
-                    closeable.close();
-                }
-                return Unit.unit();
-            }
-        );
+        return Promise.lift(DatabaseConnectorError::databaseFailure,
+                            () -> {
+                                if (dataSource instanceof AutoCloseable closeable) {
+                                    closeable.close();
+                                }
+                                return Unit.unit();
+                            });
     }
 
     private <T> T executeQuery(String sql, Object[] params, ResultSetHandler<T> handler) throws Exception {
@@ -192,7 +187,9 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
 
     private PreparedStatement prepareStatement(Connection conn, String sql, Object[] params) throws SQLException {
         var stmt = conn.prepareStatement(sql);
-        stmt.setQueryTimeout((int) config.poolConfig().connectionTimeout().toSeconds());
+        stmt.setQueryTimeout((int) config.poolConfig()
+                                        .connectionTimeout()
+                                        .toSeconds());
         setParameters(stmt, params);
         return stmt;
     }
@@ -212,15 +209,13 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
     }
 
     private void rollbackSilently(Connection conn) {
-        try {
+        try{
             conn.rollback();
-        } catch (SQLException ignored) {
-            // Best effort rollback
-        }
+        } catch (SQLException ignored) {}
     }
 
     private void commitConnection(Connection conn) {
-        try {
+        try{
             conn.commit();
         } catch (SQLException e) {
             throw new TransactionFailedException("Failed to commit: " + e.getMessage());
@@ -237,7 +232,8 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
             case TransactionFailedException e -> DatabaseConnectorError.connectionFailed(e.getMessage());
             case SQLException e -> Option.option(e.getSQLState())
                                          .filter(s -> s.startsWith("08"))
-                                         .map(_ -> (DatabaseConnectorError) DatabaseConnectorError.connectionFailed(e.getMessage(), e))
+                                         .map(_ -> (DatabaseConnectorError) DatabaseConnectorError.connectionFailed(e.getMessage(),
+                                                                                                                    e))
                                          .or(() -> DatabaseConnectorError.queryFailed(sql, e));
             default -> DatabaseConnectorError.databaseFailure(throwable);
         };
@@ -275,89 +271,81 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
 
     /// Transaction-bound connector that uses a single connection.
     private record TransactionalJdbcConnector(DatabaseConnectorConfig config, Connection conn) implements DatabaseConnector {
-
         @Override
         public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-            return Promise.lift(
-                e -> mapException(e, sql),
-                () -> {
-                    try (var stmt = prepareStatement(sql, params);
-                         var rs = stmt.executeQuery()) {
-                        if (!rs.next()) {
-                            throw new NoResultException("Query returned no results");
-                        }
-                        var accessor = new JdbcRowAccessor(rs);
-                        var result = mapper.map(accessor);
-                        if (rs.next()) {
-                            throw new MultipleResultsException("Query returned multiple results", 2);
-                        }
-                        return result.unwrap();
-                    }
-                }
-            );
+            return Promise.lift(e -> mapException(e, sql),
+                                () -> {
+                                    try (var stmt = prepareStatement(sql, params);
+                                         var rs = stmt.executeQuery()) {
+                                        if (!rs.next()) {
+                                            throw new NoResultException("Query returned no results");
+                                        }
+                                        var accessor = new JdbcRowAccessor(rs);
+                                        var result = mapper.map(accessor);
+                                        if (rs.next()) {
+                                            throw new MultipleResultsException("Query returned multiple results", 2);
+                                        }
+                                        return result.unwrap();
+                                    }
+                                });
         }
 
         @Override
         public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
-            return Promise.lift(
-                e -> mapException(e, sql),
-                () -> {
-                    try (var stmt = prepareStatement(sql, params);
-                         var rs = stmt.executeQuery()) {
-                        if (!rs.next()) {
-                            return Option.none();
-                        }
-                        var accessor = new JdbcRowAccessor(rs);
-                        return mapper.map(accessor).map(Option::some).or(Option::none);
-                    }
-                }
-            );
+            return Promise.lift(e -> mapException(e, sql),
+                                () -> {
+                                    try (var stmt = prepareStatement(sql, params);
+                                         var rs = stmt.executeQuery()) {
+                                        if (!rs.next()) {
+                                            return Option.none();
+                                        }
+                                        var accessor = new JdbcRowAccessor(rs);
+                                        return mapper.map(accessor)
+                                                     .map(Option::some)
+                                                     .or(Option::none);
+                                    }
+                                });
         }
 
         @Override
         public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
-            return Promise.lift(
-                e -> mapException(e, sql),
-                () -> {
-                    try (var stmt = prepareStatement(sql, params);
-                         var rs = stmt.executeQuery()) {
-                        var results = new ArrayList<T>();
-                        var accessor = new JdbcRowAccessor(rs);
-                        while (rs.next()) {
-                            mapper.map(accessor).onSuccess(results::add);
-                        }
-                        return results;
-                    }
-                }
-            );
+            return Promise.lift(e -> mapException(e, sql),
+                                () -> {
+                                    try (var stmt = prepareStatement(sql, params);
+                                         var rs = stmt.executeQuery()) {
+                                        var results = new ArrayList<T>();
+                                        var accessor = new JdbcRowAccessor(rs);
+                                        while (rs.next()) {
+                                            mapper.map(accessor)
+                                                  .onSuccess(results::add);
+                                        }
+                                        return results;
+                                    }
+                                });
         }
 
         @Override
         public Promise<Integer> update(String sql, Object... params) {
-            return Promise.lift(
-                e -> mapException(e, sql),
-                () -> {
-                    try (var stmt = prepareStatement(sql, params)) {
-                        return stmt.executeUpdate();
-                    }
-                }
-            );
+            return Promise.lift(e -> mapException(e, sql),
+                                () -> {
+                                    try (var stmt = prepareStatement(sql, params)) {
+                                        return stmt.executeUpdate();
+                                    }
+                                });
         }
 
         @Override
         public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
-            return Promise.lift(
-                e -> mapException(e, sql),
-                () -> {
-                    try (var stmt = conn.prepareStatement(sql)) {
-                        for (var params : paramsList) {
-                            setParameters(stmt, params);
-                            stmt.addBatch();
-                        }
-                        return stmt.executeBatch();
-                    }
-                }
-            );
+            return Promise.lift(e -> mapException(e, sql),
+                                () -> {
+                                    try (var stmt = conn.prepareStatement(sql)) {
+                                        for (var params : paramsList) {
+                                            setParameters(stmt, params);
+                                            stmt.addBatch();
+                                        }
+                                        return stmt.executeBatch();
+                                    }
+                                });
         }
 
         @Override
@@ -368,15 +356,17 @@ public final class JdbcDatabaseConnector implements DatabaseConnector {
 
         @Override
         public Promise<Boolean> isHealthy() {
-            return Promise.lift(
-                DatabaseConnectorError::databaseFailure,
-                () -> conn.isValid(5)
-            ).replaceResult(result -> result.fold(_ -> Result.success(false), Result::success));
+            return Promise.lift(DatabaseConnectorError::databaseFailure,
+                                () -> conn.isValid(5))
+                          .replaceResult(result -> result.fold(_ -> Result.success(false),
+                                                               Result::success));
         }
 
         private PreparedStatement prepareStatement(String sql, Object[] params) throws SQLException {
             var stmt = conn.prepareStatement(sql);
-            stmt.setQueryTimeout((int) config.poolConfig().connectionTimeout().toSeconds());
+            stmt.setQueryTimeout((int) config.poolConfig()
+                                            .connectionTimeout()
+                                            .toSeconds());
             setParameters(stmt, params);
             return stmt;
         }

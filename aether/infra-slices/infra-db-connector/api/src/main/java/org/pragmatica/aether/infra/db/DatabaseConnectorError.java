@@ -6,7 +6,6 @@ import org.pragmatica.lang.utils.Causes;
 
 /// Error types for database connector operations.
 public sealed interface DatabaseConnectorError extends Cause {
-
     /// Connection to database failed.
     record ConnectionFailed(String message, Option<Throwable> cause) implements DatabaseConnectorError {
         public static ConnectionFailed connectionFailed(String message) {
@@ -66,7 +65,9 @@ public sealed interface DatabaseConnectorError extends Cause {
 
         private static String truncateSql(String sql) {
             return Option.option(sql)
-                         .map(s -> s.length() > 100 ? s.substring(0, 97) + "..." : s)
+                         .map(s -> s.length() > 100
+                                   ? s.substring(0, 97) + "..."
+                                   : s)
                          .or("null");
         }
     }
@@ -134,7 +135,6 @@ public sealed interface DatabaseConnectorError extends Cause {
     /// Transaction not active when required.
     enum TransactionNotActive implements DatabaseConnectorError {
         INSTANCE;
-
         @Override
         public String message() {
             return "Transaction is required for this operation";
@@ -144,7 +144,6 @@ public sealed interface DatabaseConnectorError extends Cause {
     /// Query returned no result when one was expected.
     enum ResultNotFound implements DatabaseConnectorError {
         INSTANCE;
-
         @Override
         public String message() {
             return "Query returned no result when one was expected";
@@ -186,7 +185,6 @@ public sealed interface DatabaseConnectorError extends Cause {
     /// Pool exhausted - no connections available.
     enum PoolExhausted implements DatabaseConnectorError {
         INSTANCE;
-
         @Override
         public String message() {
             return "Connection pool exhausted - no connections available";
@@ -202,7 +200,8 @@ public sealed interface DatabaseConnectorError extends Cause {
         @Override
         public String message() {
             return "Database operation failed: " + Option.option(cause.getMessage())
-                                                         .or(() -> cause.getClass().getName());
+                                                         .or(() -> cause.getClass()
+                                                                        .getName());
         }
 
         @Override

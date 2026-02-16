@@ -185,11 +185,10 @@ public interface SharedDependencyLoader {
     }
 
     private static Promise<Unit> registerAsRuntimeProvided(ArtifactDependency dependency,
-                                                            SharedLibraryClassLoader sharedLibraryLoader) {
+                                                           SharedLibraryClassLoader sharedLibraryLoader) {
         var version = extractVersion(dependency.versionPattern());
         sharedLibraryLoader.registerRuntimeProvided(dependency.groupId(), dependency.artifactId(), version);
-        log.info("Shared dependency {} not found in repositories, registered as runtime-provided",
-                 dependency.asString());
+        log.info("Shared dependency {} not found in repositories, registered as runtime-provided", dependency.asString());
         return Promise.success(unit());
     }
 

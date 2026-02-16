@@ -24,7 +24,11 @@ public record NodeConfig(String heap,
     public static final Duration DEFAULT_RECONCILIATION = Duration.ofSeconds(5);
 
     /// Factory method following JBCT naming convention.
-    public static NodeConfig nodeConfig(String heap, String gc, Duration metricsInterval, Duration reconciliation, Option<ResourcesConfig> resources) {
+    public static NodeConfig nodeConfig(String heap,
+                                        String gc,
+                                        Duration metricsInterval,
+                                        Duration reconciliation,
+                                        Option<ResourcesConfig> resources) {
         return new NodeConfig(heap, gc, metricsInterval, reconciliation, resources);
     }
 

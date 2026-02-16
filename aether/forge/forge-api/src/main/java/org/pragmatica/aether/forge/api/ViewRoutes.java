@@ -24,7 +24,7 @@ public sealed interface ViewRoutes {
     Duration HTTP_TIMEOUT = Duration.ofSeconds(10);
 
     static RouteSource viewRoutes(ForgeCluster cluster,
-                                   Option<Path> loadConfigPath) {
+                                  Option<Path> loadConfigPath) {
         var http = JdkHttpOperations.jdkHttpOperations();
         return in("/api/view")
         .serve(overviewRoute(),
@@ -80,7 +80,8 @@ public sealed interface ViewRoutes {
     }
 
     private static String renderTestingTab(Option<Path> loadConfigPath) {
-        var configContent = loadConfigPath.flatMap(ViewRoutes::readFile).or("");
+        var configContent = loadConfigPath.flatMap(ViewRoutes::readFile)
+                                          .or("");
         return """
             <div class="testing-tab">
                 <div class="panel">
@@ -281,8 +282,8 @@ public sealed interface ViewRoutes {
     }
 
     private static Promise<String> renderAlertFragment(ForgeCluster cluster,
-                                                        JdkHttpOperations http,
-                                                        String path) {
+                                                       JdkHttpOperations http,
+                                                       String path) {
         return cluster.getLeaderManagementPort()
                       .async(MetricsNotAvailable.INSTANCE)
                       .flatMap(port -> sendGet(http, port, path))
@@ -299,7 +300,7 @@ public sealed interface ViewRoutes {
 
     // ========== Helpers ==========
     private static Option<String> readFile(Path path) {
-        try {
+        try{
             return Option.some(Files.readString(path));
         } catch (IOException _) {
             return Option.none();
@@ -313,7 +314,8 @@ public sealed interface ViewRoutes {
                                  .timeout(HTTP_TIMEOUT)
                                  .build();
         return http.sendString(request)
-                   .flatMap(result -> result.toResult().async());
+                   .flatMap(result -> result.toResult()
+                                            .async());
     }
 
     private static String escapeHtml(String text) {

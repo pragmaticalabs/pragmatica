@@ -126,7 +126,8 @@ public final class ForgeCluster {
 
         private InstanceInfo toInstanceInfo(String nodeIdStr) {
             var addresses = Option.option(nodeInfos.get(nodeIdStr))
-                                  .map(info -> List.of("localhost:" + info.address().port()))
+                                  .map(info -> List.of("localhost:" + info.address()
+                                                                         .port()))
                                   .or(List.of());
             return InstanceInfo.instanceInfo(InstanceId.instanceId(nodeIdStr),
                                              InstanceStatus.RUNNING,
@@ -183,7 +184,12 @@ public final class ForgeCluster {
     /// @param baseMgmtPort  Base port for management HTTP API (each node uses baseMgmtPort + nodeIndex)
     /// @param nodeIdPrefix  Prefix for node IDs (e.g., "cf" creates nodes "cf-1", "cf-2", etc.)
     public static ForgeCluster forgeCluster(int initialSize, int basePort, int baseMgmtPort, String nodeIdPrefix) {
-        return new ForgeCluster(initialSize, basePort, baseMgmtPort, DEFAULT_BASE_APP_HTTP_PORT, nodeIdPrefix, Option.empty());
+        return new ForgeCluster(initialSize,
+                                basePort,
+                                baseMgmtPort,
+                                DEFAULT_BASE_APP_HTTP_PORT,
+                                nodeIdPrefix,
+                                Option.empty());
     }
 
     /// Create a ForgeCluster with custom port ranges including app HTTP.
@@ -435,7 +441,8 @@ public final class ForgeCluster {
     public void setClusterSize(int newSize) {
         effectiveSize.set(newSize);
         var message = new TopologyManagementMessage.SetClusterSize(newSize);
-        nodes.values().forEach(node -> node.route(message));
+        nodes.values()
+             .forEach(node -> node.route(message));
         log.info("SetClusterSize({}) routed to {} nodes", newSize, nodes.size());
     }
 
@@ -563,7 +570,8 @@ public final class ForgeCluster {
                                    .allMetrics();
         return allMetrics.entrySet()
                          .stream()
-                         .map(entry -> toNodeMetrics(entry.getKey().id(),
+                         .map(entry -> toNodeMetrics(entry.getKey()
+                                                          .id(),
                                                      entry.getValue(),
                                                      leaderId))
                          .toList();
@@ -579,9 +587,12 @@ public final class ForgeCluster {
             if (nodes.isEmpty()) {
                 return new AetherAggregates(0, 1.0, 0, 0, 0, 0);
             }
-            leaderNode = nodes.values().iterator().next();
+            leaderNode = nodes.values()
+                              .iterator()
+                              .next();
         }
-        var allNodeMetrics = leaderNode.metricsCollector().allMetrics();
+        var allNodeMetrics = leaderNode.metricsCollector()
+                                       .allMetrics();
         long totalInvocations = 0;
         long totalSuccess = 0;
         long totalFailure = 0;
@@ -593,11 +604,14 @@ public final class ForgeCluster {
                     continue;
                 }
                 if (key.endsWith("|count")) {
-                    totalInvocations += entry.getValue().longValue();
+                    totalInvocations += entry.getValue()
+                                             .longValue();
                 } else if (key.endsWith("|success")) {
-                    totalSuccess += entry.getValue().longValue();
+                    totalSuccess += entry.getValue()
+                                         .longValue();
                 } else if (key.endsWith("|failure")) {
-                    totalFailure += entry.getValue().longValue();
+                    totalFailure += entry.getValue()
+                                         .longValue();
                 } else if (key.endsWith("|totalNs")) {
                     totalDurationNs += entry.getValue();
                 }
@@ -617,8 +631,12 @@ public final class ForgeCluster {
         emaAvgLatencyMs = EMA_ALPHA * avgLatencyMs + (1 - EMA_ALPHA) * emaAvgLatencyMs;
         lastTotalInvocations = totalInvocations;
         lastTotalSuccess = totalSuccess;
-        return new AetherAggregates(emaRps, emaSuccessRate * 100.0, emaAvgLatencyMs,
-                                    totalInvocations, totalSuccess, totalFailure);
+        return new AetherAggregates(emaRps,
+                                    emaSuccessRate * 100.0,
+                                    emaAvgLatencyMs,
+                                    totalInvocations,
+                                    totalSuccess,
+                                    totalFailure);
     }
 
     private NodeMetrics toNodeMetrics(String nodeId, Map<String, Double> metrics, String leaderId) {
@@ -628,8 +646,8 @@ public final class ForgeCluster {
         return new NodeMetrics(nodeId,
                                leaderId.equals(nodeId),
                                cpuUsage,
-                               (long) (heapUsed / 1024 / 1024),
-                               (long) (heapMax / 1024 / 1024));
+                               (long)(heapUsed / 1024 / 1024),
+                               (long)(heapMax / 1024 / 1024));
     }
 
     /// Status of a single node.
@@ -669,8 +687,12 @@ public final class ForgeCluster {
     public record RollingRestartStatusResponse(boolean active) {}
 
     /// Aggregated Aether invocation metrics with EMA smoothing.
-    public record AetherAggregates(double rps, double successRate, double avgLatencyMs,
-                                    long totalInvocations, long totalSuccess, long totalFailures) {}
+    public record AetherAggregates(double rps,
+                                   double successRate,
+                                   double avgLatencyMs,
+                                   long totalInvocations,
+                                   long totalSuccess,
+                                   long totalFailures) {}
 
     /// Get slice status from the DeploymentMap.
     /// Uses event-driven index instead of KV store scan — zero allocations per poll.
@@ -716,8 +738,8 @@ public final class ForgeCluster {
             return;
         }
         rollingRestartTask.set(rollingRestartExecutor.schedule(() -> performRollingRestartCycle(eventLogger),
-                                                                ROLLING_RESTART_DELAY_MS,
-                                                                TimeUnit.MILLISECONDS));
+                                                               ROLLING_RESTART_DELAY_MS,
+                                                               TimeUnit.MILLISECONDS));
     }
 
     private void performRollingRestartCycle(Consumer<EventLogEntry> eventLogger) {
@@ -743,8 +765,8 @@ public final class ForgeCluster {
             return;
         }
         rollingRestartTask.set(rollingRestartExecutor.schedule(() -> performRollingRestartCycle(eventLogger),
-                                                                delayMs,
-                                                                TimeUnit.MILLISECONDS));
+                                                               delayMs,
+                                                               TimeUnit.MILLISECONDS));
     }
 
     private void handleRollingRestartFailure(Consumer<EventLogEntry> eventLogger, String operation, Cause cause) {

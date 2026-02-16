@@ -303,9 +303,14 @@ class AppHttpServerImpl implements AppHttpServer {
         // No route found — distinguish between "not synced yet" and "genuinely missing"
         if (!routeSyncReceived.get() && httpRoutePublisher.isPresent()) {
             log.debug("Route not yet available for {} {} [{}] — node starting, routes not synchronized",
-                      method, path, requestId);
-            sendProblem(response, HttpStatus.SERVICE_UNAVAILABLE,
-                        "Node starting, routes not yet synchronized", path, requestId);
+                      method,
+                      path,
+                      requestId);
+            sendProblem(response,
+                        HttpStatus.SERVICE_UNAVAILABLE,
+                        "Node starting, routes not yet synchronized",
+                        path,
+                        requestId);
         } else {
             log.warn("No route found for {} {} [{}]", method, path, requestId);
             sendProblem(response, HttpStatus.NOT_FOUND, "No route found for " + method + " " + path, path, requestId);
@@ -506,18 +511,18 @@ class AppHttpServerImpl implements AppHttpServer {
                           requestId,
                           RETRY_DELAY_MS,
                           retriesRemaining);
-                Promise.<Unit>promise()
+                Promise.<Unit> promise()
                        .timeout(timeSpan(RETRY_DELAY_MS).millis())
                        .onResult(_ -> {
-                                    var freshNodes = freshCandidatesForRoute(routeKey);
-                                    forwardRequestWithRetry(request,
-                                                            response,
-                                                            freshNodes,
-                                                            Set.of(),
-                                                            routeKey,
-                                                            requestId,
-                                                            retriesRemaining - 1);
-                                });
+                                     var freshNodes = freshCandidatesForRoute(routeKey);
+                                     forwardRequestWithRetry(request,
+                                                             response,
+                                                             freshNodes,
+                                                             Set.of(),
+                                                             routeKey,
+                                                             requestId,
+                                                             retriesRemaining - 1);
+                                 });
                 return;
             }
             log.error("No more nodes to try for {} {} [{}] after all retries exhausted",

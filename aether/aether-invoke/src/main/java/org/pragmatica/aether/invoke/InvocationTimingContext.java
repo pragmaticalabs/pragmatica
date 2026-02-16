@@ -80,7 +80,9 @@ public final class InvocationTimingContext {
         completedNs = System.nanoTime();
         log.trace("Invocation timing [{}::{}] total={}us route={}us ser={}us endpoint={}us net_send={}us "
                   + "handler={}us bridge={}us resp_ser={}us net_resp={}us deser={}us",
-                  artifact, method, deltaUs(startNs, completedNs),
+                  artifact,
+                  method,
+                  deltaUs(startNs, completedNs),
                   deltaUs(startNs, routeResolvedNs),
                   deltaUs(routeResolvedNs, serializedNs),
                   deltaUs(serializedNs, endpointSelectedNs),

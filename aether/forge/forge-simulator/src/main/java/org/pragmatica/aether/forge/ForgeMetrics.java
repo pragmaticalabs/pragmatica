@@ -65,8 +65,8 @@ public final class ForgeMetrics {
         // Calculate rates with EMA smoothing (~5s effective window)
         var instantRps = (totalDelta * 1000.0) / elapsed;
         requestsPerSecond = requestsPerSecond == 0
-            ? instantRps
-            : EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * requestsPerSecond;
+                            ? instantRps
+                            : EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * requestsPerSecond;
         if (totalDelta > 0) {
             var instantSuccessRate = (successDelta * 100.0) / totalDelta;
             successRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * successRate;
@@ -77,8 +77,8 @@ public final class ForgeMetrics {
         if (count > 0) {
             var instantLatencyMs = (latency / count) / 1_000_000.0;
             avgLatencyMs = avgLatencyMs == 0
-                ? instantLatencyMs
-                : EMA_ALPHA * instantLatencyMs + (1 - EMA_ALPHA) * avgLatencyMs;
+                           ? instantLatencyMs
+                           : EMA_ALPHA * instantLatencyMs + (1 - EMA_ALPHA) * avgLatencyMs;
         }
         // Reset window counters
         successCount.reset();
@@ -92,7 +92,11 @@ public final class ForgeMetrics {
     /// Get current metrics for dashboard.
     /// Synchronized to match snapshot() for consistent reads across all volatile fields.
     public synchronized MetricsSnapshot currentMetrics() {
-        return MetricsSnapshot.metricsSnapshot(requestsPerSecond, successRate, avgLatencyMs, totalSuccess.get(), totalFailures.get());
+        return MetricsSnapshot.metricsSnapshot(requestsPerSecond,
+                                               successRate,
+                                               avgLatencyMs,
+                                               totalSuccess.get(),
+                                               totalFailures.get());
     }
 
     /// Reset all metrics.
@@ -118,10 +122,10 @@ public final class ForgeMetrics {
                                   long totalSuccess,
                                   long totalFailures) {
         public static MetricsSnapshot metricsSnapshot(double requestsPerSecond,
-                                                       double successRate,
-                                                       double avgLatencyMs,
-                                                       long totalSuccess,
-                                                       long totalFailures) {
+                                                      double successRate,
+                                                      double avgLatencyMs,
+                                                      long totalSuccess,
+                                                      long totalFailures) {
             return new MetricsSnapshot(requestsPerSecond, successRate, avgLatencyMs, totalSuccess, totalFailures);
         }
 

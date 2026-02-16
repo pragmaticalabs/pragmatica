@@ -38,7 +38,6 @@ import org.pragmatica.lang.Promise;
 /// @param <T> Resource type created by this factory
 /// @param <C> Configuration type required to create the resource
 public interface ResourceFactory<T, C> {
-
     /// Get the resource type this factory creates.
     ///
     /// @return Resource class

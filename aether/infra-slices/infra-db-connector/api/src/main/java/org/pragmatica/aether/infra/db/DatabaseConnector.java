@@ -24,9 +24,7 @@ import java.util.List;
 ///              Instant.now(), user.id()))
 /// }```
 public interface DatabaseConnector extends Slice {
-
     // ========== Query Operations ==========
-
     /// Executes a query and maps the single result.
     ///
     /// Fails if query returns zero or more than one row.
@@ -59,7 +57,6 @@ public interface DatabaseConnector extends Slice {
     <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params);
 
     // ========== Update Operations ==========
-
     /// Executes an update statement (INSERT, UPDATE, DELETE).
     ///
     /// @param sql    SQL statement with ? placeholders
@@ -75,7 +72,6 @@ public interface DatabaseConnector extends Slice {
     Promise<int[]> batch(String sql, List<Object[]> paramsList);
 
     // ========== Transaction Operations ==========
-
     /// Executes callback within a transaction.
     ///
     /// The transaction is automatically committed on success or rolled back on failure.
@@ -86,7 +82,6 @@ public interface DatabaseConnector extends Slice {
     <T> Promise<T> transactional(TransactionCallback<T> callback);
 
     // ========== Lifecycle ==========
-
     /// Returns the connector configuration.
     ///
     /// @return Connector configuration
@@ -98,7 +93,6 @@ public interface DatabaseConnector extends Slice {
     Promise<Boolean> isHealthy();
 
     // ========== Factory Methods ==========
-
     /// Creates a new connector instance with the given configuration.
     ///
     /// Default implementation returns a no-op connector.
@@ -111,7 +105,6 @@ public interface DatabaseConnector extends Slice {
     }
 
     // ========== Slice Lifecycle ==========
-
     @Override
     default Promise<Unit> start() {
         return Promise.success(Unit.unit());
@@ -130,35 +123,40 @@ public interface DatabaseConnector extends Slice {
 
 /// No-op implementation returned when no concrete implementation is available.
 record NoOpDatabaseConnector(DatabaseConnectorConfig config) implements DatabaseConnector {
-
     @Override
     public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
-        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available").promise();
+        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available")
+                                     .promise();
     }
 
     @Override
     public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
-        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available").promise();
+        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available")
+                                     .promise();
     }
 
     @Override
     public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
-        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available").promise();
+        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available")
+                                     .promise();
     }
 
     @Override
     public Promise<Integer> update(String sql, Object... params) {
-        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available").promise();
+        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available")
+                                     .promise();
     }
 
     @Override
     public Promise<int[]> batch(String sql, List<Object[]> paramsList) {
-        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available").promise();
+        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available")
+                                     .promise();
     }
 
     @Override
     public <T> Promise<T> transactional(TransactionCallback<T> callback) {
-        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available").promise();
+        return DatabaseConnectorError.configurationError("No DatabaseConnector implementation available")
+                                     .promise();
     }
 
     @Override

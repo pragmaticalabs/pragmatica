@@ -17,18 +17,19 @@
 
 package org.pragmatica.cloud.hetzner.api;
 
+import java.util.List;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import java.util.List;
 
 /// Hetzner Cloud firewall model.
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record Firewall(long id, String name, List<Rule> rules) {
-
     /// Firewall rule.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Rule(String direction, String protocol, String port,
+    public record Rule(String direction,
+                       String protocol,
+                       String port,
                        @JsonProperty("source_ips") List<String> sourceIps,
                        @JsonProperty("destination_ips") List<String> destinationIps) {}
 
@@ -38,7 +39,6 @@ public record Firewall(long id, String name, List<Rule> rules) {
 
     /// Request to apply firewall to a server.
     public record ApplyToResourcesRequest(@JsonProperty("apply_to") List<ResourceTarget> applyTo) {
-
         /// Target resource for firewall application.
         public record ResourceTarget(String type, ServerRef server) {}
 

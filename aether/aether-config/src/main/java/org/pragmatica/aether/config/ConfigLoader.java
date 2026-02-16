@@ -135,8 +135,13 @@ public final class ConfigLoader {
                                       .or(60_000L);
                 var confidence = doc.getDouble("ttm", "confidence_threshold")
                                     .or(0.7);
-                builder.ttm(TTMConfig.ttmConfig(modelPath, inputWindow, predictionHorizon, evalInterval, confidence, true)
-                                   .or(TTMConfig.disabled()));
+                builder.ttm(TTMConfig.ttmConfig(modelPath,
+                                                inputWindow,
+                                                predictionHorizon,
+                                                evalInterval,
+                                                confidence,
+                                                true)
+                                     .or(TTMConfig.disabled()));
             }
             // Slice config
             doc.getStringList("slice", "repositories")

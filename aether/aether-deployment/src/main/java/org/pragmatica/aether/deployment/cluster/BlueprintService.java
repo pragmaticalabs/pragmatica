@@ -100,7 +100,8 @@ public interface BlueprintService {
             @Override
             public List<ExpandedBlueprint> list() {
                 var result = new ArrayList<ExpandedBlueprint>();
-                store.forEach(AppBlueprintKey.class, AppBlueprintValue.class,
+                store.forEach(AppBlueprintKey.class,
+                              AppBlueprintValue.class,
                               (_, value) -> result.add(value.blueprint()));
                 return result;
             }

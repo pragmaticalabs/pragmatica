@@ -48,9 +48,10 @@ final class InMemoryPubSub implements PubSub {
     public Promise<Unit> unsubscribe(Subscription subscription) {
         return Option.option(subscriptions.get(subscription.topic()))
                      .toResult(new PubSubError.SubscriptionNotFound(subscription.subscriptionId()))
-                     .flatMap(subs -> subs.removeIf(e -> e.subscriptionId().equals(subscription.subscriptionId()))
-                         ? Result.success(unit())
-                         : new PubSubError.SubscriptionNotFound(subscription.subscriptionId()).result())
+                     .flatMap(subs -> subs.removeIf(e -> e.subscriptionId()
+                                                          .equals(subscription.subscriptionId()))
+                                      ? Result.success(unit())
+                                      : new PubSubError.SubscriptionNotFound(subscription.subscriptionId()).result())
                      .async();
     }
 

@@ -2,9 +2,10 @@ package org.pragmatica.aether.invoke;
 
 import org.pragmatica.lang.Option;
 import org.pragmatica.utility.KSUID;
-import org.slf4j.MDC;
 
 import java.util.function.Supplier;
+
+import org.slf4j.MDC;
 
 /// ScopedValue-based context for propagating request ID through invocation chains.
 ///
@@ -68,10 +69,10 @@ public final class InvocationContext {
     /// @return the result of the supplier
     public static <T> T runWithRequestId(String requestId, Supplier<T> supplier) {
         MDC.put(MDC_KEY, requestId);
-        try {
+        try{
             return ScopedValue.where(REQUEST_ID, requestId)
                               .call(supplier::get);
-        } finally {
+        } finally{
             MDC.remove(MDC_KEY);
         }
     }
@@ -82,10 +83,10 @@ public final class InvocationContext {
     /// @param runnable  the runnable to execute within the scope
     public static void runWithRequestId(String requestId, Runnable runnable) {
         MDC.put(MDC_KEY, requestId);
-        try {
+        try{
             ScopedValue.where(REQUEST_ID, requestId)
                        .run(runnable);
-        } finally {
+        } finally{
             MDC.remove(MDC_KEY);
         }
     }

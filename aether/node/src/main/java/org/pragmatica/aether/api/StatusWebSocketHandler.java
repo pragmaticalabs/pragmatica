@@ -46,7 +46,8 @@ public class StatusWebSocketHandler implements WebSocketHandler {
 
     /// Get the number of connected clients.
     public int connectedClients() {
-        sessions.values().removeIf(session -> !session.isOpen());
+        sessions.values()
+                .removeIf(session -> !session.isOpen());
         return sessions.size();
     }
 }

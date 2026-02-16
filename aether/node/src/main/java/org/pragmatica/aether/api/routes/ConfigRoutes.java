@@ -33,36 +33,38 @@ public final class ConfigRoutes implements RouteSource {
     @Override
     public Stream<Route<?>> routes() {
         return Stream.of(// GET /api/config - merged config (base + overrides)
-        Route.<Object>get("/api/config")
+        Route.<Object> get("/api/config")
              .toJson(configManager::allConfigAsJson),
         // GET /api/config/overrides - only overrides
-        Route.<Object>get("/api/config/overrides")
+        Route.<Object> get("/api/config/overrides")
              .toJson(configManager::overridesAsJson),
         // POST /api/config - set config value
-        Route.<ConfigSetResponse>post("/api/config")
+        Route.<ConfigSetResponse> post("/api/config")
              .withBody(SetConfigRequest.class)
              .toJson(this::handleSetConfig),
         // DELETE /api/config/{key} - remove cluster-wide config
-        Route.<ConfigRemovedResponse>delete("/api/config")
+        Route.<ConfigRemovedResponse> delete("/api/config")
              .withPath(aString())
              .to(this::handleDeleteConfig)
              .asJson(),
         // DELETE /api/config/node/{nodeId}/{key} - remove node-scoped config
-        Route.<ConfigRemovedResponse>delete("/api/config/node")
-             .withPath(aString(), aString())
+        Route.<ConfigRemovedResponse> delete("/api/config/node")
+             .withPath(aString(),
+                       aString())
              .to(this::handleDeleteNodeConfig)
              .asJson());
     }
 
     private Promise<ConfigSetResponse> handleSetConfig(SetConfigRequest req) {
         return validateSetRequest(req).async()
-                                      .flatMap(this::applySetConfig);
+                                 .flatMap(this::applySetConfig);
     }
 
     private Promise<ConfigSetResponse> applySetConfig(SetConfigRequest req) {
         return req.nodeId()
                   .filter(id -> !id.isEmpty())
-                  .fold(() -> configManager.setConfig(req.key(), req.value())
+                  .fold(() -> configManager.setConfig(req.key(),
+                                                      req.value())
                                            .map(_ -> new ConfigSetResponse("config_set",
                                                                            req.key(),
                                                                            req.value())),

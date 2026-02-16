@@ -38,7 +38,8 @@ final class InMemoryDatabaseService implements DatabaseService {
     }
 
     private static DatabaseConfig getDefaultConfig() {
-        return DatabaseConfig.databaseConfig().or(DEFAULT_CONFIG);
+        return DatabaseConfig.databaseConfig()
+                             .or(DEFAULT_CONFIG);
     }
 
     static InMemoryDatabaseService inMemoryDatabaseService(DatabaseConfig config) {
@@ -49,9 +50,9 @@ final class InMemoryDatabaseService implements DatabaseService {
     @Override
     public Promise<Unit> createTable(String tableName, List<String> columns) {
         var table = Table.table(tableName, columns);
-        return option(tables.putIfAbsent(tableName, table))
-               .map(_ -> DatabaseError.duplicateKey("schema", tableName).<Unit>promise())
-               .or(Promise.success(unit()));
+        return option(tables.putIfAbsent(tableName, table)).map(_ -> DatabaseError.duplicateKey("schema", tableName)
+                                                                                  .<Unit> promise())
+                     .or(Promise.success(unit()));
     }
 
     @Override
@@ -98,10 +99,9 @@ final class InMemoryDatabaseService implements DatabaseService {
     }
 
     private <T> Promise<Option<T>> mapRowById(Table table, Object id, RowMapper<T> mapper) {
-        return toLong(id)
-               .flatMap(table::getRow)
-               .map(row -> mapSingleRow(row, mapper))
-               .or(Promise.success(none()));
+        return toLong(id).flatMap(table::getRow)
+                     .map(row -> mapSingleRow(row, mapper))
+                     .or(Promise.success(none()));
     }
 
     private <T> Promise<Option<T>> mapSingleRow(Map<String, Object> row, RowMapper<T> mapper) {
@@ -154,7 +154,10 @@ final class InMemoryDatabaseService implements DatabaseService {
     }
 
     private int updateRowById(Table table, Object id, Map<String, Object> updates) {
-        return toLong(id).map(longId -> table.update(longId, updates) ? 1 : 0).or(0);
+        return toLong(id).map(longId -> table.update(longId, updates)
+                                        ? 1
+                                        : 0)
+                     .or(0);
     }
 
     @Override
@@ -164,11 +167,12 @@ final class InMemoryDatabaseService implements DatabaseService {
 
     private int updateMatchingRows(Table table, String column, Object value, Map<String, Object> updates) {
         return (int) table.getAllRows()
-                          .stream()
-                          .filter(row -> value.equals(row.get(column)))
-                          .flatMap(row -> option(row.get(ID_COLUMN)).flatMap(this::toLong).stream())
-                          .filter(id -> table.update(id, updates))
-                          .count();
+                         .stream()
+                         .filter(row -> value.equals(row.get(column)))
+                         .flatMap(row -> option(row.get(ID_COLUMN)).flatMap(this::toLong)
+                                               .stream())
+                         .filter(id -> table.update(id, updates))
+                         .count();
     }
 
     // ========== Delete Operations ==========
@@ -212,9 +216,8 @@ final class InMemoryDatabaseService implements DatabaseService {
 
     // ========== Internal Helpers ==========
     private Promise<Table> getTableOrFail(String tableName) {
-        return option(tables.get(tableName))
-               .toResult(DatabaseError.tableNotFound(tableName))
-               .async();
+        return option(tables.get(tableName)).toResult(DatabaseError.tableNotFound(tableName))
+                     .async();
     }
 
     private <T> Promise<List<T>> mapRows(List<Map<String, Object>> rows, RowMapper<T> mapper) {
@@ -281,7 +284,8 @@ final class InMemoryDatabaseService implements DatabaseService {
         }
 
         boolean update(long id, Map<String, Object> updates) {
-            return option(rows.get(id)).map(existing -> applyUpdate(id, existing, updates)).or(false);
+            return option(rows.get(id)).map(existing -> applyUpdate(id, existing, updates))
+                         .or(false);
         }
 
         private boolean applyUpdate(long id, Map<String, Object> existing, Map<String, Object> updates) {

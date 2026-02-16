@@ -105,11 +105,13 @@ public final class GitHubVersionResolver {
     public Result<Unit> clearCache() {
         resolvedVersion = null;
         cache.clear();
-        return Result.lift(Causes::fromThrowable, () -> { Files.deleteIfExists(CACHE_FILE); });
+        return Result.lift(Causes::fromThrowable,
+                           () -> {
+                               Files.deleteIfExists(CACHE_FILE);
+                           });
     }
 
     // --- Private ---
-
     private String monorepoVersion() {
         if (resolvedVersion != null) {
             return resolvedVersion;
@@ -121,12 +123,10 @@ public final class GitHubVersionResolver {
     private String fetchVersionWithCache() {
         var cacheKey = REPO_OWNER + "/" + REPO_NAME;
         var timestampKey = cacheKey + ".timestamp";
-
         var cachedVersion = cache.getProperty(cacheKey);
         var timestampStr = cache.getProperty(timestampKey);
-
         if (cachedVersion != null && timestampStr != null) {
-            try {
+            try{
                 var timestamp = Long.parseLong(timestampStr);
                 if (System.currentTimeMillis() - timestamp < CACHE_TTL_MS) {
                     return cachedVersion;
@@ -135,10 +135,8 @@ public final class GitHubVersionResolver {
                 log.debug("Invalid timestamp in version cache for {}: {}", cacheKey, timestampStr);
             }
         }
-
-        return fetchLatestVersion()
-                   .onSuccess(version -> updateCache(cacheKey, timestampKey, version))
-                   .or(DEFAULT_VERSION);
+        return fetchLatestVersion().onSuccess(version -> updateCache(cacheKey, timestampKey, version))
+                                 .or(DEFAULT_VERSION);
     }
 
     private Result<String> fetchLatestVersion() {
@@ -166,7 +164,8 @@ public final class GitHubVersionResolver {
 
     private void updateCache(String cacheKey, String timestampKey, String version) {
         cache.setProperty(cacheKey, version);
-        cache.setProperty(timestampKey, String.valueOf(System.currentTimeMillis()));
+        cache.setProperty(timestampKey,
+                          String.valueOf(System.currentTimeMillis()));
         saveCache();
     }
 
@@ -183,12 +182,13 @@ public final class GitHubVersionResolver {
     }
 
     private Result<Unit> saveCache() {
-        return Result.lift(Causes::fromThrowable, () -> {
-            Files.createDirectories(CACHE_FILE.getParent());
-            try (var writer = Files.newBufferedWriter(CACHE_FILE)) {
-                cache.store(writer, "JBCT version cache");
-            }
-        });
+        return Result.lift(Causes::fromThrowable,
+                           () -> {
+                               Files.createDirectories(CACHE_FILE.getParent());
+                               try (var writer = Files.newBufferedWriter(CACHE_FILE)) {
+                                   cache.store(writer, "JBCT version cache");
+                               }
+                           });
     }
 
     /// Compare two semantic versions and return the newer one.
@@ -208,6 +208,8 @@ public final class GitHubVersionResolver {
                 return v2;
             }
         }
-        return parts1.length >= parts2.length ? v1 : v2;
+        return parts1.length >= parts2.length
+               ? v1
+               : v2;
     }
 }

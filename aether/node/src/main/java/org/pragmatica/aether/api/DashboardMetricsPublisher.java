@@ -209,8 +209,9 @@ public class DashboardMetricsPublisher {
           .append(buildInvocationMetrics())
           .append(",");
         // Deployments (cluster-wide)
-        appendDeployments(sb, node.deploymentMap()
-                                  .allDeployments());
+        appendDeployments(sb,
+                          node.deploymentMap()
+                              .allDeployments());
         sb.append(",");
         // Dynamic aspects
         sb.append("\"aspects\":")
@@ -229,7 +230,6 @@ public class DashboardMetricsPublisher {
         long totalSuccess = 0;
         long totalFailure = 0;
         double weightedLatency = 0.0;
-
         for (var snapshot : snapshots) {
             var metrics = snapshot.metrics();
             totalInvocations += metrics.count();
@@ -237,10 +237,8 @@ public class DashboardMetricsPublisher {
             totalFailure += metrics.failureCount();
             weightedLatency += metrics.averageLatencyNs() / 1_000_000.0 * metrics.count();
         }
-
         long deltaInvocations = totalInvocations - lastTotalInvocations;
         long deltaSuccess = totalSuccess - lastTotalSuccess;
-
         double instantRps = deltaInvocations / (BROADCAST_INTERVAL_MS / 1000.0);
         double instantSuccessRate = deltaInvocations > 0
                                     ? (double) deltaSuccess / deltaInvocations
@@ -249,18 +247,18 @@ public class DashboardMetricsPublisher {
         double avgLatencyMs = totalInvocations > 0
                               ? weightedLatency / totalInvocations
                               : 0.0;
-
         emaRps = EMA_ALPHA * instantRps + (1 - EMA_ALPHA) * emaRps;
         emaSuccessRate = EMA_ALPHA * instantSuccessRate + (1 - EMA_ALPHA) * emaSuccessRate;
         emaErrorRate = EMA_ALPHA * instantErrorRate + (1 - EMA_ALPHA) * emaErrorRate;
         emaAvgLatencyMs = EMA_ALPHA * avgLatencyMs + (1 - EMA_ALPHA) * emaAvgLatencyMs;
-
         lastTotalInvocations = totalInvocations;
         lastTotalSuccess = totalSuccess;
         lastTotalFailure = totalFailure;
-
         return String.format("{\"rps\":%.2f,\"successRate\":%.4f,\"errorRate\":%.4f,\"avgLatencyMs\":%.2f}",
-                             emaRps, emaSuccessRate, emaErrorRate, emaAvgLatencyMs);
+                             emaRps,
+                             emaSuccessRate,
+                             emaErrorRate,
+                             emaAvgLatencyMs);
     }
 
     private String buildInvocationMetrics() {

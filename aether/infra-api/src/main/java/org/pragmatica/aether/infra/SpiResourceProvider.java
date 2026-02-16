@@ -4,7 +4,6 @@ import org.pragmatica.aether.config.ConfigService;
 import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Result;
-
 import org.pragmatica.lang.Functions.Fn2;
 
 import java.util.Map;
@@ -31,7 +30,8 @@ public final class SpiResourceProvider implements ResourceProvider {
         ServiceLoader.load(ResourceFactory.class)
                      .stream()
                      .map(ServiceLoader.Provider::get)
-                     .forEach(factory -> factoryMap.putIfAbsent(factory.resourceType(), factory));
+                     .forEach(factory -> factoryMap.putIfAbsent(factory.resourceType(),
+                                                                factory));
         this.factories = Map.copyOf(factoryMap);
     }
 
@@ -39,11 +39,10 @@ public final class SpiResourceProvider implements ResourceProvider {
     ///
     /// @return New SpiResourceProvider
     public static SpiResourceProvider spiResourceProvider() {
-        return new SpiResourceProvider((section, configClass) ->
-            ConfigService.instance()
-                         .toResult(ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE)
-                         .flatMap(configService -> configService.config(section, configClass))
-        );
+        return new SpiResourceProvider((section, configClass) -> ConfigService.instance()
+                                                                              .toResult(ResourceProvisioningError.ConfigServiceNotAvailable.INSTANCE)
+                                                                              .flatMap(configService -> configService.config(section,
+                                                                                                                             configClass)));
     }
 
     /// Create an SpiResourceProvider with a custom config loader.
@@ -70,7 +69,6 @@ public final class SpiResourceProvider implements ResourceProvider {
     @SuppressWarnings("unchecked")
     public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
         var key = new CacheKey(resourceType, configSection);
-
         // Use computeIfAbsent for atomic cache access - prevents duplicate factory calls
         return (Promise<T>) promiseCache.computeIfAbsent(key, k -> createResource(resourceType, configSection));
     }
@@ -80,7 +78,9 @@ public final class SpiResourceProvider implements ResourceProvider {
         return Option.option(factories.get(resourceType))
                      .toResult(ResourceProvisioningError.factoryNotFound(resourceType))
                      .async()
-                     .flatMap(factory -> loadConfigAndCreate((ResourceFactory<T, ?>) factory, configSection, resourceType));
+                     .flatMap(factory -> loadConfigAndCreate((ResourceFactory<T, ?>) factory,
+                                                             configSection,
+                                                             resourceType));
     }
 
     @Override
@@ -89,10 +89,10 @@ public final class SpiResourceProvider implements ResourceProvider {
     }
 
     private <T, C> Promise<T> loadConfigAndCreate(ResourceFactory<T, C> factory,
-                                                   String configSection,
-                                                   Class<T> resourceType) {
+                                                  String configSection,
+                                                  Class<T> resourceType) {
         return loadConfig(configSection, factory.configType())
-            .flatMap(config -> createResource(factory, config, resourceType, configSection));
+        .flatMap(config -> createResource(factory, config, resourceType, configSection));
     }
 
     @SuppressWarnings("unchecked")
@@ -104,9 +104,9 @@ public final class SpiResourceProvider implements ResourceProvider {
     }
 
     private <T, C> Promise<T> createResource(ResourceFactory<T, C> factory,
-                                              C config,
-                                              Class<T> resourceType,
-                                              String configSection) {
+                                             C config,
+                                             Class<T> resourceType,
+                                             String configSection) {
         return factory.provision(config)
                       .mapError(cause -> ResourceProvisioningError.creationFailed(resourceType, configSection, cause));
     }

@@ -81,15 +81,10 @@ public interface HttpRouteRegistry {
                                   .key();
                 var value = valuePut.cause()
                                     .value();
-                log.debug("HttpRouteRegistry.onValuePut received: keyType={}, valueType={}",
-                          key.getClass()
-                             .getSimpleName(),
-                          value.getClass()
-                               .getSimpleName());
                 if (key instanceof HttpRouteKey httpRouteKey && value instanceof HttpRouteValue httpRouteValue) {
-                    log.info("HttpRouteRegistry: Processing HttpRouteKey {} {}",
-                             httpRouteKey.httpMethod(),
-                             httpRouteKey.pathPrefix());
+                    log.debug("HttpRouteRegistry: Processing HttpRouteKey {} {}",
+                              httpRouteKey.httpMethod(),
+                              httpRouteKey.pathPrefix());
                     var routeInfo = RouteInfo.routeInfo(httpRouteKey.httpMethod(),
                                                         httpRouteKey.pathPrefix(),
                                                         httpRouteValue.nodes());
@@ -101,11 +96,10 @@ public interface HttpRouteRegistry {
                                          updated.put(httpRouteKey.pathPrefix(), routeInfo);
                                          return updated;
                                      });
-                    log.info("HttpRouteRegistry: Registered route {} {} -> {} nodes",
+                    log.info("HttpRouteRegistry: Registered route {} {} -> {}",
                              httpRouteKey.httpMethod(),
                              httpRouteKey.pathPrefix(),
-                             httpRouteValue.nodes()
-                                           .size());
+                             httpRouteValue.nodes());
                 }
             }
 

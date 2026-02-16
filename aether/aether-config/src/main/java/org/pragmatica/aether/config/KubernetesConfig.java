@@ -32,6 +32,6 @@ public record KubernetesConfig(String namespace,
     }
 
     public boolean hasStorageClass() {
-        return !storageClass.isBlank();
+        return ! storageClass.isBlank();
     }
 }

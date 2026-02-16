@@ -21,43 +21,36 @@ import java.util.Properties;
 /// @param properties     Additional driver-specific properties
 /// @param jdbcUrl        Override JDBC URL (optional, overrides host/port/database)
 /// @param r2dbcUrl       Override R2DBC URL (optional, overrides host/port/database)
-public record DatabaseConnectorConfig(
-    String name,
-    DatabaseType type,
-    String host,
-    int port,
-    String database,
-    Option<String> username,
-    Option<String> password,
-    PoolConfig poolConfig,
-    Map<String, String> properties,
-    Option<String> jdbcUrl,
-    Option<String> r2dbcUrl
-) {
+public record DatabaseConnectorConfig(String name,
+                                      DatabaseType type,
+                                      String host,
+                                      int port,
+                                      String database,
+                                      Option<String> username,
+                                      Option<String> password,
+                                      PoolConfig poolConfig,
+                                      Map<String, String> properties,
+                                      Option<String> jdbcUrl,
+                                      Option<String> r2dbcUrl) {
     /// Override toString() to mask password for security.
     @Override
     public String toString() {
-        return "DatabaseConnectorConfig[name=" + name +
-               ", type=" + type +
-               ", host=" + host +
-               ", port=" + port +
-               ", database=" + database +
-               ", username=[REDACTED]" +
-               ", password=[REDACTED]" +
-               ", poolConfig=" + poolConfig +
-               ", properties=" + properties +
-               ", jdbcUrl=" + sanitizeUrl(jdbcUrl) +
-               ", r2dbcUrl=" + sanitizeUrl(r2dbcUrl) + "]";
+        return "DatabaseConnectorConfig[name=" + name + ", type=" + type + ", host=" + host + ", port=" + port
+               + ", database=" + database + ", username=[REDACTED]" + ", password=[REDACTED]" + ", poolConfig=" + poolConfig
+               + ", properties=" + properties + ", jdbcUrl=" + sanitizeUrl(jdbcUrl) + ", r2dbcUrl=" + sanitizeUrl(r2dbcUrl)
+               + "]";
     }
 
     private static String sanitizeUrl(Option<String> url) {
-        return url.map(DatabaseConnectorConfig::removeCredentialsFromUrl).or("none");
+        return url.map(DatabaseConnectorConfig::removeCredentialsFromUrl)
+                  .or("none");
     }
 
     private static String removeCredentialsFromUrl(String url) {
         // Remove embedded credentials like user:password@ from URLs
         return url.replaceAll("://[^:]+:[^@]+@", "://[REDACTED]@");
     }
+
     /// Creates a config with required parameters.
     ///
     /// @param name     Connector name
@@ -67,19 +60,24 @@ public record DatabaseConnectorConfig(
     /// @param username Connection username
     /// @param password Connection password
     /// @return Result with config or validation error
-    public static Result<DatabaseConnectorConfig> databaseConnectorConfig(
-        String name,
-        DatabaseType type,
-        String host,
-        String database,
-        String username,
-        String password
-    ) {
+    public static Result<DatabaseConnectorConfig> databaseConnectorConfig(String name,
+                                                                          DatabaseType type,
+                                                                          String host,
+                                                                          String database,
+                                                                          String username,
+                                                                          String password) {
         return validate(name, type, host, database)
-            .map(_ -> new DatabaseConnectorConfig(
-                name, type, host, 0, database, Option.option(username), Option.option(password),
-                PoolConfig.DEFAULT, Map.of(), Option.none(), Option.none()
-            ));
+        .map(_ -> new DatabaseConnectorConfig(name,
+                                              type,
+                                              host,
+                                              0,
+                                              database,
+                                              Option.option(username),
+                                              Option.option(password),
+                                              PoolConfig.DEFAULT,
+                                              Map.of(),
+                                              Option.none(),
+                                              Option.none()));
     }
 
     /// Creates a config from a JDBC URL.
@@ -89,25 +87,31 @@ public record DatabaseConnectorConfig(
     /// @param username Connection username
     /// @param password Connection password
     /// @return Result with config or validation error
-    public static Result<DatabaseConnectorConfig> databaseConnectorConfigFromJdbcUrl(
-        String name,
-        String jdbcUrl,
-        String username,
-        String password
-    ) {
+    public static Result<DatabaseConnectorConfig> databaseConnectorConfigFromJdbcUrl(String name,
+                                                                                     String jdbcUrl,
+                                                                                     String username,
+                                                                                     String password) {
         return Option.option(name)
                      .filter(n -> !n.isBlank())
                      .toResult(Causes.cause("Connector name is required"))
                      .flatMap(_ -> Option.option(jdbcUrl)
-                                        .filter(u -> !u.isBlank())
-                                        .toResult(Causes.cause("JDBC URL is required")))
+                                         .filter(u -> !u.isBlank())
+                                         .toResult(Causes.cause("JDBC URL is required")))
                      .map(url -> {
-                         var type = DatabaseType.fromJdbcUrl(url).or(DatabaseType.POSTGRESQL);
-                         return new DatabaseConnectorConfig(
-                             name, type, "", 0, "", Option.option(username), Option.option(password),
-                             PoolConfig.DEFAULT, Map.of(), Option.some(url), Option.none()
-                         );
-                     });
+                              var type = DatabaseType.fromJdbcUrl(url)
+                                                     .or(DatabaseType.POSTGRESQL);
+                              return new DatabaseConnectorConfig(name,
+                                                                 type,
+                                                                 "",
+                                                                 0,
+                                                                 "",
+                                                                 Option.option(username),
+                                                                 Option.option(password),
+                                                                 PoolConfig.DEFAULT,
+                                                                 Map.of(),
+                                                                 Option.some(url),
+                                                                 Option.none());
+                          });
     }
 
     /// Creates a builder for fluent configuration.
@@ -136,8 +140,10 @@ public record DatabaseConnectorConfig(
     /// @return Properties object with user/password and additional properties
     public Properties toJdbcProperties() {
         var props = new Properties();
-        username.filter(u -> !u.isBlank()).onPresent(u -> props.setProperty("user", u));
-        password.filter(p -> !p.isBlank()).onPresent(p -> props.setProperty("password", p));
+        username.filter(u -> !u.isBlank())
+                .onPresent(u -> props.setProperty("user", u));
+        password.filter(p -> !p.isBlank())
+                .onPresent(p -> props.setProperty("password", p));
         properties.forEach(props::setProperty);
         return props;
     }
@@ -147,13 +153,13 @@ public record DatabaseConnectorConfig(
                      .filter(n -> !n.isBlank())
                      .toResult(Causes.cause("Connector name is required"))
                      .flatMap(_ -> Option.option(type)
-                                        .toResult(Causes.cause("Database type is required")))
+                                         .toResult(Causes.cause("Database type is required")))
                      .flatMap(_ -> Option.option(host)
-                                        .filter(h -> !h.isBlank())
-                                        .toResult(Causes.cause("Database host is required")))
+                                         .filter(h -> !h.isBlank())
+                                         .toResult(Causes.cause("Database host is required")))
                      .flatMap(_ -> Option.option(database)
-                                        .filter(d -> !d.isBlank())
-                                        .toResult(Causes.cause("Database name is required")))
+                                         .filter(d -> !d.isBlank())
+                                         .toResult(Causes.cause("Database name is required")))
                      .map(_ -> Unit.unit());
     }
 
@@ -230,10 +236,17 @@ public record DatabaseConnectorConfig(
 
         public Result<DatabaseConnectorConfig> build() {
             return validate(name, type, host, database)
-                .map(_ -> new DatabaseConnectorConfig(
-                    name, type, host, port, database, username, password,
-                    poolConfig, properties, jdbcUrl, r2dbcUrl
-                ));
+            .map(_ -> new DatabaseConnectorConfig(name,
+                                                  type,
+                                                  host,
+                                                  port,
+                                                  database,
+                                                  username,
+                                                  password,
+                                                  poolConfig,
+                                                  properties,
+                                                  jdbcUrl,
+                                                  r2dbcUrl));
         }
     }
 }

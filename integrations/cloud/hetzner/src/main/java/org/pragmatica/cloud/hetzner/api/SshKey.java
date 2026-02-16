@@ -17,15 +17,14 @@
 
 package org.pragmatica.cloud.hetzner.api;
 
+import java.util.List;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import java.util.List;
 
 /// Hetzner Cloud SSH key model.
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record SshKey(long id, String name, String fingerprint, @JsonProperty("public_key") String publicKey) {
-
     /// Request to create a new SSH key.
     public record CreateSshKeyRequest(String name, @JsonProperty("public_key") String publicKey) {
         public static CreateSshKeyRequest createSshKeyRequest(String name, String publicKey) {

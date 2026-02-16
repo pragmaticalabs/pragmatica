@@ -142,8 +142,10 @@ public interface ControlLoop {
                 var value = valuePut.cause()
                                     .value();
                 switch (key) {
-                    case SliceTargetKey(var artifactBase) when value instanceof SliceTargetValue sliceTargetValue -> registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()), sliceTargetValue.targetInstances());
-                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue(SliceState state) -> handleSliceStateChange(sliceNodeKey, state);
+                    case SliceTargetKey(var artifactBase) when value instanceof SliceTargetValue sliceTargetValue -> registerBlueprint(artifactBase.withVersion(sliceTargetValue.currentVersion()),
+                                                                                                                                       sliceTargetValue.targetInstances());
+                    case SliceNodeKey sliceNodeKey when value instanceof SliceNodeValue(SliceState state) -> handleSliceStateChange(sliceNodeKey,
+                                                                                                                                    state);
                     case null, default -> {}
                 }
             }
@@ -206,7 +208,7 @@ public interface ControlLoop {
 
             private void runEvaluation() {
                 // Scheduler boundary - generic catch prevents scheduler thread death
-                try {
+                try{
                     if (blueprints.isEmpty()) {
                         log.trace("No blueprints registered, skipping evaluation");
                         return;
@@ -327,7 +329,8 @@ public interface ControlLoop {
                     log.trace("No scaling decisions");
                     return;
                 }
-                var scalingConfig = configRef.get().scalingConfig();
+                var scalingConfig = configRef.get()
+                                             .scalingConfig();
                 var errorRateHigh = compositeLoadFactor.isErrorRateHigh();
                 for (var change : decisions.changes()) {
                     var shouldApply = shouldApplyScalingDecision(change, loadFactorResult, scalingConfig, errorRateHigh);
@@ -417,7 +420,8 @@ public interface ControlLoop {
             }
 
             private boolean isSliceCooldownExpired(Map.Entry<Artifact, Long> entry, long now) {
-                return (now - entry.getValue()) >= configRef.get().sliceCooldownMs();
+                return (now - entry.getValue()) >= configRef.get()
+                                                            .sliceCooldownMs();
             }
 
             private void applyChange(BlueprintChange change) {

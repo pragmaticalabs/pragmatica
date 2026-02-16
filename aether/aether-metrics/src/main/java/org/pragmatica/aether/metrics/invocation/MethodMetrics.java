@@ -207,8 +207,13 @@ public final class MethodMetrics {
                                         long totalDurationNs,
                                         int[] histogram,
                                         long[] latencySamples) {
-            return new Snapshot(methodName, count, successCount, failureCount,
-                               totalDurationNs, histogram, latencySamples);
+            return new Snapshot(methodName,
+                                count,
+                                successCount,
+                                failureCount,
+                                totalDurationNs,
+                                histogram,
+                                latencySamples);
         }
 
         /// Calculate average latency in nanoseconds.
@@ -235,7 +240,7 @@ public final class MethodMetrics {
             }
             var sorted = latencySamples.clone();
             Arrays.sort(sorted);
-            int index = Math.min((int) (p * sorted.length), sorted.length - 1);
+            int index = Math.min((int)(p * sorted.length), sorted.length - 1);
             return sorted[index];
         }
 

@@ -17,11 +17,11 @@ import org.pragmatica.messaging.MessageReceiver;
 import org.pragmatica.lang.io.TimeSpan;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
+import org.pragmatica.lang.Functions.Fn2;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import org.pragmatica.lang.Functions.Fn2;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -272,12 +272,13 @@ class InvocationHandlerImpl implements InvocationHandler {
         // Record invocation start for active invocation tracking
         metricsCollector.onPresent(mc -> mc.recordStart(request.targetSlice(), request.method()));
         // Delegate aspect logging to interceptor, then handle response/metrics
-        aspectInterceptor.intercept(
-            request.targetSlice(), request.method(), request.requestId(),
-            () -> invokeWithHttpRouting(request, bridge)
-        ).timeout(invocationTimeout)
-         .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
-         .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
+        aspectInterceptor.intercept(request.targetSlice(),
+                                    request.method(),
+                                    request.requestId(),
+                                    () -> invokeWithHttpRouting(request, bridge))
+                         .timeout(invocationTimeout)
+                         .onSuccess(data -> handleInvocationSuccess(request, data, startTime, requestBytes))
+                         .onFailure(cause -> handleInvocationFailure(request, cause, startTime, requestBytes));
     }
 
     /// Attempt to route HTTP requests through SliceRouter if available.

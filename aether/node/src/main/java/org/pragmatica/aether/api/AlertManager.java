@@ -421,7 +421,7 @@ public class AlertManager {
             sb.append("],");
             sb.append("\"lastError\":\"")
               .append(escapeJson(alert.lastError.map(Cause::message)
-                                                .or("unknown")))
+                                      .or("unknown")))
               .append("\",");
             sb.append("\"timestamp\":")
               .append(alert.triggeredAt);

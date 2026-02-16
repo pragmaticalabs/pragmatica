@@ -73,8 +73,12 @@ public final class ForgeApiResponses {
                               long totalFailures) {}
 
     /// Real Aether invocation aggregates (EMA-smoothed).
-    public record AetherAggregates(double rps, double successRate, double avgLatencyMs,
-                                    long totalInvocations, long totalSuccess, long totalFailures) {}
+    public record AetherAggregates(double rps,
+                                   double successRate,
+                                   double avgLatencyMs,
+                                   long totalInvocations,
+                                   long totalSuccess,
+                                   long totalFailures) {}
 
     /// Load status information derived from ConfigurableLoadRunner.
     public record LoadInfo(String state,
@@ -168,7 +172,6 @@ public final class ForgeApiResponses {
     public record RateSetResponse(boolean success, int newRate) {}
 
     // ========== Simulator Responses ===========
-
     /// Inventory mode response.
     public record InventoryModeResponse(String mode) {}
 
@@ -240,5 +243,4 @@ public final class ForgeApiResponses {
     // ========== Multiplier/Config Responses ==========
     /// Response from multiplier set operation.
     public record MultiplierSetResponse(boolean success, double multiplier) {}
-
 }

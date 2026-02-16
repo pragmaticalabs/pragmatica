@@ -96,8 +96,10 @@ public final class StatusRoutes implements RouteSource {
         }
         // Add nodes from KV-Store slice entries
         node.kvStore()
-            .forEach(SliceNodeKey.class, SliceNodeValue.class,
-                     (key, _) -> nodeIds.add(key.nodeId().id()));
+            .forEach(SliceNodeKey.class,
+                     SliceNodeValue.class,
+                     (key, _) -> nodeIds.add(key.nodeId()
+                                                .id()));
         return new NodesResponse(List.copyOf(nodeIds));
     }
 

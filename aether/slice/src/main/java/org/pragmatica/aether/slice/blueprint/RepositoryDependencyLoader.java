@@ -35,7 +35,7 @@ public interface RepositoryDependencyLoader {
         if (!manifest.artifact()
                      .equals(expected)) {
             return ExpanderError.ArtifactMismatch.artifactMismatch(expected,
-                                                        manifest.artifact())
+                                                                   manifest.artifact())
                                 .result();
         }
         return Result.success(manifest);

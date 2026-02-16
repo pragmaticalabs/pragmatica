@@ -1,5 +1,7 @@
 package org.pragmatica.aether.metrics.eventloop;
 
+import org.pragmatica.lang.Option;
+
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
@@ -12,7 +14,6 @@ import io.netty.channel.EventLoop;
 import io.netty.channel.EventLoopGroup;
 import io.netty.channel.SingleThreadEventLoop;
 import io.netty.util.concurrent.EventExecutor;
-import org.pragmatica.lang.Option;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

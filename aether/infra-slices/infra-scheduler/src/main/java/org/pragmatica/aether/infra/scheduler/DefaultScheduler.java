@@ -6,8 +6,6 @@ import org.pragmatica.lang.Promise;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.io.TimeSpan;
 
-import static org.pragmatica.lang.Option.option;
-
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,6 +17,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.pragmatica.lang.Option.option;
 
 /// Default implementation of Scheduler using ScheduledExecutorService.
 final class DefaultScheduler implements Scheduler {
@@ -122,9 +122,9 @@ final class DefaultScheduler implements Scheduler {
     public Promise<Boolean> cancel(String name) {
         return Promise.success(Option.option(tasks.remove(name))
                                      .onPresent(entry -> {
-                                         entry.cancel();
-                                         log.debug("Cancelled task '{}'", name);
-                                     })
+                                   entry.cancel();
+                                   log.debug("Cancelled task '{}'", name);
+                               })
                                      .isPresent());
     }
 

@@ -55,7 +55,9 @@ public class LogLevelRegistry {
     private void loadLevel(LogLevelKey key, LogLevelValue value) {
         registry.put(key.loggerName(), value.level());
         applyLevel(key.loggerName(), value.level());
-        log.debug("Loaded log level from KV-Store: {} -> {}", key.loggerName(), value.level());
+        log.debug("Loaded log level from KV-Store: {} -> {}",
+                  key.loggerName(),
+                  value.level());
     }
 
     /// Set log level for a specific logger and persist to KV-Store.
@@ -65,11 +67,12 @@ public class LogLevelRegistry {
     public Promise<Unit> setLevel(String loggerName, String level) {
         var key = LogLevelKey.logLevelKey(loggerName);
         var value = LogLevelValue.logLevelValue(loggerName, level);
-        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<>(key, value);
-        return clusterNode.<Unit>apply(List.of(command))
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
+        return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> applyAndStore(loggerName, level))
                           .onFailure(cause -> log.error("Failed to persist log level for {}: {}",
-                                                        loggerName, cause.message()));
+                                                        loggerName,
+                                                        cause.message()));
     }
 
     /// Remove log level override for a specific logger and persist removal to KV-Store.
@@ -78,11 +81,12 @@ public class LogLevelRegistry {
     @SuppressWarnings("unchecked")
     public Promise<Unit> resetLevel(String loggerName) {
         var key = LogLevelKey.logLevelKey(loggerName);
-        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Remove<>(key);
-        return clusterNode.<Unit>apply(List.of(command))
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
+        return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> removeAndReset(loggerName))
                           .onFailure(cause -> log.error("Failed to persist log level removal for {}: {}",
-                                                        loggerName, cause.message()));
+                                                        loggerName,
+                                                        cause.message()));
     }
 
     /// Returns an immutable copy of all configured log level overrides.
@@ -96,7 +100,9 @@ public class LogLevelRegistry {
         value instanceof LogLevelValue logLevelValue) {
             registry.put(logLevelKey.loggerName(), logLevelValue.level());
             applyLevel(logLevelKey.loggerName(), logLevelValue.level());
-            log.debug("Log level updated from cluster: {} -> {}", logLevelKey.loggerName(), logLevelValue.level());
+            log.debug("Log level updated from cluster: {} -> {}",
+                      logLevelKey.loggerName(),
+                      logLevelValue.level());
         }
     }
 

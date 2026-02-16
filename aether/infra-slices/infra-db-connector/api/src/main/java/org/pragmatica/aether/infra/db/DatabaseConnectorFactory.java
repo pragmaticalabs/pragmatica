@@ -7,7 +7,6 @@ import org.pragmatica.lang.Result;
 /// Implementations are discovered via ServiceLoader and selected based on
 /// the configuration and available drivers.
 public interface DatabaseConnectorFactory {
-
     /// Creates a new DatabaseConnector with the given configuration.
     ///
     /// @param config Connector configuration

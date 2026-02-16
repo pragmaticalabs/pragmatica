@@ -65,9 +65,10 @@ public interface LoadBalancerManager {
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                var key = valuePut.cause().key();
-                var value = valuePut.cause().value();
-
+                var key = valuePut.cause()
+                                  .key();
+                var value = valuePut.cause()
+                                    .value();
                 if (key instanceof HttpRouteKey routeKey && value instanceof HttpRouteValue routeValue) {
                     handleRouteChange(routeKey, routeValue);
                 }
@@ -85,17 +86,16 @@ public interface LoadBalancerManager {
             void reconcile() {
                 var allNodeIps = new HashSet<String>();
                 var routes = new ArrayList<RouteChange>();
-
-                kvStore.forEach(HttpRouteKey.class, HttpRouteValue.class,
+                kvStore.forEach(HttpRouteKey.class,
+                                HttpRouteValue.class,
                                 (key, value) -> collectRouteForReconciliation(key, value, allNodeIps, routes));
-
                 trackedNodeIps.clear();
                 trackedNodeIps.addAll(allNodeIps);
-
                 var state = loadBalancerState(allNodeIps, routes);
                 log.info("Reconciling load balancer: {} routes, {} node IPs", routes.size(), allNodeIps.size());
                 provider.reconcile(state)
-                        .onFailure(cause -> log.error("Load balancer reconciliation failed: {}", cause.message()));
+                        .onFailure(cause -> log.error("Load balancer reconciliation failed: {}",
+                                                      cause.message()));
             }
 
             private void collectRouteForReconciliation(HttpRouteKey routeKey,
@@ -104,7 +104,6 @@ public interface LoadBalancerManager {
                                                        List<RouteChange> routes) {
                 var nodeIps = resolveNodeIps(routeValue.nodes());
                 allNodeIps.addAll(nodeIps);
-
                 if (!nodeIps.isEmpty()) {
                     routes.add(routeChange(routeKey.httpMethod(), routeKey.pathPrefix(), nodeIps));
                 }
@@ -113,12 +112,16 @@ public interface LoadBalancerManager {
             private void handleRouteChange(HttpRouteKey routeKey, HttpRouteValue routeValue) {
                 var nodeIps = resolveNodeIps(routeValue.nodes());
                 trackedNodeIps.addAll(nodeIps);
-
                 var change = routeChange(routeKey.httpMethod(), routeKey.pathPrefix(), nodeIps);
-                log.debug("Route changed: {} {} -> {} nodes", routeKey.httpMethod(), routeKey.pathPrefix(), nodeIps.size());
+                log.debug("Route changed: {} {} -> {} nodes",
+                          routeKey.httpMethod(),
+                          routeKey.pathPrefix(),
+                          nodeIps.size());
                 provider.onRouteChanged(change)
                         .onFailure(cause -> log.error("Failed to update load balancer route {} {}: {}",
-                                                      routeKey.httpMethod(), routeKey.pathPrefix(), cause.message()));
+                                                      routeKey.httpMethod(),
+                                                      routeKey.pathPrefix(),
+                                                      cause.message()));
             }
 
             private void handleNodeDeparture(NodeId departedNode) {
@@ -133,7 +136,8 @@ public interface LoadBalancerManager {
                     log.info("Node departed, removing IP {} from load balancer", ip);
                     provider.onNodeRemoved(ip)
                             .onFailure(cause -> log.error("Failed to remove node {} from load balancer: {}",
-                                                          ip, cause.message()));
+                                                          ip,
+                                                          cause.message()));
                 }
             }
 
@@ -166,10 +170,10 @@ public interface LoadBalancerManager {
                 if (leaderChange.localNodeIsLeader()) {
                     log.info("Node {} became leader, activating load balancer manager", self);
                     var activeState = new LoadBalancerManagerState.Active(provider,
-                                                                         topologyManager,
-                                                                         kvStore,
-                                                                         appHttpPort,
-                                                                         ConcurrentHashMap.newKeySet());
+                                                                          topologyManager,
+                                                                          kvStore,
+                                                                          appHttpPort,
+                                                                          ConcurrentHashMap.newKeySet());
                     state.set(activeState);
                     activeState.reconcile();
                 } else {
@@ -180,20 +184,22 @@ public interface LoadBalancerManager {
 
             @Override
             public void onValuePut(ValuePut<AetherKey, AetherValue> valuePut) {
-                state.get().onValuePut(valuePut);
+                state.get()
+                     .onValuePut(valuePut);
             }
 
             @Override
             public void onValueRemove(ValueRemove<AetherKey, AetherValue> valueRemove) {
-                state.get().onValueRemove(valueRemove);
+                state.get()
+                     .onValueRemove(valueRemove);
             }
 
             @Override
             public void onTopologyChange(TopologyChangeNotification topologyChange) {
-                state.get().onTopologyChange(topologyChange);
+                state.get()
+                     .onTopologyChange(topologyChange);
             }
         }
-
         return new loadBalancerManager(self,
                                        kvStore,
                                        topologyManager,

@@ -20,7 +20,6 @@ import org.pragmatica.lang.Promise;
 ///     });
 /// }```
 public interface ResourceProvider {
-
     /// Provide a resource instance for the given type and configuration section.
     ///
     /// If an instance has already been created for this (type, configSection) pair,
@@ -40,7 +39,6 @@ public interface ResourceProvider {
     boolean hasFactory(Class<?> resourceType);
 
     // Static accessor pattern
-
     /// Get the global ResourceProvider instance.
     ///
     /// @return ResourceProvider if configured, empty otherwise

@@ -471,21 +471,6 @@
                     </executions>
                 </plugin>
                 <plugin>
-                    <groupId>org.pragmatica-lite</groupId>
-                    <artifactId>jbct-maven-plugin</artifactId>
-                    <version>${project.version}</version>
-                    <configuration>
-                        <skip>${jbct.skip}</skip>
-                    </configuration>
-                    <executions>
-                        <execution>
-                            <goals>
-                                <goal>format</goal>
-                            </goals>
-                        </execution>
-                    </executions>
-                </plugin>
-                <plugin>
                     <artifactId>maven-shade-plugin</artifactId>
                     <version>3.6.0</version>
                     <configuration>
@@ -572,12 +557,6 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
             </plugin>
-            <!-- jbct-maven-plugin commented until 0.15.0 is published
-            <plugin>
-                <groupId>org.pragmatica-lite</groupId>
-                <artifactId>jbct-maven-plugin</artifactId>
-            </plugin>
-            -->
         </plugins>
     </build>
 

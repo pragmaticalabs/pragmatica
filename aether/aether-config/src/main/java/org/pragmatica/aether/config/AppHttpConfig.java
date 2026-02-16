@@ -33,7 +33,11 @@ public record AppHttpConfig(boolean enabled,
     }
 
     /// Factory method following JBCT naming convention.
-    public static AppHttpConfig appHttpConfig(boolean enabled, int port, Set<String> apiKeys, long forwardTimeoutMs, int forwardMaxRetries) {
+    public static AppHttpConfig appHttpConfig(boolean enabled,
+                                              int port,
+                                              Set<String> apiKeys,
+                                              long forwardTimeoutMs,
+                                              int forwardMaxRetries) {
         return new AppHttpConfig(enabled, port, apiKeys, forwardTimeoutMs, forwardMaxRetries);
     }
 

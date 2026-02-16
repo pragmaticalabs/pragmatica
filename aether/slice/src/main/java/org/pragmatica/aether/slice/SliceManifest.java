@@ -94,13 +94,12 @@ public interface SliceManifest {
         return Option.option(mainAttrs.getValue(SLICE_ARTIFACT_ATTR))
                      .filter(s -> !s.isBlank())
                      .toResult(MISSING_ARTIFACT_ATTR)
-                     .flatMap(artifactStr ->
-                         Option.option(mainAttrs.getValue(SLICE_CLASS_ATTR))
-                               .filter(s -> !s.isBlank())
-                               .toResult(MISSING_CLASS_ATTR)
-                               .flatMap(sliceClass ->
-                                   Artifact.artifact(artifactStr)
-                                           .map(artifact -> new SliceManifestInfo(artifact, sliceClass))));
+                     .flatMap(artifactStr -> Option.option(mainAttrs.getValue(SLICE_CLASS_ATTR))
+                                                   .filter(s -> !s.isBlank())
+                                                   .toResult(MISSING_CLASS_ATTR)
+                                                   .flatMap(sliceClass -> Artifact.artifact(artifactStr)
+                                                                                  .map(artifact -> new SliceManifestInfo(artifact,
+                                                                                                                         sliceClass))));
     }
 
     /// Information extracted from a slice JAR manifest.

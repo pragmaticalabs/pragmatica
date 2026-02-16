@@ -2,6 +2,7 @@ package org.pragmatica.aether.controller;
 
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
+
 /// Immutable sliding window for relative change calculation.
 ///
 ///
@@ -43,7 +44,8 @@ public record MetricWindow(double[] valuesInternal, int head, int count, double 
     public static Result<MetricWindow> metricWindow(int windowSize) {
         return windowSize > 0
                ? Result.success(new MetricWindow(new double[windowSize], 0, 0, 0.0, 0))
-               : Causes.cause("windowSize must be positive, got: " + windowSize).result();
+               : Causes.cause("windowSize must be positive, got: " + windowSize)
+                       .result();
     }
 
     /// Returns a defensive copy of the internal values array.

@@ -28,27 +28,28 @@ public sealed interface AspectProxyRoutes {
     static RouteSource aspectProxyRoutes(ForgeCluster cluster) {
         var http = JdkHttpOperations.jdkHttpOperations();
         return in("/api/aspects")
-        .serve(listAspectsRoute(cluster, http),
-               setAspectRoute(cluster, http),
-               deleteAspectRoute(cluster, http));
+        .serve(listAspectsRoute(cluster, http), setAspectRoute(cluster, http), deleteAspectRoute(cluster, http));
     }
 
     private static Route<AspectListResponse> listAspectsRoute(ForgeCluster cluster,
-                                                               JdkHttpOperations http) {
+                                                              JdkHttpOperations http) {
         return Route.<AspectListResponse> get("")
                     .to(_ -> proxyGet(cluster, http, "/api/aspects"))
                     .asJson();
     }
 
     private static Route<AspectSetResponse> setAspectRoute(ForgeCluster cluster,
-                                                             JdkHttpOperations http) {
+                                                           JdkHttpOperations http) {
         return Route.<AspectSetResponse> post("")
-                    .to(ctx -> proxyPost(cluster, http, "/api/aspects", ctx.bodyAsString()))
+                    .to(ctx -> proxyPost(cluster,
+                                         http,
+                                         "/api/aspects",
+                                         ctx.bodyAsString()))
                     .asJson();
     }
 
     private static Route<AspectDeleteResponse> deleteAspectRoute(ForgeCluster cluster,
-                                                                   JdkHttpOperations http) {
+                                                                 JdkHttpOperations http) {
         return Route.<AspectDeleteResponse> delete("")
                     .withPath(aString())
                     .to(key -> proxyDelete(cluster, http, "/api/aspects/" + key))
@@ -56,8 +57,8 @@ public sealed interface AspectProxyRoutes {
     }
 
     private static Promise<AspectListResponse> proxyGet(ForgeCluster cluster,
-                                                         JdkHttpOperations http,
-                                                         String path) {
+                                                        JdkHttpOperations http,
+                                                        String path) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
                       .flatMap(port -> sendGet(http, port, path))
@@ -65,9 +66,9 @@ public sealed interface AspectProxyRoutes {
     }
 
     private static Promise<AspectSetResponse> proxyPost(ForgeCluster cluster,
-                                                         JdkHttpOperations http,
-                                                         String path,
-                                                         String body) {
+                                                        JdkHttpOperations http,
+                                                        String path,
+                                                        String body) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
                       .flatMap(port -> sendPost(http, port, path, body))
@@ -75,8 +76,8 @@ public sealed interface AspectProxyRoutes {
     }
 
     private static Promise<AspectDeleteResponse> proxyDelete(ForgeCluster cluster,
-                                                               JdkHttpOperations http,
-                                                               String path) {
+                                                             JdkHttpOperations http,
+                                                             String path) {
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
                       .flatMap(port -> sendDelete(http, port, path))
@@ -90,18 +91,22 @@ public sealed interface AspectProxyRoutes {
                                  .timeout(HTTP_TIMEOUT)
                                  .build();
         return http.sendString(request)
-                   .flatMap(result -> result.toResult().async());
+                   .flatMap(result -> result.toResult()
+                                            .async());
     }
 
     private static Promise<String> sendPost(JdkHttpOperations http, int port, String path, String body) {
         var request = HttpRequest.newBuilder()
                                  .uri(URI.create("http://localhost:" + port + path))
                                  .header("Content-Type", "application/json")
-                                 .POST(HttpRequest.BodyPublishers.ofString(body != null ? body : ""))
+                                 .POST(HttpRequest.BodyPublishers.ofString(body != null
+                                                                           ? body
+                                                                           : ""))
                                  .timeout(HTTP_TIMEOUT)
                                  .build();
         return http.sendString(request)
-                   .flatMap(result -> result.toResult().async());
+                   .flatMap(result -> result.toResult()
+                                            .async());
     }
 
     private static Promise<String> sendDelete(JdkHttpOperations http, int port, String path) {
@@ -111,7 +116,8 @@ public sealed interface AspectProxyRoutes {
                                  .timeout(HTTP_TIMEOUT)
                                  .build();
         return http.sendString(request)
-                   .flatMap(result -> result.toResult().async());
+                   .flatMap(result -> result.toResult()
+                                            .async());
     }
 
     enum LeaderNotAvailable implements Cause {

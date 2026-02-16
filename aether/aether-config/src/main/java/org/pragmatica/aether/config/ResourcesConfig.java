@@ -10,7 +10,10 @@ public record ResourcesConfig(String cpuRequest,
                               String memoryRequest,
                               String memoryLimit) {
     /// Factory method following JBCT naming convention.
-    public static ResourcesConfig resourcesConfig(String cpuRequest, String cpuLimit, String memoryRequest, String memoryLimit) {
+    public static ResourcesConfig resourcesConfig(String cpuRequest,
+                                                  String cpuLimit,
+                                                  String memoryRequest,
+                                                  String memoryLimit) {
         return new ResourcesConfig(cpuRequest, cpuLimit, memoryRequest, memoryLimit);
     }
 

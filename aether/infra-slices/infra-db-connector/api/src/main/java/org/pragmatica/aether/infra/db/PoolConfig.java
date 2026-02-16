@@ -13,25 +13,27 @@ import java.time.Duration;
 /// @param maxLifetime          Maximum lifetime of a connection
 /// @param validationQuery      SQL query to validate connections (optional)
 /// @param leakDetectionTimeout Time after which connection leak warnings are logged
-public record PoolConfig(
-    int minConnections,
-    int maxConnections,
-    Duration connectionTimeout,
-    Duration idleTimeout,
-    Duration maxLifetime,
-    Option<String> validationQuery,
-    Duration leakDetectionTimeout
-) {
+public record PoolConfig(int minConnections,
+                         int maxConnections,
+                         Duration connectionTimeout,
+                         Duration idleTimeout,
+                         Duration maxLifetime,
+                         Option<String> validationQuery,
+                         Duration leakDetectionTimeout) {
     /// Default pool configuration suitable for most applications.
-    public static final PoolConfig DEFAULT = new PoolConfig(
-        2,                          // minConnections
-        10,                         // maxConnections
-        Duration.ofSeconds(30),     // connectionTimeout
-        Duration.ofMinutes(10),     // idleTimeout
-        Duration.ofMinutes(30),     // maxLifetime
-        Option.none(),              // validationQuery (use driver default)
-        Duration.ZERO               // leakDetectionTimeout (disabled)
-    );
+    public static final PoolConfig DEFAULT = new PoolConfig(2,
+                                                            // minConnections
+    10,
+                                                            // maxConnections
+    Duration.ofSeconds(30),
+                                                            // connectionTimeout
+    Duration.ofMinutes(10),
+                                                            // idleTimeout
+    Duration.ofMinutes(30),
+                                                            // maxLifetime
+    Option.none(),
+                                                            // validationQuery (use driver default)
+    Duration.ZERO);
 
     /// Creates a pool config with default values.
     ///
@@ -46,15 +48,13 @@ public record PoolConfig(
     /// @param maxConnections Maximum connections
     /// @return Pool configuration
     public static PoolConfig poolConfig(int minConnections, int maxConnections) {
-        return new PoolConfig(
-            minConnections,
-            maxConnections,
-            DEFAULT.connectionTimeout,
-            DEFAULT.idleTimeout,
-            DEFAULT.maxLifetime,
-            DEFAULT.validationQuery,
-            DEFAULT.leakDetectionTimeout
-        );
+        return new PoolConfig(minConnections,
+                              maxConnections,
+                              DEFAULT.connectionTimeout,
+                              DEFAULT.idleTimeout,
+                              DEFAULT.maxLifetime,
+                              DEFAULT.validationQuery,
+                              DEFAULT.leakDetectionTimeout);
     }
 
     /// Creates a builder for fluent configuration.
@@ -112,15 +112,13 @@ public record PoolConfig(
         }
 
         public PoolConfig build() {
-            return new PoolConfig(
-                minConnections,
-                maxConnections,
-                connectionTimeout,
-                idleTimeout,
-                maxLifetime,
-                validationQuery,
-                leakDetectionTimeout
-            );
+            return new PoolConfig(minConnections,
+                                  maxConnections,
+                                  connectionTimeout,
+                                  idleTimeout,
+                                  maxLifetime,
+                                  validationQuery,
+                                  leakDetectionTimeout);
         }
     }
 }

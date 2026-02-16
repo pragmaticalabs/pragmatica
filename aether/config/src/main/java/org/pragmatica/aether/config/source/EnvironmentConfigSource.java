@@ -76,7 +76,6 @@ public final class EnvironmentConfigSource implements ConfigSource {
     private static Map<String, String> loadFromEnvironment(String prefix) {
         var result = new LinkedHashMap<String, String>();
         var env = System.getenv();
-
         for (var entry : env.entrySet()) {
             var key = entry.getKey();
             if (key.startsWith(prefix)) {
@@ -84,12 +83,12 @@ public final class EnvironmentConfigSource implements ConfigSource {
                 result.put(normalizedKey, entry.getValue());
             }
         }
-
         return result;
     }
 
     /// Convert SCREAMING_SNAKE_CASE to dot.notation.lowercase.
     private static String normalizeKey(String key) {
-        return key.toLowerCase().replace('_', '.');
+        return key.toLowerCase()
+                  .replace('_', '.');
     }
 }

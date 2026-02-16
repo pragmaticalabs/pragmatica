@@ -143,15 +143,17 @@ public interface ClusterDeploymentManager {
             void startAutoHealCooldown() {
                 cooldownActive.set(true);
                 log.info("AUTO-HEAL: Starting {}ms cooldown for initial cluster formation",
-                         autoHealConfig.startupCooldown().millis());
+                         autoHealConfig.startupCooldown()
+                                       .millis());
                 SharedScheduler.schedule(() -> {
-                    if (deactivated.get()) {
-                        return;
-                    }
-                    cooldownActive.set(false);
-                    log.info("AUTO-HEAL: Cooldown expired, checking cluster health");
-                    checkAndScheduleAutoHeal();
-                }, autoHealConfig.startupCooldown());
+                                             if (deactivated.get()) {
+                                                 return;
+                                             }
+                                             cooldownActive.set(false);
+                                             log.info("AUTO-HEAL: Cooldown expired, checking cluster health");
+                                             checkAndScheduleAutoHeal();
+                                         },
+                                         autoHealConfig.startupCooldown());
             }
 
             /// Rebuild state from KVStore snapshot on leader activation.
@@ -315,24 +317,25 @@ public interface ClusterDeploymentManager {
 
             /// Compute cluster deficit: target size minus current active nodes.
             private int computeAutoHealDeficit() {
-                return topologyManager.clusterSize() - activeNodes.get().size();
+                return topologyManager.clusterSize() - activeNodes.get()
+                                                                 .size();
             }
 
             /// Provision replacement nodes for the given deficit via ComputeProvider.
             private void provisionReplacements(int deficit) {
                 computeProvider.onPresent(provider -> {
-                    for (int i = 0; i < deficit; i++) {
-                        provider.provision(InstanceType.ON_DEMAND)
-                                .onFailure(cause -> log.warn("AUTO-HEAL: Provisioning failed: {}", cause.message()));
-                    }
-                });
+                                              for (int i = 0; i < deficit; i++) {
+                                                  provider.provision(InstanceType.ON_DEMAND)
+                                                          .onFailure(cause -> log.warn("AUTO-HEAL: Provisioning failed: {}",
+                                                                                       cause.message()));
+                                              }
+                                          });
             }
 
             /// Schedule periodic auto-heal recheck if not already scheduled.
             /// Uses compareAndSet to avoid race conditions.
             private void scheduleAutoHealRecheck() {
-                var future = SharedScheduler.scheduleAtFixedRate(
-                    this::autoHealRecheck, autoHealConfig.retryInterval());
+                var future = SharedScheduler.scheduleAtFixedRate(this::autoHealRecheck, autoHealConfig.retryInterval());
                 if (!autoHealFuture.compareAndSet(null, future)) {
                     future.cancel(false);
                 }
@@ -354,9 +357,12 @@ public interface ClusterDeploymentManager {
                     log.trace("AUTO-HEAL: Cooldown active, deferring provisioning ({} node deficit)", deficit);
                     return;
                 }
-                var currentSize = activeNodes.get().size();
+                var currentSize = activeNodes.get()
+                                             .size();
                 log.info("AUTO-HEAL: Cluster size {} below target {}, provisioning {} replacement node(s)",
-                         currentSize, topologyManager.clusterSize(), deficit);
+                         currentSize,
+                         topologyManager.clusterSize(),
+                         deficit);
                 provisionReplacements(deficit);
                 scheduleAutoHealRecheck();
             }
@@ -368,13 +374,17 @@ public interface ClusterDeploymentManager {
                 }
                 var deficit = computeAutoHealDeficit();
                 if (deficit <= 0) {
-                    log.info("AUTO-HEAL: Cluster at target size {}, cancelling periodic recheck", topologyManager.clusterSize());
+                    log.info("AUTO-HEAL: Cluster at target size {}, cancelling periodic recheck",
+                             topologyManager.clusterSize());
                     cancelAutoHeal();
                     return;
                 }
-                var currentSize = activeNodes.get().size();
+                var currentSize = activeNodes.get()
+                                             .size();
                 log.info("AUTO-HEAL: Cluster still below target ({}/{}), provisioning {} node(s)",
-                         currentSize, topologyManager.clusterSize(), deficit);
+                         currentSize,
+                         topologyManager.clusterSize(),
+                         deficit);
                 provisionReplacements(deficit);
             }
 
@@ -615,7 +625,8 @@ public interface ClusterDeploymentManager {
 
             private List<EndpointKey> findEndpointKeysForNode(NodeId nodeId) {
                 var result = new ArrayList<EndpointKey>();
-                kvStore.forEach(EndpointKey.class, EndpointValue.class,
+                kvStore.forEach(EndpointKey.class,
+                                EndpointValue.class,
                                 (key, value) -> collectEndpointKeyForNode(result, key, value, nodeId));
                 return result;
             }
@@ -624,7 +635,8 @@ public interface ClusterDeploymentManager {
                                                    EndpointKey endpointKey,
                                                    EndpointValue endpointValue,
                                                    NodeId nodeId) {
-                if (endpointValue.nodeId().equals(nodeId)) {
+                if (endpointValue.nodeId()
+                                 .equals(nodeId)) {
                     result.add(endpointKey);
                 }
             }
@@ -634,7 +646,8 @@ public interface ClusterDeploymentManager {
             /// If the node set becomes empty, delete the entry.
             private List<KVCommand<AetherKey>> cleanupHttpRoutesForNode(NodeId removedNode) {
                 var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
-                kvStore.forEach(HttpRouteKey.class, HttpRouteValue.class,
+                kvStore.forEach(HttpRouteKey.class,
+                                HttpRouteValue.class,
                                 (key, value) -> collectRouteCleanupCommand(commands, key, value, removedNode));
                 return commands;
             }
@@ -643,7 +656,8 @@ public interface ClusterDeploymentManager {
                                                     HttpRouteKey routeKey,
                                                     HttpRouteValue routeValue,
                                                     NodeId removedNode) {
-                if (!routeValue.nodes().contains(removedNode)) {
+                if (!routeValue.nodes()
+                               .contains(removedNode)) {
                     return;
                 }
                 var updatedValue = routeValue.withoutNode(removedNode);
@@ -653,7 +667,10 @@ public interface ClusterDeploymentManager {
                 } else {
                     commands.add(new KVCommand.Put<>(routeKey, updatedValue));
                     log.debug("Updating HTTP route {} - removed departed node {}, {} nodes remaining",
-                              routeKey, removedNode, updatedValue.nodes().size());
+                              routeKey,
+                              removedNode,
+                              updatedValue.nodes()
+                                          .size());
                 }
             }
 
@@ -662,7 +679,8 @@ public interface ClusterDeploymentManager {
             private void cleanupStaleHttpRoutes() {
                 var currentNodes = new HashSet<>(activeNodes.get());
                 var commands = new java.util.ArrayList<KVCommand<AetherKey>>();
-                kvStore.forEach(HttpRouteKey.class, HttpRouteValue.class,
+                kvStore.forEach(HttpRouteKey.class,
+                                HttpRouteValue.class,
                                 (key, value) -> collectStaleRouteCleanupCommand(commands, key, value, currentNodes));
                 if (!commands.isEmpty()) {
                     log.debug("Cleaning up {} stale HTTP route entries", commands.size());
@@ -692,8 +710,7 @@ public interface ClusterDeploymentManager {
                     log.debug("Removing stale HTTP route {} (no valid nodes)", routeKey);
                 } else {
                     commands.add(new KVCommand.Put<>(routeKey, updatedValue));
-                    log.debug("Cleaning up HTTP route {} - removed {} stale nodes",
-                              routeKey, staleNodes.size());
+                    log.debug("Cleaning up HTTP route {} - removed {} stale nodes", routeKey, staleNodes.size());
                 }
             }
 
@@ -715,7 +732,7 @@ public interface ClusterDeploymentManager {
                 log.info("Cleaning up {} stale slice entries", staleKeys.size());
                 cluster.apply(commands)
                        .onFailure(cause -> log.error("Failed to clean up stale slice entries: {}",
-                                                      cause.message()));
+                                                     cause.message()));
             }
 
             /// Remove endpoint entries for nodes not in the current topology.
@@ -723,7 +740,8 @@ public interface ClusterDeploymentManager {
             private void cleanupStaleEndpointEntries() {
                 var currentNodes = new HashSet<>(activeNodes.get());
                 var staleKeys = new ArrayList<EndpointKey>();
-                kvStore.forEach(EndpointKey.class, EndpointValue.class,
+                kvStore.forEach(EndpointKey.class,
+                                EndpointValue.class,
                                 (key, value) -> collectStaleEndpointKey(staleKeys, key, value, currentNodes));
                 if (staleKeys.isEmpty()) {
                     return;
@@ -734,13 +752,13 @@ public interface ClusterDeploymentManager {
                 log.info("Cleaning up {} stale endpoint entries", staleKeys.size());
                 cluster.apply(commands)
                        .onFailure(cause -> log.error("Failed to clean up stale endpoint entries: {}",
-                                                      cause.message()));
+                                                     cause.message()));
             }
 
             private void collectStaleEndpointKey(List<EndpointKey> result,
-                                                  EndpointKey endpointKey,
-                                                  EndpointValue endpointValue,
-                                                  Set<NodeId> currentNodes) {
+                                                 EndpointKey endpointKey,
+                                                 EndpointValue endpointValue,
+                                                 Set<NodeId> currentNodes) {
                 if (!currentNodes.contains(endpointValue.nodeId())) {
                     result.add(endpointKey);
                 }
@@ -775,7 +793,7 @@ public interface ClusterDeploymentManager {
                 log.info("Cleaning up {} orphaned slice entries (no matching blueprint)", orphanedEntries.size());
                 cluster.apply(commands)
                        .onFailure(cause -> log.error("Failed to clean up orphaned slice entries: {}",
-                                                      cause.message()));
+                                                     cause.message()));
             }
 
             /// Allocate instances across cluster nodes using round-robin strategy.
@@ -955,9 +973,7 @@ public interface ClusterDeploymentManager {
             }
 
             private boolean isLiveState(SliceState state) {
-                return state != SliceState.FAILED
-                    && state != SliceState.UNLOAD
-                    && state != SliceState.UNLOADING;
+                return state != SliceState.FAILED && state != SliceState.UNLOAD && state != SliceState.UNLOADING;
             }
 
             private void issueLoadCommand(SliceNodeKey sliceKey) {
@@ -1008,7 +1024,8 @@ public interface ClusterDeploymentManager {
                 }
                 log.debug("Performing cluster reconciliation with {} blueprints and {} active nodes",
                           blueprints.size(),
-                          activeNodes.get().size());
+                          activeNodes.get()
+                                     .size());
                 var reconciled = 0;
                 for (var blueprint : blueprints.values()) {
                     var artifact = blueprint.artifact();
@@ -1099,7 +1116,8 @@ public interface ClusterDeploymentManager {
                     activeState.reconcile();
                     // Use startup cooldown for initial formation (no blueprints yet),
                     // immediate auto-heal for leader failover (blueprints restored from KVStore)
-                    if (activeState.blueprints().isEmpty()) {
+                    if (activeState.blueprints()
+                                   .isEmpty()) {
                         activeState.startAutoHealCooldown();
                     } else {
                         activeState.checkAndScheduleAutoHeal();

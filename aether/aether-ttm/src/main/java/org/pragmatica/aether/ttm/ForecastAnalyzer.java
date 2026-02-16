@@ -35,7 +35,7 @@ final class ForecastAnalyzerImpl implements ForecastAnalyzer {
     private static final float HIGH_CPU_THRESHOLD = 0.7f;
     private static final float HIGH_CPU_INCREASE_THRESHOLD = 0.1f;
     private static final double TARGET_CPU_UTILIZATION = 0.6;
-    private static final float CPU_DECREASE_THRESHOLD = -0.15f;
+    private static final float CPU_DECREASE_THRESHOLD = - 0.15f;
     private static final float LOW_CPU_THRESHOLD = 0.3f;
     private static final double SCALE_DOWN_TARGET_CPU = 0.5;
     private static final double MODERATE_CHANGE_THRESHOLD = 0.05;

@@ -1,5 +1,4 @@
 package org.pragmatica.aether.environment;
-
 /// Lifecycle status of a compute instance.
 public sealed interface InstanceStatus {
     record Provisioning() implements InstanceStatus {}

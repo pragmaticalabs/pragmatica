@@ -78,19 +78,19 @@ final class InMemoryDistributedLock implements DistributedLock {
     }
 
     Promise<Unit> releaseLock(String lockId, String ownerId) {
-        return option(locks.get(lockId))
-               .filter(entry -> entry.ownerId().equals(ownerId))
-               .map(entry -> {
-                   locks.remove(lockId, entry);
-                   return Promise.success(unit());
-               })
-               .or(() -> new LockError.LockNotHeld(lockId).<Unit>promise());
+        return option(locks.get(lockId)).filter(entry -> entry.ownerId()
+                                                              .equals(ownerId))
+                     .map(entry -> {
+                         locks.remove(lockId, entry);
+                         return Promise.success(unit());
+                     })
+                     .or(() -> new LockError.LockNotHeld(lockId).<Unit>promise());
     }
 
     Promise<Boolean> extendLock(String lockId, String ownerId, TimeSpan extension) {
-        return Promise.success(option(locks.get(lockId))
-                               .filter(entry -> entry.ownerId().equals(ownerId))
-                               .isPresent());
+        return Promise.success(option(locks.get(lockId)).filter(entry -> entry.ownerId()
+                                                                              .equals(ownerId))
+                                     .isPresent());
     }
 
     private record LockEntry(String ownerId, String token, Instant acquiredAt) {}

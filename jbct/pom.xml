@@ -54,6 +54,7 @@
     </modules>
 
     <properties>
+        <jbct.skip>true</jbct.skip>
         <java.version>25</java.version>
         <maven.compiler.source>${java.version}</maven.compiler.source>
         <maven.compiler.target>${java.version}</maven.compiler.target>
@@ -328,35 +329,6 @@
     </build>
 
     <profiles>
-        <!-- jbct profile disabled - dogfooding creates cycle. Run jbct:check manually on single modules -->
-        <!--
-        <profile>
-            <id>jbct</id>
-            <activation>
-                <property>
-                    <name>jbct.skip</name>
-                    <value>false</value>
-                </property>
-            </activation>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.pragmatica-lite</groupId>
-                        <artifactId>jbct-maven-plugin</artifactId>
-                        <version>0.16.0</version>
-                        <executions>
-                            <execution>
-                                <id>check</id>
-                                <goals>
-                                    <goal>check</goal>
-                                </goals>
-                            </execution>
-                        </executions>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-        -->
         <profile>
             <id>release</id>
             <activation>

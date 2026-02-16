@@ -12,8 +12,8 @@ import java.util.ServiceLoader;
 /// Discovered via ServiceLoader. Use `EnvironmentIntegration.SPI` for the
 /// ServiceLoader-discovered instance, or factory methods for programmatic construction.
 public interface EnvironmentIntegration {
-    Option<EnvironmentIntegration> SPI = Option.from(
-        ServiceLoader.load(EnvironmentIntegration.class).findFirst());
+    Option<EnvironmentIntegration> SPI = Option.from(ServiceLoader.load(EnvironmentIntegration.class)
+                                                                  .findFirst());
 
     Option<ComputeProvider> compute();
 
@@ -33,7 +33,6 @@ public interface EnvironmentIntegration {
         record facetedEnvironment(Option<ComputeProvider> compute,
                                   Option<SecretsProvider> secrets,
                                   Option<LoadBalancerProvider> loadBalancer) implements EnvironmentIntegration {}
-
         return new facetedEnvironment(compute, secrets, loadBalancer);
     }
 }

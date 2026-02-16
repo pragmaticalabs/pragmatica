@@ -37,12 +37,12 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                          boolean expectResponse) implements InvocationMessage {
         /// Factory method following JBCT naming convention. */
         public static InvokeRequest invokeRequest(NodeId sender,
-                                                   String correlationId,
-                                                   String requestId,
-                                                   Artifact targetSlice,
-                                                   MethodName method,
-                                                   byte[] payload,
-                                                   boolean expectResponse) {
+                                                  String correlationId,
+                                                  String requestId,
+                                                  Artifact targetSlice,
+                                                  MethodName method,
+                                                  byte[] payload,
+                                                  boolean expectResponse) {
             return new InvokeRequest(sender, correlationId, requestId, targetSlice, method, payload, expectResponse);
         }
     }
@@ -61,10 +61,10 @@ public sealed interface InvocationMessage extends ProtocolMessage {
                           byte[] payload) implements InvocationMessage {
         /// Factory method following JBCT naming convention. */
         public static InvokeResponse invokeResponse(NodeId sender,
-                                                     String correlationId,
-                                                     String requestId,
-                                                     boolean success,
-                                                     byte[] payload) {
+                                                    String correlationId,
+                                                    String requestId,
+                                                    boolean success,
+                                                    byte[] payload) {
             return new InvokeResponse(sender, correlationId, requestId, success, payload);
         }
     }

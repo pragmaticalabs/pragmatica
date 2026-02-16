@@ -15,35 +15,28 @@ public enum DatabaseType {
     SQLSERVER("sqlserver", 1433, "com.microsoft.sqlserver.jdbc.SQLServerDriver", "sqlserver"),
     DB2("db2", 50000, "com.ibm.db2.jcc.DB2Driver", "db2"),
     COCKROACHDB("cockroachdb", 26257, "org.postgresql.Driver", "postgresql");
-
     private final String name;
     private final int defaultPort;
     private final String driverClassName;
     private final String jdbcProtocol;
-
     DatabaseType(String name, int defaultPort, String driverClassName, String jdbcProtocol) {
         this.name = name;
         this.defaultPort = defaultPort;
         this.driverClassName = driverClassName;
         this.jdbcProtocol = jdbcProtocol;
     }
-
     public String typeName() {
         return name;
     }
-
     public int defaultPort() {
         return defaultPort;
     }
-
     public String driverClassName() {
         return driverClassName;
     }
-
     public String jdbcProtocol() {
         return jdbcProtocol;
     }
-
     /// Builds a JDBC URL for this database type.
     ///
     /// @param host     Database host
@@ -51,7 +44,9 @@ public enum DatabaseType {
     /// @param database Database name
     /// @return JDBC connection URL
     public String buildJdbcUrl(String host, int port, String database) {
-        var actualPort = port > 0 ? port : defaultPort;
+        var actualPort = port > 0
+                         ? port
+                         : defaultPort;
         return switch (this) {
             case SQLITE -> "jdbc:sqlite:" + database;
             case H2 -> database.startsWith("mem:")
@@ -60,7 +55,6 @@ public enum DatabaseType {
             default -> "jdbc:" + jdbcProtocol + "://" + host + ":" + actualPort + "/" + database;
         };
     }
-
     /// Builds an R2DBC URL for this database type.
     ///
     /// @param host     Database host
@@ -68,7 +62,9 @@ public enum DatabaseType {
     /// @param database Database name
     /// @return R2DBC connection URL
     public String buildR2dbcUrl(String host, int port, String database) {
-        var actualPort = port > 0 ? port : defaultPort;
+        var actualPort = port > 0
+                         ? port
+                         : defaultPort;
         return switch (this) {
             case H2 -> database.startsWith("mem:")
                        ? "r2dbc:h2:" + database
@@ -81,7 +77,6 @@ public enum DatabaseType {
             default -> "r2dbc:" + name + "://" + host + ":" + actualPort + "/" + database;
         };
     }
-
     /// Parse database type from string name.
     ///
     /// @param name Database type name (case-insensitive)
@@ -92,17 +87,18 @@ public enum DatabaseType {
                      .toResult(Causes.cause("Database type name is required"))
                      .flatMap(DatabaseType::findByName);
     }
-
     private static Result<DatabaseType> findByName(String name) {
-        var normalized = name.trim().toLowerCase();
+        var normalized = name.trim()
+                             .toLowerCase();
         for (var type : values()) {
-            if (type.name.equals(normalized) || type.name().equalsIgnoreCase(normalized)) {
+            if (type.name.equals(normalized) || type.name()
+                                                    .equalsIgnoreCase(normalized)) {
                 return Result.success(type);
             }
         }
-        return Causes.cause("Unknown database type: " + name).result();
+        return Causes.cause("Unknown database type: " + name)
+                     .result();
     }
-
     /// Try to detect database type from JDBC URL.
     ///
     /// @param jdbcUrl JDBC connection URL
@@ -112,7 +108,6 @@ public enum DatabaseType {
                      .filter(url -> url.startsWith("jdbc:"))
                      .flatMap(DatabaseType::findByJdbcUrl);
     }
-
     private static Option<DatabaseType> findByJdbcUrl(String jdbcUrl) {
         var urlLower = jdbcUrl.toLowerCase();
         for (var type : values()) {

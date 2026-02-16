@@ -54,10 +54,12 @@ public class DynamicAspectRegistry {
 
     private void loadAspect(DynamicAspectKey key, DynamicAspectValue value) {
         var registryKey = key.artifactBase() + "/" + key.methodName();
-        try {
+        try{
             var mode = DynamicAspectMode.valueOf(value.mode());
             registry.put(registryKey, mode);
-            log.debug("Loaded aspect from KV-Store: {} -> {}", registryKey, mode);
+            log.debug("Loaded aspect from KV-Store: {} -> {}",
+                      registryKey,
+                      mode);
         } catch (IllegalArgumentException e) {
             log.warn("Invalid aspect mode in KV-Store for {}: {}", registryKey, value.mode());
         }
@@ -70,8 +72,8 @@ public class DynamicAspectRegistry {
     public Promise<Unit> setAspectMode(String artifactBase, String methodName, DynamicAspectMode mode) {
         var key = DynamicAspectKey.dynamicAspectKey(artifactBase, methodName);
         var value = DynamicAspectValue.dynamicAspectValue(artifactBase, methodName, mode.name());
-        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<>(key, value);
-        return clusterNode.<Unit>apply(List.of(command))
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(key, value);
+        return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> {
                                    var registryKey = artifactBase + "/" + methodName;
                                    if (mode == DynamicAspectMode.NONE) {
@@ -83,7 +85,9 @@ public class DynamicAspectRegistry {
                                    return Unit.unit();
                                })
                           .onFailure(cause -> log.error("Failed to persist aspect mode for {}/{}: {}",
-                                                        artifactBase, methodName, cause.message()));
+                                                        artifactBase,
+                                                        methodName,
+                                                        cause.message()));
     }
 
     /// Remove aspect configuration for a specific artifact method and persist removal to KV-Store.
@@ -92,8 +96,8 @@ public class DynamicAspectRegistry {
     @SuppressWarnings("unchecked")
     public Promise<Unit> removeAspect(String artifactBase, String methodName) {
         var key = DynamicAspectKey.dynamicAspectKey(artifactBase, methodName);
-        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Remove<>(key);
-        return clusterNode.<Unit>apply(List.of(command))
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(key);
+        return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> {
                                    var registryKey = artifactBase + "/" + methodName;
                                    registry.remove(registryKey);
@@ -101,7 +105,9 @@ public class DynamicAspectRegistry {
                                    return Unit.unit();
                                })
                           .onFailure(cause -> log.error("Failed to persist aspect removal for {}/{}: {}",
-                                                        artifactBase, methodName, cause.message()));
+                                                        artifactBase,
+                                                        methodName,
+                                                        cause.message()));
     }
 
     /// Fast local lookup of the aspect mode for a given artifact method.
@@ -127,14 +133,16 @@ public class DynamicAspectRegistry {
         if (key instanceof DynamicAspectKey aspectKey &&
         value instanceof DynamicAspectValue aspectValue) {
             var registryKey = aspectKey.artifactBase() + "/" + aspectKey.methodName();
-            try {
+            try{
                 var mode = DynamicAspectMode.valueOf(aspectValue.mode());
                 if (mode == DynamicAspectMode.NONE) {
                     registry.remove(registryKey);
                 } else {
                     registry.put(registryKey, mode);
                 }
-                log.debug("Aspect updated from cluster: {} -> {}", registryKey, mode);
+                log.debug("Aspect updated from cluster: {} -> {}",
+                          registryKey,
+                          mode);
             } catch (IllegalArgumentException e) {
                 log.warn("Invalid aspect mode from cluster for {}: {}", registryKey, aspectValue.mode());
             }
@@ -160,7 +168,8 @@ public class DynamicAspectRegistry {
             sb.append("\"")
               .append(entry.getKey())
               .append("\":\"")
-              .append(entry.getValue().name())
+              .append(entry.getValue()
+                           .name())
               .append("\"");
             first = false;
         }

@@ -5,7 +5,6 @@ import org.pragmatica.lang.Option;
 
 /// Error types for resource provisioning operations.
 public sealed interface ResourceProvisioningError extends Cause {
-
     /// No factory registered for the requested resource type.
     record FactoryNotFound(Class<?> resourceType) implements ResourceProvisioningError {
         public static FactoryNotFound factoryNotFound(Class<?> resourceType) {
@@ -67,7 +66,6 @@ public sealed interface ResourceProvisioningError extends Cause {
     /// ConfigService not available.
     enum ConfigServiceNotAvailable implements ResourceProvisioningError {
         INSTANCE;
-
         @Override
         public String message() {
             return "ConfigService not available - call ConfigService.setInstance() first";

@@ -33,9 +33,9 @@ public interface TTMPredictor {
         if (!config.enabled()) {
             return Result.success(noOp());
         }
-        return TTMPredictorFactory.INSTANCE
-            .fold(() -> TTMError.NoProvider.noProvider().<TTMPredictor>result(),
-                  factory -> factory.ttmPredictor(config));
+        return TTMPredictorFactory.INSTANCE.fold(() -> TTMError.NoProvider.noProvider()
+                                                               .<TTMPredictor> result(),
+                                                 factory -> factory.ttmPredictor(config));
     }
 
     /// Create a no-op predictor for testing or when TTM is disabled.

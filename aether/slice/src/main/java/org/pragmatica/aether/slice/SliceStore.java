@@ -68,8 +68,9 @@ public interface SliceStore {
         return new ResourceProviderFacade() {
             @Override
             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return Causes.cause("Resource provisioning not configured. " +
-                    "Use AetherNodeConfig.withConfigProvider() to enable resource provisioning.").promise();
+                return Causes.cause("Resource provisioning not configured. "
+                                    + "Use AetherNodeConfig.withConfigProvider() to enable resource provisioning.")
+                             .promise();
             }
         };
     }
@@ -144,7 +145,7 @@ public interface SliceStore {
         private Promise<LoadedSliceEntry> startLoading(Artifact artifact) {
             log.debug("Loading slice {}", artifact);
             return loadFromLocation(artifact)
-                       .onFailure(_ -> CompletableFuture.runAsync(() -> entries.remove(artifact)));
+            .onFailure(_ -> CompletableFuture.runAsync(() -> entries.remove(artifact)));
         }
 
         private Promise<LoadedSliceEntry> loadFromLocation(Artifact artifact) {
@@ -274,9 +275,10 @@ public interface SliceStore {
         @Override
         public Promise<Unit> unloadSlice(Artifact artifact) {
             return Option.option(entries.remove(artifact))
-                         .map(entryPromise -> entryPromise.fold(result -> result.fold(
-                             cause -> skipFailedUnload(artifact, cause),
-                             entry -> unloadEntry(artifact, entry))))
+                         .map(entryPromise -> entryPromise.fold(result -> result.fold(cause -> skipFailedUnload(artifact,
+                                                                                                                cause),
+                                                                                      entry -> unloadEntry(artifact,
+                                                                                                           entry))))
                          .or(() -> {
                                  log.debug("Slice {} not loaded, nothing to unload", artifact);
                                  return Promise.unitPromise();

@@ -14,8 +14,6 @@ import org.pragmatica.http.HttpStatus;
 import org.pragmatica.lang.Option;
 import org.pragmatica.http.routing.ContentCategory;
 import org.pragmatica.http.routing.JsonCodec;
-
-import java.nio.file.Path;
 import org.pragmatica.http.routing.JsonCodecAdapter;
 import org.pragmatica.http.routing.RequestContext.RequestContextImpl;
 import org.pragmatica.http.routing.RequestRouter;
@@ -23,6 +21,7 @@ import org.pragmatica.http.routing.Route;
 import org.pragmatica.http.server.RequestContext;
 import org.pragmatica.http.server.ResponseWriter;
 
+import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Deque;
@@ -205,15 +204,13 @@ public final class ForgeApiHandler {
     @SuppressWarnings("unchecked")
     private void sendSuccessResponse(ResponseWriter response, Route<?> route, Object result) {
         var serverContentType = toServerContentType(route.contentType());
-        var category = route.contentType().category();
-
+        var category = route.contentType()
+                            .category();
         // HTML and PLAIN_TEXT String responses must bypass JSON serialization
-        if ((category == ContentCategory.HTML || category == ContentCategory.PLAIN_TEXT)
-            && result instanceof String text) {
+        if ((category == ContentCategory.HTML || category == ContentCategory.PLAIN_TEXT) && result instanceof String text) {
             response.write(HttpStatus.OK, text.getBytes(StandardCharsets.UTF_8), serverContentType);
             return;
         }
-
         jsonCodec.serialize(result)
                  .onSuccess(byteBuf -> {
                                 var bytes = new byte[byteBuf.readableBytes()];

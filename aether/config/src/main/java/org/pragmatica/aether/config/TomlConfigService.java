@@ -29,7 +29,8 @@ public final class TomlConfigService implements ConfigService {
     /// @return Result containing the ConfigService or error
     public static Result<ConfigService> tomlConfigService(Path path) {
         return TomlParser.parseFile(path)
-                         .mapError(e -> ConfigError.readFailed(path.toString(), new RuntimeException(e.message())))
+                         .mapError(e -> ConfigError.readFailed(path.toString(),
+                                                               new RuntimeException(e.message())))
                          .map(TomlConfigService::new);
     }
 
@@ -39,7 +40,8 @@ public final class TomlConfigService implements ConfigService {
     /// @return Result containing the ConfigService or error
     public static Result<ConfigService> tomlConfigService(String content) {
         return TomlParser.parse(content)
-                         .mapError(e -> ConfigError.parseFailed("root", e.message()))
+                         .mapError(e -> ConfigError.parseFailed("root",
+                                                                e.message()))
                          .map(TomlConfigService::new);
     }
 
@@ -53,9 +55,9 @@ public final class TomlConfigService implements ConfigService {
     @Override
     public <T> Result<T> config(String section, Class<T> configClass) {
         if (!hasSection(section)) {
-            return ConfigError.sectionNotFound(section).result();
+            return ConfigError.sectionNotFound(section)
+                              .result();
         }
-
         return bindToClass(section, configClass);
     }
 
@@ -85,17 +87,17 @@ public final class TomlConfigService implements ConfigService {
     @SuppressWarnings("unchecked")
     private <T> Result<T> bindToClass(String section, Class<T> configClass) {
         if (!configClass.isRecord()) {
-            return ConfigError.typeMismatch(section, "record", configClass.getSimpleName()).result();
+            return ConfigError.typeMismatch(section,
+                                            "record",
+                                            configClass.getSimpleName())
+                              .result();
         }
-
-        try {
+        try{
             var components = configClass.getRecordComponents();
             var types = Arrays.stream(components)
                               .map(RecordComponent::getType)
                               .toArray(Class[]::new);
-
             Constructor<T> constructor = configClass.getDeclaredConstructor(types);
-
             var args = new Object[components.length];
             for (int i = 0; i < components.length; i++) {
                 var component = components[i];
@@ -105,10 +107,10 @@ public final class TomlConfigService implements ConfigService {
                 }
                 args[i] = value.unwrap();
             }
-
             return Result.success(constructor.newInstance(args));
         } catch (Exception e) {
-            return ConfigError.parseFailed(section, e).result();
+            return ConfigError.parseFailed(section, e)
+                              .result();
         }
     }
 
@@ -117,56 +119,51 @@ public final class TomlConfigService implements ConfigService {
         var key = component.getName();
         var type = component.getType();
         var tomlKey = toSnakeCase(key);
-
         if (type == String.class) {
             return document.getString(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
                            .map(Object.class::cast);
         }
-
         if (type == int.class || type == Integer.class) {
             return document.getInt(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
                            .map(Object.class::cast);
         }
-
         if (type == long.class || type == Long.class) {
             return document.getLong(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
                            .map(Object.class::cast);
         }
-
         if (type == boolean.class || type == Boolean.class) {
             return document.getBoolean(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
                            .map(Object.class::cast);
         }
-
         if (type == double.class || type == Double.class) {
             return document.getDouble(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
                            .map(Object.class::cast);
         }
-
         if (type.isEnum()) {
             return document.getString(section, tomlKey)
                            .toResult(ConfigError.sectionNotFound(section + "." + key))
                            .flatMap(value -> parseEnum(value, type, section + "." + key));
         }
-
         if (type.isRecord()) {
             var nestedSection = section + "." + tomlKey;
             if (!document.hasSection(nestedSection)) {
-                return ConfigError.sectionNotFound(nestedSection).result();
+                return ConfigError.sectionNotFound(nestedSection)
+                                  .result();
             }
             return (Result<Object>) bindToClass(nestedSection, type);
         }
-
         if (type == Option.class) {
             return extractOptionValue(section, tomlKey, key, component.getGenericType());
         }
-
-        return ConfigError.typeMismatch(section + "." + key, "supported type", type.getSimpleName()).result();
+        return ConfigError.typeMismatch(section + "." + key,
+                                        "supported type",
+                                        type.getSimpleName())
+                          .result();
     }
 
     @SuppressWarnings("unchecked")
@@ -206,8 +203,7 @@ public final class TomlConfigService implements ConfigService {
             if (stringOpt.isEmpty()) {
                 return Result.success(Option.none());
             }
-            return parseEnum(stringOpt.unwrap(), innerClass, section + "." + key)
-                .map(Option::option);
+            return parseEnum(stringOpt.unwrap(), innerClass, section + "." + key).map(Option::option);
         }
         // For unsupported types, return none
         return Result.success(Option.none());
@@ -215,10 +211,13 @@ public final class TomlConfigService implements ConfigService {
 
     @SuppressWarnings({"unchecked", "rawtypes"})
     private Result<Object> parseEnum(String value, Class<?> type, String fullKey) {
-        try {
+        try{
             return Result.success(Enum.valueOf((Class<Enum>) type, value.toUpperCase()));
         } catch (IllegalArgumentException e) {
-            return ConfigError.typeMismatch(fullKey, type.getSimpleName(), value).result();
+            return ConfigError.typeMismatch(fullKey,
+                                            type.getSimpleName(),
+                                            value)
+                              .result();
         }
     }
 

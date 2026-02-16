@@ -16,10 +16,8 @@
  */
 
 package org.pragmatica.cloud.hetzner;
-
 /// Configuration for the Hetzner Cloud API client.
 public record HetznerConfig(String apiToken, String baseUrl) {
-
     private static final String DEFAULT_BASE_URL = "https://api.hetzner.cloud/v1";
 
     /// Creates configuration with default Hetzner API base URL.

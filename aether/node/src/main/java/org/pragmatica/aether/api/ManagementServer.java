@@ -64,8 +64,13 @@ public interface ManagementServer {
                                              LogLevelRegistry logLevelRegistry,
                                              Option<DynamicConfigManager> dynamicConfigManager,
                                              Option<TlsConfig> tls) {
-        return new ManagementServerImpl(port, nodeSupplier, alertManager, aspectManager, logLevelRegistry,
-                                        dynamicConfigManager, tls);
+        return new ManagementServerImpl(port,
+                                        nodeSupplier,
+                                        alertManager,
+                                        aspectManager,
+                                        logLevelRegistry,
+                                        dynamicConfigManager,
+                                        tls);
     }
 }
 
@@ -106,9 +111,8 @@ class ManagementServerImpl implements ManagementServer {
         this.logLevelRegistry = logLevelRegistry;
         this.metricsPublisher = new DashboardMetricsPublisher(nodeSupplier, alertManager, aspectManager);
         this.statusWsHandler = new StatusWebSocketHandler();
-        this.statusWsPublisher = StatusWebSocketPublisher.statusWebSocketPublisher(
-            statusWsHandler,
-            () -> buildStatusJson(nodeSupplier));
+        this.statusWsPublisher = StatusWebSocketPublisher.statusWebSocketPublisher(statusWsHandler,
+                                                                                   () -> buildStatusJson(nodeSupplier));
         this.observability = ObservabilityRegistry.prometheus();
         this.tls = tls;
         // Route-based router for migrated routes — build route sources dynamically
@@ -173,12 +177,15 @@ class ManagementServerImpl implements ManagementServer {
     }
 
     private static String escapeJson(String value) {
-        return value.replace("\\", "\\\\").replace("\"", "\\\"");
+        return value.replace("\\", "\\\\")
+                    .replace("\"", "\\\"");
     }
 
     private static String buildStatusJson(Supplier<AetherNode> nodeSupplier) {
         var node = nodeSupplier.get();
-        var leaderId = node.leader().map(leader -> leader.id()).or("");
+        var leaderId = node.leader()
+                           .map(leader -> leader.id())
+                           .or("");
         var sb = new StringBuilder(4096);
         sb.append("{");
         // Uptime
@@ -186,38 +193,57 @@ class ManagementServerImpl implements ManagementServer {
           .append(node.uptimeSeconds());
         // Node metrics
         sb.append(",\"nodeMetrics\":[");
-        var allMetrics = node.metricsCollector().allMetrics();
+        var allMetrics = node.metricsCollector()
+                             .allMetrics();
         boolean firstNode = true;
         for (var entry : allMetrics.entrySet()) {
             if (!firstNode) sb.append(",");
-            var nodeId = entry.getKey().id();
+            var nodeId = entry.getKey()
+                              .id();
             var metrics = entry.getValue();
             var cpuUsage = metrics.getOrDefault("cpu.usage", 0.0);
             var heapUsed = metrics.getOrDefault("heap.used", 0.0);
             var heapMax = metrics.getOrDefault("heap.max", 1.0);
-            sb.append("{\"nodeId\":\"").append(escapeJson(nodeId)).append("\"");
-            sb.append(",\"isLeader\":").append(leaderId.equals(nodeId));
-            sb.append(",\"cpuUsage\":").append(cpuUsage);
-            sb.append(",\"heapUsedMb\":").append((long) (heapUsed / 1024 / 1024));
-            sb.append(",\"heapMaxMb\":").append((long) (heapMax / 1024 / 1024));
+            sb.append("{\"nodeId\":\"")
+              .append(escapeJson(nodeId))
+              .append("\"");
+            sb.append(",\"isLeader\":")
+              .append(leaderId.equals(nodeId));
+            sb.append(",\"cpuUsage\":")
+              .append(cpuUsage);
+            sb.append(",\"heapUsedMb\":")
+              .append((long)(heapUsed / 1024 / 1024));
+            sb.append(",\"heapMaxMb\":")
+              .append((long)(heapMax / 1024 / 1024));
             sb.append("}");
             firstNode = false;
         }
         sb.append("]");
         // Slices from DeploymentMap
         sb.append(",\"slices\":[");
-        var deployments = node.deploymentMap().allDeployments();
+        var deployments = node.deploymentMap()
+                              .allDeployments();
         boolean firstSlice = true;
         for (var info : deployments) {
             if (!firstSlice) sb.append(",");
-            sb.append("{\"artifact\":\"").append(escapeJson(info.artifact())).append("\"");
-            sb.append(",\"state\":\"").append(info.aggregateState().name()).append("\"");
+            sb.append("{\"artifact\":\"")
+              .append(escapeJson(info.artifact()))
+              .append("\"");
+            sb.append(",\"state\":\"")
+              .append(info.aggregateState()
+                          .name())
+              .append("\"");
             sb.append(",\"instances\":[");
             boolean firstInst = true;
             for (var inst : info.instances()) {
                 if (!firstInst) sb.append(",");
-                sb.append("{\"nodeId\":\"").append(escapeJson(inst.nodeId())).append("\"");
-                sb.append(",\"state\":\"").append(inst.state().name()).append("\"}");
+                sb.append("{\"nodeId\":\"")
+                  .append(escapeJson(inst.nodeId()))
+                  .append("\"");
+                sb.append(",\"state\":\"")
+                  .append(inst.state()
+                              .name())
+                  .append("\"}");
                 firstInst = false;
             }
             sb.append("]}");
@@ -229,15 +255,20 @@ class ManagementServerImpl implements ManagementServer {
         boolean firstClusterNode = true;
         for (var entry : allMetrics.entrySet()) {
             if (!firstClusterNode) sb.append(",");
-            var nodeId = entry.getKey().id();
-            sb.append("{\"id\":\"").append(escapeJson(nodeId)).append("\"");
-            sb.append(",\"isLeader\":").append(leaderId.equals(nodeId));
+            var nodeId = entry.getKey()
+                              .id();
+            sb.append("{\"id\":\"")
+              .append(escapeJson(nodeId))
+              .append("\"");
+            sb.append(",\"isLeader\":")
+              .append(leaderId.equals(nodeId));
             sb.append("}");
             firstClusterNode = false;
         }
         sb.append("],\"leaderId\":\"");
         sb.append(escapeJson(leaderId));
-        sb.append("\",\"nodeCount\":").append(allMetrics.size());
+        sb.append("\",\"nodeCount\":")
+          .append(allMetrics.size());
         sb.append("}");
         sb.append("}");
         return sb.toString();

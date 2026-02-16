@@ -61,7 +61,8 @@ public final class SliceLoadingContext implements SliceCreationContext {
         return new ResourceProviderFacade() {
             @Override
             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return org.pragmatica.lang.utils.Causes.cause("Resource provisioning not configured").promise();
+                return org.pragmatica.lang.utils.Causes.cause("Resource provisioning not configured")
+                          .promise();
             }
         };
     }
@@ -112,7 +113,8 @@ public final class SliceLoadingContext implements SliceCreationContext {
     ///
     /// @return Number of buffered handles
     public int bufferedHandleCount() {
-        return bufferingInvoker.bufferedHandles().size();
+        return bufferingInvoker.bufferedHandles()
+                               .size();
     }
 
     /// Get the underlying delegate (for testing/debugging).

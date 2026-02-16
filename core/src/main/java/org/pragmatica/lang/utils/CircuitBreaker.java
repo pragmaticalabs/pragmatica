@@ -110,7 +110,9 @@ public interface CircuitBreaker {
                         }
                         var timeout = timeSpan(resetTimeout.nanos() - (timeSource().nanoTime() - lastStateChangeTimestamp.get()))
                         .nanos();
-                        yield CircuitBreakerOpenError.circuitBreakerOpenError("Circuit breaker is open. Operation rejected.", timeout).promise();
+                        yield CircuitBreakerOpenError.circuitBreakerOpenError("Circuit breaker is open. Operation rejected.",
+                                                                              timeout)
+                                                     .promise();
                     }
                     case HALF_OPEN -> executeHalfOpenState(operation);
                 };

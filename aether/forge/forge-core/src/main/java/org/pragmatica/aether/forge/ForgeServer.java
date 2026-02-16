@@ -102,7 +102,7 @@ public final class ForgeServer {
                    log.info("Shutting down...");
                    server.stop();
                }));
-        try {
+        try{
             server.start();
         } catch (Exception e) {
             log.error("Failed to start Forge server", e);
@@ -114,7 +114,7 @@ public final class ForgeServer {
         return startupConfig.forgeConfig()
                             .map(ForgeConfig::load)
                             .map(r -> r.onFailure(c -> log.error("Failed to load forge config: {}",
-                                                                  c.message()))
+                                                                 c.message()))
                                        .or(ForgeConfig.DEFAULT))
                             .or(createDefaultForgeConfig(startupConfig));
     }
@@ -134,10 +134,13 @@ public final class ForgeServer {
         log.info("  Dashboard: http://localhost:{}", forgeConfig.dashboardPort());
         log.info("  Cluster size: {} nodes", forgeConfig.nodes());
         log.info("  App HTTP port: {} (load target)", forgeConfig.appHttpPort());
-        if (forgeConfig.h2Config().enabled()) {
+        if (forgeConfig.h2Config()
+                       .enabled()) {
             log.info("  H2 Database: port {} ({})",
-                     forgeConfig.h2Config().port(),
-                     forgeConfig.h2Config().persistent()
+                     forgeConfig.h2Config()
+                                .port(),
+                     forgeConfig.h2Config()
+                                .persistent()
                      ? "persistent"
                      : "in-memory");
         }
@@ -160,7 +163,7 @@ public final class ForgeServer {
         startMetricsCollection();
         deployAndStartLoad();
         apiHandler.onPresent(h -> h.addEvent("CLUSTER_STARTED",
-                                              "Forge cluster started with " + forgeConfig.nodes() + " nodes"));
+                                             "Forge cluster started with " + forgeConfig.nodes() + " nodes"));
         startHttpServer();
         openBrowser("http://localhost:" + forgeConfig.dashboardPort());
         log.info("Forge server running. Press Ctrl+C to stop.");
@@ -176,10 +179,9 @@ public final class ForgeServer {
                                                         "node",
                                                         configProvider);
         var entryPointMetrics = EntryPointMetrics.entryPointMetrics();
-        var configurableLoadRunnerInstance = ConfigurableLoadRunner.configurableLoadRunner(
-            clusterInstance::getAvailableAppHttpPorts,
-            metricsInstance,
-            entryPointMetrics);
+        var configurableLoadRunnerInstance = ConfigurableLoadRunner.configurableLoadRunner(clusterInstance::getAvailableAppHttpPorts,
+                                                                                           metricsInstance,
+                                                                                           entryPointMetrics);
         var apiHandlerInstance = ForgeApiHandler.forgeApiHandler(clusterInstance,
                                                                  metricsInstance,
                                                                  configurableLoadRunnerInstance,
@@ -189,39 +191,43 @@ public final class ForgeServer {
         configurableLoadRunner = Option.some(configurableLoadRunnerInstance);
         apiHandler = Option.some(apiHandlerInstance);
         staticHandler = Option.some(StaticFileHandler.staticFileHandler());
-        var wsPublisherInstance = StatusWebSocketPublisher.statusWebSocketPublisher(
-            wsHandler,
-            () -> serializeStatus(clusterInstance,
-                                  metricsInstance, startTime, configurableLoadRunnerInstance));
+        var wsPublisherInstance = StatusWebSocketPublisher.statusWebSocketPublisher(wsHandler,
+                                                                                    () -> serializeStatus(clusterInstance,
+                                                                                                          metricsInstance,
+                                                                                                          startTime,
+                                                                                                          configurableLoadRunnerInstance));
         wsPublisher = Option.some(wsPublisherInstance);
     }
 
     private static String serializeStatus(ForgeCluster cluster,
-                                           ForgeMetrics metrics,
-                                           long startTime,
-                                           ConfigurableLoadRunner loadRunner) {
+                                          ForgeMetrics metrics,
+                                          long startTime,
+                                          ConfigurableLoadRunner loadRunner) {
         var status = StatusRoutes.buildFullStatus(cluster, metrics, startTime, loadRunner);
         return CODEC.serialize(status)
                     .map(byteBuf -> {
-                        try {
-                            var bytes = new byte[byteBuf.readableBytes()];
-                            byteBuf.readBytes(bytes);
-                            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
-                        } finally {
-                            byteBuf.release();
-                        }
-                    })
+                             try{
+                                 var bytes = new byte[byteBuf.readableBytes()];
+                                 byteBuf.readBytes(bytes);
+                                 return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                             } finally{
+                                 byteBuf.release();
+                             }
+                         })
                     .or("{}");
     }
 
     private void startCluster() {
         log.info("Starting {} node cluster...", forgeConfig.nodes());
         cluster.onPresent(c -> c.start()
-                                .await(TimeSpan.timeSpan(60).seconds())
+                                .await(TimeSpan.timeSpan(60)
+                                               .seconds())
                                 .onFailure(cause -> {
-                                    throw new IllegalStateException("Failed to start cluster: " + cause.message());
-                                }));
-        TimeSpan.timeSpan(2).seconds().sleep();
+                                               throw new IllegalStateException("Failed to start cluster: " + cause.message());
+                                           }));
+        TimeSpan.timeSpan(2)
+                .seconds()
+                .sleep();
     }
 
     private void startMetricsCollection() {
@@ -236,7 +242,8 @@ public final class ForgeServer {
                      .onPresent(this::deployBlueprint);
         startupConfig.loadConfig()
                      .onPresent(this::loadLoadConfig);
-        if (startupConfig.autoStart() && startupConfig.loadConfig().isPresent()) {
+        if (startupConfig.autoStart() && startupConfig.loadConfig()
+                                                      .isPresent()) {
             log.info("Auto-starting load generation...");
             configurableLoadRunner.onPresent(ConfigurableLoadRunner::start);
             apiHandler.onPresent(h -> h.addEvent("LOAD_STARTED", "Load generation auto-started"));
@@ -244,10 +251,12 @@ public final class ForgeServer {
     }
 
     private static void joinMainThread() {
-        try {
-            Thread.currentThread().join();
+        try{
+            Thread.currentThread()
+                  .join();
         } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+            Thread.currentThread()
+                  .interrupt();
         }
     }
 
@@ -266,9 +275,11 @@ public final class ForgeServer {
             if (response.statusCode() >= 200 && response.statusCode() < 300) {
                 log.info("Blueprint deployed");
                 apiHandler.onPresent(h -> h.addEvent("BLUEPRINT_DEPLOYED",
-                                                      "Blueprint deployed from " + blueprintPath.getFileName()));
+                                                     "Blueprint deployed from " + blueprintPath.getFileName()));
                 // Wait for deployment to propagate
-                TimeSpan.timeSpan(1).seconds().sleep();
+                TimeSpan.timeSpan(1)
+                        .seconds()
+                        .sleep();
             } else {
                 log.error("Failed to deploy blueprint: {} - {}", response.statusCode(), response.body());
             }
@@ -286,8 +297,8 @@ public final class ForgeServer {
                                                 config.targets()
                                                       .size());
                                        apiHandler.onPresent(h -> h.addEvent("LOAD_CONFIG_LOADED",
-                                                                             "Loaded " + config.targets()
-                                                                                               .size() + " targets from " + loadConfigPath.getFileName()));
+                                                                            "Loaded " + config.targets()
+                                                                                              .size() + " targets from " + loadConfigPath.getFileName()));
                                    })
                         .onFailure(cause -> log.error("Failed to load configuration: {}",
                                                       cause.message()));
@@ -298,11 +309,13 @@ public final class ForgeServer {
         wsPublisher.onPresent(StatusWebSocketPublisher::stop);
         metricsScheduler.onPresent(ScheduledExecutorService::shutdownNow);
         httpServer.onPresent(server -> server.stop()
-                                             .await(TimeSpan.timeSpan(10).seconds())
+                                             .await(TimeSpan.timeSpan(10)
+                                                            .seconds())
                                              .onFailure(cause -> log.warn("Error stopping HTTP server: {}",
                                                                           cause.message())));
         cluster.onPresent(c -> c.stop()
-                                .await(TimeSpan.timeSpan(30).seconds())
+                                .await(TimeSpan.timeSpan(30)
+                                               .seconds())
                                 .onFailure(cause -> log.warn("Error stopping cluster: {}",
                                                              cause.message())));
         stopH2Server();
@@ -310,16 +323,19 @@ public final class ForgeServer {
     }
 
     private void startH2Server() {
-        if (!forgeConfig.h2Config().enabled()) {
+        if (!forgeConfig.h2Config()
+                        .enabled()) {
             return;
         }
         var server = ForgeH2Server.forgeH2Server(forgeConfig.h2Config());
         server.start()
-              .await(TimeSpan.timeSpan(10).seconds())
+              .await(TimeSpan.timeSpan(10)
+                             .seconds())
               .onSuccess(_ -> {
-                  h2Server = Option.some(server);
-                  log.info("H2 database available at: {}", server.jdbcUrl());
-              })
+                             h2Server = Option.some(server);
+                             log.info("H2 database available at: {}",
+                                      server.jdbcUrl());
+                         })
               .onFailure(cause -> {
                   throw new IllegalStateException("Failed to start H2 server: " + cause.message());
               });
@@ -339,45 +355,48 @@ public final class ForgeServer {
     /// @return ConfigurationProvider for all nodes, or empty if no config needed
     private Option<ConfigurationProvider> buildConfigurationProvider() {
         var builder = ConfigurationProvider.builder();
-
         // Add TOML files (lowest priority)
         startupConfig.forgeConfig()
                      .map(path -> path.resolveSibling("aether.toml"))
-                     .filter(path -> path.toFile().exists())
+                     .filter(path -> path.toFile()
+                                         .exists())
                      .onPresent(builder::withTomlFile);
-
         startupConfig.forgeConfig()
                      .onPresent(builder::withTomlFile);
-
         // Add system properties and environment (higher priority)
         builder.withSystemProperties("aether.")
                .withEnvironment("AETHER_");
-
         // Inject H2 runtime values (highest priority)
         // Keys must match toSnakeCase(recordComponentName) from DatabaseConnectorConfig
         h2Server.onPresent(server -> injectH2Config(server, builder));
-
         return Option.some(builder.build());
     }
 
     private void injectH2Config(ForgeH2Server server, ConfigurationProvider.Builder builder) {
-        var runtimeValues = Map.of(
-            "database.name", "forge-h2",
-            "database.type", "H2",
-            "database.host", "localhost",
-            "database.port", "0",
-            "database.database", "forge",
-            "database.jdbc_url", server.jdbcUrl(),
-            "database.username", FORGE_H2_USERNAME,
-            "database.password", FORGE_H2_PASSWORD
-        );
+        var runtimeValues = Map.of("database.name",
+                                   "forge-h2",
+                                   "database.type",
+                                   "H2",
+                                   "database.host",
+                                   "localhost",
+                                   "database.port",
+                                   "0",
+                                   "database.database",
+                                   "forge",
+                                   "database.jdbc_url",
+                                   server.jdbcUrl(),
+                                   "database.username",
+                                   FORGE_H2_USERNAME,
+                                   "database.password",
+                                   FORGE_H2_PASSWORD);
         builder.withSource(MapConfigSource.mapConfigSource("runtime", runtimeValues, 500));
         log.info("Injected H2 configuration into ConfigurationProvider");
     }
 
     private void stopH2Server() {
         h2Server.onPresent(server -> server.stop()
-                                           .await(TimeSpan.timeSpan(5).seconds())
+                                           .await(TimeSpan.timeSpan(5)
+                                                          .seconds())
                                            .onFailure(cause -> log.warn("Error stopping H2 server: {}",
                                                                         cause.message())));
     }
@@ -402,19 +421,20 @@ public final class ForgeServer {
                                      .withChunkedWrite()
                                      .withWebSocket(wsEndpoint);
         HttpServer.httpServer(config, requestHandler::handle)
-                  .await(TimeSpan.timeSpan(10).seconds())
+                  .await(TimeSpan.timeSpan(10)
+                                 .seconds())
                   .onSuccess(server -> {
                                  httpServer = Option.some(server);
                                  log.info("HTTP server started on port {}",
                                           server.port());
                              })
                   .onFailure(cause -> {
-                      throw new IllegalStateException("Failed to start HTTP server: " + cause.message());
-                  });
+                                 throw new IllegalStateException("Failed to start HTTP server: " + cause.message());
+                             });
     }
 
     private void openBrowser(String url) {
-        try {
+        try{
             if (Desktop.isDesktopSupported() && Desktop.getDesktop()
                                                        .isSupported(Desktop.Action.BROWSE)) {
                 Desktop.getDesktop()

@@ -75,14 +75,12 @@ public final class SystemPropertyConfigSource implements ConfigSource {
     private static Map<String, String> loadFromSystemProperties(String prefix) {
         var result = new LinkedHashMap<String, String>();
         var properties = System.getProperties();
-
         for (var key : properties.stringPropertyNames()) {
             if (key.startsWith(prefix)) {
                 var normalizedKey = key.substring(prefix.length());
                 result.put(normalizedKey, properties.getProperty(key));
             }
         }
-
         return result;
     }
 }

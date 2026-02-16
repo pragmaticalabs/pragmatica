@@ -130,11 +130,12 @@ final class InMemoryConfigService implements ConfigService {
         var watchKey = watchKey(section, key);
         Option.option(watchers.get(watchKey))
               .onPresent(entries -> {
-                  var currentValue = getHierarchical(section, key, TomlDocument::getString);
-                  entries.stream()
-                         .filter(WatchEntry::isActive)
-                         .forEach(entry -> entry.callback().apply(currentValue));
-              });
+                             var currentValue = getHierarchical(section, key, TomlDocument::getString);
+                             entries.stream()
+                                    .filter(WatchEntry::isActive)
+                                    .forEach(entry -> entry.callback()
+                                                           .apply(currentValue));
+                         });
     }
 
     private static String watchKey(String section, String key) {

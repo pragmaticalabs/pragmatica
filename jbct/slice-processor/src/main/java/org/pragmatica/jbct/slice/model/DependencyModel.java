@@ -19,7 +19,6 @@ public record DependencyModel(String parameterName,
                               Option<String> sliceArtifact,
                               Option<String> version,
                               Option<ResourceQualifierModel> resourceQualifier) {
-
     /// Backward-compatible constructor without resourceQualifier.
     public DependencyModel(String parameterName,
                            TypeMirror interfaceType,
@@ -28,15 +27,21 @@ public record DependencyModel(String parameterName,
                            String interfacePackage,
                            Option<String> sliceArtifact,
                            Option<String> version) {
-        this(parameterName, interfaceType, interfaceQualifiedName, interfaceSimpleName,
-             interfacePackage, sliceArtifact, version, Option.none());
+        this(parameterName,
+             interfaceType,
+             interfaceQualifiedName,
+             interfaceSimpleName,
+             interfacePackage,
+             sliceArtifact,
+             version,
+             Option.none());
     }
 
     public static Result<DependencyModel> dependencyModel(VariableElement param, ProcessingEnvironment env) {
         var paramName = param.getSimpleName()
                              .toString();
         var type = param.asType();
-        if (!(type instanceof DeclaredType dt)) {
+        if (! (type instanceof DeclaredType dt)) {
             return Causes.cause("Dependency parameter must be an interface: " + paramName)
                          .result();
         }

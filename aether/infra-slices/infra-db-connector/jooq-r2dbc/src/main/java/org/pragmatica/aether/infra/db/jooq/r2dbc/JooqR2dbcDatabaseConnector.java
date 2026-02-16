@@ -1,14 +1,5 @@
 package org.pragmatica.aether.infra.db.jooq.r2dbc;
 
-import io.r2dbc.spi.Connection;
-import io.r2dbc.spi.ConnectionFactory;
-import io.r2dbc.spi.Row;
-import io.r2dbc.spi.RowMetadata;
-import org.jooq.DSLContext;
-import org.jooq.Query;
-import org.jooq.Record;
-import org.jooq.ResultQuery;
-import org.jooq.SQLDialect;
 import org.pragmatica.aether.infra.db.DatabaseConnector;
 import org.pragmatica.aether.infra.db.DatabaseConnectorConfig;
 import org.pragmatica.aether.infra.db.DatabaseConnectorError;
@@ -26,6 +17,16 @@ import org.pragmatica.r2dbc.ReactiveOperations;
 
 import java.util.List;
 
+import io.r2dbc.spi.Connection;
+import io.r2dbc.spi.ConnectionFactory;
+import io.r2dbc.spi.Row;
+import io.r2dbc.spi.RowMetadata;
+import org.jooq.DSLContext;
+import org.jooq.Query;
+import org.jooq.Record;
+import org.jooq.ResultQuery;
+import org.jooq.SQLDialect;
+
 /// jOOQ R2DBC implementation of DatabaseConnector for reactive type-safe SQL queries.
 ///
 /// Combines jOOQ's type-safe query building with R2DBC's reactive execution.
@@ -37,7 +38,9 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     private final SQLDialect dialect;
     private final JooqR2dbcOperations operations;
 
-    private JooqR2dbcDatabaseConnector(DatabaseConnectorConfig config, ConnectionFactory connectionFactory, SQLDialect dialect) {
+    private JooqR2dbcDatabaseConnector(DatabaseConnectorConfig config,
+                                       ConnectionFactory connectionFactory,
+                                       SQLDialect dialect) {
         this.config = config;
         this.connectionFactory = connectionFactory;
         this.dialect = dialect;
@@ -49,7 +52,8 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     /// @param config            Connector configuration
     /// @param connectionFactory R2DBC ConnectionFactory
     /// @return New JooqR2dbcDatabaseConnector instance
-    public static JooqR2dbcDatabaseConnector jooqR2dbcDatabaseConnector(DatabaseConnectorConfig config, ConnectionFactory connectionFactory) {
+    public static JooqR2dbcDatabaseConnector jooqR2dbcDatabaseConnector(DatabaseConnectorConfig config,
+                                                                        ConnectionFactory connectionFactory) {
         var dialect = mapDialect(config.type());
         return new JooqR2dbcDatabaseConnector(config, connectionFactory, dialect);
     }
@@ -60,7 +64,9 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     /// @param connectionFactory R2DBC ConnectionFactory
     /// @param dialect           SQL dialect
     /// @return New JooqR2dbcDatabaseConnector instance
-    public static JooqR2dbcDatabaseConnector jooqR2dbcDatabaseConnector(DatabaseConnectorConfig config, ConnectionFactory connectionFactory, SQLDialect dialect) {
+    public static JooqR2dbcDatabaseConnector jooqR2dbcDatabaseConnector(DatabaseConnectorConfig config,
+                                                                        ConnectionFactory connectionFactory,
+                                                                        SQLDialect dialect) {
         return new JooqR2dbcDatabaseConnector(config, connectionFactory, dialect);
     }
 
@@ -132,69 +138,70 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     }
 
     // ========== DatabaseConnector Implementation ==========
-
     @Override
     public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
         return withConnection(conn -> {
-            var stmt = conn.createStatement(sql);
-            for (int i = 0; i < params.length; i++) {
-                stmt.bind(i, params[i]);
-            }
-            return ReactiveOperations.<Result<T>>fromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
-                e -> R2dbcError.fromException(e, sql)
-            ).flatMap(result -> result.mapError(JooqR2dbcDatabaseConnector::toConnectorError).async());
-        });
+                                  var stmt = conn.createStatement(sql);
+                                  for (int i = 0; i < params.length; i++) {
+                                      stmt.bind(i, params[i]);
+                                  }
+                                  return ReactiveOperations.<Result<T>> fromPublisher(flatMapResult(stmt.execute(),
+                                                                                                    (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
+                                                                                      e -> R2dbcError.fromException(e,
+                                                                                                                    sql))
+                                                           .flatMap(result -> result.mapError(JooqR2dbcDatabaseConnector::toConnectorError)
+                                                                                    .async());
+                              });
     }
 
     @Override
     public <T> Promise<Option<T>> queryOptional(String sql, RowMapper<T> mapper, Object... params) {
         return withConnection(conn -> {
-            var stmt = conn.createStatement(sql);
-            for (int i = 0; i < params.length; i++) {
-                stmt.bind(i, params[i]);
-            }
-            return ReactiveOperations.<Result<T>>firstFromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
-                e -> R2dbcError.fromException(e, sql)
-            ).flatMap(opt -> opt.fold(
-                () -> Promise.success(Option.none()),
-                result -> result.mapError(JooqR2dbcDatabaseConnector::toConnectorError)
-                               .async()
-                               .map(Option::some)
-            ));
-        });
+                                  var stmt = conn.createStatement(sql);
+                                  for (int i = 0; i < params.length; i++) {
+                                      stmt.bind(i, params[i]);
+                                  }
+                                  return ReactiveOperations.<Result<T>> firstFromPublisher(flatMapResult(stmt.execute(),
+                                                                                                         (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
+                                                                                           e -> R2dbcError.fromException(e,
+                                                                                                                         sql))
+                                                           .flatMap(opt -> opt.fold(() -> Promise.success(Option.none()),
+                                                                                    result -> result.mapError(JooqR2dbcDatabaseConnector::toConnectorError)
+                                                                                                    .async()
+                                                                                                    .map(Option::some)));
+                              });
     }
 
     @Override
     public <T> Promise<List<T>> queryList(String sql, RowMapper<T> mapper, Object... params) {
         return withConnection(conn -> {
-            var stmt = conn.createStatement(sql);
-            for (int i = 0; i < params.length; i++) {
-                stmt.bind(i, params[i]);
-            }
-            return ReactiveOperations.<Result<T>>collectFromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
-                e -> R2dbcError.fromException(e, sql)
-            ).flatMap(JooqR2dbcDatabaseConnector::collectSuccessfulResults);
-        });
+                                  var stmt = conn.createStatement(sql);
+                                  for (int i = 0; i < params.length; i++) {
+                                      stmt.bind(i, params[i]);
+                                  }
+                                  return ReactiveOperations.<Result<T>> collectFromPublisher(flatMapResult(stmt.execute(),
+                                                                                                           (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
+                                                                                             e -> R2dbcError.fromException(e,
+                                                                                                                           sql))
+                                                           .flatMap(JooqR2dbcDatabaseConnector::collectSuccessfulResults);
+                              });
     }
 
     @Override
     public Promise<Integer> update(String sql, Object... params) {
         return withConnection(conn -> {
-            var stmt = conn.createStatement(sql);
-            for (int i = 0; i < params.length; i++) {
-                stmt.bind(i, params[i]);
-            }
-            return ReactiveOperations.<io.r2dbc.spi.Result>fromPublisher(
-                stmt.execute(),
-                e -> R2dbcError.fromException(e, sql)
-            ).flatMap(result -> ReactiveOperations.fromPublisher(
-                result.getRowsUpdated(),
-                e -> R2dbcError.fromException(e, sql)
-            )).map(Long::intValue);
-        });
+                                  var stmt = conn.createStatement(sql);
+                                  for (int i = 0; i < params.length; i++) {
+                                      stmt.bind(i, params[i]);
+                                  }
+                                  return ReactiveOperations.<io.r2dbc.spi.Result> fromPublisher(stmt.execute(),
+                                                                                                e -> R2dbcError.fromException(e,
+                                                                                                                              sql))
+                                                           .flatMap(result -> ReactiveOperations.fromPublisher(result.getRowsUpdated(),
+                                                                                                               e -> R2dbcError.fromException(e,
+                                                                                                                                             sql)))
+                                                           .map(Long::intValue);
+                              });
     }
 
     @Override
@@ -202,31 +209,32 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
         if (paramsList.isEmpty()) {
             return Promise.success(new int[0]);
         }
-
         return withConnection(conn -> {
-            var stmt = conn.createStatement(sql);
-            for (int i = 0; i < paramsList.size(); i++) {
-                var params = paramsList.get(i);
-                for (int j = 0; j < params.length; j++) {
-                    stmt.bind(j, params[j]);
-                }
-                if (i < paramsList.size() - 1) {
-                    stmt.add();
-                }
-            }
-
-            return ReactiveOperations.<io.r2dbc.spi.Result>collectFromPublisher(
-                stmt.execute(),
-                e -> R2dbcError.fromException(e, sql)
-            ).flatMap(results -> collectUpdateCounts(results, new int[results.size()], 0));
-        });
+                                  var stmt = conn.createStatement(sql);
+                                  for (int i = 0; i < paramsList.size(); i++) {
+                                      var params = paramsList.get(i);
+                                      for (int j = 0; j < params.length; j++) {
+                                          stmt.bind(j, params[j]);
+                                      }
+                                      if (i < paramsList.size() - 1) {
+                                          stmt.add();
+                                      }
+                                  }
+                                  return ReactiveOperations.<io.r2dbc.spi.Result> collectFromPublisher(stmt.execute(),
+                                                                                                       e -> R2dbcError.fromException(e,
+                                                                                                                                     sql))
+                                                           .flatMap(results -> collectUpdateCounts(results,
+                                                                                                   new int[results.size()],
+                                                                                                   0));
+                              });
     }
 
     private static Promise<int[]> collectUpdateCounts(List<io.r2dbc.spi.Result> results, int[] counts, int index) {
         if (index >= results.size()) {
             return Promise.success(counts);
         }
-        return ReactiveOperations.<Long>fromPublisher(results.get(index).getRowsUpdated())
+        return ReactiveOperations.<Long> fromPublisher(results.get(index)
+                                                              .getRowsUpdated())
                                  .map(count -> {
                                      counts[index] = count.intValue();
                                      return counts;
@@ -236,14 +244,13 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
 
     @Override
     public <T> Promise<T> transactional(TransactionCallback<T> callback) {
-        return withConnection(conn ->
-            ReactiveOperations.fromVoidPublisher(conn.beginTransaction())
-                              .flatMap(_ -> callback.execute(new TransactionalJooqR2dbcConnector(config, conn, dialect)))
-                              .flatMap(result ->
-                                  ReactiveOperations.fromVoidPublisher(conn.commitTransaction())
-                                                    .map(_ -> result))
-                              .onFailure(_ -> ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction()))
-        );
+        return withConnection(conn -> ReactiveOperations.fromVoidPublisher(conn.beginTransaction())
+                                                        .flatMap(_ -> callback.execute(new TransactionalJooqR2dbcConnector(config,
+                                                                                                                           conn,
+                                                                                                                           dialect)))
+                                                        .flatMap(result -> ReactiveOperations.fromVoidPublisher(conn.commitTransaction())
+                                                                                             .map(_ -> result))
+                                                        .onFailure(_ -> ReactiveOperations.fromVoidPublisher(conn.rollbackTransaction())));
     }
 
     @Override
@@ -261,19 +268,17 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     @Override
     public Promise<Unit> stop() {
         if (connectionFactory instanceof AutoCloseable closeable) {
-            return Promise.lift(
-                DatabaseConnectorError::databaseFailure,
-                () -> {
-                    closeable.close();
-                    return Unit.unit();
-                }
-            );
+            return Promise.lift(DatabaseConnectorError::databaseFailure,
+                                () -> {
+                                    closeable.close();
+                                    return Unit.unit();
+                                });
         }
         return Promise.success(Unit.unit());
     }
 
     private <T> Promise<T> withConnection(java.util.function.Function<Connection, Promise<T>> operation) {
-        return ReactiveOperations.<Connection>fromPublisher(connectionFactory.create())
+        return ReactiveOperations.<Connection> fromPublisher(connectionFactory.create())
                                  .flatMap(conn -> operation.apply(conn)
                                                            .onResult(_ -> ReactiveOperations.fromPublisher(conn.close())));
     }
@@ -286,7 +291,9 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
                              .map(_ -> List.<T>of());
             }
         }
-        return Promise.success(results.stream().map(Result::unwrap).toList());
+        return Promise.success(results.stream()
+                                      .map(Result::unwrap)
+                                      .toList());
     }
 
     private static DatabaseConnectorError toConnectorError(org.pragmatica.lang.Cause cause) {
@@ -305,25 +312,24 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     }
 
     @SuppressWarnings("unchecked")
-    private <T> org.reactivestreams.Publisher<T> flatMapResult(
-        org.reactivestreams.Publisher<? extends io.r2dbc.spi.Result> resultPublisher,
-        java.util.function.BiFunction<Row, RowMetadata, T> mapper
-    ) {
+    private <T> org.reactivestreams.Publisher<T> flatMapResult(org.reactivestreams.Publisher<? extends io.r2dbc.spi.Result> resultPublisher,
+                                                               java.util.function.BiFunction<Row, RowMetadata, T> mapper) {
         return subscriber -> resultPublisher.subscribe(new org.reactivestreams.Subscriber<io.r2dbc.spi.Result>() {
             @Override
             public void onSubscribe(org.reactivestreams.Subscription s) {
-                s.request(1);
-            }
+                                                           s.request(1);
+                                                       }
 
             @Override
             public void onNext(io.r2dbc.spi.Result result) {
-                result.map(mapper).subscribe((org.reactivestreams.Subscriber<? super Object>) subscriber);
-            }
+                                                           result.map(mapper)
+                                                                 .subscribe((org.reactivestreams.Subscriber<? super Object>) subscriber);
+                                                       }
 
             @Override
             public void onError(Throwable t) {
-                subscriber.onError(t);
-            }
+                                                           subscriber.onError(t);
+                                                       }
 
             @Override
             public void onComplete() {}
@@ -381,19 +387,21 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
     }
 
     /// A DatabaseConnector bound to a specific R2DBC Connection for transactional operations.
-    private record TransactionalJooqR2dbcConnector(DatabaseConnectorConfig config, Connection connection, SQLDialect dialect)
-        implements DatabaseConnector {
-
+    private record TransactionalJooqR2dbcConnector(DatabaseConnectorConfig config,
+                                                   Connection connection,
+                                                   SQLDialect dialect)
+    implements DatabaseConnector {
         @Override
         public <T> Promise<T> queryOne(String sql, RowMapper<T> mapper, Object... params) {
             var stmt = connection.createStatement(sql);
             for (int i = 0; i < params.length; i++) {
                 stmt.bind(i, params[i]);
             }
-            return ReactiveOperations.<Result<T>>fromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
-                e -> R2dbcError.fromException(e, sql)
-            ).flatMap(result -> result.mapError(JooqR2dbcDatabaseConnector::toConnectorError).async());
+            return ReactiveOperations.<Result<T>> fromPublisher(flatMapResult(stmt.execute(),
+                                                                              (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
+                                                                e -> R2dbcError.fromException(e, sql))
+                                     .flatMap(result -> result.mapError(JooqR2dbcDatabaseConnector::toConnectorError)
+                                                              .async());
         }
 
         @Override
@@ -402,15 +410,13 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
             for (int i = 0; i < params.length; i++) {
                 stmt.bind(i, params[i]);
             }
-            return ReactiveOperations.<Result<T>>firstFromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
-                e -> R2dbcError.fromException(e, sql)
-            ).flatMap(opt -> opt.fold(
-                () -> Promise.success(Option.none()),
-                result -> result.mapError(JooqR2dbcDatabaseConnector::toConnectorError)
-                               .async()
-                               .map(Option::some)
-            ));
+            return ReactiveOperations.<Result<T>> firstFromPublisher(flatMapResult(stmt.execute(),
+                                                                                   (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
+                                                                     e -> R2dbcError.fromException(e, sql))
+                                     .flatMap(opt -> opt.fold(() -> Promise.success(Option.none()),
+                                                              result -> result.mapError(JooqR2dbcDatabaseConnector::toConnectorError)
+                                                                              .async()
+                                                                              .map(Option::some)));
         }
 
         @Override
@@ -419,10 +425,10 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
             for (int i = 0; i < params.length; i++) {
                 stmt.bind(i, params[i]);
             }
-            return ReactiveOperations.<Result<T>>collectFromPublisher(
-                flatMapResult(stmt.execute(), (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
-                e -> R2dbcError.fromException(e, sql)
-            ).flatMap(JooqR2dbcDatabaseConnector::collectSuccessfulResults);
+            return ReactiveOperations.<Result<T>> collectFromPublisher(flatMapResult(stmt.execute(),
+                                                                                     (row, meta) -> mapper.map(new R2dbcRowAccessor(row))),
+                                                                       e -> R2dbcError.fromException(e, sql))
+                                     .flatMap(JooqR2dbcDatabaseConnector::collectSuccessfulResults);
         }
 
         @Override
@@ -431,13 +437,12 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
             for (int i = 0; i < params.length; i++) {
                 stmt.bind(i, params[i]);
             }
-            return ReactiveOperations.<io.r2dbc.spi.Result>fromPublisher(
-                stmt.execute(),
-                e -> R2dbcError.fromException(e, sql)
-            ).flatMap(result -> ReactiveOperations.fromPublisher(
-                result.getRowsUpdated(),
-                e -> R2dbcError.fromException(e, sql)
-            )).map(Long::intValue);
+            return ReactiveOperations.<io.r2dbc.spi.Result> fromPublisher(stmt.execute(),
+                                                                          e -> R2dbcError.fromException(e, sql))
+                                     .flatMap(result -> ReactiveOperations.fromPublisher(result.getRowsUpdated(),
+                                                                                         e -> R2dbcError.fromException(e,
+                                                                                                                       sql)))
+                                     .map(Long::intValue);
         }
 
         @Override
@@ -445,7 +450,6 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
             if (paramsList.isEmpty()) {
                 return Promise.success(new int[0]);
             }
-
             var stmt = connection.createStatement(sql);
             for (int i = 0; i < paramsList.size(); i++) {
                 var params = paramsList.get(i);
@@ -456,11 +460,11 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
                     stmt.add();
                 }
             }
-
-            return ReactiveOperations.<io.r2dbc.spi.Result>collectFromPublisher(
-                stmt.execute(),
-                e -> R2dbcError.fromException(e, sql)
-            ).flatMap(results -> collectUpdateCounts(results, new int[results.size()], 0));
+            return ReactiveOperations.<io.r2dbc.spi.Result> collectFromPublisher(stmt.execute(),
+                                                                                 e -> R2dbcError.fromException(e, sql))
+                                     .flatMap(results -> collectUpdateCounts(results,
+                                                                             new int[results.size()],
+                                                                             0));
         }
 
         @Override
@@ -471,12 +475,12 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
 
         @Override
         public Promise<Boolean> isHealthy() {
-            return Promise.success(true); // Connection is healthy if we got here
+            return Promise.success(true);
         }
 
         @Override
         public Promise<Unit> stop() {
-            return Promise.success(Unit.unit()); // Don't close - managed by outer connector
+            return Promise.success(Unit.unit());
         }
 
         @Override
@@ -485,25 +489,24 @@ public final class JooqR2dbcDatabaseConnector implements DatabaseConnector {
         }
 
         @SuppressWarnings("unchecked")
-        private <T> org.reactivestreams.Publisher<T> flatMapResult(
-            org.reactivestreams.Publisher<? extends io.r2dbc.spi.Result> resultPublisher,
-            java.util.function.BiFunction<Row, RowMetadata, T> mapper
-        ) {
+        private <T> org.reactivestreams.Publisher<T> flatMapResult(org.reactivestreams.Publisher<? extends io.r2dbc.spi.Result> resultPublisher,
+                                                                   java.util.function.BiFunction<Row, RowMetadata, T> mapper) {
             return subscriber -> resultPublisher.subscribe(new org.reactivestreams.Subscriber<io.r2dbc.spi.Result>() {
                 @Override
                 public void onSubscribe(org.reactivestreams.Subscription s) {
-                    s.request(1);
-                }
+                                                               s.request(1);
+                                                           }
 
                 @Override
                 public void onNext(io.r2dbc.spi.Result result) {
-                    result.map(mapper).subscribe((org.reactivestreams.Subscriber<? super Object>) subscriber);
-                }
+                                                               result.map(mapper)
+                                                                     .subscribe((org.reactivestreams.Subscriber<? super Object>) subscriber);
+                                                           }
 
                 @Override
                 public void onError(Throwable t) {
-                    subscriber.onError(t);
-                }
+                                                               subscriber.onError(t);
+                                                           }
 
                 @Override
                 public void onComplete() {}

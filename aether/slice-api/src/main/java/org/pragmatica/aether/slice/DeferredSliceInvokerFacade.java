@@ -23,8 +23,7 @@ public final class DeferredSliceInvokerFacade implements SliceInvokerFacade {
         return new DeferredSliceInvokerFacade();
     }
 
-    private static final org.pragmatica.lang.Cause DELEGATE_ALREADY_SET =
-        Causes.cause("Delegate already set");
+    private static final org.pragmatica.lang.Cause DELEGATE_ALREADY_SET = Causes.cause("Delegate already set");
 
     /// Set the actual SliceInvokerFacade delegate.
     /// Must be called before any invocations occur.
@@ -36,8 +35,7 @@ public final class DeferredSliceInvokerFacade implements SliceInvokerFacade {
                : DELEGATE_ALREADY_SET.result();
     }
 
-    private static final org.pragmatica.lang.Cause NOT_INITIALIZED =
-        Causes.cause("SliceInvokerFacade not initialized");
+    private static final org.pragmatica.lang.Cause NOT_INITIALIZED = Causes.cause("SliceInvokerFacade not initialized");
 
     @Override
     public <R, T> Result<MethodHandle<R, T>> methodHandle(String sliceArtifact,

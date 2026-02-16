@@ -91,7 +91,9 @@ public record Money(BigDecimal amount, Currency currency) {
 
     public Result<Money> percentage(int percent) {
         var factor = BigDecimal.valueOf(percent)
-                               .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP);
+                               .divide(BigDecimal.valueOf(100),
+                                       4,
+                                       RoundingMode.HALF_UP);
         return multiply(factor);
     }
 

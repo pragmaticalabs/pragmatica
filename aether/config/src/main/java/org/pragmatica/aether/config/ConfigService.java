@@ -16,7 +16,6 @@ import org.pragmatica.lang.Result;
 ///     .onSuccess(config -> // use config);
 /// }```
 public interface ConfigService {
-
     /// Load a configuration section and bind it to the specified type.
     ///
     /// @param section     Dot-separated section path (e.g., "database.primary")
@@ -60,7 +59,6 @@ public interface ConfigService {
     Option<Boolean> getBoolean(String key);
 
     // Static accessor pattern
-
     /// Get the global ConfigService instance.
     ///
     /// @return ConfigService if configured, empty otherwise

@@ -158,7 +158,9 @@ class MetricsCollectorImpl implements MetricsCollector {
         var invMetrics = invocationMetricsProvider;
         if (invMetrics != null) {
             for (var snapshot : invMetrics.snapshot()) {
-                var prefix = "inv|" + snapshot.artifact().asString() + "|" + snapshot.methodName().name() + "|";
+                var prefix = "inv|" + snapshot.artifact()
+                                             .asString() + "|" + snapshot.methodName()
+                                                                        .name() + "|";
                 var m = snapshot.metrics();
                 metrics.put(prefix + "count", (double) m.count());
                 metrics.put(prefix + "success", (double) m.successCount());
@@ -237,12 +239,13 @@ class MetricsCollectorImpl implements MetricsCollector {
     @Override
     public void onMetricsPing(MetricsPing ping) {
         // Store all cluster metrics from leader's aggregated snapshot
-        ping.allMetrics().forEach((nodeId, metrics) -> {
-            if (!nodeId.equals(self)) {
-                remoteMetrics.put(nodeId, metrics);
-                addToHistory(nodeId, metrics);
-            }
-        });
+        ping.allMetrics()
+            .forEach((nodeId, metrics) -> {
+                         if (!nodeId.equals(self)) {
+                             remoteMetrics.put(nodeId, metrics);
+                             addToHistory(nodeId, metrics);
+                         }
+                     });
         // Respond with our metrics
         network.send(ping.sender(), new MetricsPong(self, collectLocal()));
     }

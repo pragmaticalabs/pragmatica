@@ -103,12 +103,13 @@ public record StateMachineDefinition<S, E, C>(String name,
 
         private Result<Builder<S, E, C>> validate() {
             return option(name).filter(n -> !n.isBlank())
-                               .toResult(StateMachineError.invalidConfiguration("Name cannot be null or empty"))
-                               .flatMap(_ -> option(initialState)
-                                   .toResult(StateMachineError.invalidConfiguration("Initial state must be defined")))
-                               .flatMap(_ -> transitions.isEmpty()
-                                   ? StateMachineError.invalidConfiguration("At least one transition must be defined").result()
-                                   : Result.success(this));
+                         .toResult(StateMachineError.invalidConfiguration("Name cannot be null or empty"))
+                         .flatMap(_ -> option(initialState)
+            .toResult(StateMachineError.invalidConfiguration("Initial state must be defined")))
+                         .flatMap(_ -> transitions.isEmpty()
+                                       ? StateMachineError.invalidConfiguration("At least one transition must be defined")
+                                                          .result()
+                                       : Result.success(this));
         }
     }
 }

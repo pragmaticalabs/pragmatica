@@ -17,19 +17,20 @@
 
 package org.pragmatica.cloud.hetzner.api;
 
+import java.util.List;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import java.util.List;
 
 /// Hetzner Cloud network model.
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record Network(long id, String name, @JsonProperty("ip_range") String ipRange, List<Subnet> subnets) {
-
     /// Network subnet.
     @JsonIgnoreProperties(ignoreUnknown = true)
-    public record Subnet(String type, @JsonProperty("ip_range") String ipRange,
-                         @JsonProperty("network_zone") String networkZone, String gateway) {}
+    public record Subnet(String type,
+                         @JsonProperty("ip_range") String ipRange,
+                         @JsonProperty("network_zone") String networkZone,
+                         String gateway) {}
 
     /// Wrapper for single-network API responses.
     @JsonIgnoreProperties(ignoreUnknown = true)

@@ -50,7 +50,6 @@ import java.util.List;
 
 /// Hetzner Cloud REST API client with Promise-based async operations.
 public interface HetznerClient {
-
     /// Creates a new server.
     Promise<Server> createServer(CreateServerRequest request);
 
@@ -126,11 +125,9 @@ public interface HetznerClient {
 
 /// Implementation of HetznerClient using HttpOperations and JsonMapper.
 record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper mapper) implements HetznerClient {
-
     @Override
     public Promise<Server> createServer(CreateServerRequest request) {
-        return postJson("/servers", request, ServerResponse.class)
-            .map(ServerResponse::server);
+        return postJson("/servers", request, ServerResponse.class).map(ServerResponse::server);
     }
 
     @Override
@@ -140,20 +137,17 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<Server> getServer(long serverId) {
-        return getJson("/servers/" + serverId, ServerResponse.class)
-            .map(ServerResponse::server);
+        return getJson("/servers/" + serverId, ServerResponse.class).map(ServerResponse::server);
     }
 
     @Override
     public Promise<List<Server>> listServers() {
-        return getJson("/servers", ServerListResponse.class)
-            .map(ServerListResponse::servers);
+        return getJson("/servers", ServerListResponse.class).map(ServerListResponse::servers);
     }
 
     @Override
     public Promise<SshKey> createSshKey(SshKey.CreateSshKeyRequest request) {
-        return postJson("/ssh_keys", request, SshKeyResponse.class)
-            .map(SshKeyResponse::sshKey);
+        return postJson("/ssh_keys", request, SshKeyResponse.class).map(SshKeyResponse::sshKey);
     }
 
     @Override
@@ -163,26 +157,22 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<List<SshKey>> listSshKeys() {
-        return getJson("/ssh_keys", SshKeyListResponse.class)
-            .map(SshKeyListResponse::sshKeys);
+        return getJson("/ssh_keys", SshKeyListResponse.class).map(SshKeyListResponse::sshKeys);
     }
 
     @Override
     public Promise<List<Network>> listNetworks() {
-        return getJson("/networks", NetworkListResponse.class)
-            .map(NetworkListResponse::networks);
+        return getJson("/networks", NetworkListResponse.class).map(NetworkListResponse::networks);
     }
 
     @Override
     public Promise<Network> getNetwork(long networkId) {
-        return getJson("/networks/" + networkId, NetworkResponse.class)
-            .map(NetworkResponse::network);
+        return getJson("/networks/" + networkId, NetworkResponse.class).map(NetworkResponse::network);
     }
 
     @Override
     public Promise<List<Firewall>> listFirewalls() {
-        return getJson("/firewalls", FirewallListResponse.class)
-            .map(FirewallListResponse::firewalls);
+        return getJson("/firewalls", FirewallListResponse.class).map(FirewallListResponse::firewalls);
     }
 
     @Override
@@ -193,8 +183,7 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<LoadBalancer> createLoadBalancer(CreateLoadBalancerRequest request) {
-        return postJson("/load_balancers", request, LoadBalancerResponse.class)
-            .map(LoadBalancerResponse::loadBalancer);
+        return postJson("/load_balancers", request, LoadBalancerResponse.class).map(LoadBalancerResponse::loadBalancer);
     }
 
     @Override
@@ -204,8 +193,7 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
 
     @Override
     public Promise<List<LoadBalancer>> listLoadBalancers() {
-        return getJson("/load_balancers", LoadBalancerListResponse.class)
-            .map(LoadBalancerListResponse::loadBalancers);
+        return getJson("/load_balancers", LoadBalancerListResponse.class).map(LoadBalancerListResponse::loadBalancers);
     }
 
     @Override
@@ -235,26 +223,23 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
     @Override
     public Promise<LoadBalancer> getLoadBalancer(long loadBalancerId) {
         return getJson("/load_balancers/" + loadBalancerId, LoadBalancerResponse.class)
-            .map(LoadBalancerResponse::loadBalancer);
+        .map(LoadBalancerResponse::loadBalancer);
     }
 
     // --- Internal HTTP helpers ---
-
     private <T> Promise<T> getJson(String path, Class<T> responseType) {
         return http.sendString(buildGet(path))
                    .flatMap(result -> parseResponse(result, responseType));
     }
 
     private <T, R> Promise<R> postJson(String path, T body, Class<R> responseType) {
-        return serializeBody(body)
-            .flatMap(json -> http.sendString(buildPost(path, json)))
-            .flatMap(result -> parseResponse(result, responseType));
+        return serializeBody(body).flatMap(json -> http.sendString(buildPost(path, json)))
+                            .flatMap(result -> parseResponse(result, responseType));
     }
 
     private <T> Promise<Unit> postJsonDiscarding(String path, T body) {
-        return serializeBody(body)
-            .flatMap(json -> http.sendString(buildPost(path, json)))
-            .flatMap(this::checkSuccess);
+        return serializeBody(body).flatMap(json -> http.sendString(buildPost(path, json)))
+                            .flatMap(this::checkSuccess);
     }
 
     private Promise<Unit> delete(String path) {
@@ -263,41 +248,52 @@ record HetznerClientRecord(HetznerConfig config, HttpOperations http, JsonMapper
     }
 
     private <T> Promise<String> serializeBody(T body) {
-        return mapper.writeAsString(body).async();
+        return mapper.writeAsString(body)
+                     .async();
     }
 
     private <T> Promise<T> parseResponse(HttpResult<String> result, Class<T> responseType) {
         if (result.isSuccess()) {
-            return mapper.readString(result.body(), responseType).async();
+            return mapper.readString(result.body(),
+                                     responseType)
+                         .async();
         }
-        return HetznerError.fromResponse(result.statusCode(), result.body(), mapper).promise();
+        return HetznerError.fromResponse(result.statusCode(),
+                                         result.body(),
+                                         mapper)
+                           .promise();
     }
 
     private Promise<Unit> checkSuccess(HttpResult<String> result) {
         if (result.isSuccess()) {
             return Promise.success(Unit.unit());
         }
-        return HetznerError.fromResponse(result.statusCode(), result.body(), mapper).promise();
+        return HetznerError.fromResponse(result.statusCode(),
+                                         result.body(),
+                                         mapper)
+                           .promise();
     }
 
     private HttpRequest buildGet(String path) {
-        return authorizedRequest(path).GET().build();
+        return authorizedRequest(path).GET()
+                                .build();
     }
 
     private HttpRequest buildPost(String path, String jsonBody) {
-        return authorizedRequest(path)
-            .POST(BodyPublishers.ofString(jsonBody))
-            .header("Content-Type", "application/json")
-            .build();
+        return authorizedRequest(path).POST(BodyPublishers.ofString(jsonBody))
+                                .header("Content-Type", "application/json")
+                                .build();
     }
 
     private HttpRequest buildDelete(String path) {
-        return authorizedRequest(path).DELETE().build();
+        return authorizedRequest(path).DELETE()
+                                .build();
     }
 
     private HttpRequest.Builder authorizedRequest(String path) {
         return HttpRequest.newBuilder()
                           .uri(URI.create(config.baseUrl() + path))
-                          .header("Authorization", "Bearer " + config.apiToken());
+                          .header("Authorization",
+                                  "Bearer " + config.apiToken());
     }
 }

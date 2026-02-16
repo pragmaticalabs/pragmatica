@@ -364,18 +364,21 @@ class SliceInvokerImpl implements SliceInvoker {
     @Override
     public Promise<Unit> invoke(Artifact slice, MethodName method, Object request) {
         return selectEndpoint(slice, method)
-            .flatMap(endpoint -> endpoint.nodeId().equals(self)
-                ? invokeLocalFireAndForget(slice, method, request)
-                : sendFireAndForget(endpoint, slice, method, request));
+        .flatMap(endpoint -> endpoint.nodeId()
+                                     .equals(self)
+                             ? invokeLocalFireAndForget(slice, method, request)
+                             : sendFireAndForget(endpoint, slice, method, request));
     }
 
     private Promise<Unit> invokeLocalFireAndForget(Artifact slice, MethodName method, Object request) {
         return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> aspectInterceptor.intercept(
-                                    slice, method,
-                                    InvocationContext.getOrGenerateRequestId(),
-                                    () -> invokeViaBridge(bridge, method, request)))
+                                .flatMap(bridge -> aspectInterceptor.intercept(slice,
+                                                                               method,
+                                                                               InvocationContext.getOrGenerateRequestId(),
+                                                                               () -> invokeViaBridge(bridge,
+                                                                                                     method,
+                                                                                                     request)))
                                 .mapToUnit();
     }
 
@@ -403,9 +406,10 @@ class SliceInvokerImpl implements SliceInvoker {
             return INVOKER_STOPPED.promise();
         }
         return selectEndpoint(slice, method)
-            .flatMap(endpoint -> endpoint.nodeId().equals(self)
-                ? invokeLocal(slice, method, request, responseType)
-                : sendRequestResponse(endpoint, slice, method, request));
+        .flatMap(endpoint -> endpoint.nodeId()
+                                     .equals(self)
+                             ? invokeLocal(slice, method, request, responseType)
+                             : sendRequestResponse(endpoint, slice, method, request));
     }
 
     @SuppressWarnings("unchecked")
@@ -533,12 +537,10 @@ class SliceInvokerImpl implements SliceInvoker {
     @SuppressWarnings("unchecked")
     private <R> void invokeEndpointWithFailover(Promise<R> promise, FailoverContext<R> ctx, Endpoint endpoint) {
         var targetNode = endpoint.nodeId();
-
         if (targetNode.equals(self)) {
             invokeLocalForFailover(promise, ctx);
             return;
         }
-
         invokeRemoteForFailover(promise, ctx, targetNode);
     }
 
@@ -546,9 +548,12 @@ class SliceInvokerImpl implements SliceInvoker {
     private <R> void invokeLocalForFailover(Promise<R> promise, FailoverContext<R> ctx) {
         invocationHandler.localSlice(ctx.slice)
                          .async(SLICE_NOT_FOUND)
-                         .flatMap(bridge -> aspectInterceptor.intercept(
-                             ctx.slice, ctx.method, ctx.requestId,
-                             () -> invokeViaBridge(bridge, ctx.method, ctx.request)))
+                         .flatMap(bridge -> aspectInterceptor.intercept(ctx.slice,
+                                                                        ctx.method,
+                                                                        ctx.requestId,
+                                                                        () -> invokeViaBridge(bridge,
+                                                                                              ctx.method,
+                                                                                              ctx.request)))
                          .onSuccess(result -> promise.succeed((R) result))
                          .onFailure(cause -> handleFailoverFailure(promise, ctx, self, cause));
     }
@@ -566,7 +571,13 @@ class SliceInvokerImpl implements SliceInvoker {
                                 .add(correlationId);
         pendingPromise.timeout(timeSpan(timeoutMs).millis())
                       .onResult(_ -> removePendingInvocation(correlationId, targetNode));
-        var invokeRequest = InvokeRequest.invokeRequest(self, correlationId, ctx.requestId, ctx.slice, ctx.method, payload, true);
+        var invokeRequest = InvokeRequest.invokeRequest(self,
+                                                        correlationId,
+                                                        ctx.requestId,
+                                                        ctx.slice,
+                                                        ctx.method,
+                                                        payload,
+                                                        true);
         network.send(targetNode, invokeRequest);
         if (log.isDebugEnabled()) {
             log.debug("[requestId={}] Sent failover invocation to {}: {}.{} [{}] (attempt {})",
@@ -675,10 +686,12 @@ class SliceInvokerImpl implements SliceInvoker {
     public <R> Promise<R> invokeLocal(Artifact slice, MethodName method, Object request, TypeToken<R> responseType) {
         return invocationHandler.localSlice(slice)
                                 .async(SLICE_NOT_FOUND)
-                                .flatMap(bridge -> aspectInterceptor.intercept(
-                                    slice, method,
-                                    InvocationContext.getOrGenerateRequestId(),
-                                    () -> invokeViaBridge(bridge, method, request)));
+                                .flatMap(bridge -> aspectInterceptor.intercept(slice,
+                                                                               method,
+                                                                               InvocationContext.getOrGenerateRequestId(),
+                                                                               () -> invokeViaBridge(bridge,
+                                                                                                     method,
+                                                                                                     request)));
     }
 
     @SuppressWarnings("unchecked")
@@ -700,8 +713,7 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private void processReceivedResponse(PendingInvocation pending, InvokeResponse response) {
-        removeFromNodeIndex(response.correlationId(),
-                            pending.targetNode());
+        removeFromNodeIndex(response.correlationId(), pending.targetNode());
         handlePendingResponse(pending, response);
     }
 
@@ -724,7 +736,8 @@ class SliceInvokerImpl implements SliceInvoker {
     private void retryPendingForDepartedNode(NodeId departedNode, Set<String> correlationIds) {
         var affectedRequestIds = correlationIds.stream()
                                                .map(pendingInvocations::get)
-                                               .flatMap(p -> Option.option(p).stream())
+                                               .flatMap(p -> Option.option(p)
+                                                                   .stream())
                                                .map(PendingInvocation::requestId)
                                                .limit(5)
                                                .toList();
@@ -739,9 +752,7 @@ class SliceInvokerImpl implements SliceInvoker {
     }
 
     private void retryDepartedInvocation(PendingInvocation pending, NodeId departedNode) {
-        log.debug("Triggering retry for request [{}] due to node {} departure",
-                  pending.requestId(),
-                  departedNode);
+        log.debug("Triggering retry for request [{}] due to node {} departure", pending.requestId(), departedNode);
         // Fail the promise to trigger onFailure callback which handles retry
         pending.promise()
                .fail(Causes.cause("Target node " + departedNode + " departed"));
@@ -757,7 +768,7 @@ class SliceInvokerImpl implements SliceInvoker {
               .onPresent(nodeCorrelations -> {
                              nodeCorrelations.remove(correlationId);
                              // Clean up empty sets
-                             if (nodeCorrelations.isEmpty()) {
+        if (nodeCorrelations.isEmpty()) {
                                  pendingInvocationsByNode.remove(targetNode, nodeCorrelations);
                              }
                          });
@@ -788,7 +799,10 @@ class SliceInvokerImpl implements SliceInvoker {
             var errorMessage = new String(response.payload());
             promise.resolve(new SliceInvokerError.RemoteInvocationError(errorMessage).result());
             if (log.isDebugEnabled()) {
-                log.debug("[requestId={}] Failed to complete invocation [{}]: {}", requestId, response.correlationId(), errorMessage);
+                log.debug("[requestId={}] Failed to complete invocation [{}]: {}",
+                          requestId,
+                          response.correlationId(),
+                          errorMessage);
             }
         }
     }

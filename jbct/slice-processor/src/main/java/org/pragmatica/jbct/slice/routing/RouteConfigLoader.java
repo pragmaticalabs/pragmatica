@@ -7,14 +7,14 @@ import org.pragmatica.lang.Option;
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.utils.Causes;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /// Loader for route configuration from TOML files.
 ///
@@ -151,7 +151,8 @@ public final class RouteConfigLoader {
             var typeName = entry.getKey();
             parseStatusCodeSafely(entry.getValue()).onPresent(statusCode -> mappings.put(typeName, statusCode))
                                  .onEmpty(() -> log.warn("Invalid status code for type '{}': {}",
-                                                          typeName, entry.getValue()));
+                                                         typeName,
+                                                         entry.getValue()));
         }
         return Map.copyOf(mappings);
     }

@@ -1,5 +1,4 @@
 package org.pragmatica.aether.api;
-
 /// Configuration for the cluster event aggregator.
 ///
 /// @param maxEvents maximum number of events to retain in the ring buffer

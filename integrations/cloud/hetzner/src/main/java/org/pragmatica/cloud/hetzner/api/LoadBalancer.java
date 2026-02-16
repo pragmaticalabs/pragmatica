@@ -17,16 +17,18 @@
 
 package org.pragmatica.cloud.hetzner.api;
 
+import java.util.List;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
-import java.util.List;
-
 /// Hetzner Cloud load balancer model.
 @JsonIgnoreProperties(ignoreUnknown = true)
-public record LoadBalancer(long id, String name, @JsonProperty("load_balancer_type") LbType loadBalancerType,
-                           Algorithm algorithm, List<Target> targets) {
-
+public record LoadBalancer(long id,
+                           String name,
+                           @JsonProperty("load_balancer_type") LbType loadBalancerType,
+                           Algorithm algorithm,
+                           List<Target> targets) {
     /// Load balancer type.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record LbType(long id, String name, String description) {}
@@ -48,7 +50,8 @@ public record LoadBalancer(long id, String name, @JsonProperty("load_balancer_ty
     public record TargetServer(long id) {}
 
     /// Service configuration for load balancer creation.
-    public record Service(String protocol, @JsonProperty("listen_port") int listenPort,
+    public record Service(String protocol,
+                          @JsonProperty("listen_port") int listenPort,
                           @JsonProperty("destination_port") int destinationPort) {}
 
     /// Request to create a load balancer.
@@ -59,7 +62,6 @@ public record LoadBalancer(long id, String name, @JsonProperty("load_balancer_ty
                                             long network,
                                             List<Service> services,
                                             List<TargetRequest> targets) {
-
         /// Target specification for load balancer creation.
         public record TargetRequest(String type, TargetServer server) {}
 
@@ -71,17 +73,21 @@ public record LoadBalancer(long id, String name, @JsonProperty("load_balancer_ty
                                                                           long network,
                                                                           List<Service> services,
                                                                           List<Long> serverIds) {
-            return new CreateLoadBalancerRequest(
-                loadBalancerType, name, new Algorithm(algorithmType), location, network, services,
-                serverIds.stream()
-                         .map(id -> new TargetRequest("server", new TargetServer(id)))
-                         .toList());
+            return new CreateLoadBalancerRequest(loadBalancerType,
+                                                 name,
+                                                 new Algorithm(algorithmType),
+                                                 location,
+                                                 network,
+                                                 services,
+                                                 serverIds.stream()
+                                                          .map(id -> new TargetRequest("server",
+                                                                                       new TargetServer(id)))
+                                                          .toList());
         }
     }
 
     /// Request to add/remove a target.
     public record TargetActionRequest(String type, TargetServer server) {
-
         /// Factory method for a server target action.
         public static TargetActionRequest serverTarget(long serverId) {
             return new TargetActionRequest("server", new TargetServer(serverId));
@@ -90,7 +96,6 @@ public record LoadBalancer(long id, String name, @JsonProperty("load_balancer_ty
 
     /// Request to add/remove an IP target.
     public record IpTargetActionRequest(String type, Ip ip) {
-
         /// IP address within an IP target request.
         public record Ip(String ip) {}
 

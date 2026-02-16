@@ -14,7 +14,6 @@ import java.util.Set;
 /// Implementations may load from various sources: environment variables,
 /// system properties, TOML files, JSON files, or in-memory maps.
 public interface ConfigSource {
-
     /// Get a string value from the configuration.
     ///
     /// @param key Dot-separated key path (e.g., "database.host")
@@ -93,7 +92,7 @@ public interface ConfigSource {
     }
 
     private Option<Integer> parseInteger(String value) {
-        try {
+        try{
             return Option.some(Integer.parseInt(value));
         } catch (NumberFormatException _) {
             return Option.none();
@@ -101,7 +100,7 @@ public interface ConfigSource {
     }
 
     private Option<Long> parseLong(String value) {
-        try {
+        try{
             return Option.some(Long.parseLong(value));
         } catch (NumberFormatException _) {
             return Option.none();
@@ -119,7 +118,7 @@ public interface ConfigSource {
     }
 
     private Option<Double> parseDouble(String value) {
-        try {
+        try{
             return Option.some(Double.parseDouble(value));
         } catch (NumberFormatException _) {
             return Option.none();

@@ -33,9 +33,18 @@ public final class ControllerRoutes implements RouteSource {
     }
 
     // Training data export DTO
-    record TrainingDataPoint(long timestamp, double cpuUsage, double heapUsage, double eventLoopLagMs,
-                             double latencyMs, long invocations, long gcPauseMs, double latencyP50,
-                             double latencyP95, double latencyP99, double errorRate, int eventCount) {}
+    record TrainingDataPoint(long timestamp,
+                             double cpuUsage,
+                             double heapUsage,
+                             double eventLoopLagMs,
+                             double latencyMs,
+                             long invocations,
+                             long gcPauseMs,
+                             double latencyP50,
+                             double latencyP95,
+                             double latencyP99,
+                             double errorRate,
+                             int eventCount) {}
 
     // Request DTO
     record ControllerConfigRequest(Double cpuScaleUpThreshold,

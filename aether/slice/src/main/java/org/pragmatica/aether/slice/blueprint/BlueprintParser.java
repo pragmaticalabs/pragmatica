@@ -47,8 +47,8 @@ public interface BlueprintParser {
                      .filter(s -> !s.isBlank())
                      .toResult(MISSING_ID)
                      .flatMap(content -> TomlParser.parse(content)
-                         .mapError(cause -> Causes.cause("TOML parse error: " + cause.message()))
-                         .flatMap(BlueprintParser::parseDocument));
+                                                   .mapError(cause -> Causes.cause("TOML parse error: " + cause.message()))
+                                                   .flatMap(BlueprintParser::parseDocument));
     }
 
     static Result<Blueprint> parseFile(Path path) {
@@ -96,13 +96,13 @@ public interface BlueprintParser {
         return Option.option(entry.get("artifact"))
                      .toResult(MISSING_ARTIFACT.apply("slices[" + index + "]"))
                      .flatMap(artifactObj -> {
-                         var artifactStr = artifactObj.toString();
-                         var instanceCount = entry.get("instances") instanceof Number n
-                                             ? n.intValue()
-                                             : 1;
-                         return Artifact.artifact(artifactStr)
-                                        .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
-                                        .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instanceCount));
-                     });
+                                  var artifactStr = artifactObj.toString();
+                                  var instanceCount = entry.get("instances") instanceof Number n
+                                                      ? n.intValue()
+                                                      : 1;
+                                  return Artifact.artifact(artifactStr)
+                                                 .mapError(_ -> INVALID_ARTIFACT.apply(artifactStr))
+                                                 .flatMap(artifact -> SliceSpec.sliceSpec(artifact, instanceCount));
+                              });
     }
 }

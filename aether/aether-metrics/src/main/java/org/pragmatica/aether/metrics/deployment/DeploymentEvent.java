@@ -55,7 +55,10 @@ public sealed interface DeploymentEvent extends Message.Local {
     /// Emitted when deployment fails (reaches FAILED state).
     record DeploymentFailed(Artifact artifact, NodeId nodeId, SliceState failedAt, long timestamp) implements DeploymentEvent {
         /// Factory method following JBCT naming convention. */
-        public static DeploymentFailed deploymentFailed(Artifact artifact, NodeId nodeId, SliceState failedAt, long timestamp) {
+        public static DeploymentFailed deploymentFailed(Artifact artifact,
+                                                        NodeId nodeId,
+                                                        SliceState failedAt,
+                                                        long timestamp) {
             return new DeploymentFailed(artifact, nodeId, failedAt, timestamp);
         }
     }

@@ -30,13 +30,13 @@ public class StatusWebSocketPublisher {
     }
 
     public static StatusWebSocketPublisher statusWebSocketPublisher(StatusWebSocketHandler handler,
-                                                                     Supplier<String> jsonSupplier,
-                                                                     long intervalMs) {
+                                                                    Supplier<String> jsonSupplier,
+                                                                    long intervalMs) {
         return new StatusWebSocketPublisher(handler, jsonSupplier, intervalMs);
     }
 
     public static StatusWebSocketPublisher statusWebSocketPublisher(StatusWebSocketHandler handler,
-                                                                     Supplier<String> jsonSupplier) {
+                                                                    Supplier<String> jsonSupplier) {
         return new StatusWebSocketPublisher(handler, jsonSupplier, 1000);
     }
 
@@ -45,15 +45,12 @@ public class StatusWebSocketPublisher {
             return;
         }
         var scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            var thread = new Thread(r, "status-ws-publisher");
-            thread.setDaemon(true);
-            return thread;
-        });
+                                                                       var thread = new Thread(r, "status-ws-publisher");
+                                                                       thread.setDaemon(true);
+                                                                       return thread;
+                                                                   });
         schedulerRef.set(scheduler);
-        scheduler.scheduleAtFixedRate(this::publish,
-                                      intervalMs,
-                                      intervalMs,
-                                      TimeUnit.MILLISECONDS);
+        scheduler.scheduleAtFixedRate(this::publish, intervalMs, intervalMs, TimeUnit.MILLISECONDS);
         log.info("Status WebSocket publisher started ({}ms interval)", intervalMs);
     }
 
@@ -72,7 +69,7 @@ public class StatusWebSocketPublisher {
         if (handler.connectedClients() == 0) {
             return;
         }
-        try {
+        try{
             var json = jsonSupplier.get();
             handler.broadcast(json);
         } catch (Exception e) {

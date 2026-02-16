@@ -46,9 +46,8 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
 
     @Override
     public Promise<TransactionContext> begin(TransactionConfig config) {
-        return currentTransaction()
-               .map(existing -> handleExistingTransaction(config, existing))
-               .or(() -> beginNewTransaction(config));
+        return currentTransaction().map(existing -> handleExistingTransaction(config, existing))
+                                 .or(() -> beginNewTransaction(config));
     }
 
     private Promise<TransactionContext> beginNewTransaction(TransactionConfig config) {
@@ -93,10 +92,9 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
 
     @Override
     public Promise<Unit> commit() {
-        return currentTransaction()
-               .toResult(TransactionError.noActiveTransaction("commit"))
-               .async()
-               .flatMap(this::commitTransaction);
+        return currentTransaction().toResult(TransactionError.noActiveTransaction("commit"))
+                                 .async()
+                                 .flatMap(this::commitTransaction);
     }
 
     private Promise<Unit> commitTransaction(TransactionContext context) {
@@ -107,10 +105,9 @@ final class DefaultTransactionAspectFactory implements TransactionAspectFactory 
 
     @Override
     public Promise<Unit> rollback() {
-        return currentTransaction()
-               .toResult(TransactionError.noActiveTransaction("rollback"))
-               .async()
-               .flatMap(this::rollbackTransaction);
+        return currentTransaction().toResult(TransactionError.noActiveTransaction("rollback"))
+                                 .async()
+                                 .flatMap(this::rollbackTransaction);
     }
 
     private Promise<Unit> rollbackTransaction(TransactionContext context) {

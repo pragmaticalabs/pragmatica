@@ -280,22 +280,23 @@ public final class MetricsRoutes implements RouteSource {
     private Object buildHistoryResponse(Option<String> rangeOpt) {
         var range = rangeOpt.or("1h");
         var node = nodeSupplier.get();
-        var historicalData = node.metricsCollector().historicalMetrics();
+        var historicalData = node.metricsCollector()
+                                 .historicalMetrics();
         var cutoff = System.currentTimeMillis() - parseTimeRange(range);
-
         Map<String, List<Map<String, Object>>> nodes = new HashMap<>();
         for (var nodeEntry : historicalData.entrySet()) {
             var snapshots = new ArrayList<Map<String, Object>>();
             for (var snapshot : nodeEntry.getValue()) {
                 if (snapshot.timestamp() < cutoff) continue;
-
                 var point = new HashMap<String, Object>();
                 point.put("timestamp", snapshot.timestamp());
                 point.put("metrics", snapshot.metrics());
                 snapshots.add(point);
             }
             if (!snapshots.isEmpty()) {
-                nodes.put(nodeEntry.getKey().id(), snapshots);
+                nodes.put(nodeEntry.getKey()
+                                   .id(),
+                          snapshots);
             }
         }
         return Map.of("timeRange", range, "nodes", nodes);

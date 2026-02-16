@@ -11,7 +11,6 @@ import java.util.Set;
 ///
 /// Useful for default values, testing, or programmatic configuration.
 public record MapConfigSource(String name, Map<String, String> values, int priority) implements ConfigSource {
-
     /// Create a MapConfigSource from a map.
     ///
     /// @param name     Source name for identification

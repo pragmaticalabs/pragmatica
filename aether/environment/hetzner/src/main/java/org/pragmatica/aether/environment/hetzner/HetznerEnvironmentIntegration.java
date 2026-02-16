@@ -15,7 +15,6 @@ import static org.pragmatica.aether.environment.hetzner.HetznerLoadBalancerProvi
 /// Optionally provides load balancer management when configured.
 public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvider,
                                             Option<LoadBalancerProvider> loadBalancerProvider) implements EnvironmentIntegration {
-
     /// Factory method for creating a HetznerEnvironmentIntegration from configuration.
     public static HetznerEnvironmentIntegration hetznerEnvironmentIntegration(HetznerEnvironmentConfig config) {
         var client = HetznerClient.hetznerClient(config.hetznerConfig());
@@ -24,7 +23,7 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
 
     /// Factory method for creating a HetznerEnvironmentIntegration with a custom client.
     public static HetznerEnvironmentIntegration hetznerEnvironmentIntegration(HetznerClient client,
-                                                                               HetznerEnvironmentConfig config) {
+                                                                              HetznerEnvironmentConfig config) {
         var compute = hetznerComputeProvider(client, config);
         Option<LoadBalancerProvider> lb = config.loadBalancer()
                                                 .map(lbConfig -> createLbProvider(client, lbConfig));
@@ -32,7 +31,6 @@ public record HetznerEnvironmentIntegration(HetznerComputeProvider computeProvid
     }
 
     // --- Leaf: create load balancer provider from config ---
-
     private static LoadBalancerProvider createLbProvider(HetznerClient client,
                                                          HetznerEnvironmentConfig.HetznerLbConfig lbConfig) {
         return hetznerLoadBalancerProvider(client, lbConfig.loadBalancerId(), lbConfig.destinationPort());

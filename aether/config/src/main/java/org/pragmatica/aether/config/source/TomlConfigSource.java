@@ -55,7 +55,8 @@ public final class TomlConfigSource implements ConfigSource {
     /// @return Result containing the source or error
     public static Result<TomlConfigSource> tomlConfigSource(Path path, int priority) {
         return TomlParser.parseFile(path)
-                         .mapError(e -> ConfigError.readFailed(path.toString(), new RuntimeException(e.message())))
+                         .mapError(e -> ConfigError.readFailed(path.toString(),
+                                                               new RuntimeException(e.message())))
                          .map(doc -> new TomlConfigSource(path, priority, doc));
     }
 
@@ -65,7 +66,8 @@ public final class TomlConfigSource implements ConfigSource {
     /// @return Result containing the source or error
     public static Result<TomlConfigSource> tomlConfigSource(String content) {
         return TomlParser.parse(content)
-                         .mapError(e -> ConfigError.parseFailed("inline", e.message()))
+                         .mapError(e -> ConfigError.parseFailed("inline",
+                                                                e.message()))
                          .map(doc -> new TomlConfigSource(null, DEFAULT_PRIORITY, doc));
     }
 
@@ -92,8 +94,8 @@ public final class TomlConfigSource implements ConfigSource {
     @Override
     public String name() {
         return path != null
-            ? "TomlConfigSource[" + path + "]"
-            : "TomlConfigSource[inline]";
+               ? "TomlConfigSource[" + path + "]"
+               : "TomlConfigSource[inline]";
     }
 
     @Override
@@ -113,15 +115,15 @@ public final class TomlConfigSource implements ConfigSource {
 
     private static Map<String, String> flattenDocument(TomlDocument document) {
         var result = new LinkedHashMap<String, String>();
-
         for (var section : document.sectionNames()) {
-            var prefix = section.isEmpty() ? "" : section + ".";
+            var prefix = section.isEmpty()
+                         ? ""
+                         : section + ".";
             var sectionValues = document.getSection(section);
             for (var entry : sectionValues.entrySet()) {
                 result.put(prefix + entry.getKey(), entry.getValue());
             }
         }
-
         return result;
     }
 }

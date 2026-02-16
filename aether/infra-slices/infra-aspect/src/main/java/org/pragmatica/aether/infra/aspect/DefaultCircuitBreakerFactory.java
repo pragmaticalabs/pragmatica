@@ -85,7 +85,8 @@ final class DefaultCircuitBreakerFactory implements CircuitBreakerFactory {
                 return (Promise<?>) method.invoke(delegate, args);
             } catch (Exception e) {
                 return InfraSliceError.CircuitBreakerTripped.circuitBreakerTripped("Failed to invoke method: " + method.getName(),
-                                                                                               e).promise();
+                                                                                   e)
+                                      .promise();
             }
         }
 

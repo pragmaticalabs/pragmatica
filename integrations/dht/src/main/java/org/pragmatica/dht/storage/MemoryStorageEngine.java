@@ -92,7 +92,9 @@ public final class MemoryStorageEngine implements StorageEngine {
     public Promise<List<DHTMessage.KeyValue>> entries() {
         return Promise.success(data.entrySet()
                                    .stream()
-                                   .map(e -> new DHTMessage.KeyValue(e.getKey().data(), e.getValue()))
+                                   .map(e -> new DHTMessage.KeyValue(e.getKey()
+                                                                      .data(),
+                                                                     e.getValue()))
                                    .toList());
     }
 
@@ -100,8 +102,12 @@ public final class MemoryStorageEngine implements StorageEngine {
     public Promise<List<DHTMessage.KeyValue>> entriesForPartition(ConsistentHashRing<?> ring, Partition partition) {
         return Promise.success(data.entrySet()
                                    .stream()
-                                   .filter(e -> ring.partitionFor(e.getKey().data()).equals(partition))
-                                   .map(e -> new DHTMessage.KeyValue(e.getKey().data(), e.getValue()))
+                                   .filter(e -> ring.partitionFor(e.getKey()
+                                                                   .data())
+                                                    .equals(partition))
+                                   .map(e -> new DHTMessage.KeyValue(e.getKey()
+                                                                      .data(),
+                                                                     e.getValue()))
                                    .toList());
     }
 

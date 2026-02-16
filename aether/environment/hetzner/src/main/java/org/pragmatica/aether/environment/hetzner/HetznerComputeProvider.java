@@ -24,10 +24,9 @@ import static org.pragmatica.aether.environment.InstanceInfo.instanceInfo;
 /// Hetzner server models to the environment integration domain types.
 public record HetznerComputeProvider(HetznerClient client,
                                      HetznerEnvironmentConfig config) implements ComputeProvider {
-
     /// Factory method for creating a HetznerComputeProvider.
     public static HetznerComputeProvider hetznerComputeProvider(HetznerClient client,
-                                                                 HetznerEnvironmentConfig config) {
+                                                                HetznerEnvironmentConfig config) {
         return new HetznerComputeProvider(client, config);
     }
 
@@ -60,33 +59,35 @@ public record HetznerComputeProvider(HetznerClient client,
     }
 
     // --- Leaf: build server creation request ---
-
     private CreateServerRequest buildCreateRequest() {
-        var name = "aether-" + UUID.randomUUID().toString().substring(0, 8);
-        return CreateServerRequest.createServerRequest(
-            name, config.serverType(), config.image(),
-            config.sshKeyIds(), config.networkIds(), config.firewallIds(),
-            config.region(), config.userData(), true);
+        var name = "aether-" + UUID.randomUUID()
+                                  .toString()
+                                  .substring(0, 8);
+        return CreateServerRequest.createServerRequest(name,
+                                                       config.serverType(),
+                                                       config.image(),
+                                                       config.sshKeyIds(),
+                                                       config.networkIds(),
+                                                       config.firewallIds(),
+                                                       config.region(),
+                                                       config.userData(),
+                                                       true);
     }
 
     // --- Leaf: parse server ID from instance ID ---
-
     private static long parseServerId(InstanceId instanceId) {
         return Long.parseLong(instanceId.value());
     }
 
     // --- Leaf: map Hetzner server to InstanceInfo ---
-
     static InstanceInfo toInstanceInfo(Server server) {
-        return instanceInfo(
-            instanceId(String.valueOf(server.id())),
-            mapStatus(server.status()),
-            collectAddresses(server),
-            InstanceType.ON_DEMAND);
+        return instanceInfo(instanceId(String.valueOf(server.id())),
+                            mapStatus(server.status()),
+                            collectAddresses(server),
+                            InstanceType.ON_DEMAND);
     }
 
     // --- Leaf: map list of servers ---
-
     private static List<InstanceInfo> toInstanceInfoList(List<Server> servers) {
         return servers.stream()
                       .map(HetznerComputeProvider::toInstanceInfo)
@@ -94,7 +95,6 @@ public record HetznerComputeProvider(HetznerClient client,
     }
 
     // --- Leaf: map Hetzner status string to InstanceStatus ---
-
     static InstanceStatus mapStatus(String hetznerStatus) {
         return switch (hetznerStatus) {
             case "initializing", "starting", "rebuilding", "migrating" -> InstanceStatus.PROVISIONING;
@@ -105,20 +105,20 @@ public record HetznerComputeProvider(HetznerClient client,
     }
 
     // --- Leaf: collect all IP addresses from a server ---
-
     static List<String> collectAddresses(Server server) {
         var addresses = new ArrayList<String>();
-
-        if (server.publicNet() != null && server.publicNet().ipv4() != null) {
-            addresses.add(server.publicNet().ipv4().ip());
+        if (server.publicNet() != null && server.publicNet()
+                                                .ipv4() != null) {
+            addresses.add(server.publicNet()
+                                .ipv4()
+                                .ip());
         }
-
         if (server.privateNet() != null) {
-            server.privateNet().stream()
+            server.privateNet()
+                  .stream()
                   .map(Server.PrivateNet::ip)
                   .forEach(addresses::add);
         }
-
         return List.copyOf(addresses);
     }
 }

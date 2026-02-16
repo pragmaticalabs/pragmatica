@@ -84,11 +84,12 @@ import org.pragmatica.messaging.Message;
 import org.pragmatica.messaging.MessageRouter;
 import org.pragmatica.serialization.Deserializer;
 import org.pragmatica.serialization.Serializer;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.pragmatica.cluster.state.kvstore.KVStoreNotification.filterPut;
 import static org.pragmatica.cluster.state.kvstore.KVStoreNotification.filterRemove;
@@ -231,11 +232,10 @@ public interface AetherNode {
         var dhtRing = ConsistentHashRing.<NodeId>consistentHashRing();
         dhtRing.addNode(config.self());
         // Pre-populate ring with all known peers so DHT is ready before topology events fire
-        config.topology().coreNodes().forEach(peer -> dhtRing.addNode(peer.id()));
-        var dhtNode = DHTNode.dhtNode(config.self(),
-                                      dhtStorage,
-                                      dhtRing,
-                                      config.artifactRepo());
+        config.topology()
+              .coreNodes()
+              .forEach(peer -> dhtRing.addNode(peer.id()));
+        var dhtNode = DHTNode.dhtNode(config.self(), dhtStorage, dhtRing, config.artifactRepo());
         // Create slice management components (deferred — artifact store needs ClusterNetwork)
         var sliceRegistry = SliceRegistry.sliceRegistry();
         var deferredInvoker = DeferredSliceInvokerFacade.deferredSliceInvokerFacade();
@@ -278,8 +278,7 @@ public interface AetherNode {
                                                    Deserializer deserializer,
                                                    DHTNode dhtNode) {
         // Create distributed DHT client with quorum-based reads/writes via ClusterNetwork
-        var dhtClient = DistributedDHTClient.distributedDHTClient(
-            dhtNode, clusterNode.network(), config.artifactRepo());
+        var dhtClient = DistributedDHTClient.distributedDHTClient(dhtNode, clusterNode.network(), config.artifactRepo());
         var artifactStore = ArtifactStore.artifactStore(dhtClient);
         // Create repositories from SliceConfig using RepositoryFactory
         var repositoryFactory = RepositoryFactory.repositoryFactory(artifactStore);
@@ -556,13 +555,18 @@ public interface AetherNode {
                                                                                          delegateRouter,
                                                                                          initialTopology,
                                                                                          clusterNode.topologyManager(),
-                                                                                         config.environment().flatMap(EnvironmentIntegration::compute),
+                                                                                         config.environment()
+                                                                                               .flatMap(EnvironmentIntegration::compute),
                                                                                          config.autoHeal());
         // Create load balancer manager when provider is available
         var loadBalancerManager = config.environment()
-            .flatMap(EnvironmentIntegration::loadBalancer)
-            .map(provider -> LoadBalancerManager.loadBalancerManager(
-                config.self(), kvStore, clusterNode.topologyManager(), provider, config.appHttp().port()));
+                                        .flatMap(EnvironmentIntegration::loadBalancer)
+                                        .map(provider -> LoadBalancerManager.loadBalancerManager(config.self(),
+                                                                                                 kvStore,
+                                                                                                 clusterNode.topologyManager(),
+                                                                                                 provider,
+                                                                                                 config.appHttp()
+                                                                                                       .port()));
         // Create endpoint registry
         var endpointRegistry = EndpointRegistry.endpointRegistry();
         // Create HTTP route registry for application HTTP routing
@@ -585,7 +589,10 @@ public interface AetherNode {
         var alertManager = AlertManager.alertManager(clusterNode, kvStore);
         // Create dynamic config manager if dynamic provider is available
         var dynamicConfigManager = resourceProviderSetup.dynamicProvider()
-            .map(dp -> DynamicConfigManager.dynamicConfigManager(clusterNode, kvStore, dp, config.self()));
+                                                        .map(dp -> DynamicConfigManager.dynamicConfigManager(clusterNode,
+                                                                                                             kvStore,
+                                                                                                             dp,
+                                                                                                             config.self()));
         // Create minute aggregator for TTM and metrics collection
         var minuteAggregator = MinuteAggregator.minuteAggregator();
         // Create subsystem collectors for comprehensive snapshots
@@ -688,44 +695,44 @@ public interface AetherNode {
                                                 loadBalancerManager);
         // DHT message routes for distributed operations
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetRequest.class,
-                                                     request -> dhtNode.handleGetRequest(request,
-                                                                                          response -> clusterNode.network()
-                                                                                                                  .send(request.sender(),
-                                                                                                                        response))));
+                                                    request -> dhtNode.handleGetRequest(request,
+                                                                                        response -> clusterNode.network()
+                                                                                                               .send(request.sender(),
+                                                                                                                     response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutRequest.class,
-                                                     request -> dhtNode.handlePutRequest(request,
-                                                                                          response -> clusterNode.network()
+                                                    request -> dhtNode.handlePutRequest(request,
+                                                                                        response -> clusterNode.network()
+                                                                                                               .send(request.sender(),
+                                                                                                                     response))));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveRequest.class,
+                                                    request -> dhtNode.handleRemoveRequest(request,
+                                                                                           response -> clusterNode.network()
                                                                                                                   .send(request.sender(),
                                                                                                                         response))));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveRequest.class,
-                                                     request -> dhtNode.handleRemoveRequest(request,
-                                                                                             response -> clusterNode.network()
-                                                                                                                     .send(request.sender(),
-                                                                                                                           response))));
         aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsRequest.class,
-                                                     request -> dhtNode.handleExistsRequest(request,
-                                                                                             response -> clusterNode.network()
-                                                                                                                     .send(request.sender(),
-                                                                                                                           response))));
+                                                    request -> dhtNode.handleExistsRequest(request,
+                                                                                           response -> clusterNode.network()
+                                                                                                                  .send(request.sender(),
+                                                                                                                        response))));
         // DHT response routes — complete the request/response cycle for DistributedDHTClient
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetResponse.class,
-                                                     dhtClient::onGetResponse));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutResponse.class,
-                                                     dhtClient::onPutResponse));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveResponse.class,
-                                                     dhtClient::onRemoveResponse));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsResponse.class,
-                                                     dhtClient::onExistsResponse));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.GetResponse.class, dhtClient::onGetResponse));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.PutResponse.class, dhtClient::onPutResponse));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.RemoveResponse.class, dhtClient::onRemoveResponse));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.ExistsResponse.class, dhtClient::onExistsResponse));
         // DHT migration/digest routes (no-op — migration not yet implemented)
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataRequest.class, _ -> {}));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class, _ -> {}));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestRequest.class, _ -> {}));
-        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestResponse.class, _ -> {}));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataRequest.class,
+                                                    _ -> {}));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.MigrationDataResponse.class,
+                                                    _ -> {}));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestRequest.class,
+                                                    _ -> {}));
+        aetherEntries.add(MessageRouter.Entry.route(DHTMessage.DigestResponse.class,
+                                                    _ -> {}));
         // DHT topology listener — update consistent hash ring on node add/remove
         aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
-                                                     dhtTopologyListener::onNodeAdded));
+                                                    dhtTopologyListener::onNodeAdded));
         aetherEntries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
-                                                     dhtTopologyListener::onNodeRemoved));
+                                                    dhtTopologyListener::onNodeRemoved));
         var allEntries = new ArrayList<>(clusterNode.routeEntries());
         allEntries.addAll(aetherEntries);
         // Create the node first (without management server reference)
@@ -907,7 +914,7 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
                                               filterRemove(AetherKey.class,
                                                            notification -> aspectRegistry.onKvStoreRemove(notification.cause()
-                                                                                                                     .key()))));
+                                                                                                                      .key()))));
         // Log level sync via KV-Store
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
                                               filterPut(AetherKey.class,
@@ -918,20 +925,20 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
                                               filterRemove(AetherKey.class,
                                                            notification -> logLevelRegistry.onKvStoreRemove(notification.cause()
-                                                                                                                       .key()))));
+                                                                                                                        .key()))));
         // Dynamic config sync via KV-Store
         dynamicConfigManager.onPresent(dcm -> {
-            entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                                  filterPut(AetherKey.class,
-                                                            (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> dcm.onKvStoreUpdate(notification.cause()
-                                                                                                                                                                  .key(),
-                                                                                                                                      notification.cause()
-                                                                                                                                                  .value()))));
-            entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                                  filterRemove(AetherKey.class,
-                                                               notification -> dcm.onKvStoreRemove(notification.cause()
-                                                                                                               .key()))));
-        });
+                                           entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                                                 filterPut(AetherKey.class,
+                                                                                           (KVStoreNotification.ValuePut<AetherKey, AetherValue> notification) -> dcm.onKvStoreUpdate(notification.cause()
+                                                                                                                                                                                                  .key(),
+                                                                                                                                                                                      notification.cause()
+                                                                                                                                                                                                  .value()))));
+                                           entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                                                                 filterRemove(AetherKey.class,
+                                                                                              notification -> dcm.onKvStoreRemove(notification.cause()
+                                                                                                                                              .key()))));
+                                       });
         // Quorum state notifications - these handlers activate/deactivate components.
         // NOTE: RabiaNode's handlers run first (consensus activates before LeaderManager emits LeaderChange).
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, nodeDeploymentManager::onQuorumStateChange));
@@ -1017,16 +1024,23 @@ public interface AetherNode {
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, appHttpServer::onNodeDown));
         // Cluster event aggregator — fan-out handlers for structured event collection
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, eventAggregator::onNodeAdded));
-        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class, eventAggregator::onNodeRemoved));
+        entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                              eventAggregator::onNodeRemoved));
         entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, eventAggregator::onNodeDown));
         entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, eventAggregator::onLeaderChange));
         entries.add(MessageRouter.Entry.route(QuorumStateNotification.class, eventAggregator::onQuorumStateChange));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentStarted.class, eventAggregator::onDeploymentStarted));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentCompleted.class, eventAggregator::onDeploymentCompleted));
-        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class, eventAggregator::onDeploymentFailed));
-        entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class, eventAggregator::onSliceFailure));
-        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class, eventAggregator::onConnectionEstablished));
-        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class, eventAggregator::onConnectionFailed));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentStarted.class,
+                                              eventAggregator::onDeploymentStarted));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentCompleted.class,
+                                              eventAggregator::onDeploymentCompleted));
+        entries.add(MessageRouter.Entry.route(DeploymentEvent.DeploymentFailed.class,
+                                              eventAggregator::onDeploymentFailed));
+        entries.add(MessageRouter.Entry.route(SliceFailureEvent.AllInstancesFailed.class,
+                                              eventAggregator::onSliceFailure));
+        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionEstablished.class,
+                                              eventAggregator::onConnectionEstablished));
+        entries.add(MessageRouter.Entry.route(NetworkServiceMessage.ConnectionFailed.class,
+                                              eventAggregator::onConnectionFailed));
         // Invocation messages
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeRequest.class, invocationHandler::onInvokeRequest));
         entries.add(MessageRouter.Entry.route(InvocationMessage.InvokeResponse.class, sliceInvoker::onInvokeResponse));
@@ -1047,15 +1061,21 @@ public interface AetherNode {
                                               notification -> handleLeaderCommit(notification, leaderManager)));
         // Load balancer manager routes
         loadBalancerManager.onPresent(lbm -> {
-            entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class, lbm::onLeaderChange));
-            entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
-                                                  filterPut(AetherKey.class, lbm::onValuePut)));
-            entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
-                                                  filterRemove(AetherKey.class, lbm::onValueRemove)));
-            entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class, lbm::onTopologyChange));
-            entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class, lbm::onTopologyChange));
-            entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class, lbm::onTopologyChange));
-        });
+                                          entries.add(MessageRouter.Entry.route(LeaderNotification.LeaderChange.class,
+                                                                                lbm::onLeaderChange));
+                                          entries.add(MessageRouter.Entry.route(KVStoreNotification.ValuePut.class,
+                                                                                filterPut(AetherKey.class,
+                                                                                          lbm::onValuePut)));
+                                          entries.add(MessageRouter.Entry.route(KVStoreNotification.ValueRemove.class,
+                                                                                filterRemove(AetherKey.class,
+                                                                                             lbm::onValueRemove)));
+                                          entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeAdded.class,
+                                                                                lbm::onTopologyChange));
+                                          entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeRemoved.class,
+                                                                                lbm::onTopologyChange));
+                                          entries.add(MessageRouter.Entry.route(TopologyChangeNotification.NodeDown.class,
+                                                                                lbm::onTopologyChange));
+                                      });
         return entries;
     }
 
@@ -1100,7 +1120,7 @@ public interface AetherNode {
     }
 
     record ResourceProviderSetup(ResourceProviderFacade facade,
-                                  Option<DynamicConfigurationProvider> dynamicProvider) {}
+                                 Option<DynamicConfigurationProvider> dynamicProvider) {}
 
     /// Create ResourceProviderFacade from config.
     /// If ConfigurationProvider is configured, creates ConfigService and ResourceProvider
@@ -1109,54 +1129,49 @@ public interface AetherNode {
     private static ResourceProviderSetup createResourceProviderFacade(AetherNodeConfig config) {
         var log = LoggerFactory.getLogger(AetherNode.class);
         return config.configProvider()
-                     .fold(
-                         () -> {
-                             log.debug("No configuration provider configured, resource provisioning disabled");
-                             return new ResourceProviderSetup(noOpResourceProviderFacade(), Option.empty());
-                         },
-                         configProvider -> {
-                             log.info("Creating ConfigService and ResourceProvider from configuration provider");
-                             var resolvedProvider = config.environment()
-                                                         .flatMap(EnvironmentIntegration::secrets)
-                                                         .fold(
-                                                             () -> Result.success(configProvider),
-                                                             sp -> ConfigurationProvider.withSecretResolution(configProvider, sp::resolveSecret)
-                                                         );
-
-                             return resolvedProvider.fold(
-                                 cause -> {
-                                     log.error("Failed to resolve secrets in configuration: {}", cause.message());
-                                     return new ResourceProviderSetup(noOpResourceProviderFacade(), Option.empty());
-                                 },
-                                 provider -> {
-                                     var dynamicProvider = DynamicConfigurationProvider.dynamicConfigurationProvider(provider);
-                                     var configService = ProviderBasedConfigService.providerBasedConfigService(dynamicProvider);
-                                     ConfigService.setInstance(configService);
-                                     var resourceProvider = SpiResourceProvider.spiResourceProvider();
-                                     ResourceProvider.setInstance(resourceProvider);
-                                     log.info("ConfigService and ResourceProvider initialized with dynamic overlay");
-                                     return new ResourceProviderSetup(
-                                         new ResourceProviderFacade() {
-                                             @Override
-                                             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                                                 return resourceProvider.provide(resourceType, configSection);
-                                             }
-                                         },
-                                         Option.some(dynamicProvider)
-                                     );
-                                 }
-                             );
-                         }
-                     );
+                     .fold(() -> {
+                               log.debug("No configuration provider configured, resource provisioning disabled");
+                               return new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                Option.empty());
+                           },
+                           configProvider -> {
+                               log.info("Creating ConfigService and ResourceProvider from configuration provider");
+                               var resolvedProvider = config.environment()
+                                                            .flatMap(EnvironmentIntegration::secrets)
+                                                            .fold(() -> Result.success(configProvider),
+                                                                  sp -> ConfigurationProvider.withSecretResolution(configProvider,
+                                                                                                                   sp::resolveSecret));
+                               return resolvedProvider.fold(cause -> {
+                                                                log.error("Failed to resolve secrets in configuration: {}",
+                                                                          cause.message());
+                                                                return new ResourceProviderSetup(noOpResourceProviderFacade(),
+                                                                                                 Option.empty());
+                                                            },
+                                                            provider -> {
+                                                                var dynamicProvider = DynamicConfigurationProvider.dynamicConfigurationProvider(provider);
+                                                                var configService = ProviderBasedConfigService.providerBasedConfigService(dynamicProvider);
+                                                                ConfigService.setInstance(configService);
+                                                                var resourceProvider = SpiResourceProvider.spiResourceProvider();
+                                                                ResourceProvider.setInstance(resourceProvider);
+                                                                log.info("ConfigService and ResourceProvider initialized with dynamic overlay");
+                                                                return new ResourceProviderSetup(new ResourceProviderFacade() {
+            @Override
+            public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
+                                                                                                     return resourceProvider.provide(resourceType,
+                                                                                                                                     configSection);
+                                                                                                 }
+        },
+                                                                                                 Option.some(dynamicProvider));
+                                                            });
+                           });
     }
 
     private static ResourceProviderFacade noOpResourceProviderFacade() {
         return new ResourceProviderFacade() {
             @Override
             public <T> Promise<T> provide(Class<T> resourceType, String configSection) {
-                return Causes.cause(
-                    "Resource provisioning not configured. Use AetherNodeConfig.withConfigProvider() to enable."
-                ).promise();
+                return Causes.cause("Resource provisioning not configured. Use AetherNodeConfig.withConfigProvider() to enable.")
+                             .promise();
             }
         };
     }
@@ -1168,7 +1183,7 @@ public interface AetherNode {
     private static Repository compositeRepository(List<Repository> repositories) {
         if (repositories.isEmpty()) {
             return artifact -> Causes.cause("No repositories configured")
-                                  .promise();
+                                     .promise();
         }
         // Use first repository (most configurations use a single repository)
         return repositories.getFirst();

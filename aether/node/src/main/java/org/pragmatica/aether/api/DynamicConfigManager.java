@@ -55,7 +55,9 @@ public class DynamicConfigManager {
     /// Load config overrides from KV-Store on startup.
     private void loadFromKvStore() {
         kvStore.forEach(ConfigKey.class, ConfigValue.class, this::loadConfig);
-        log.info("Loaded {} config overrides from KV-Store", provider.overlayMap().size());
+        log.info("Loaded {} config overrides from KV-Store",
+                 provider.overlayMap()
+                         .size());
     }
 
     private void loadConfig(ConfigKey key, ConfigValue value) {
@@ -66,9 +68,12 @@ public class DynamicConfigManager {
             key.nodeScope()
                .filter(self::equals)
                .onPresent(_ -> {
-                   provider.put(value.key(), value.value());
-                   log.debug("Loaded node-scoped config from KV-Store: {}={}", value.key(), value.value());
-               });
+                              provider.put(value.key(),
+                                           value.value());
+                              log.debug("Loaded node-scoped config from KV-Store: {}={}",
+                                        value.key(),
+                                        value.value());
+                          });
         }
     }
 
@@ -102,14 +107,16 @@ public class DynamicConfigManager {
     public Promise<Unit> setConfig(String key, String value) {
         var configKey = ConfigKey.configKey(key);
         var configValue = ConfigValue.configValue(key, value);
-        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<>(configKey, configValue);
-        return clusterNode.<Unit>apply(List.of(command))
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(configKey, configValue);
+        return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> {
                                    provider.put(key, value);
                                    log.info("Config set and persisted: {}={}", key, value);
                                    return Unit.unit();
                                })
-                          .onFailure(cause -> log.error("Failed to persist config {}: {}", key, cause.message()));
+                          .onFailure(cause -> log.error("Failed to persist config {}: {}",
+                                                        key,
+                                                        cause.message()));
     }
 
     /// Set a node-scoped configuration value and persist to KV-Store.
@@ -119,18 +126,22 @@ public class DynamicConfigManager {
     public Promise<Unit> setNodeConfig(String key, String value, NodeId nodeId) {
         var configKey = ConfigKey.configKey(key, nodeId);
         var configValue = ConfigValue.configValue(key, value);
-        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Put<>(configKey, configValue);
-        return clusterNode.<Unit>apply(List.of(command))
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Put<>(configKey, configValue);
+        return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> {
                                    if (nodeId.equals(self)) {
                                        provider.put(key, value);
                                    }
                                    log.info("Node config set and persisted: {}={} for node {}",
-                                            key, value, nodeId.id());
+                                            key,
+                                            value,
+                                            nodeId.id());
                                    return Unit.unit();
                                })
                           .onFailure(cause -> log.error("Failed to persist node config {} for {}: {}",
-                                                        key, nodeId.id(), cause.message()));
+                                                        key,
+                                                        nodeId.id(),
+                                                        cause.message()));
     }
 
     /// Remove a cluster-wide configuration value and persist removal to KV-Store.
@@ -139,15 +150,16 @@ public class DynamicConfigManager {
     @SuppressWarnings("unchecked")
     public Promise<Unit> removeConfig(String key) {
         var configKey = ConfigKey.configKey(key);
-        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Remove<>(configKey);
-        return clusterNode.<Unit>apply(List.of(command))
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(configKey);
+        return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> {
                                    provider.remove(key);
                                    log.info("Config removed and persisted: {}", key);
                                    return Unit.unit();
                                })
                           .onFailure(cause -> log.error("Failed to persist config removal {}: {}",
-                                                        key, cause.message()));
+                                                        key,
+                                                        cause.message()));
     }
 
     /// Remove a node-scoped configuration value and persist removal to KV-Store.
@@ -156,18 +168,21 @@ public class DynamicConfigManager {
     @SuppressWarnings("unchecked")
     public Promise<Unit> removeNodeConfig(String key, NodeId nodeId) {
         var configKey = ConfigKey.configKey(key, nodeId);
-        var command = (KVCommand<AetherKey>) (KVCommand<?>) new KVCommand.Remove<>(configKey);
-        return clusterNode.<Unit>apply(List.of(command))
+        var command = (KVCommand<AetherKey>)(KVCommand<?>) new KVCommand.Remove<>(configKey);
+        return clusterNode.<Unit> apply(List.of(command))
                           .map(_ -> {
                                    if (nodeId.equals(self)) {
                                        provider.remove(key);
                                    }
                                    log.info("Node config removed and persisted: {} for node {}",
-                                            key, nodeId.id());
+                                            key,
+                                            nodeId.id());
                                    return Unit.unit();
                                })
                           .onFailure(cause -> log.error("Failed to persist node config removal {} for {}: {}",
-                                                        key, nodeId.id(), cause.message()));
+                                                        key,
+                                                        nodeId.id(),
+                                                        cause.message()));
     }
 
     /// Get all current overlay overrides.

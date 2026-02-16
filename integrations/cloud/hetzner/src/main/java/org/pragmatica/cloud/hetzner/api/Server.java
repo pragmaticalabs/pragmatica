@@ -17,10 +17,10 @@
 
 package org.pragmatica.cloud.hetzner.api;
 
+import java.util.List;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonProperty;
-
-import java.util.List;
 
 /// Hetzner Cloud server model.
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -31,7 +31,6 @@ public record Server(long id,
                      Image image,
                      @JsonProperty("public_net") PublicNet publicNet,
                      @JsonProperty("private_net") List<PrivateNet> privateNet) {
-
     /// Server hardware type.
     @JsonIgnoreProperties(ignoreUnknown = true)
     public record ServerType(long id, String name, String description, int cores, double memory, int disk) {}
@@ -66,7 +65,6 @@ public record Server(long id,
                                       String location,
                                       @JsonProperty("user_data") String userData,
                                       @JsonProperty("start_after_create") boolean startAfterCreate) {
-
         /// Firewall reference for server creation.
         public record FirewallRef(long firewall) {}
 
@@ -80,9 +78,17 @@ public record Server(long id,
                                                               String location,
                                                               String userData,
                                                               boolean startAfterCreate) {
-            return new CreateServerRequest(name, serverType, image, sshKeys, networks,
-                                           firewalls.stream().map(FirewallRef::new).toList(),
-                                           location, userData, startAfterCreate);
+            return new CreateServerRequest(name,
+                                           serverType,
+                                           image,
+                                           sshKeys,
+                                           networks,
+                                           firewalls.stream()
+                                                    .map(FirewallRef::new)
+                                                    .toList(),
+                                           location,
+                                           userData,
+                                           startAfterCreate);
         }
     }
 

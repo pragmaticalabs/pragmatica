@@ -24,12 +24,11 @@ public sealed interface MetricsProxyRoutes {
 
     static RouteSource metricsProxyRoutes(ForgeCluster cluster) {
         var http = JdkHttpOperations.jdkHttpOperations();
-        return in("/api/metrics")
-        .serve(historyRoute(cluster, http));
+        return in("/api/metrics").serve(historyRoute(cluster, http));
     }
 
     private static Route<HistoryResponse> historyRoute(ForgeCluster cluster,
-                                                        JdkHttpOperations http) {
+                                                       JdkHttpOperations http) {
         return Route.<HistoryResponse> get("/history")
                     .withQuery(aString("range"))
                     .to(range -> proxyHistory(cluster, http, range))
@@ -37,8 +36,8 @@ public sealed interface MetricsProxyRoutes {
     }
 
     private static Promise<HistoryResponse> proxyHistory(ForgeCluster cluster,
-                                                          JdkHttpOperations http,
-                                                          Option<String> range) {
+                                                         JdkHttpOperations http,
+                                                         Option<String> range) {
         var rangeParam = range.or("1h");
         return cluster.getLeaderManagementPort()
                       .async(LeaderNotAvailable.INSTANCE)
@@ -53,7 +52,8 @@ public sealed interface MetricsProxyRoutes {
                                  .timeout(HTTP_TIMEOUT)
                                  .build();
         return http.sendString(request)
-                   .flatMap(result -> result.toResult().async());
+                   .flatMap(result -> result.toResult()
+                                            .async());
     }
 
     enum LeaderNotAvailable implements Cause {

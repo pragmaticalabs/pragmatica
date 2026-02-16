@@ -57,7 +57,9 @@ public record DHTConfig(int replicationFactor, int writeQuorum, int readQuorum, 
     }
 
     /// Create a DHT configuration with validation and custom timeout.
-    public static Result<DHTConfig> dhtConfig(int replicationFactor, int writeQuorum, int readQuorum,
+    public static Result<DHTConfig> dhtConfig(int replicationFactor,
+                                              int writeQuorum,
+                                              int readQuorum,
                                               TimeSpan operationTimeout) {
         if (replicationFactor < 0) {
             return INVALID_REPLICATION.result();

@@ -1,11 +1,11 @@
 package org.pragmatica.aether.controller;
 
-import java.util.EnumMap;
-import java.util.Map;
-
 import org.pragmatica.lang.Result;
 import org.pragmatica.lang.Unit;
 import org.pragmatica.lang.utils.Causes;
+
+import java.util.EnumMap;
+import java.util.Map;
 
 /// Configuration for the Lizard Brain relative change scaling algorithm.
 ///
@@ -155,43 +155,46 @@ public record ScalingConfig(int windowSize,
                                                       double scaleDownThreshold,
                                                       Map<ScalingMetric, Double> weights,
                                                       double errorRateBlockThreshold) {
-        return validatePositive(windowSize, "windowSize")
-            .flatMap(_ -> validatePositive(scaleUpThreshold, "scaleUpThreshold"))
-            .flatMap(_ -> validatePositive(scaleDownThreshold, "scaleDownThreshold"))
-            .flatMap(_ -> validateThresholdOrder(scaleUpThreshold, scaleDownThreshold))
-            .flatMap(_ -> validateWeights(weights))
-            .map(_ -> new ScalingConfig(windowSize,
-                                        evaluationIntervalMs,
-                                        scaleUpThreshold,
-                                        scaleDownThreshold,
-                                        Map.copyOf(weights),
-                                        errorRateBlockThreshold));
+        return validatePositive(windowSize, "windowSize").flatMap(_ -> validatePositive(scaleUpThreshold,
+                                                                                        "scaleUpThreshold"))
+                               .flatMap(_ -> validatePositive(scaleDownThreshold, "scaleDownThreshold"))
+                               .flatMap(_ -> validateThresholdOrder(scaleUpThreshold, scaleDownThreshold))
+                               .flatMap(_ -> validateWeights(weights))
+                               .map(_ -> new ScalingConfig(windowSize,
+                                                           evaluationIntervalMs,
+                                                           scaleUpThreshold,
+                                                           scaleDownThreshold,
+                                                           Map.copyOf(weights),
+                                                           errorRateBlockThreshold));
     }
 
     private static Result<Unit> validatePositive(double value, String name) {
         return value > 0
                ? Result.unitResult()
-               : Causes.cause(name + " must be positive, got: " + value).result();
+               : Causes.cause(name + " must be positive, got: " + value)
+                       .result();
     }
 
     private static Result<Unit> validatePositive(int value, String name) {
         return value > 0
                ? Result.unitResult()
-               : Causes.cause(name + " must be positive, got: " + value).result();
+               : Causes.cause(name + " must be positive, got: " + value)
+                       .result();
     }
 
     private static Result<Unit> validateThresholdOrder(double scaleUp, double scaleDown) {
         return scaleUp > scaleDown
                ? Result.unitResult()
-               : Causes.cause("scaleUpThreshold must be greater than scaleDownThreshold, got: "
-                               + scaleUp + " <= " + scaleDown).result();
+               : Causes.cause("scaleUpThreshold must be greater than scaleDownThreshold, got: " + scaleUp + " <= " + scaleDown)
+                       .result();
     }
 
     /// Validate that all weights are non-negative.
     private static Result<Unit> validateWeights(Map<ScalingMetric, Double> weights) {
         for (var entry : weights.entrySet()) {
             if (entry.getValue() < 0) {
-                return Causes.cause("Weight for " + entry.getKey() + " must be >= 0, got: " + entry.getValue()).result();
+                return Causes.cause("Weight for " + entry.getKey() + " must be >= 0, got: " + entry.getValue())
+                             .result();
             }
         }
         return Result.unitResult();

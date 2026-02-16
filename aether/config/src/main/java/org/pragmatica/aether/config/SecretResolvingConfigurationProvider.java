@@ -35,48 +35,40 @@ final class SecretResolvingConfigurationProvider implements ConfigurationProvide
     /// @param secretResolver Function that resolves secret paths to values
     /// @return New ConfigurationProvider with all secrets resolved, or failure
     static Result<ConfigurationProvider> resolve(ConfigurationProvider provider,
-                                                  Fn1<Promise<String>, String> secretResolver) {
+                                                 Fn1<Promise<String>, String> secretResolver) {
         var originalMap = provider.asMap();
         var resolvedMap = new LinkedHashMap<String, String>();
-
         for (var entry : originalMap.entrySet()) {
             var key = entry.getKey();
             var value = entry.getValue();
             var resolvedValue = resolveValue(key, value, secretResolver);
-
             if (resolvedValue.isFailure()) {
                 return resolvedValue.map(_ -> (ConfigurationProvider) null);
             }
-
             resolvedMap.put(key, resolvedValue.unwrap());
         }
-
         return Result.success(new SecretResolvingConfigurationProvider(provider, resolvedMap));
     }
 
     private static Result<String> resolveValue(String key, String value, Fn1<Promise<String>, String> secretResolver) {
         var matcher = SECRET_PATTERN.matcher(value);
-
         if (!matcher.find()) {
             return Result.success(value);
         }
-
         var result = new StringBuilder();
         matcher.reset();
-
         while (matcher.find()) {
             var secretPath = matcher.group(1);
-            var resolved = secretResolver.apply(secretPath).await();
-
+            var resolved = secretResolver.apply(secretPath)
+                                         .await();
             switch (resolved) {
-                case Result.Failure<String>(var cause) ->  {
+                case Result.Failure<String>(var cause) -> {
                     return Result.failure(ConfigError.secretResolutionFailed(key, secretPath, cause));
                 }
                 case Result.Success<String>(var secretValue) ->
-                    matcher.appendReplacement(result, java.util.regex.Matcher.quoteReplacement(secretValue));
+                matcher.appendReplacement(result, java.util.regex.Matcher.quoteReplacement(secretValue));
             }
         }
-
         matcher.appendTail(result);
         return Result.success(result.toString());
     }

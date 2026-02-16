@@ -246,10 +246,12 @@ public interface LeaderManager {
             }
 
             private void scheduleElectionRetryIfNeeded() {
-                if (!hasEverHadLeader.get() && currentLeader.get().isEmpty()) {
+                if (!hasEverHadLeader.get() && currentLeader.get()
+                                                            .isEmpty()) {
                     var retries = electionRetryCount.incrementAndGet();
                     log.debug("No leader elected yet, scheduling election retry #{} in {}ms",
-                              retries, PROPOSAL_RETRY_DELAY.millis());
+                              retries,
+                              PROPOSAL_RETRY_DELAY.millis());
                     SharedScheduler.schedule(this::triggerElection, PROPOSAL_RETRY_DELAY);
                 }
             }
@@ -271,11 +273,12 @@ public interface LeaderManager {
                 // If each node proposed itself, different BatchIds would cause infinite V0 decisions
                 // because no single proposal gets quorum agreement.
                 var shouldSubmit = self.equals(candidate);
-                if (!shouldSubmit && isInitialElection
-                    && electionRetryCount.get() >= ELECTION_FALLBACK_RETRIES) {
+                if (!shouldSubmit && isInitialElection && electionRetryCount.get() >= ELECTION_FALLBACK_RETRIES) {
                     log.info("Election fallback after {} retries: self={} taking over submission "
                              + "for candidate={} (designated min node may be slow)",
-                             electionRetryCount.get(), self, candidate);
+                             electionRetryCount.get(),
+                             self,
+                             candidate);
                     shouldSubmit = true;
                 }
                 if (!shouldSubmit) {
@@ -483,9 +486,12 @@ public interface LeaderManager {
                     // Use INITIAL_ELECTION_DELAY on first election to allow all nodes to complete
                     // synchronization before leader proposals are submitted.
                     var isFirstElection = !hasEverHadLeader.get();
-                    var delay = isFirstElection ? INITIAL_ELECTION_DELAY : PROPOSAL_RETRY_DELAY;
+                    var delay = isFirstElection
+                                ? INITIAL_ELECTION_DELAY
+                                : PROPOSAL_RETRY_DELAY;
                     log.debug("Quorum established, scheduling leader election trigger (initial={}, delay={}ms)",
-                              isFirstElection, delay.millis());
+                              isFirstElection,
+                              delay.millis());
                     SharedScheduler.schedule(this::triggerElection, delay);
                 } else {
                     // Local mode: notify if we have a candidate

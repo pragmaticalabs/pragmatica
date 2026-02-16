@@ -95,8 +95,7 @@ public final class ErrorTypeDiscovery {
     }
 
     private static boolean isTypeKind(ElementKind kind) {
-        return kind == ElementKind.CLASS || kind == ElementKind.ENUM
-               || kind == ElementKind.INTERFACE || kind == ElementKind.RECORD;
+        return kind == ElementKind.CLASS || kind == ElementKind.ENUM || kind == ElementKind.INTERFACE || kind == ElementKind.RECORD;
     }
 
     private boolean implementsCause(TypeElement element, javax.lang.model.util.Types types) {
@@ -126,16 +125,18 @@ public final class ErrorTypeDiscovery {
         // Sort children before parents for correct switch pattern dominance
         var types = processingEnv.getTypeUtils();
         mappings.sort((a, b) -> {
-            var aType = a.errorType().asType();
-            var bType = b.errorType().asType();
-            if (types.isAssignable(aType, bType)) {
-                return -1;
-            }
-            if (types.isAssignable(bType, aType)) {
-                return 1;
-            }
-            return 0;
-        });
+                          var aType = a.errorType()
+                                       .asType();
+                          var bType = b.errorType()
+                                       .asType();
+                          if (types.isAssignable(aType, bType)) {
+                              return - 1;
+                          }
+                          if (types.isAssignable(bType, aType)) {
+                              return 1;
+                          }
+                          return 0;
+                      });
         return Result.success(List.copyOf(mappings));
     }
 

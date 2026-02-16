@@ -1,7 +1,5 @@
 package org.pragmatica.aether.ttm;
 
-import io.micrometer.core.instrument.Counter;
-import io.micrometer.core.instrument.Metrics;
 import org.pragmatica.aether.config.TTMConfig;
 import org.pragmatica.aether.controller.ControllerConfig;
 import org.pragmatica.aether.metrics.MinuteAggregator;
@@ -22,6 +20,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Metrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -81,15 +81,15 @@ public interface TTMManager {
                                                                        return thread;
                                                                    });
         return new ActiveTTMManager(config,
-                              predictor,
-                              analyzer,
-                              aggregator,
-                              controllerConfigSupplier,
-                              scheduler,
-                              new AtomicReference<>(),
-                              new AtomicReference<>(),
-                              new AtomicReference<>(TTMState.STOPPED),
-                              new CopyOnWriteArrayList<>());
+                                    predictor,
+                                    analyzer,
+                                    aggregator,
+                                    controllerConfigSupplier,
+                                    scheduler,
+                                    new AtomicReference<>(),
+                                    new AtomicReference<>(),
+                                    new AtomicReference<>(TTMState.STOPPED),
+                                    new CopyOnWriteArrayList<>());
     }
 
     /// Create a no-op TTM manager (for when TTM is disabled).

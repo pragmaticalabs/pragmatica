@@ -43,7 +43,6 @@ import java.util.Set;
 /// config.getString("server.port")  // Returns merged value
 /// }```
 public interface ConfigurationProvider extends ConfigSource {
-
     /// Get all registered sources in priority order (highest first).
     ///
     /// @return List of configuration sources
@@ -61,7 +60,8 @@ public interface ConfigurationProvider extends ConfigSource {
     /// @param source The configuration source
     /// @return ConfigurationProvider wrapping the source
     static ConfigurationProvider configurationProvider(ConfigSource source) {
-        return builder().withSource(source).build();
+        return builder().withSource(source)
+                      .build();
     }
 
     /// Resolve ${secrets:path} placeholders in all config values.
@@ -72,9 +72,8 @@ public interface ConfigurationProvider extends ConfigSource {
     /// @param provider       The configuration provider with unresolved values
     /// @param secretResolver Function that resolves secret paths to values
     /// @return New ConfigurationProvider with all secrets resolved, or failure
-    static Result<ConfigurationProvider> withSecretResolution(
-        ConfigurationProvider provider,
-        Fn1<Promise<String>, String> secretResolver) {
+    static Result<ConfigurationProvider> withSecretResolution(ConfigurationProvider provider,
+                                                              Fn1<Promise<String>, String> secretResolver) {
         return SecretResolvingConfigurationProvider.resolve(provider, secretResolver);
     }
 
@@ -98,7 +97,7 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @param defaults Map of default key-value pairs
         /// @return This builder
         public Builder withDefaults(Map<String, String> defaults) {
-            return withSource(MapConfigSource.mapConfigSource("defaults", defaults, -1000));
+            return withSource(MapConfigSource.mapConfigSource("defaults", defaults, - 1000));
         }
 
         /// Add a TOML file source (priority: 0).
@@ -150,9 +149,9 @@ public interface ConfigurationProvider extends ConfigSource {
         /// @return Configured provider with all sources merged
         public ConfigurationProvider build() {
             var sortedSources = sources.stream()
-                                       .sorted(Comparator.comparingInt(ConfigSource::priority).reversed())
+                                       .sorted(Comparator.comparingInt(ConfigSource::priority)
+                                                         .reversed())
                                        .toList();
-
             var mergedMap = DeepMerger.mergeSources(sortedSources);
             return new LayeredConfigurationProvider(sortedSources, mergedMap);
         }
@@ -204,7 +203,6 @@ final class LayeredConfigurationProvider implements ConfigurationProvider {
             }
             reloadedSources.add(reloaded.unwrap());
         }
-
         var newMerged = DeepMerger.mergeSources(reloadedSources);
         return Result.success(new LayeredConfigurationProvider(reloadedSources, newMerged));
     }

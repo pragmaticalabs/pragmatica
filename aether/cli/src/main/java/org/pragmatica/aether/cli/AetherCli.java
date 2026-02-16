@@ -1588,14 +1588,15 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var hashIndex = target.indexOf('#');
-                if (hashIndex == -1) {
+                if (hashIndex == - 1) {
                     System.err.println("Invalid target format. Expected: artifact#method");
                     return 1;
                 }
                 var artifact = target.substring(0, hashIndex);
                 var method = target.substring(hashIndex + 1);
                 var normalizedMode = mode.toUpperCase();
-                var body = "{\"artifact\":\"" + artifact + "\",\"method\":\"" + method + "\",\"mode\":\"" + normalizedMode + "\"}";
+                var body = "{\"artifact\":\"" + artifact + "\",\"method\":\"" + method + "\",\"mode\":\"" + normalizedMode
+                           + "\"}";
                 var response = aspectsParent.parent.postToNode("/api/aspects", body);
                 System.out.println(formatJson(response));
                 return 0;
@@ -1613,7 +1614,7 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var hashIndex = target.indexOf('#');
-                if (hashIndex == -1) {
+                if (hashIndex == - 1) {
                     System.err.println("Invalid target format. Expected: artifact#method");
                     return 1;
                 }
@@ -1627,7 +1628,8 @@ public class AetherCli implements Runnable {
 
         private static void printAspectsTable(String json) {
             // Parse JSON map: {"key::mode", ...}
-            if (json == null || json.trim().equals("{}") || json.contains("\"error\":")) {
+            if (json == null || json.trim()
+                                    .equals("{}") || json.contains("\"error\":")) {
                 if (json != null && json.contains("\"error\":")) {
                     System.out.println(formatJson(json));
                 } else {
@@ -1641,13 +1643,14 @@ public class AetherCli implements Runnable {
             var content = json.trim();
             if (content.startsWith("{")) content = content.substring(1);
             if (content.endsWith("}")) content = content.substring(0, content.length() - 1);
-            if (content.trim().isEmpty()) {
+            if (content.trim()
+                       .isEmpty()) {
                 System.out.println("No active aspects");
                 return;
             }
             // Parse key-value pairs
             var inString = false;
-            var tokenStart = -1;
+            var tokenStart = - 1;
             var key = "";
             var expectValue = false;
             for (int i = 0; i < content.length(); i++) {
@@ -1665,8 +1668,12 @@ public class AetherCli implements Runnable {
                         } else {
                             // key = "artifactBase/method", token = mode
                             var slashIndex = key.indexOf('/');
-                            var artifact = slashIndex != -1 ? key.substring(0, slashIndex) : key;
-                            var method = slashIndex != -1 ? key.substring(slashIndex + 1) : "";
+                            var artifact = slashIndex != - 1
+                                           ? key.substring(0, slashIndex)
+                                           : key;
+                            var method = slashIndex != - 1
+                                         ? key.substring(slashIndex + 1)
+                                         : "";
                             System.out.printf("%-40s %-20s %s%n", artifact, method, token);
                             expectValue = false;
                         }
@@ -1803,9 +1810,13 @@ public class AetherCli implements Runnable {
             @Override
             public Integer call() {
                 var body = new StringBuilder("{\"key\":\"").append(key)
-                    .append("\",\"value\":\"").append(value).append("\"");
+                                                           .append("\",\"value\":\"")
+                                                           .append(value)
+                                                           .append("\"");
                 if (nodeId != null) {
-                    body.append(",\"nodeId\":\"").append(nodeId).append("\"");
+                    body.append(",\"nodeId\":\"")
+                        .append(nodeId)
+                        .append("\"");
                 }
                 body.append("}");
                 var response = configParent.parent.postToNode("/api/config", body.toString());

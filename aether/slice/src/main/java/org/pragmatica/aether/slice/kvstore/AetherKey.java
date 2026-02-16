@@ -420,12 +420,12 @@ public sealed interface AetherKey extends StructuredKey {
         public static Result<LogLevelKey> parseLogLevelKey(String key) {
             if (!key.startsWith(PREFIX)) {
                 return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key)
-                                                  .result();
+                                                 .result();
             }
             var loggerName = key.substring(PREFIX.length());
             if (loggerName.isEmpty()) {
                 return LOG_LEVEL_KEY_FORMAT_ERROR.apply(key)
-                                                  .result();
+                                                 .result();
             }
             return Result.success(new LogLevelKey(loggerName));
         }
@@ -464,13 +464,13 @@ public sealed interface AetherKey extends StructuredKey {
         public static Result<DynamicAspectKey> dynamicAspectKey(String key) {
             if (!key.startsWith(PREFIX)) {
                 return DYNAMIC_ASPECT_KEY_FORMAT_ERROR.apply(key)
-                                                       .result();
+                                                      .result();
             }
             var content = key.substring(PREFIX.length());
             var slashIndex = content.indexOf('/');
-            if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+            if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {
                 return DYNAMIC_ASPECT_KEY_FORMAT_ERROR.apply(key)
-                                                       .result();
+                                                      .result();
             }
             var artifactBase = content.substring(0, slashIndex);
             var methodName = content.substring(slashIndex + 1);
@@ -538,10 +538,7 @@ public sealed interface AetherKey extends StructuredKey {
 
         @Override
         public String asString() {
-            return nodeScope.fold(
-                () -> CLUSTER_PREFIX + key,
-                nodeId -> NODE_PREFIX + nodeId.id() + "/" + key
-            );
+            return nodeScope.fold(() -> CLUSTER_PREFIX + key, nodeId -> NODE_PREFIX + nodeId.id() + "/" + key);
         }
 
         @Override
@@ -565,14 +562,15 @@ public sealed interface AetherKey extends StructuredKey {
             if (raw.startsWith(NODE_PREFIX)) {
                 var content = raw.substring(NODE_PREFIX.length());
                 var slashIndex = content.indexOf('/');
-                if (slashIndex == -1 || slashIndex == 0 || slashIndex == content.length() - 1) {
+                if (slashIndex == - 1 || slashIndex == 0 || slashIndex == content.length() - 1) {
                     return CONFIG_KEY_FORMAT_ERROR.apply(raw)
                                                   .result();
                 }
                 var nodeIdPart = content.substring(0, slashIndex);
                 var keyPart = content.substring(slashIndex + 1);
                 return NodeId.nodeId(nodeIdPart)
-                             .map(nodeId -> new ConfigKey(keyPart, Option.some(nodeId)));
+                             .map(nodeId -> new ConfigKey(keyPart,
+                                                          Option.some(nodeId)));
             }
             if (raw.startsWith(CLUSTER_PREFIX)) {
                 var keyPart = raw.substring(CLUSTER_PREFIX.length());

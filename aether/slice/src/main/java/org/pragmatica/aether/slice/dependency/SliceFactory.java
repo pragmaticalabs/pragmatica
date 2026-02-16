@@ -42,7 +42,7 @@ public interface SliceFactory {
                                       List<DependencyDescriptor> descriptors) {
         log.debug("Creating slice from class {} with {} dependencies", sliceClass.getName(), dependencies.size());
         Result<Method> factoryMethodResult;
-        try {
+        try{
             factoryMethodResult = findFactoryMethod(sliceClass);
         } catch (Throwable t) {
             log.error("Exception in findFactoryMethod for {}: {}", sliceClass.getName(), t.getMessage(), t);
@@ -60,9 +60,9 @@ public interface SliceFactory {
                                                                                      sliceClass,
                                                                                      dependencies,
                                                                                      descriptors)
-                                                                 .onFailure(cause -> log.error("Failed to verify parameters for {}: {}",
-                                                                                               method.getName(),
-                                                                                               cause.message()));
+        .onFailure(cause -> log.error("Failed to verify parameters for {}: {}",
+                                      method.getName(),
+                                      cause.message()));
                                                          });
         return verifiedResult.async()
                              .flatMap(method -> invokeFactory(method, creationContext, dependencies));
@@ -84,9 +84,7 @@ public interface SliceFactory {
         Method[] methods;
         try{
             methods = sliceClass.getDeclaredMethods();
-            log.trace("getDeclaredMethods returned {} methods for {}",
-                      methods.length,
-                      sliceClass.getName());
+            log.trace("getDeclaredMethods returned {} methods for {}", methods.length, sliceClass.getName());
         } catch (Throwable t) {
             log.error("findFactoryMethod: getDeclaredMethods FAILED for {}: {}", sliceClass.getName(), t.getMessage(), t);
             return Causes.fromThrowable(t)
@@ -129,17 +127,17 @@ public interface SliceFactory {
         }
         // Verify first parameter is Aspect
         if (!parameters[0].getType()
-                          .equals(Aspect.class)) {
+                       .equals(Aspect.class)) {
             return firstParameterMustBeAspect(method.getName(),
                                               parameters[0].getType()
-                                                           .getName()).result();
+                                                        .getName()).result();
         }
         // Verify second parameter is SliceCreationContext
         if (!parameters[1].getType()
-                          .equals(SliceCreationContext.class)) {
+                       .equals(SliceCreationContext.class)) {
             return secondParameterMustBeCreationContext(method.getName(),
                                                         parameters[1].getType()
-                                                                     .getName()).result();
+                                                                  .getName()).result();
         }
         return Result.success(method);
     }
@@ -153,8 +151,8 @@ public interface SliceFactory {
                             () -> {
                                 method.setAccessible(true);
                                 // New-style factories take only (Aspect, SliceCreationContext)
-                                // Dependencies are resolved dynamically via SliceCreationContext
-                                var args = new Object[]{Aspect.identity(), creationContext};
+        // Dependencies are resolved dynamically via SliceCreationContext
+        var args = new Object[]{Aspect.identity(), creationContext};
                                 log.debug("Calling factory method {} with args: Aspect, SliceCreationContext",
                                           method.getName());
                                 return (Promise<Slice>) method.invoke(null, args);

@@ -1,5 +1,4 @@
 package org.pragmatica.aether.slice;
-
 /// Unified context for slice factory methods during slice creation.
 ///
 /// Provides access to all services needed when creating a slice:
@@ -27,7 +26,6 @@ package org.pragmatica.aether.slice;
 /// The unified context enables parallel resolution of resources and dependencies
 /// via Promise.all(), improving startup latency.
 public interface SliceCreationContext {
-
     /// Get the slice invoker facade for cross-slice method invocation.
     ///
     /// Use this to obtain MethodHandle instances for calling methods on other slices.
@@ -49,12 +47,11 @@ public interface SliceCreationContext {
     /// @param resources ResourceProviderFacade for resource provisioning
     /// @return New SliceCreationContext
     static SliceCreationContext sliceCreationContext(SliceInvokerFacade invoker,
-                                                      ResourceProviderFacade resources) {
+                                                     ResourceProviderFacade resources) {
         return new DefaultSliceCreationContext(invoker, resources);
     }
 }
 
 /// Default implementation of SliceCreationContext.
 record DefaultSliceCreationContext(SliceInvokerFacade invoker,
-                                    ResourceProviderFacade resources) implements SliceCreationContext {
-}
+                                   ResourceProviderFacade resources) implements SliceCreationContext {}

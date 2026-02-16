@@ -6,7 +6,6 @@ import org.pragmatica.lang.utils.Causes;
 
 /// Error types for configuration operations.
 public sealed interface ConfigError extends Cause {
-
     /// Config section not found in configuration.
     record SectionNotFound(String section) implements ConfigError {
         public static SectionNotFound sectionNotFound(String section) {
@@ -113,8 +112,7 @@ public sealed interface ConfigError extends Cause {
 
         @Override
         public String message() {
-            return "Failed to resolve secret '${secrets:" + secretPath + "}' in config key '" + key + "': "
-                   + underlying.message();
+            return "Failed to resolve secret '${secrets:" + secretPath + "}' in config key '" + key + "': " + underlying.message();
         }
 
         @Override
